@@ -32,15 +32,15 @@ static inline char *_xmldup(const char *str) {
 	return pstrdup(str);
 }
 
-static char *_get_cdata(mxml_node_t *node) {
+static const char *_get_cdata(mxml_node_t *node) {
 	if (!node)
 		return NULL;
 
-	mxml_node_t *n = node->child;
+	mxml_node_t *n = mxmlGetFirstChild(node);
 
 	while (n) {
-		if (n->type == MXML_OPAQUE)
-			return n->value.opaque;
+		if (mxmlGetType(n) == MXML_OPAQUE)
+			return mxmlGetOpaque(n);
 
 		n = mxmlWalkNext(n, node, MXML_NO_DESCEND);
 	}
@@ -48,7 +48,7 @@ static char *_get_cdata(mxml_node_t *node) {
 	return NULL;
 }
 
-static char *_get_elem_cdata(mxml_node_t *node, const char *element) {
+static const char *_get_elem_cdata(mxml_node_t *node, const char *element) {
 	if (!node)
 		return NULL;
 
@@ -57,7 +57,7 @@ static char *_get_elem_cdata(mxml_node_t *node, const char *element) {
 }
 
 static int _get_elem_int(mxml_node_t *node, const char *element, int std) {
-	char *cdata;
+	const char *cdata;
 
 	if (!node)
 		return std;
@@ -191,7 +191,7 @@ static char *_get_args(u16 *length, mxml_node_t *node, const char *element) {
 
 	mxml_node_t *n;
 	u16 len = 0;
-	char *arg;
+	const char *arg;
 
 	for (n = mxmlFindElement(node, node, "arg", NULL, NULL, MXML_DESCEND_FIRST);
 			n != NULL; n = mxmlFindElement(n, node, "arg", NULL, NULL,
@@ -246,7 +246,7 @@ meta_info *meta_parse(char *fn) {
 	int fd;
 	mxml_node_t *root, *node;
 	meta_info *res;
-	char *s;
+	const char *s;
 	struct tm t;
 
 	fd = open(fn, O_RDONLY);
@@ -332,7 +332,7 @@ void meta_free(meta_info *info) {
 
 update_info *update_parse(char *buf) {
 	mxml_node_t *root, *node;
-	char *s;
+	const char *s;
 	update_info *res;
 
 	root = mxmlLoadString(NULL, buf, MXML_OPAQUE_CALLBACK);
@@ -385,7 +385,7 @@ bool settings_load(void) {
 	s32 res;
 	u8 *buf;
 	mxml_node_t *root, *node;
-	char *s;
+	const char *s;
 	const char *titlepath;
 	STACK_ALIGN(char, fn, ISFS_MAXPATH, 32);
 

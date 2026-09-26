@@ -20,43 +20,62 @@ the official version of The Homebrew Channel, which includes additional
 protection features (i.e. we had to add reverse-DRM to stop scammers from
 selling it).
 
-This code is released with no warranty, and hasn't even been tested on a real
-Wii, only under Dolphin (yes, this release runs under Dolphin).
+This code is released with no warranty. The channel app DOL has been tested in
+Dolphin and on a dev Wii; on the Wii it launched the Wii64 DOL through wiiload.
+The retail WAD builds with the current toolchain. It has not yet been installed
+or tested on a Wii.
 
 ## Build instructions
 
 You need devkitPPC and libogc installed, and the DEVKITPRO/DEVKITPPC environment
-variables correctly set. Use the latest available versions. Make sure you have
-libogc/libfat, and also install the following 3rd party libraries:
+variables correctly set. The channel app builds with devkitPPC r50-1 and libogc
+3.1.0. Make sure you have libogc/libfat, and also install these PowerPC libraries:
 
 * zlib
 * libpng
 * mxml
 * freetype
+* bzip2
+* brotli
 
 You can obtain binaries of those with
 [devkitPro pacman](https://devkitpro.org/wiki/devkitPro_pacman). Simply use
 
-    sudo (dkp-)pacman -S ppc-zlib ppc-libpng ppc-mxml ppc-freetype
+    sudo dkp-pacman -S ppc-zlib ppc-libpng ppc-mxml ppc-freetype ppc-bzip2 ppc-brotli
 
-Additionally, you'll need the following packages on your host machine:
+The host also needs libpng headers to build the banner tools.
 
-* pycryptodomex (for PyWii)
-* libpng headers (libpng-dev)
-* gettext
-* sox
+The channel app build has also been tested on Intel macOS with the versions
+above. From the repository root, run:
 
-The build process has only been tested on Linux. You're on your own if you
-want to try building this on OSX or Windows.
+    make -C wiipax
+    make -C channel/channelapp channel
 
-You'll need the Wii common key installed as ~/.wii/common-key.
+The resulting `channel/channelapp/channelapp-channel.dol` can be run in Dolphin
+or sent to a Wii running Homebrew Channel with wiiload. It draws the menu and
+accepts a Wii64 DOL through wiiload on the dev Wii. This build does not need the
+Wii common key.
 
-First run 'make' in wiipax, then 'make' in channel. You'll find a .wad file
-that you can install or directly run with Dolphin under
-channel/title/channel_retail.wad. You'll also find executable binaries under
-channel/channelapp, but be advised that the NAND save file / theme storage
-features won't work properly if HBC isn't launched as a channel with its
-correct title identity/permissions.
+The full retail WAD build also needs Python 3, PyCryptodomex, `msgfmt`, SoX,
+and host libpng headers. On macOS, install the host tools in their standard
+Homebrew locations with `brew install gettext sox libpng`. Install the Python
+dependency in a project virtual environment, then build from the repository
+root:
+
+    python3 -m venv .venv
+    .venv/bin/python -m pip install -r requirements.txt
+    make -C wiipax
+    make -C channel PYTHON="$(pwd)/.venv/bin/python"
+
+The build reads a 16-byte Wii common key from `~/.wii/common-key`. Obtain it
+from your own Wii's BootMii `keys.bin`: [BackupMii documents](https://wiibrew.org/wiki/BackupMii)
+the common key at offset `0x114` for 16 bytes. Keep `keys.bin` and the extracted
+key private; never add either to Git. The repository already includes the
+retail ticket, TMD, certificate, and footer templates. The optional `dpki`
+target needs separate private signing keys and is not part of this retail
+build. The resulting file is `channel/title/channel_retail.wad`. NAND save and
+theme storage need the channel's title identity and permissions, so they do
+not work properly from a direct DOL launch.
 
 ## License
 

@@ -1,6 +1,9 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
-import sys, os, os.path
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii as wii
 try:
     from Cryptodome.Hash import SHA
@@ -14,7 +17,7 @@ args = sys.argv[1:]
 tmdfile = args.pop(0)
 indir = args.pop(0)
 
-print "updating content records of TMD file %s" % tmdfile
+print("updating content records of TMD file %s" % tmdfile)
 tmd = wii.WiiTmd(open(tmdfile, "rb").read())
 
 for i, cr in enumerate(tmd.get_content_records()):
@@ -29,4 +32,3 @@ tmd.update()
 f = open(tmdfile, "wb")
 f.write(tmd.data)
 f.close()
-

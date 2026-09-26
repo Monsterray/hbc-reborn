@@ -1,8 +1,8 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define CHANNEL_VERSION_DATE 201611230000llu
-#define CHANNEL_VERSION_STR "1.1.3"
+#define CHANNEL_VERSION_DATE 202609261134llu
+#define CHANNEL_VERSION_STR "1.1.4"
 
 //#define DEBUG_APP
 //#define DEBUG_STUB
@@ -140,4 +140,3 @@ void memstats(int reset);
 #define FORCE_INLINE __attribute__((always_inline))
 
 #endif
-

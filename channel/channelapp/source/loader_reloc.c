@@ -10,7 +10,6 @@
 #include "elf_abi.h"
 #include "asm.h"
 
-extern void __exception_closeall ();
 
 typedef struct _dolheader {
 	u32 text_pos[7];
@@ -263,8 +262,6 @@ void loader_exec (entry_point ep) {
 	gprintf ("shutting down services and vectoring...\n");
 	SYS_ResetSystem (SYS_SHUTDOWN, 0, 0);
 
-	__exception_closeall ();
-	
 	// these pokes make ninty SDK dols work, I'm told
 	*(vu32*)0x800000F8 = 0x0E7BE2C0; // Bus Clock Speed
 	*(vu32*)0x800000FC = 0x2B73A840; // CPU Clock Speed

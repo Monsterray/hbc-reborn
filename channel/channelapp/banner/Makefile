@@ -1,7 +1,7 @@
 all: banner.bin
 
 banner.bin: twintig title banner.ppm icon.ppm
-	@$(CURDIR)/twintig
+	@"$(CURDIR)/twintig"
 
 twintig: twintig.c
 	@gcc -g -O2 -Wall $< -o $@

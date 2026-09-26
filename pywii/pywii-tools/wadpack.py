@@ -1,6 +1,9 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
-import sys, os, os.path
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii as wii
 
 args = sys.argv[1:]

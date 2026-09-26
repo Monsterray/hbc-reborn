@@ -8,29 +8,35 @@ export EXE =
 export LFLAGS =
 endif
 
+empty :=
+space := $(empty) $(empty)
+escape = $(subst $(space),\$(space),$1)
+
 export PYWII := $(CURDIR)/../../pywii/pywii-tools
 export ALAMEDA := $(CURDIR)/../../pywii/Alameda
+export PYTHON ?= python3
+export PYTHONPATH := $(CURDIR)/../../pywii/Common:$(PYTHONPATH)
 
-export PNG2TPL := $(CURDIR)/tools/png2tpl$(EXE)
-export MKBNS := $(CURDIR)/tools/mkbns$(EXE)
-export LZ77 := $(CURDIR)/tools/lz77$(EXE)
-export ADDIMD5 := python2 $(CURDIR)/tools/addimd5.py
-export ARCPACK := python2 $(PYWII)/arcpack.py
+export PNG2TPL := $(call escape,$(CURDIR))/tools/png2tpl$(EXE)
+export MKBNS := $(call escape,$(CURDIR))/tools/mkbns$(EXE)
+export LZ77 := $(call escape,$(CURDIR))/tools/lz77$(EXE)
+export ADDIMD5 := "$(PYTHON)" $(call escape,$(CURDIR))/tools/addimd5.py
+export ARCPACK := "$(PYTHON)" "$(PYWII)/arcpack.py"
 export SOX := sox
 
 all: channel.imet
 
 channel.imet: build/data.arc names.txt tools/join-imet.py
-	python2 tools/join-imet.py $@ build/data.arc build/icon.arc build/banner.arc build/sound.bns names.txt
+	"$(PYTHON)" tools/join-imet.py $@ build/data.arc build/icon.arc build/banner.arc build/sound.bns names.txt
 
 build/data.arc : build/data/meta/icon.bin build/data/meta/banner.bin build/data/meta/sound.bin
 	$(ARCPACK) $@ build/data
 
 build/data/meta/icon.bin : icon/* $(PNG2TPL) $(LZ77)
-	$(MAKE) -C icon -f ../Makefile.section
+	$(MAKE) -C icon -f ../Makefile.section TYPE=icon
 
 build/data/meta/banner.bin : banner/* $(PNG2TPL) $(LZ77)
-	$(MAKE) -C banner -f ../Makefile.section
+	$(MAKE) -C banner -f ../Makefile.section TYPE=banner
 
 build/data/meta/sound.bin : build/sound.bns
 	@[ ! -d build/data/meta ] && mkdir -p build/data/meta || true
@@ -45,9 +51,9 @@ build/%.raw : sound/%.wav
 	$(SOX) $< -r 32000 -c 2 -e signed-integer -b 16 -t raw $@
 
 testi : channel.imet
-	python2 $(ALAMEDA)/Alameda.py channel.imet icon
+	"$(PYTHON)" "$(ALAMEDA)/Alameda.py" channel.imet icon
 testb : channel.imet
-	python2 $(ALAMEDA)/Alameda.py channel.imet banner
+	"$(PYTHON)" "$(ALAMEDA)/Alameda.py" channel.imet banner
 
 $(PNG2TPL): tools/*.c
 	$(MAKE) -C tools png2tpl$(EXE)

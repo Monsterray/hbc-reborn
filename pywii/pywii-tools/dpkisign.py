@@ -1,6 +1,9 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
-import sys, os, os.path
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii
 
 pywii.loadkeys_dpki()
@@ -17,19 +20,19 @@ if sys.argv[1] == "-cetk":
 elif sys.argv[1] == "-tmd":
 	signed = pywii.WiiTmd(open(infile, "rb").read())
 else:
-	print "EYOUFAILIT"
+	print("EYOUFAILIT")
 	sys.exit(1)
 
-certs, certlist = pywii.parse_certs(open(certfile).read())
+certs, certlist = pywii.parse_certs(open(certfile, "rb").read())
 
 signed.update_issuer(issuer)
 
 if not signed.sign(certs):
-	print "dpki signing failed"
+	print("dpki signing failed")
 	sys.exit(1)
 
-open(outfile, "wb").write(signed.data)
+with open(outfile, "wb") as output:
+	output.write(signed.data)
 
-print "successfully signed %s" % outfile
+print("successfully signed %s" % outfile)
 sys.exit(0)
-

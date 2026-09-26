@@ -1,6 +1,9 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
-import sys, os, os.path
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii as wii
 
 wii.loadkeys()
@@ -14,10 +17,12 @@ if len(args) == 2:
 else:
 	newvers = int(args.pop(0), 16)
 
-print "setting version of TMD file %s to 0x%04x" % (tmdfile, newvers)
+print("setting version of TMD file %s to 0x%04x" % (tmdfile, newvers))
 tmd = wii.WiiTmd(open(tmdfile, "rb").read())
 tmd.title_version = newvers
 tmd.update()
+tmd.null_signature()
+tmd.brute_sha()
 f = open(tmdfile,"wb")
 f.write(tmd.data)
 f.close()

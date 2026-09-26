@@ -5,5 +5,6 @@
 .*.swp
 *.dSYM
 *.pyc
+.venv/
 .DS_Store
-
+/keys/
