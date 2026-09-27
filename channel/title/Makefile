@@ -1,5 +1,4 @@
-INSTALLER_VER_MAJOR = 1
-INSTALLER_VER_MINOR = 4
+CHANNEL_VERSION = 1.1.6
 
 TOOLS = ../../pywii/pywii-tools
 PYWII = ../../pywii/Common/pywii/wii.py
@@ -34,7 +33,7 @@ dpki/cetk: retail/cetk Makefile $(TOOLS)/dpkisign.py $(PYWII)
 retail/tmd: tmd.template 00000000 00000001 Makefile $(TOOLS)/tmdupdatecr.py $(TOOLS)/tmdvers.py $(PYWII)
 	@cp $< $@
 	@"$(PYTHON)" "$(TOOLS)/tmdupdatecr.py" $@ "$(CURDIR)"
-	@"$(PYTHON)" "$(TOOLS)/tmdvers.py" $@ $(INSTALLER_VER_MAJOR) $(INSTALLER_VER_MINOR)
+	@"$(PYTHON)" "$(TOOLS)/tmdvers.py" $@ $(CHANNEL_VERSION)
 
 dpki/tmd: retail/tmd Makefile $(TOOLS)/dpkisign.py $(PYWII)
 	@"$(PYTHON)" "$(TOOLS)/dpkisign.py" -tmd $< $@ "$(CERTS)" $(DPKI_ISSUER_TMD)

@@ -306,6 +306,13 @@ static void * ld_tcp_func (void *arg) {
 				continue;
 			}
 
+			if (!memcmp(buf, "HBCV", 4)) {
+				tcp_write(sn, (const u8 *)CHANNEL_VERSION_STR,
+						sizeof(CHANNEL_VERSION_STR), NULL, NULL);
+				net_close(sn);
+				continue;
+			}
+
 			wiiload_version = buf_u16(buf, 4);
 			ta->args_len = buf_u16(buf, 6);
 			ta->data_len = buf_u32(buf, 8);
@@ -1006,4 +1013,3 @@ bool loader_handle_zip_app(loader_result *result, view *sub_view) {
 
 	return true;
 }
-

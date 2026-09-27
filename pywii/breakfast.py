@@ -82,7 +82,7 @@ class BreakfastMaker:
 		breakfast = maker().make()
 		return breakfast
 
-print "Breakfast Maker v0.2"
+print "Breakfast Maker v0.2.0"
 user = raw_input("Please enter your username: ")
 maker = BreakfastMaker()
 print "Making breakfast for %s..."%user

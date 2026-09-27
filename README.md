@@ -22,8 +22,16 @@ selling it).
 
 This code is released with no warranty. The channel app DOL has been tested in
 Dolphin and on a dev Wii; on the Wii it launched the Wii64 DOL through wiiload.
+The 1.1.6 DOL also answered a live version query on the dev Wii.
 The retail WAD builds with the current toolchain. It has not yet been installed
 or tested on a Wii.
+
+The current channel release is **1.1.6**. The displayed channel version and
+retail WAD title version use the same SemVer value. The Wii TMD stores a
+16-bit title version, so packaging encodes `major.minor.patch` as 5/6/5 bits
+(`major << 11 | minor << 5 | patch`), preserving version order within those
+field limits (major 0–31, minor 0–63, patch 0–31). The channel update protocol
+also carries a numeric `YYYYMMDDHHMM` release timestamp for availability checks.
 
 ## Build instructions
 
@@ -55,6 +63,8 @@ The resulting `channel/channelapp/channelapp-channel.dol` can be run in Dolphin
 or sent to a Wii running Homebrew Channel with wiiload. It draws the menu and
 accepts a Wii64 DOL through wiiload on the dev Wii. This build does not need the
 Wii common key.
+See the [project skill](.agents/skills/hbc-build-and-review/SKILL.md) for an
+isolated Dolphin profile command and the dev Wii version query.
 
 The full retail WAD build also needs Python 3, PyCryptodomex, `msgfmt`, SoX,
 and host libpng headers. On macOS, install the host tools in their standard

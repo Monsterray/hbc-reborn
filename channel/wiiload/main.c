@@ -383,7 +383,7 @@ int main (int argc, char **argv) {
 
 	bool res;
 
-	printf ("wiiload v%u.%u\n"
+	printf ("wiiload v%u.%u.0\n"
 			"coded by dhewg, #wiidev efnet\n\n",
 			WIILOAD_VERSION_MAYOR, WIILOAD_VERSION_MINOR);
 

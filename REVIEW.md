@@ -41,11 +41,15 @@ No measured hot spot emerged from this source review. Measure startup app scan
 and theme load time in Dolphin before changing caches, image formats, or draw
 paths.
 
-An isolated Dolphin run of this DOL did not reach the menu. Its latest log ends
-at `Setup Wii Memory...` with no guest exception. The result is inconclusive;
-the crash report from an earlier direct launch was a host Qt/Cocoa abort before
-emulation began. The DOL from the previous commit had reached the menu in
-Dolphin and on a dev Wii, but this changed DOL still needs a runtime check.
+The 1.1.6 DOL was sent to the dev Wii through the existing Homebrew Channel.
+The new build answered the local version query on port 4299 with `1.1.6`, which
+confirms that it booted and accepted a network connection. This check does not
+cover launching another app or installed-WAD behavior.
+
+An isolated Dolphin run of the prior DOL did not reach the menu. Its latest log
+ends at `Setup Wii Memory...` with no guest exception, so the result is
+inconclusive. A later Wii64-style profile launch failed in macOS LaunchServices
+before guest execution. Dolphin still needs a successful run for this version.
 
 ## Future work
 

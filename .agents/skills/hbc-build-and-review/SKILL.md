@@ -25,7 +25,31 @@ The full build needs `pycryptodomex` in `.venv`, SoX, `msgfmt`, host libpng, and
 
 Test a new DOL in an isolated Dolphin profile. The sibling Wii64 project's `.dev/dolphin_test.sh` shows the local Intel Mac profile and log setup; adapt its steps to this DOL rather than reusing a Wii64 ROM workflow. Read only the latest boot segment in Dolphin's append-only log. Match guest fault addresses to the ELF from the same build. A link result alone does not show that the menu or loader works.
 
+On macOS, the Wii64 launch pattern is:
+
+```sh
+profile="$(mktemp -d /tmp/hbc-dolphin.XXXXXX)"
+open -n -a /Applications/Dolphin.app --args -b \
+  -e "$(pwd)/channel/channelapp/channelapp-channel.dol" -u "$profile" \
+  -C Dolphin.Core.CPUThread=True -C Dolphin.Core.MMU=True \
+  -C Dolphin.Core.DSPHLE=True \
+  -C Logger.Options.WriteToFile=True -C Logger.Options.Verbosity=4 \
+  -C Logger.Logs.MASTER=True -C Logger.Logs.BOOT=True
+```
+
+The append-only log is `$profile/Logs/dolphin.log`; inspect only its latest `Starting core = Wii mode` segment. The latest HBC attempt could not start Dolphin because LaunchServices returned `-10822`, so it produced no guest result. Earlier fresh-profile logs ended at `Setup Wii Memory`; that line alone does not establish a guest failure.
+
 For a real Wii check, send the DOL through the existing Homebrew Channel with Wiiload, then launch a known DOL such as Wii64 through the new menu. Keep an installable WAD off the real Wii until installation is an explicit test objective.
+
+To confirm the running DOL version before launching another app, use the local Wii IP from the Wii64 project's ignored `.dev/hardware.env`:
+
+```sh
+wii_ip="$(sed -n 's/^WII64_WII_IP=//p' ../Wii64/.dev/hardware.env)"
+WIILOAD="tcp:$wii_ip" /opt/devkitpro/tools/bin/wiiload channel/channelapp/channelapp-channel.dol
+python3 tests/wii_version.py "$wii_ip"
+```
+
+The second command sends a read-only `HBCV` query to port 4299 and requires the reply to match `CHANNEL_VERSION_STR`.
 
 ## Packaging and release checks
 

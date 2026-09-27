@@ -433,7 +433,7 @@ int main(int argc, char *argv[]) {
 	u8 *dataptr;
 	lzma_t *lzma;
 
-	printf("wiipax v0.2 (c) 2009 Team Twiizers\n\n");
+	printf("wiipax v0.2.0 (c) 2009 Team Twiizers\n\n");
 
 	if (argc < 3)
 		usage(argv[0]);
@@ -514,4 +514,3 @@ int main(int argc, char *argv[]) {
 	printf("Done.\n");
 	return 0;
 }
-
