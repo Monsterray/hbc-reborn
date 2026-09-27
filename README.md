@@ -66,6 +66,7 @@ root:
     .venv/bin/python -m pip install -r requirements.txt
     make -C wiipax
     make -C channel PYTHON="$(pwd)/.venv/bin/python"
+    make -C channel/title PYTHON="$(pwd)/.venv/bin/python" check
 
 The build reads a 16-byte Wii common key from `~/.wii/common-key`. Obtain it
 from your own Wii's BootMii `keys.bin`: [BackupMii documents](https://wiibrew.org/wiki/BackupMii)

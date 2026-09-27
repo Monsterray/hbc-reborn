@@ -86,7 +86,7 @@ static bool http_split_url (char **host, char **path, const char *url) {
 	p = url + 7;
 	c = strchr (p, '/');
 
-	if (c[0] == 0)
+	if (!c)
 		return false;
 
 	*host = strndup (p, c - p);

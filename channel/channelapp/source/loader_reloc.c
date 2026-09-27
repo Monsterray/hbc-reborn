@@ -76,6 +76,9 @@ static bool reloc_dol (entry_point *ep, const u8 *addr, u32 size,
 	u32 i;
 	dolheader *dolfile;
 
+	if (size < sizeof(dolheader))
+		return false;
+
 	dolfile = (dolheader *) addr;
 	for (i = 0; i < 7; i++) {
 		if (!dolfile->text_size[i])
@@ -84,12 +87,13 @@ static bool reloc_dol (entry_point *ep, const u8 *addr, u32 size,
 		gprintf ("loading text section %u @ 0x%08x (0x%08x bytes)\n", i,
 					dolfile->text_start[i], dolfile->text_size[i]);
 
-		if (dolfile->text_pos[i] + dolfile->text_size[i] > size)
+		if (dolfile->text_pos[i] > size ||
+				dolfile->text_size[i] > size - dolfile->text_pos[i])
 			return false;
 
 		if (check_overlap && ((dolfile->text_start[i] < LD_MIN_ADDR) ||
-				((dolfile->text_start[i] + dolfile->text_size[i] >
-				LD_MAX_ADDR))))
+				(dolfile->text_start[i] > LD_MAX_ADDR) ||
+				(dolfile->text_size[i] > LD_MAX_ADDR - dolfile->text_start[i])))
 			return false;
 
 
@@ -108,11 +112,13 @@ static bool reloc_dol (entry_point *ep, const u8 *addr, u32 size,
 		gprintf ("loading data section %u @ 0x%08x (0x%08x bytes)\n", i,
 					dolfile->data_start[i], dolfile->data_size[i]);
 
-		if (dolfile->data_pos[i] + dolfile->data_size[i] > size)
+		if (dolfile->data_pos[i] > size ||
+				dolfile->data_size[i] > size - dolfile->data_pos[i])
 			return false;
 
 		if (check_overlap && ((dolfile->data_start[i] < LD_MIN_ADDR) ||
-				(dolfile->data_start[i] + dolfile->data_size[i] > LD_MAX_ADDR)))
+				(dolfile->data_start[i] > LD_MAX_ADDR) ||
+				(dolfile->data_size[i] > LD_MAX_ADDR - dolfile->data_start[i])))
 			return false;
 
 		memmove ((void*) dolfile->data_start[i], addr + dolfile->data_pos[i],
@@ -128,6 +134,9 @@ static bool reloc_dol (entry_point *ep, const u8 *addr, u32 size,
 
 static s8 is_valid_elf (const u8 *addr, u32 size) {
 	Elf32_Ehdr *ehdr; /* Elf header structure pointer */
+
+	if (size < sizeof(Elf32_Ehdr))
+		return -1;
 
 	ehdr = (Elf32_Ehdr *) addr;
 
@@ -170,6 +179,10 @@ static bool reloc_elf (entry_point *ep, const u8 *addr, u32 size,
 		return false;
 	}
 
+	if (ehdr->e_phoff > size ||
+			ehdr->e_phnum > (size - ehdr->e_phoff) / sizeof(Elf32_Phdr))
+		return false;
+
 	phdrs = (Elf32_Phdr*)(addr + ehdr->e_phoff);
 
 	for(i=0;i<ehdr->e_phnum;i++) {
@@ -198,8 +211,14 @@ static bool reloc_elf (entry_point *ep, const u8 *addr, u32 size,
 			}
 
 			if(phdrs[i].p_filesz) {
+				if (phdrs[i].p_offset > size ||
+				    phdrs[i].p_filesz > size - phdrs[i].p_offset) {
+					gprintf ("-> failed image bounds check\n");
+					return false;
+				}
 				if (check_overlap && ((phdrs[i].p_paddr < LD_MIN_ADDR) ||
-				    (phdrs[i].p_paddr + phdrs[i].p_filesz) > LD_MAX_ADDR)) {
+				    (phdrs[i].p_paddr > LD_MAX_ADDR) ||
+				    (phdrs[i].p_memsz > LD_MAX_ADDR - phdrs[i].p_paddr))) {
 					gprintf ("-> failed overlap check\n");
 					return false;
 				}
@@ -277,4 +296,3 @@ void loader_exec (entry_point ep) {
 
 	gprintf ("this cant be good\n");
 }
-

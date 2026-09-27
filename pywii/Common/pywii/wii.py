@@ -162,7 +162,7 @@ def toblocks(start, size, blocksize):
         raise ValueError("blocksize must be > 0")
     header = 0
     hdroffset = start % blocksize
-    startblock = start / blocksize
+    startblock = start // blocksize
     if hdroffset != 0:
         startblock+=1
         header = blocksize - hdroffset
@@ -170,7 +170,7 @@ def toblocks(start, size, blocksize):
             return (startblock, 0, hdroffset, size, 0)
         start += header
         size -= header
-    nblocks = size / blocksize
+    nblocks = size // blocksize
     footer = size % blocksize
     return (startblock, nblocks, hdroffset, header, footer)
 

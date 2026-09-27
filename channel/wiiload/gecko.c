@@ -216,7 +216,7 @@ int gecko_write(const void *buf, size_t count) {
 		else
 #endif		
 #ifndef __WIN32__
-		res = write(fd_gecko, buf, count);
+		res = write(fd_gecko, buf, chunk);
 		if (res < 1) {
 			perror("gecko_write");
 			return 1;

@@ -474,6 +474,11 @@ int main (int argc, char **argv) {
 	args_left = MAX_ARGS_LEN;
 
 	c = snprintf (arg_pos, args_left, "%s", basename (argv[1]));
+	if (c < 0 || c >= args_left - 1) {
+		free (buf);
+		fprintf (stderr, "argument string too long\n");
+		exit (EXIT_FAILURE);
+	}
 	arg_pos += c + 1;
 	args_left -= c + 1;
 
@@ -481,7 +486,7 @@ int main (int argc, char **argv) {
 		for (i = 2; i < argc; ++i) {
 			c = snprintf (arg_pos, args_left, "%s", argv[i]);
 
-			if (c >= args_left) {
+			if (c < 0 || c >= args_left - 1) {
 				free (buf);
 				fprintf (stderr, "argument string too long\n");
 				exit (EXIT_FAILURE);

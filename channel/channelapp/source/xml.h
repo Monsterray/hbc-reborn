@@ -19,6 +19,7 @@ typedef struct {
 	char *args;
 	u16 argslen;
 	bool ahb_access;
+	bool no_ios_reload;
 } meta_info;
 
 typedef struct {
@@ -76,4 +77,3 @@ void theme_xml_init(void);
 bool load_theme_xml(char *buf);
 
 #endif
-

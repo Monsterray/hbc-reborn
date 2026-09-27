@@ -154,7 +154,7 @@ static void _get_font(mxml_node_t *node) {
 					if (f.file) {
 						if (theme.fonts[i].file)
 							free(theme.fonts[i].file);
-						theme.fonts[i].file = f.file;
+						theme.fonts[i].file = pstrdup(f.file);
 					}
 					if (f.size)
 						theme.fonts[i].size = f.size;
@@ -165,6 +165,7 @@ static void _get_font(mxml_node_t *node) {
 			tok = strtok(NULL, ",");
 		}
 		free(trg);
+		free(f.file);
 	} else {
 		if (f.file) {
 			if (theme.default_font.file)
@@ -190,7 +191,7 @@ static char *_get_args(u16 *length, mxml_node_t *node, const char *element) {
 		return NULL;
 
 	mxml_node_t *n;
-	u16 len = 0;
+	size_t len = 0;
 	const char *arg;
 
 	for (n = mxmlFindElement(node, node, "arg", NULL, NULL, MXML_DESCEND_FIRST);
@@ -199,9 +200,12 @@ static char *_get_args(u16 *length, mxml_node_t *node, const char *element) {
 		arg = _get_cdata(n);
 
 		if (arg) {
-			if (len)
-				len++;
-			len += strlen(arg);
+			size_t arglen = strlen(arg);
+			size_t sep = len ? 1 : 0;
+			if (len + sep >= ARGS_MAX_LEN ||
+					arglen > ARGS_MAX_LEN - len - sep - 1)
+				return NULL;
+			len += sep + arglen;
 		}
 	}
 
@@ -209,9 +213,6 @@ static char *_get_args(u16 *length, mxml_node_t *node, const char *element) {
 		return NULL;
 
 	len++;
-
-	if (len > ARGS_MAX_LEN)
-		return NULL;
 
 	char *ret;
 
@@ -309,7 +310,7 @@ meta_info *meta_parse(char *fn) {
 		res->ahb_access = true;
 	if (mxmlFindElement(node, node, "no_ios_reload", NULL, NULL,
 			MXML_DESCEND_FIRST))
-		res->ahb_access = true;
+		res->no_ios_reload = true;
 
 	mxmlDelete(root);
 

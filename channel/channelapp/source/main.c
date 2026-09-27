@@ -290,6 +290,7 @@ void main_real(void) {
 	entry_point ep;
 	bool reloced;
 	bool ahb_access;
+	bool no_ios_reload;
 	bool launch_bootmii;
 
 	u64 frame;
@@ -332,6 +333,7 @@ void main_real(void) {
 
 	reloced = false;
 	ahb_access = false;
+	no_ios_reload = false;
 	launch_bootmii = false;
 
 	frame = 0;
@@ -365,7 +367,8 @@ void main_real(void) {
 				app_sel = browser_sel();
 				if (app_sel) {
 					memset(settings.app_sel, 0, sizeof(settings.app_sel));
-					strcpy(settings.app_sel, app_sel->dirname);
+					strncpy(settings.app_sel, app_sel->dirname,
+							sizeof(settings.app_sel) - 1);
 				}
 
 				bubble_popall();
@@ -695,7 +698,10 @@ void main_real(void) {
 						reloced = true;
 
 						if (app_sel && app_sel->meta)
+						{
 							ahb_access = app_sel->meta->ahb_access;
+							no_ios_reload = app_sel->meta->no_ios_reload;
+						}
 
 						should_exit = true;
 					}
@@ -755,7 +761,7 @@ void main_real(void) {
 	if (app_sel) {
 		size_t i, s = strlen(app_sel->dirname);
 		memset(settings.app_sel, 0, sizeof(settings.app_sel));
-		for (i = 0; i < s; ++i)
+		for (i = 0; i < s && i < sizeof(settings.app_sel) - 1; ++i)
 			settings.app_sel[i] = tolower((int) app_sel->dirname[i]);
 	}
 
@@ -788,19 +794,21 @@ void main_real(void) {
 	}
 
 	if (reloced) {
-		if (ahb_access) {
-			gprintf ("patching IOS for AHB access post-reload...\n");
-			int res = patch_ahbprot_reset();
-			if (res)
-				gprintf ("patch failed (%d)\n", res);
-		}
+		if (!no_ios_reload) {
+			if (ahb_access) {
+				gprintf ("patching IOS for AHB access post-reload...\n");
+				int res = patch_ahbprot_reset();
+				if (res)
+					gprintf ("patch failed (%d)\n", res);
+			}
 
-		gprintf ("reloading to IOS%d...\n", APPS_IOS_VERSION);
-		__IOS_LaunchNewIOS(APPS_IOS_VERSION);
+			gprintf ("reloading to IOS%d...\n", APPS_IOS_VERSION);
+			__IOS_LaunchNewIOS(APPS_IOS_VERSION);
 
-		if (ahb_access) {
-			gprintf ("reenabling DVD access...\n");
-			mask32(0x0D800180, 1<<21, 0);
+			if (ahb_access) {
+				gprintf ("reenabling DVD access...\n");
+				mask32(0x0D800180, 1<<21, 0);
+			}
 		}
 
 		gprintf ("branching to %p\n", ep);
@@ -822,4 +830,3 @@ int main(int argc, char *argv[]) {
 	gprintf("uh oh\n");
 	return 0;
 }
-

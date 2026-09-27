@@ -201,7 +201,7 @@ static u32 find_payload_offset(const elf_t *elf) {
 	u16 shnum = be16(elf->ehdr->e_shnum);
 
 	u16 shstrndx = be16(elf->ehdr->e_shstrndx);
-	if (!shstrndx || shstrndx > shnum)
+	if (!shstrndx || shstrndx >= shnum)
 		die("Invalid .shstrtab index");
 
 	u32 off = be32(elf->shdrs[shstrndx].sh_offset);
@@ -216,7 +216,7 @@ static u32 find_payload_offset(const elf_t *elf) {
 	for (i = 0; i < shnum; ++i) {
 		off = be32(elf->shdrs[i].sh_name);
 
-		if (off > size)
+		if (off >= size || !memchr(&shstr[off], '\0', size - off))
 			die("Section #%u name out of .shstrtab bounds", i);
 
 		if (!strcmp(&shstr[off], ".payload")) {

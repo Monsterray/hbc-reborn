@@ -30,6 +30,7 @@ s32 isfs_get(const char *path, u8 **buf, u32 expected, u32 maxsize, bool use_blo
 	ret = ISFS_GetFileStats(fd, &__st);
 	if (ret < 0) {
 		gprintf("ISFS_GetFileStats failed (%d)\n", ret);
+		ISFS_Close(fd);
 		return ret;
 	}
 	DCInvalidateRange(&__st, sizeof(__st));
@@ -126,4 +127,3 @@ s32 isfs_put(const char *path, const void *buf, u32 len) {
 
 	return 0;
 }
-

@@ -1,3 +1,6 @@
+Historical Homebrew Channel v1.1.2 notes. For current build and test steps,
+see ../README.md.
+
 The Homebrew Channel v1.1.2
 Copyright (C) 2007-2012 Team Twiizers, all rights reserved.
 All rights reserved; do not redistribute
@@ -66,4 +69,3 @@ recompile with the latest version of devkitPPC.  You can use the following
 command to convert a broken ELF file to a DOL file:
 
    powerpc-gekko-objcopy -O binary boot.elf boot.dol
-
