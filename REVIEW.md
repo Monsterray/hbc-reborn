@@ -46,10 +46,33 @@ The new build answered the local version query on port 4299 with `1.1.6`, which
 confirms that it booted and accepted a network connection. This check does not
 cover launching another app or installed-WAD behavior.
 
-An isolated Dolphin run of the prior DOL did not reach the menu. Its latest log
-ends at `Setup Wii Memory...` with no guest exception, so the result is
-inconclusive. A later Wii64-style profile launch failed in macOS LaunchServices
-before guest execution. Dolphin still needs a successful run for this version.
+The 1.1.7 DOL was also sent through the installed channel. Wii64 completed
+its two-game diagnostic run and returned to the older Homebrew Channel menu.
+A second Wiiload transfer then started HBC 1.1.7 again. Before the fix, the
+same Wii64 exit left its screen frozen and needed a power cycle. The older
+channel alone returned after the same Wii64 run. The HBC loader had replaced
+the older channel's return stub with its own stub, which was linked for
+`0x80003f00` but copied to `0x80001800`. The code now keeps a valid launching
+channel stub for direct DOL use. Its own stub is linked at the copied address,
+and its BSS starts above the Wii low-memory IOS state; `tests/stub_layout.sh`
+checks these bounds. A forced test of the own stub from the direct DOL still
+froze on the Wii64 screen. It does not establish installed-WAD behavior,
+because a direct DOL has no installed OHBC title identity. The 1.1.7 retail
+WAD imported into an isolated Dolphin NAND and reached the HBC menu. Its own
+app return path still needs a test before installing the WAD on a Wii.
+
+For the installed WAD return test, Dolphin's default `HBReload` hook replaced
+the HBC stub and stopped emulation. With that hook disabled, GDB confirmed the
+real HBC stub ran. It opened `/dev/es`, tried to reload the already active
+IOS58, then waited forever for the second `/dev/es` IPC acknowledgment. The
+stub now skips the redundant IOS reload and second open. The rebuilt WAD boots
+to the HBC menu and its live stub matches the new binary, but app exit on that
+WAD remains unverified: the attempted automated GameCube A input did not
+launch the test app. See `WII_DEVELOPMENT.md` for the debugger evidence.
+
+The Dolphin log ends at `Setup Wii Memory...` even when the WAD's HBC menu is
+visible. Direct Dolphin executable launches abort in macOS Qt/Cocoa startup;
+use `open -n -a /Applications/Dolphin.app` for an isolated profile.
 
 ## Future work
 
@@ -58,8 +81,10 @@ before guest execution. Dolphin still needs a successful run for this version.
    DOL launch working.
 2. Port the auxiliary PyWii inspection and disc tools to Python 3 when they
    are needed. The documented retail WAD path already runs under Python 3.
-3. Add an isolated Dolphin smoke-test helper for the channel DOL. Compare only
-   the latest boot log with the ELF from that build. Test an installed WAD in
-   Dolphin before a real Wii installation test.
+3. Add an isolated Dolphin smoke-test helper for the channel DOL and installed
+   WAD. Record or inject two GameCube A presses one second apart to select and
+   launch the exit-test app; macOS keyboard injection did not work in the
+   current window. Verify app return to the installed WAD before a real Wii
+   test.
 4. Record supported devkitPro package versions in a repeatable build check.
    Current validation is on Intel macOS with devkitPPC r50-1 and libogc 3.1.0.

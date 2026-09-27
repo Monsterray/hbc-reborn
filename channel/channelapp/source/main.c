@@ -217,10 +217,16 @@ static void main_pre(void) {
 		gprintf("WARNING: stub too big!\n");
 #endif
 
-	memcpy((u32 *) 0x80001800, stub_bin, stub_bin_size);
-	DCFlushRange((u32 *) 0x80001800, stub_bin_size);
-
-	*conf_magic = 0;
+	if (title_get_id() != MY_TITLEID &&
+			memcmp((void *) 0x80001804, "STUBHAXX", 8) == 0) {
+		gprintf("keeping the launching channel's return stub\n");
+	} else {
+		memcpy((u32 *) 0x80001800, stub_bin, stub_bin_size);
+		DCFlushRange((u32 *) 0x80001800, stub_bin_size);
+		*conf_title_id = title_get_id();
+		*conf_magic = *conf_title_id ? STUB_MAGIC : 0;
+		DCFlushRange(conf_magic, 16);
+	}
 
 	gprintf ("startup\n");
 	gprintf("IOS Version: IOS%d %d.%d\n",

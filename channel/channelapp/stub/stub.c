@@ -131,12 +131,13 @@ void _main (void) {
 		iosver = STUB_LOAD_IOS_VERSION;
 		if(iosver < 0)
 			iosver = 21; //bah
-		printversion();
-		debug_string("\n\rReloading IOS...\n\r");
-		LaunchTitle(0x0000000100000000LL | iosver);
-		printversion();
-
-		if(es_init() < 0) goto fail;
+		if(iosver != IOS_GetVersion()) {
+			printversion();
+			debug_string("\n\rReloading IOS...\n\r");
+			LaunchTitle(0x0000000100000000LL | iosver);
+			printversion();
+			if(es_init() < 0) goto fail;
+		}
 		debug_string("\n\rLoading requested channel...\n\r");
 		LaunchTitle(titleID);
 		// if fail, try system menu

@@ -66,6 +66,10 @@ const char *title_get_path(void) {
 	return title_path;
 }
 
+u64 title_get_id(void) {
+	return title_id;
+}
+
 static bool title_is_installed(u64 title_id) {
 	s32 ret;
 	u32 x;

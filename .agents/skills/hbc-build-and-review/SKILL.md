@@ -33,11 +33,16 @@ open -n -a /Applications/Dolphin.app --args -b \
   -e "$(pwd)/channel/channelapp/channelapp-channel.dol" -u "$profile" \
   -C Dolphin.Core.CPUThread=True -C Dolphin.Core.MMU=True \
   -C Dolphin.Core.DSPHLE=True \
+  -C Dolphin.Analytics.PermissionAsked=True \
+  -C Dolphin.Analytics.Enabled=False \
+  -C Dolphin.Interface.UsePanicHandlers=False \
   -C Logger.Options.WriteToFile=True -C Logger.Options.Verbosity=4 \
   -C Logger.Logs.MASTER=True -C Logger.Logs.BOOT=True
 ```
 
-The append-only log is `$profile/Logs/dolphin.log`; inspect only its latest `Starting core = Wii mode` segment. The latest HBC attempt could not start Dolphin because LaunchServices returned `-10822`, so it produced no guest result. Earlier fresh-profile logs ended at `Setup Wii Memory`; that line alone does not establish a guest failure.
+The append-only log is `$profile/Logs/dolphin.log`; inspect only its latest `Starting core = Wii mode` segment. Launch Dolphin through `open`; direct executable launch caused a Qt/Cocoa startup abort on this Mac. Logs can end at `Setup Wii Memory` even when the guest menu is visible, so confirm the display too. The 1.1.7 retail WAD installed and showed the HBC menu in an isolated Dolphin NAND; app return from that installed title still needs a separate test.
+
+For a WAD boot, use a new profile and pass `channel/title/channel_retail.wad` to `-e` in the same `open` command. Dolphin imports the ticket and title into that profile's `Wii/` NAND. Check the menu visually and test app return separately. For an interactive return test, omit `-b`, add `-C Dolphin.Core.EnableCheats=True` with no cheat codes, and add `-C Dolphin.Interface.ConfirmStop=False`. Dolphin otherwise replaces the HBC stub at `0x80001800` with its own stop-emulation hook. Check the actual stub bytes or PC in the debugger before interpreting an exit result. See `WII_DEVELOPMENT.md`.
 
 For a real Wii check, send the DOL through the existing Homebrew Channel with Wiiload, then launch a known DOL such as Wii64 through the new menu. Keep an installable WAD off the real Wii until installation is an explicit test objective.
 
