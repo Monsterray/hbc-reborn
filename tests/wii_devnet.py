@@ -7,7 +7,11 @@ afterwards) and a network-log run of tests/netlog_app. That app's exit goes
 through the installed channel's reload stub, so the Wii ends back in the
 installed HBC, which the shared bench queue requires.
 
-usage: tests/wii_devnet.py [--log-port PORT] [WII-IP]
+With --installed nothing is sent: the test checks the channel already
+running (an installed WAD) and requires the app's exit to relaunch that
+same channel through HBC's own reload stub.
+
+usage: tests/wii_devnet.py [--installed] [--expect VERSION] [--log-port PORT] [WII-IP]
 The address defaults to $HBC_WII or $WII_BENCH_IP. The log port must accept
 inbound TCP through the PC firewall.
 """
@@ -47,21 +51,35 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("wii", nargs="?")
     parser.add_argument("--log-port", type=int, default=hbc.LOG_PORT)
+    parser.add_argument("--installed", action="store_true",
+                        help="test the running installed channel; send nothing")
+    parser.add_argument("--expect", help="version the Wii should run (default: this tree's)")
     opts = parser.parse_args()
     wii = hbc.wii_address(opts.wii)
-    expected = dolphin_smoke.expected
+    expected = opts.expect or dolphin_smoke.expected
+    dolphin_smoke.expected = expected
 
-    # Snapshot the DOL so a rebuild during the run cannot change what boots.
-    snap = pathlib.Path(tempfile.mkdtemp(prefix="hbc-wii-")) / "channelapp-channel.dol"
-    shutil.copy(root / "channel/channelapp/channelapp-channel.dol", snap)
+    snap = None
+    if opts.installed:
+        try:
+            running = hbc.version(wii)
+        except (OSError, hbc.HBCError) as exc:
+            raise SystemExit(f"FAIL: no HBCV reply; is the installed channel running? {exc}")
+        if running != expected:
+            raise SystemExit(f"FAIL: the Wii runs HBC {running}, this tree is {expected}")
+        print(f"PASS: installed HBC {expected} is running on the Wii")
+    else:
+        # Snapshot the DOL so a rebuild during the run cannot change what boots.
+        snap = pathlib.Path(tempfile.mkdtemp(prefix="hbc-wii-")) / "channelapp-channel.dol"
+        shutil.copy(root / "channel/channelapp/channelapp-channel.dol", snap)
 
-    print(f"sending {snap.name} ({snap.stat().st_size} bytes) to {wii}")
-    hbc.send(wii, str(snap), [])
-    try:
-        hbc.relaunch_wait(wii, expected)
-    except hbc.HBCError as exc:
-        raise SystemExit(f"FAIL: {exc}")
-    print(f"PASS: HBC {expected} is running on the Wii")
+        print(f"sending {snap.name} ({snap.stat().st_size} bytes) to {wii}")
+        hbc.send(wii, str(snap), [])
+        try:
+            hbc.relaunch_wait(wii, expected)
+        except hbc.HBCError as exc:
+            raise SystemExit(f"FAIL: {exc}")
+        print(f"PASS: HBC {expected} is running on the Wii")
 
     dolphin_smoke.check_devnet(Target(wii), log_port=opts.log_port)
 
@@ -75,8 +93,14 @@ def main():
         now = hbc.version(wii)
     except (OSError, hbc.HBCError):
         now = "an HBC without HBCV"
-    print(f"PASS: the Wii returned to {now}")
-    shutil.rmtree(snap.parent, ignore_errors=True)
+    if opts.installed:
+        # Only HBC's own stub relaunching the installed title answers HBCV here.
+        if now != expected:
+            raise SystemExit(f"FAIL: app exit returned to {now}, not the installed HBC")
+        print(f"PASS: app exit relaunched the installed HBC {expected}")
+    else:
+        print(f"PASS: the Wii returned to {now}")
+        shutil.rmtree(snap.parent, ignore_errors=True)
 
 
 if __name__ == "__main__":

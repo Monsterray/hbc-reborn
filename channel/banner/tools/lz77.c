@@ -256,13 +256,20 @@ int main(int argc, char *argv[])
 		out = creat(argv[2], 0600);
 		fstat(in, &buf);
 		uncompressed = malloc(buf.st_size);
-		read(in, uncompressed, buf.st_size);
+		if (in < 0 || out < 0 || !uncompressed ||
+				read(in, uncompressed, buf.st_size) != buf.st_size) {
+			fprintf(stderr, "cannot read %s\n", argv[1]);
+			return 1;
+		}
 		close(in);
 		compressed = malloc(buf.st_size*2);
 		size = LZ_Compress(uncompressed, compressed, buf.st_size);
-		write(out, "LZ77", 4);
-		write(out, compressed, size);
-		close(out);
+		if (write(out, "LZ77", 4) != 4 || write(out, compressed, size) != size ||
+				close(out)) {
+			fprintf(stderr, "cannot write %s\n", argv[2]);
+			unlink(argv[2]);
+			return 1;
+		}
 		free(compressed);
 		free(uncompressed);
 		return 0;

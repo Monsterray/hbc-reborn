@@ -28,7 +28,7 @@ apps can return to the installed channel after exit.
 The retail WAD builds with the current toolchain and has booted to the HBC
 menu in an isolated Dolphin NAND. It has not yet been installed on a Wii.
 
-The current channel release is **1.3.0**. The displayed channel version and
+The current channel release is **1.3.1**. The displayed channel version and
 retail WAD title version use the same SemVer value. The Wii TMD stores a
 16-bit title version, so packaging encodes `major.minor.patch` as 5/6/5 bits
 (`major << 11 | minor << 5 | patch`), preserving version order within those

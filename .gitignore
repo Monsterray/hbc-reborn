@@ -22,5 +22,7 @@ korean-key
 *.pem
 tests/netlog_app/*.elf
 tests/netlog_app/*.dol
+tests/launch_title/*.elf
+tests/launch_title/*.dol
 # Local hardware settings such as the Wii IP
 .dev/

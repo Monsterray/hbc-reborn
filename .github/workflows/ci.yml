@@ -33,8 +33,10 @@ jobs:
       - name: Build the channel DOL
         run: make -C channel/channelapp channel EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
-      - name: Build the network log test app
-        run: make -C tests/netlog_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
+      - name: Build the test apps
+        run: |
+          make -C tests/netlog_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
+          make -C tests/launch_title EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
       - name: Build the banner
         run: make -C channel/banner PYTHON="$PWD/.venv/bin/python" EXTRA_CFLAGS="$EXTRA_CFLAGS"

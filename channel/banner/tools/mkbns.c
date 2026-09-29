@@ -312,14 +312,20 @@ int main(int argc, char **argv)
 	
 	if(separated_loop) {
 		fseek(f,0,SEEK_SET);
-		fread(datain,sizeof(uint16_t)*2,loop_pt,f);
 		fseek(f2,0,SEEK_SET);
-		fread(&datain[loop_pt],sizeof(uint16_t)*2,samples-loop_pt,f2);
+		if (fread(datain,sizeof(uint16_t)*2,loop_pt,f) != (size_t)loop_pt ||
+			fread(&datain[loop_pt],sizeof(uint16_t)*2,samples-loop_pt,f2) != (size_t)(samples-loop_pt)) {
+			fprintf(stderr, "short read of the input samples\n");
+			return 1;
+		}
 		fclose(f);
 		fclose(f2);
 	} else {
 		fseek(f,0,SEEK_SET);
-		fread(datain,sizeof(uint16_t)*2,samples,f);
+		if (fread(datain,sizeof(uint16_t)*2,samples,f) != (size_t)samples) {
+			fprintf(stderr, "short read of the input samples\n");
+			return 1;
+		}
 		fclose(f);
 	}
 	
