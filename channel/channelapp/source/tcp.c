@@ -188,23 +188,34 @@ char * tcp_readln (s32 s, u16 max_length, s64 start_time, u16 timeout) {
 // keeps IPC overhead low with room for concurrent sockets.
 #define TCP_IO_BLOCK (16 * 1024)
 
-// IOS poll events (libogc 3.1 does not export them): read, write.
+// IOS poll events (libogc 3.1 does not export them).
 #define TCP_POLLIN 0x0003
 #define TCP_POLLOUT 0x0008
+#define TCP_POLLERR 0x0020
+#define TCP_POLLHUP 0x0040
 
 // Sleep until the socket is ready, instead of polling with fixed delays.
-static void tcp_wait (s32 s, u32 events, s32 ms) {
+// Returns the events IOS reported, or 0 on a timeout or poll error.
+static u32 tcp_wait (s32 s, u32 events, s32 ms) {
 	struct pollsd sd;
 
 	sd.socket = s;
 	sd.events = events;
 	sd.revents = 0;
-	if (net_poll (&sd, 1, ms) < 0)
+	if (net_poll (&sd, 1, ms > 0 ? ms : 0) < 0) {
 		usleep (1000);
+		return 0;
+	}
+	return sd.revents;
 }
 
-bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progress) {
+// Reads exactly length bytes. Fails on a timeout (no progress for
+// timeout_ms), an error, or end of stream: a read of 0 bytes right after
+// IOS reported the socket readable or hung up means the peer closed it.
+bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
+					   u32 *progress, s32 timeout_ms) {
 	u32 step, left, block, received;
+	bool ready = false;
 	s64 t;
 	s32 res;
 
@@ -216,7 +227,7 @@ bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progres
 	while (left) {
 		s32 idle = ticks_to_millisecs (diff_ticks (t, gettime ()));
 
-		if (idle > TCP_BLOCK_RECV_TIMEOUT) {
+		if (idle > timeout_ms) {
 			gprintf ("tcp_read timeout\n");
 
 			break;
@@ -228,8 +239,15 @@ bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progres
 
 		res = net_read (s, buffer, block);
 
+		if (res == 0 && ready) {
+			gprintf ("tcp_read: peer closed\n");
+
+			break;
+		}
+
 		if ((res == 0) || (res == -EAGAIN)) {
-			tcp_wait (s, TCP_POLLIN, TCP_BLOCK_RECV_TIMEOUT - idle);
+			ready = tcp_wait (s, TCP_POLLIN, timeout_ms - idle) &
+					(TCP_POLLIN | TCP_POLLHUP | TCP_POLLERR);
 
 			continue;
 		}
@@ -240,6 +258,7 @@ bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progres
 			break;
 		}
 
+		ready = false;
 		received += res;
 		left -= res;
 		buffer += res;
@@ -259,10 +278,16 @@ bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progres
 	return left == 0;
 }
 
+bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progress) {
+	return tcp_read_timeout (s, buffer, length, mutex, progress,
+							 TCP_BLOCK_RECV_TIMEOUT);
+}
+
 bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 				u32 *progress) {
 	const u8 *p;
 	u32 step, left, block, sent;
+	bool hangup = false;
 	s64 t;
 	s32 res;
 
@@ -287,8 +312,14 @@ bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 
 		res = net_write (s, p, block);
 
+		if (res == 0 && hangup) {
+			gprintf ("tcp_write: peer closed\n");
+			break;
+		}
+
 		if ((res == 0) || (res == -EAGAIN)) {
-			tcp_wait (s, TCP_POLLOUT, TCP_BLOCK_SEND_TIMEOUT - idle);
+			hangup = tcp_wait (s, TCP_POLLOUT, TCP_BLOCK_SEND_TIMEOUT - idle) &
+					 (TCP_POLLHUP | TCP_POLLERR);
 			continue;
 		}
 
@@ -297,6 +328,7 @@ bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 			break;
 		}
 
+		hangup = false;
 		sent += res;
 		left -= res;
 		p += res;
@@ -330,10 +362,16 @@ void tcp_close (s32 s) {
 	net_shutdown (s, 1);
 
 	t = gettime ();
-	while (ticks_to_millisecs (diff_ticks (t, gettime ())) < 1000) {
+	while (true) {
+		s32 idle = ticks_to_millisecs (diff_ticks (t, gettime ()));
+
+		if (idle >= 1000)
+			break;
+
 		res = net_read (s, drain, sizeof (drain));
 		if (res == -EAGAIN) {
-			usleep (10 * 1000);
+			if (!tcp_wait (s, TCP_POLLIN, 1000 - idle))
+				break;
 			continue;
 		}
 		if (res <= 0)

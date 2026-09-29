@@ -30,6 +30,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 
 root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tools"))
@@ -186,6 +187,73 @@ def check_devnet(run, log_port=0):
     assert "bad.bin" not in hbc.file_request(wii, "L", "sd:/hbctest/sub").decode()
     print("devnet framed transfers: PASS")
 
+    # Status reports real memory, stack, and timing numbers.
+    st = hbc.status(wii)
+    for key in ("heap_free", "tcp_stack_used", "tcp_stack_size", "init_ms", "scan_ms"):
+        assert key in st, (key, st)
+    assert 0 < st["tcp_stack_used"] < st["tcp_stack_size"], st
+    print(f"  heap {st['heap_free']} free, tcp stack "
+          f"{st['tcp_stack_used']} of {st['tcp_stack_size']}, init {st['init_ms']} ms, "
+          f"scan {st['scan_ms']} ms")
+
+    # A client that connects and closes without a request must not stall the
+    # loader (it used to spin for the 10 s receive timeout).
+    socket.create_connection((wii, hbc.PORT), timeout=5).close()
+    start = time.monotonic()
+    hbc.status(wii)
+    stall = time.monotonic() - start
+    assert stall < 4, f"status took {stall:.1f} s after a bare connect"
+    print(f"  bare connect then status: {stall:.2f} s")
+
+    # Op C returns the size and CRC-32 that the client computes.
+    blob = os.urandom(70_000)
+    hbc.put_file(wii, "sd:/hbctest/sub/crc.bin", blob)
+    assert hbc.checksum(wii, "sd:/hbctest/sub/crc.bin") == (len(blob), zlib.crc32(blob))
+    hbc.file_request(wii, "D", "sd:/hbctest/sub/crc.bin")
+
+    # A put to a path ending in "/" names a directory, not a file.
+    try:
+        hbc.file_request(wii, "P", "sd:/hbctest/sub/", 3, b"abc")
+        raise AssertionError("put to a trailing slash was accepted")
+    except hbc.HBCError as exc:
+        assert "EISDIR" in str(exc), exc
+
+    # An app put under sd:/apps/ shows up in the menu without a restart, and
+    # goes away when it is removed.
+    before = hbc.status(wii)["apps"]
+    app = (root / "tests/netlog_app/netlog_app.dol").read_bytes()
+    hbc.put_file(wii, "sd:/apps/hbctestapp/boot.dol", app)
+    deadline = time.monotonic() + 5
+    while hbc.status(wii)["apps"] != before + 1:
+        assert time.monotonic() < deadline, "the uploaded app did not appear"
+        time.sleep(0.2)
+    hbc.remove_tree(wii, "sd:/apps/hbctestapp", out=lambda *a: None)
+    deadline = time.monotonic() + 5
+    while hbc.status(wii)["apps"] != before:
+        assert time.monotonic() < deadline, "the removed app did not go away"
+        time.sleep(0.2)
+    print(f"  app list followed a put and a removal ({before} -> {before + 1} -> {before})")
+
+    # sync uploads only what changed; get -r brings the tree back intact.
+    with tempfile.TemporaryDirectory() as tmp:
+        src = pathlib.Path(tmp, "src")
+        (src / "data").mkdir(parents=True)
+        (src / "a.bin").write_bytes(os.urandom(5000))
+        (src / "data" / "b.txt").write_bytes(b"hello " * 1000)
+        quiet = lambda *a: None
+        first = hbc.sync(wii, str(src), "sd:/hbctest/sync", out=quiet)
+        again = hbc.sync(wii, str(src), "sd:/hbctest/sync", out=quiet)
+        assert first[0] == 2 and again[0] == 0 and again[1] == 2, (first, again)
+        (src / "a.bin").write_bytes(os.urandom(5000))
+        changed = hbc.sync(wii, str(src), "sd:/hbctest/sync", out=quiet)
+        assert changed[0] == 1, changed
+        dst = pathlib.Path(tmp, "dst")
+        hbc.get_tree(wii, "sd:/hbctest/sync", str(dst), out=quiet)
+        for rel in ("a.bin", "data/b.txt"):
+            assert (dst / rel).read_bytes() == (src / rel).read_bytes(), rel
+        hbc.remove_tree(wii, "sd:/hbctest/sync", out=quiet)
+    print("devnet tools (checksum, sync, trees, app list, EOF): PASS")
+
     hbc.file_request(wii, "D", "sd:/hbctest/sub/blob.bin")
     assert "blob.bin" not in hbc.file_request(wii, "L", "sd:/hbctest/sub").decode()
     hbc.file_request(wii, "D", "sd:/hbctest/sub")
@@ -199,12 +267,20 @@ def check_devnet(run, log_port=0):
     output = bytearray()
 
     def serve():
-        conn, _ = server.sock.accept()
+        deadline = time.monotonic() + 60
+        while True:  # LogServer's socket times out so Ctrl-C works on Windows
+            try:
+                conn, _ = server.sock.accept()
+                break
+            except TimeoutError:
+                if time.monotonic() > deadline:
+                    return
+        conn.settimeout(30)
         with conn:
             try:
                 while chunk := conn.recv(4096):
                     output.extend(chunk)
-            except ConnectionResetError:
+            except (ConnectionResetError, TimeoutError):
                 pass  # IOS closes sockets with a reset
         server.done.set()
 

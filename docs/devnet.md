@@ -9,7 +9,13 @@ format for other tools.
 
 HBC answers only hosts on its own `/16` network, as it always has for
 Wiiload. Wiiload already runs any code a LAN host sends, so these requests
-add no new privilege; do not expose port 4299 beyond your LAN.
+add no new privilege; do not expose port 4299 beyond your LAN. The same goes
+for `HBCN`: any host on the `/16` can point the next app's log output at
+itself, just as it could send that app in the first place.
+
+HBC waits at most 2 s for a request's 16-byte header after accepting a
+connection, and treats a closed connection as the end of a request, so a
+client that connects and closes without sending anything costs nothing.
 
 ## Framing
 
@@ -41,9 +47,11 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 ### Status
 
 ```json
-{"version":"1.3.0","proto":2,"ios":58,"ios_revision":6175,"ahbprot":true,
- "mem1_free":4080,"mem2_free":50546528,"ip":"192.168.8.213","apps":14,
- "device":"sd","inserted":["sd"],"log":"192.168.8.147:4405",
+{"version":"1.4.0","proto":2,"ios":58,"ios_revision":6175,"ahbprot":true,
+ "mem1_free":4080,"mem2_free":50599776,"heap_free":116032,
+ "tcp_stack_used":2824,"tcp_stack_size":8192,"init_ms":968,"scan_ms":300,
+ "ip":"192.168.8.213","apps":14,"device":"sd","inserted":["sd"],
+ "log":"192.168.8.147:4405",
  "last":{"op":"p","bytes":5328444,"wire":2663251,"ms":3674,
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
@@ -53,6 +61,10 @@ that file requests can use; `inserted` also lists devices that were present
 at the last device poll. `last` describes the most recent file transfer:
 bytes on the network, and time the Wii spent on Wi-Fi, SD, and zlib/CRC.
 Network and SD overlap in framed transfers, so their sum can exceed `ms`.
+`heap_free` is newlib's free heap (its "used" figure would count the gap
+between MEM1 and MEM2), `tcp_stack_used` is the loader thread's stack
+high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
+`scan_ms` is the last full app scan.
 
 ### Files
 
@@ -66,13 +78,18 @@ character, and paths of 256 bytes or more.
 | `g` | framed download; flags bit 0 allows zlib frames | reply header with the file size, then frames |
 | `P` | protocol 1 upload of `size` raw bytes, as `p` without checks | none |
 | `G` | protocol 1 download | the file |
-| `L` | list a directory | lines of `d <name>` or `f <size> <name>` |
+| `L` | list a directory | lines of `d <name>` or `f <size> <name>`; a listing that reached 256 KiB ends with `! truncated` |
+| `C` | checksum a file | u32 size, u32 CRC-32 |
 | `D` | delete a file or an empty directory | none |
 | `M` | create a directory and its parents | none |
 
-HBC only rescans the app list when the device is inserted or removed, so an
-app put under `sd:/apps/` appears in the menu the next time the channel
-starts.
+A put to a path ending in `/` is refused with `EISDIR`. After a put or delete
+under `<device>:/apps/<name>/` on the mounted device, HBC reloads that app's
+menu entry, so an uploaded app appears (and a deleted one disappears) at once.
+
+If an app is launched from the Wii while a transfer runs, HBC stops the
+transfer first (an upload's partial file is deleted), and only then unmounts
+the card.
 
 ### Framed transfers
 

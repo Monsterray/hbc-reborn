@@ -15,7 +15,8 @@
  *
  * Output still reaches any console installed before hbc_netlog_init(). The
  * connection closes at exit(); call hbc_netlog_close() before leaving any
- * other way. The header needs nothing beyond libogc.
+ * other way. hbc_netlog_init() gives up within about 5 s when the network
+ * or the PC is unavailable. The header needs nothing beyond libogc.
  *
  * Define HBC_NETLOG_LAYOUT_ONLY to get only the shared block layout.
  *
@@ -50,22 +51,36 @@ static inline u32 hbc_netlog_check(const hbc_netlog_block *b) {
 #ifndef HBC_NETLOG_LAYOUT_ONLY
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/iosupport.h>
 #include <network.h>
 #include <ogc/cache.h>
+#include <ogc/lwp_watchdog.h>
+#include <ogc/mutex.h>
+
+/* How long hbc_netlog_init waits for the network and for the PC. */
+#define HBC_NETLOG_INIT_MS 3000
+#define HBC_NETLOG_CONNECT_MS 2000
+/* IOS poll event for "writable" (libogc does not export it). */
+#define HBC_NETLOG_POLLOUT 0x0008
 
 static s32 hbc_netlog_socket = -1;
+static mutex_t hbc_netlog_lock = LWP_MUTEX_NULL;
 static const devoptab_t *hbc_netlog_prev_out;
 static const devoptab_t *hbc_netlog_prev_err;
 
+/* Called with the lock held. */
 static inline void hbc_netlog_send(const char *ptr, size_t len) {
 	while (hbc_netlog_socket >= 0 && len > 0) {
 		s32 res = net_write(hbc_netlog_socket, ptr, len > 1024 ? 1024 : len);
-		if (res == -EAGAIN)
+		if (res == -EAGAIN) {
+			struct pollsd sd = { hbc_netlog_socket, HBC_NETLOG_POLLOUT, 0 };
+			net_poll(&sd, 1, 100);
 			continue;
+		}
 		if (res <= 0) {
 			net_close(hbc_netlog_socket);
 			hbc_netlog_socket = -1;
@@ -80,7 +95,9 @@ static inline ssize_t hbc_netlog_write(const devoptab_t *prev, struct _reent *r,
 									   void *fd, const char *ptr, size_t len) {
 	if (prev && prev->write_r)
 		prev->write_r(r, fd, ptr, len);
+	LWP_MutexLock(hbc_netlog_lock);
 	hbc_netlog_send(ptr, len);
+	LWP_MutexUnlock(hbc_netlog_lock);
 	return len;
 }
 
@@ -105,17 +122,56 @@ static inline void hbc_netlog_close(void) {
 		return;
 	fflush(stdout);
 	fflush(stderr);
+	LWP_MutexLock(hbc_netlog_lock);
 	devoptab_list[STD_OUT] = hbc_netlog_prev_out;
 	devoptab_list[STD_ERR] = hbc_netlog_prev_err;
-	net_shutdown(hbc_netlog_socket, 2);
-	net_close(hbc_netlog_socket);
-	hbc_netlog_socket = -1;
+	if (hbc_netlog_socket >= 0) {
+		net_shutdown(hbc_netlog_socket, 2);
+		net_close(hbc_netlog_socket);
+		hbc_netlog_socket = -1;
+	}
+	LWP_MutexUnlock(hbc_netlog_lock);
+}
+
+/* Connect without blocking past HBC_NETLOG_CONNECT_MS, even when a firewall
+ * silently drops the connection attempt. */
+static inline s32 hbc_netlog_connect(s32 s, struct sockaddr_in *sa) {
+	s64 start = gettime();
+	s32 flags = net_fcntl(s, F_GETFL, 0);
+	s32 res;
+
+	if (flags >= 0)
+		net_fcntl(s, F_SETFL, flags | 4);
+
+	for (;;) {
+		res = net_connect(s, (struct sockaddr *) sa, sizeof(*sa));
+		if (res == 0 || res == -EISCONN) {
+			res = 0;
+			break;
+		}
+		if (res != -EINPROGRESS && res != -EALREADY)
+			break;
+		if (ticks_to_millisecs(diff_ticks(start, gettime())) > HBC_NETLOG_CONNECT_MS) {
+			res = -ETIMEDOUT;
+			break;
+		}
+		{
+			struct pollsd sd = { s, HBC_NETLOG_POLLOUT, 0 };
+			net_poll(&sd, 1, 100);
+		}
+	}
+
+	/* Blocking sends: IOS can misreport a non-blocking send to a full buffer. */
+	if (flags >= 0)
+		net_fcntl(s, F_SETFL, flags & ~4);
+	return res;
 }
 
 /* Returns 0 when connected, or a negative error code. */
 static inline s32 hbc_netlog_init(void) {
 	hbc_netlog_block block;
 	struct sockaddr_in sa;
+	s64 start;
 	s32 res;
 
 	if (hbc_netlog_socket >= 0)
@@ -124,31 +180,34 @@ static inline s32 hbc_netlog_init(void) {
 	DCInvalidateRange((void *) HBC_NETLOG_ADDR, sizeof(block));
 	memcpy(&block, (const void *) HBC_NETLOG_ADDR, sizeof(block));
 	if (block.magic != HBC_NETLOG_MAGIC || block.version != HBC_NETLOG_VERSION ||
-			block.check != hbc_netlog_check(&block))
+			block.check != hbc_netlog_check(&block) || !block.port)
 		return -ENOENT;
 
+	start = gettime();
 	do {
 		res = net_init();
-	} while (res == -EAGAIN);
+	} while (res == -EAGAIN &&
+			 ticks_to_millisecs(diff_ticks(start, gettime())) < HBC_NETLOG_INIT_MS);
 	if (res < 0)
 		return res;
+
+	if (hbc_netlog_lock == LWP_MUTEX_NULL && LWP_MutexInit(&hbc_netlog_lock, false) < 0)
+		return -ENOMEM;
 
 	res = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
 	if (res < 0)
 		return res;
-	hbc_netlog_socket = res;
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sin_family = AF_INET;
 	sa.sin_len = sizeof(sa);
 	sa.sin_port = block.port;
 	sa.sin_addr.s_addr = block.ip;
-	res = net_connect(hbc_netlog_socket, (struct sockaddr *) &sa, sizeof(sa));
-	if (res < 0) {
-		net_close(hbc_netlog_socket);
-		hbc_netlog_socket = -1;
-		return res;
+	if (hbc_netlog_connect(res, &sa) < 0) {
+		net_close(res);
+		return -ETIMEDOUT;
 	}
+	hbc_netlog_socket = res;
 
 	hbc_netlog_prev_out = devoptab_list[STD_OUT];
 	hbc_netlog_prev_err = devoptab_list[STD_ERR];

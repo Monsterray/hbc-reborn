@@ -10,6 +10,7 @@
 
 #include <ogcsys.h>
 #include <ogc/machine/processor.h>
+#include <ogc/lwp_watchdog.h>
 #include <ogc/conf.h>
 #include <debug.h>
 
@@ -29,6 +30,7 @@
 #include "browser.h"
 #include "m_main.h"
 #include "loader.h"
+#include "devnet.h"
 #ifdef ENABLE_UPDATES
 #include "http.h"
 #include "update.h"
@@ -63,6 +65,7 @@ u64 *conf_magic = STUB_ADDR_MAGIC;
 u64 *conf_title_id = STUB_ADDR_TITLE;
 
 static bool should_exit;
+static s64 hbc_start;
 static bool shutdown;
 #ifdef GDBSTUB
 static bool gdb;
@@ -353,6 +356,8 @@ void main_real(void) {
 
 	view_enable_cursor (true);
 
+	devnet_set_init_ms(ticks_to_millisecs(diff_ticks(hbc_start, gettime())));
+
 	while (!should_exit) {
 #ifdef GDBSTUB
 		if (gdb) {
@@ -392,6 +397,13 @@ void main_real(void) {
 				view_show_throbber(false);
 				browser_gen_view(BA_ADD, app_sel);
 				break;
+			}
+
+			// Reload apps that developer file requests added or changed.
+			char changed[64];
+			while (devnet_take_app_change(changed, sizeof(changed))) {
+				app_sel = app_entry_add(changed);
+				browser_gen_view(BA_REFRESH, app_sel);
 			}
 		}
 
@@ -831,6 +843,7 @@ void main_real(void) {
 }
 
 int main(int argc, char *argv[]) {
+	hbc_start = gettime();
 	main_pre();
 	main_real();
 	gprintf("uh oh\n");

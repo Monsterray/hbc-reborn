@@ -138,6 +138,23 @@ reload, and Reset returned to the stock HBC. The same launcher starts the
 channel in Dolphin within 5 s, so real IOS behaves differently here; start
 installed titles from the Wii Menu on hardware.
 
+### 1.4.0 fixes and optimizations
+
+From the 1.3.6 review, each verified in the code first:
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Fix | `tcp_read`/`tcp_write` treated end of stream like "no data yet" and spun for the 10 s timeout above the UI, which was the real cause of the "bare connect holds the loader" behavior. A read of 0 right after `net_poll` reports the socket readable or hung up now ends the request, and the request header must arrive within 2 s. | Bare connect then status: 0.05 s on the Wii. |
+| Fix | An app launched during a transfer could unmount the card under the transfer's worker. `loader_deinit` now calls `devnet_abort()`, which shuts the socket and waits up to 3 s; uploads delete their partial file. | Code path; not forced on hardware. |
+| Fix | Apps put under `<device>:/apps/` never appeared: `AE_CMD_SCAN` ignores a mounted card. Puts and deletes queue the app folder and the menu reloads that entry. | 14 → 15 → 14 apps on the Wii. |
+| Fix | The reload stub waited forever for a second acknowledgment when IOS refused `ES_Launch`, so its system-menu fallback never ran. It now also accepts the refusal reply. | Success path in Dolphin and on the Wii; Dolphin stalls the PPC on a missing title, so the failure path needs hardware. |
+| Fix | A log target outlived its PC: `hbc.py` now clears it on exit, HBC restores a live target after a restart, and `hbc_netlog_init` connects non-blocking with a 2 s limit and a bounded `net_init`. | Dolphin and Wii log runs. |
+| Fix | A put to `.../` created a file named after the directory (now `EISDIR`); SD-app descriptors leaked on loader out-of-memory paths; `devstream` leaked message queues when its worker failed to start. | `EISDIR` checked on the Wii. |
+| Optimization | Wiiload uploads now run above the UI and inflate in 16 KiB pieces as they arrive, so compressed data needs no full-size buffer. | Wii runs; throughput is link-bound and unchanged. |
+| Optimization | `tcp_close` drains with `net_poll` instead of 10 ms sleeps; `hbc.py send` compresses at level 9. | Status median 30.9 ms. |
+| Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
+| Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
+
 The disc and partition tools (`discinfo`, `extract*`, `inject*`, `partsetios`,
 `rsapatch`, `getappldr`) run only their usage paths in tests; no disc image
 was available.

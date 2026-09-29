@@ -10,6 +10,8 @@ s32 tcp_listen (u16 port, s32 backlog);
 
 char * tcp_readln (s32 s, u16 max_length, s64 start_time, u16 timeout);
 bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progress);
+bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
+					   u32 *progress, s32 timeout_ms);
 bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 				u32 *progress);
 void tcp_close (s32 s);

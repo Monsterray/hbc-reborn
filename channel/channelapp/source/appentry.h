@@ -49,6 +49,8 @@ extern const char *app_fn_icon;
 
 extern app_entry *entries[MAX_ENTRIES];
 extern u32 entry_count;
+// Milliseconds the last full app scan took.
+extern u32 app_entry_scan_ms;
 
 void app_entry_init (void);
 void app_entry_deinit (void);

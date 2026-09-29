@@ -180,7 +180,14 @@ s32 devstream_put(s32 s, const char *path, const char *part, u32 size,
 	job.stats = stats;
 	job.result = 0;
 
-	if (!setup() || !start_worker(put_worker)) {
+	if (!setup()) {
+		fclose(job.f);
+		unlink(part);
+		return -ENOMEM;
+	}
+	if (!start_worker(put_worker)) {
+		MQ_Close(q_full);
+		MQ_Close(q_free);
 		fclose(job.f);
 		unlink(part);
 		return -ENOMEM;
@@ -190,7 +197,9 @@ s32 devstream_put(s32 s, const char *path, const char *part, u32 size,
 		slot_t *slot = take(q_free);
 		u64 t0 = gettime();
 
-		if (!tcp_read(s, hdr, FRAME_HDR, NULL, NULL)) {
+		if (devnet_aborted()) {
+			err = -EINTR;
+		} else if (!tcp_read(s, hdr, FRAME_HDR, NULL, NULL)) {
 			err = -EIO;
 		} else {
 			slot->raw_len = get_u32(hdr);
@@ -242,7 +251,7 @@ static void *get_worker(void *arg) {
 	s32 err = 0;
 	(void) arg;
 
-	while (left && !abort_flag) {
+	while (left && !abort_flag && !devnet_aborted()) {
 		slot_t *slot = take(q_free);
 		u32 n = left > FRAME_MAX ? FRAME_MAX : left;
 		u64 t0 = gettime();
@@ -311,7 +320,14 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 	job.compress = compress;
 	job.stats = stats;
 
-	if (!setup() || !start_worker(get_worker)) {
+	if (!setup()) {
+		fclose(job.f);
+		devnet_reply(s, -ENOMEM, NULL, 0);
+		return;
+	}
+	if (!start_worker(get_worker)) {
+		MQ_Close(q_full);
+		MQ_Close(q_free);
 		fclose(job.f);
 		devnet_reply(s, -ENOMEM, NULL, 0);
 		return;
@@ -333,6 +349,10 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 		put_u32(frame + 4, done ? 0 : slot->wire_len);
 		put_u32(frame + 8, done ? (u32) slot->err : slot->crc);
 
+		if (sending && devnet_aborted()) {
+			sending = false;
+			abort_flag = true;
+		}
 		if (sending) {
 			u64 t1 = gettime();
 			u32 len = FRAME_HDR + (done ? 0 : slot->wire_len);

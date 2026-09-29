@@ -7,6 +7,7 @@
 #include <sys/dir.h>
 
 #include <ogcsys.h>
+#include <ogc/lwp_watchdog.h>
 #include <ogc/cond.h>
 #include <sdcard/gcsd.h>
 #include <sdcard/wiisd_io.h>
@@ -30,6 +31,7 @@ static u32 entry_count_all = 0;
 
 app_entry *entries[MAX_ENTRIES];
 u32 entry_count = 0;
+u32 app_entry_scan_ms = 0;
 
 const char *app_path = "/apps";
 const char *app_fn_boot_elf = "boot.elf";
@@ -455,7 +457,10 @@ static void *ae_func (void *arg) {
 				if (chdir(cwd))
 					gprintf("chdir failed: %d\n", errno);
 
+				s64 scan_start = gettime();
 				app_entry_load_all();
+				app_entry_scan_ms =
+					ticks_to_millisecs(diff_ticks(scan_start, gettime()));
 
 				ta->loading = false;
 

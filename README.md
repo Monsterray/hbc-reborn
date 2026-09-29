@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.3.6**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.4.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -54,30 +54,35 @@ fork (1.2.0 or later), either sent as a DOL like this or installed as the WAD.
 ## `hbc.py` reference
 
 ```
-python3 tools/hbc.py [--wii ADDR] [--log-port PORT] [--timeout S] COMMAND ...
+python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMAND ...
 ```
 
 | Command | What it does |
 | --- | --- |
 | `version` | Print the running HBC version (`HBCV`). |
-| `status` | Print JSON status: version, protocol, IOS and revision, AHBPROT, free MEM1/MEM2, IP, app count, mounted device, log target, and timing of the last transfer. |
+| `status` | Print JSON status: version, protocol, IOS and revision, AHBPROT, free memory, loader stack use, startup and app-scan time, IP, app count, mounted device, log target, and timing of the last transfer. |
 | `wait [SECONDS]` | Wait until HBC answers (default 90 s). |
 | `send FILE [ARG ...]` | Send a DOL, ELF, or ZIP over Wiiload. A ZIP is installed to the SD card after you confirm on the Wii. |
 | `run FILE [ARG ...]` | Register for logs, send `FILE`, and print its output until it exits (`--timeout`, default 300 s). |
 | `log` | Register for logs and print app output until Ctrl+C. Use it when you launch apps from the Wii itself. |
 | `ls REMOTE` | List a directory, e.g. `sd:/apps`. Lines are `d name` or `f size name`. |
-| `get REMOTE [LOCAL]` | Download a file. |
-| `put LOCAL REMOTE` | Upload a file; parent directories are created. |
-| `rm REMOTE` | Delete a file or an empty directory. |
+| `get [-r] REMOTE [LOCAL]` | Download a file, or with `-r` a directory tree. |
+| `put [-r] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. |
+| `sync [--delete] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only files whose size or CRC-32 differ; `--delete` also removes remote extras. |
+| `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
 | `mkdir REMOTE` | Create a directory and its parents. |
+
+`--json` makes `version`, `status`, and `ls` print JSON. Options can follow
+the command; for `send` and `run`, everything after the file goes to the app,
+and `--` ends option parsing. Large transfers show progress on a terminal.
 
 The Wii address comes from `--wii`, then `$HBC_WII`, `$WII_BENCH_IP`, or
 `$WIILOAD` (`tcp:ADDR`, the variable the devkitPro `wiiload` uses).
 
 Remote paths are `<device>:/<path>` with device `sd`, `usb`, `carda`, or
 `cardb`; paths containing `..`, `//`, or backslashes are refused. An app you
-`put` under `sd:/apps/` shows up in the menu the next time the channel
-starts; `send` runs it right away.
+`put` or `sync` under `sd:/apps/` appears in the menu right away, and one you
+remove disappears.
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame
@@ -125,13 +130,18 @@ with `--log-port`. On Windows, allow it once in Windows Defender Firewall.
 
 ```sh
 make && python3 tools/hbc.py run myapp.dol          # build, run, watch the log
+python3 tools/hbc.py sync dist/myapp sd:/apps/myapp # install: only changed files move
 python3 tools/hbc.py put data/level1.bin sd:/apps/myapp/level1.bin
 python3 tools/hbc.py get sd:/apps/myapp/save.dat    # pull a file the app wrote
 python3 tools/hbc.py status                         # IOS, AHBPROT, memory after a run
 ```
 
-To install an app permanently, `put` its `boot.dol` and `meta.xml` under
-`sd:/apps/<name>/`, or `send` a ZIP.
+To install an app permanently, `sync` or `put -r` its folder (with
+`boot.dol` and `meta.xml`) to `sd:/apps/<name>/`, or `send` a ZIP.
+
+`hbc_netlog_init()` gives up within about 5 s when the PC is unreachable, and
+`run` and `log` clear HBC's log target when they exit, so a stale target
+never stalls later apps.
 
 ## Installing the channel on a Wii
 
@@ -222,8 +232,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Developer network in Dolphin | `make -C tests/netlog_app` then `python3 tests/dolphin_smoke.py --devnet` | Dolphin |
 | Installed WAD in Dolphin, including app exit back to it | `python3 tests/dolphin_smoke.py --devnet channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.3.0 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.4.0 WII-IP` | installed channel running |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
+| Start an installed title from HBC | `python3 tools/hbc.py send tests/launch_title/launch_title.dol 000100014f484243` | Wii in any HBC |
 
 The Dolphin tests use a throwaway profile, pass every setting on the command
 line, and delete the profile when they pass. Set `DOLPHIN` if Dolphin is not

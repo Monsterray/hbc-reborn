@@ -302,7 +302,7 @@ static void * ld_tcp_func (void *arg) {
 				continue;
 			}
 
-			if (!tcp_read (sn, buf, 16, NULL, NULL)) {
+			if (!tcp_read_timeout (sn, buf, 16, NULL, NULL, LD_HEADER_TIMEOUT)) {
 				net_close (sn);
 				continue;
 			}
@@ -373,6 +373,8 @@ static ld_tcp_arg ta_tcp;
 void loader_init (void) {
 	int res;
 
+	devnet_init ();
+
 	if (usb_isgeckoalive (USBGECKO_CHANNEL)) {
 		gprintf ("starting gecko thread\n");
 
@@ -425,6 +427,9 @@ void loader_init (void) {
 
 void loader_deinit (void) {
 	u8 i;
+
+	// A developer file transfer must stop before the card is unmounted.
+	devnet_abort ();
 
 	// the tcp thread does stuff on exit; the ideal order is stopping it first
 	if (ta_tcp.running) {
@@ -524,6 +529,16 @@ bool loader_tcp_initializing (void) {
 	return ta_tcp.running && ta_tcp.state == LDTCPS_INITIALIZING;
 }
 
+// Bytes of the loader TCP thread's stack ever used: the stack is zeroed at
+// init and grows down, so untouched bytes remain zero at the low end.
+u32 loader_tcp_stack_used (void) {
+	u32 i;
+
+	for (i = 0; i < LD_THREAD_STACKSIZE && !ld_tcp_stack[i]; ++i)
+		;
+	return LD_THREAD_STACKSIZE - i;
+}
+
 bool loader_tcp_initialized (void) {
 	return ta_tcp.running && ta_tcp.state == LDTCPS_INITIALIZED;
 }
@@ -571,6 +586,7 @@ typedef struct {
 	u8 *data_un;
 
 	u16 args_len;
+	u8 *args;
 
 	int fd;
 
@@ -578,6 +594,61 @@ typedef struct {
 	ld_load_state state;
 	u32 progress;
 } ld_load_arg;
+
+// Receive a compressed Wiiload upload in LD_STREAM_CHUNK pieces and inflate
+// each as it arrives, so decompression overlaps the transfer and the
+// compressed data never needs a buffer of its own.
+static ld_load_state ld_tcp_inflate (ld_load_arg *ta) {
+	z_stream z = { 0 };  // zlib reads zalloc/zfree/opaque from here
+	u32 left = ta->data_len, received = 0;
+	int zres = Z_OK;
+
+	if (inflateInit (&z) != Z_OK)
+		return LDS_ERR_UNCOMPRESS;
+
+	z.next_out = ta->data_un;
+	z.avail_out = ta->data_len_un;
+
+	while (left) {
+		u32 block = left > LD_STREAM_CHUNK ? LD_STREAM_CHUNK : left;
+
+		if (!tcp_read (ta->fd, ta->data, block, NULL, NULL)) {
+			inflateEnd (&z);
+			return LDS_ERR_RECEIVE;
+		}
+
+		received += block;
+		left -= block;
+
+		LWP_MutexLock (ta->mutex);
+		ta->progress = received;
+		LWP_MutexUnlock (ta->mutex);
+
+		if (zres == Z_STREAM_END)
+			continue;
+
+		z.next_in = ta->data;
+		z.avail_in = block;
+		zres = inflate (&z, Z_NO_FLUSH);
+		if (zres != Z_OK && zres != Z_STREAM_END) {
+			gprintf ("error uncompressing: %d\n", zres);
+			inflateEnd (&z);
+			return LDS_ERR_UNCOMPRESS;
+		}
+	}
+
+	inflateEnd (&z);
+
+	if (ta->args_len && !tcp_read (ta->fd, ta->args, ta->args_len, NULL, NULL))
+		return LDS_ERR_RECEIVE;
+
+	if (zres != Z_STREAM_END || z.total_out != ta->data_len_un) {
+		gprintf ("short uncompress: %u\n", (u32) z.total_out);
+		return LDS_ERR_UNCOMPRESS;
+	}
+
+	return LDS_SUCCESS;
+}
 
 static void * ld_load_func (void *arg) {
 	ld_load_arg *ta = (ld_load_arg *) arg;
@@ -664,6 +735,18 @@ static void * ld_load_func (void *arg) {
 		break;
 
 	case LDC_TCP:
+		if (ta->data_un) {
+			ld_load_state state = ld_tcp_inflate (ta);
+
+			net_close (ta->fd);
+
+			LWP_MutexLock (ta->mutex);
+			ta->state = state;
+			LWP_MutexUnlock (ta->mutex);
+
+			return NULL;
+		}
+
 		if (!tcp_read (ta->fd, ta->data, left, &ta->mutex, &ta->progress)) {
 			LWP_MutexLock (ta->mutex);
 			ta->state = LDS_ERR_RECEIVE;
@@ -711,6 +794,14 @@ static void * ld_load_func (void *arg) {
 	LWP_MutexUnlock (ta->mutex);
 
 	return NULL;
+}
+
+// Close the transfer source after a failure before the load thread runs.
+static void ld_close_source (ld_load_arg *ta) {
+	if (ta->cmd == LDC_TCP)
+		net_close (ta->fd);
+	else if (ta->cmd == LDC_FILE)
+		close (ta->fd);
 }
 
 // public loading function
@@ -804,19 +895,23 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		ta.data_un = (u8 *) blob_alloc(ta.data_len_un);
 
 		if (!ta.data_un) {
-			if (ta.cmd == LDC_TCP)
-				net_close (ta.fd);
+			ld_close_source (&ta);
 			show_message (sub_view, DLGMT_ERROR, DLGB_OK, text_err_oom, 0);
 			return;
 		}
 	}
 
-	ta.data = (u8 *) blob_alloc(ta.data_len + ta.args_len);
+	if (ta.cmd == LDC_TCP && ta.data_len_un) {
+		ta.data = (u8 *) blob_alloc(LD_STREAM_CHUNK + ta.args_len);
+		ta.args = ta.data + LD_STREAM_CHUNK;
+	} else {
+		ta.data = (u8 *) blob_alloc(ta.data_len + ta.args_len);
+		ta.args = ta.data + ta.data_len;
+	}
 
 	if (!ta.data) {
 		blob_free(ta.data_un);
-		if (ta.cmd == LDC_TCP)
-			net_close (ta.fd);
+		ld_close_source (&ta);
 		show_message (sub_view, DLGMT_ERROR, DLGB_OK, text_err_oom, 0);
 		return;
 	}
@@ -828,22 +923,20 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		gprintf ("error creating mutex: %d\n", res);
 		blob_free (ta.data);
 		blob_free (ta.data_un);
-		if (ta.cmd == LDC_TCP)
-			net_close (ta.fd);
+		ld_close_source (&ta);
 		panic(); // if this happens, let's find out
 		return;
 	}
 
 	memset (&ld_load_stack, 0, LD_THREAD_STACKSIZE);
 	res = LWP_CreateThread (&ld_load_thread, ld_load_func, &ta, ld_load_stack,
-							LD_THREAD_STACKSIZE, LD_THREAD_PRIO);
+							LD_THREAD_STACKSIZE, DEVNET_THREAD_PRIO);
 
 	if (res) {
 		gprintf ("error creating thread: %d\n", res);
 		blob_free (ta.data);
 		blob_free (ta.data_un);
-		if (ta.cmd == LDC_TCP)
-			net_close (ta.fd);
+		ld_close_source (&ta);
 		panic(); // if this happens, let's find out
 		return;
 	}
@@ -871,7 +964,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 	LWP_MutexDestroy (ta.mutex);
 
 	if (ta.args_len) {
-		memcpy(result->args, &ta.data[ta.data_len], ta.args_len);
+		memcpy(result->args, ta.args, ta.args_len);
 		result->args_len = ta.args_len;
 	}
 

@@ -15,11 +15,13 @@
 #include <ogc/machine/processor.h>
 #include <ogc/lwp_watchdog.h>
 #include <network.h>
+#include <zlib.h>
 
 #include "../config.h"
 #include "appentry.h"
 #include "devnet.h"
 #include "devstream.h"
+#include "loader.h"
 #include "tcp.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
@@ -34,6 +36,17 @@ static const char *device_names[DEVICE_COUNT] = { "sd", "usb", "carda", "cardb" 
 static u8 chunk[DEVNET_CHUNK] ATTRIBUTE_ALIGN(32);
 static u32 log_ip;
 static u16 log_port;
+
+// Transfer state, for aborting before an app launch unmounts the card.
+static volatile bool busy, abort_requested;
+static volatile s32 active_socket = -1;
+
+// App folders changed by file requests, for the menu to reload.
+#define CHANGES 8
+static char changes[CHANGES][64];
+static u32 change_count;
+
+static u32 init_ms;
 
 // Timing of the last file transfer, reported in the status reply.
 static struct {
@@ -89,16 +102,23 @@ bool devnet_reply(s32 s, s32 status, const void *data, u32 len) {
 static s32 status_json(char *buf, size_t size) {
 	bool mounted[DEVICE_COUNT] = { false };
 	int active = app_entry_get_status(mounted);
+	// newlib's heap spans MEM1 and MEM2, so mallinfo's "used" figure counts
+	// the gap between them; only the free figure is meaningful.
+	struct mallinfo heap = mallinfo();
 	u32 ip = net_gethostip();
 	int i, n;
 
 	n = snprintf(buf, size,
 			"{\"version\":\"%s\",\"proto\":%d,\"ios\":%d,\"ios_revision\":%d,"
 			"\"ahbprot\":%s,\"mem1_free\":%u,\"mem2_free\":%u,"
+			"\"heap_free\":%u,\"tcp_stack_used\":%u,"
+			"\"tcp_stack_size\":%u,\"init_ms\":%u,\"scan_ms\":%u,"
 			"\"ip\":\"%u.%u.%u.%u\",\"apps\":%u,\"device\":",
 			CHANNEL_VERSION_STR, DEVNET_PROTO, IOS_GetVersion(), IOS_GetRevision(),
 			read32(0x0d800064) == 0xffffffff ? "true" : "false",
 			SYS_GetArena1Size(), SYS_GetArena2Size(),
+			heap.fordblks, loader_tcp_stack_used(),
+			LD_THREAD_STACKSIZE, init_ms, app_entry_scan_ms,
 			ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff,
 			entry_count);
 	if (active >= 0 && active < DEVICE_COUNT)
@@ -184,6 +204,10 @@ static s32 file_put_raw(s32 s, const char *path, const char *part, u32 size) {
 		u32 block = left > DEVNET_CHUNK ? DEVNET_CHUNK : left;
 		u64 t0 = gettime();
 
+		if (abort_requested) {
+			err = -EINTR;
+			break;
+		}
 		if (!tcp_read(s, chunk, block, NULL, NULL)) {
 			err = -EIO;
 			break;
@@ -242,7 +266,7 @@ static void file_get_raw(s32 s, const char *path) {
 			if (got < block)
 				memset(chunk + got, 0, block - got);
 			u64 t1 = gettime();
-			bool ok = devnet_send_all(s, chunk, block);
+			bool ok = !abort_requested && devnet_send_all(s, chunk, block);
 			last.st.disk += diff_ticks(t0, t1);
 			last.st.net += diff_ticks(t1, gettime());
 			last.st.wire += block;
@@ -275,10 +299,15 @@ static void file_list(s32 s, const char *path) {
 		return;
 	}
 
-	// One entry per line: "d <name>" or "f <size> <name>".
-	while ((de = readdir(d)) && n < DEVNET_LIST_MAX - DEVNET_PATH_MAX - 16) {
+	// One entry per line: "d <name>" or "f <size> <name>". A listing that
+	// reaches the buffer limit ends with "! truncated".
+	while ((de = readdir(d))) {
 		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
 			continue;
+		if (n >= DEVNET_LIST_MAX - DEVNET_PATH_MAX - 32) {
+			n += snprintf(buf + n, DEVNET_LIST_MAX - n, "! truncated\n");
+			break;
+		}
 		snprintf(full, sizeof(full), "%s/%s", path, de->d_name);
 		if (stat(full, &st))
 			continue;
@@ -294,12 +323,92 @@ static void file_list(s32 s, const char *path) {
 	free(buf);
 }
 
+// Reply with the file's size and CRC-32, so clients can skip unchanged files.
+static void file_checksum(s32 s, const char *path) {
+	struct stat st;
+	u8 out[8];
+	uLong crc = crc32(0, Z_NULL, 0);
+	size_t got;
+	FILE *f;
+
+	if (stat(path, &st)) {
+		devnet_reply(s, -ENOENT, NULL, 0);
+		return;
+	}
+	if (S_ISDIR(st.st_mode)) {
+		devnet_reply(s, -EISDIR, NULL, 0);
+		return;
+	}
+
+	f = fopen(path, "rb");
+	if (!f) {
+		devnet_reply(s, -errno, NULL, 0);
+		return;
+	}
+	while ((got = fread(chunk, 1, sizeof(chunk), f)) > 0 && !abort_requested)
+		crc = crc32(crc, chunk, got);
+	fclose(f);
+
+	put_u32(out, st.st_size);
+	put_u32(out + 4, crc);
+	devnet_reply(s, abort_requested ? -EINTR : 0, out, sizeof(out));
+}
+
+// Note the app folder a change under "<active device>:/apps/<name>" touched.
+static void note_app_change(const char *path) {
+	bool mounted[DEVICE_COUNT];
+	int active = app_entry_get_status(mounted);
+	const char *p, *name;
+	char dirname[64];
+	size_t len;
+	u32 level, i;
+
+	if (active < 0 || active >= DEVICE_COUNT)
+		return;
+	len = strlen(device_names[active]);
+	if (strncasecmp(path, device_names[active], len) ||
+			strncasecmp(path + len, ":/apps/", 7))
+		return;
+
+	name = path + len + 7;
+	p = strchr(name, '/');
+	len = p ? (size_t) (p - name) : strlen(name);
+	if (!len || len >= sizeof(dirname))
+		return;
+	memcpy(dirname, name, len);
+	dirname[len] = 0;
+
+	_CPU_ISR_Disable(level);
+	for (i = 0; i < change_count; ++i)
+		if (!strcasecmp(changes[i], dirname))
+			break;
+	if (i == change_count && change_count < CHANGES)
+		strcpy(changes[change_count++], dirname);
+	_CPU_ISR_Restore(level);
+}
+
+bool devnet_take_app_change(char *dirname, size_t size) {
+	bool found = false;
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	if (change_count) {
+		strncpy(dirname, changes[0], size - 1);
+		dirname[size - 1] = 0;
+		memmove(changes[0], changes[1], --change_count * sizeof(changes[0]));
+		found = true;
+	}
+	_CPU_ISR_Restore(level);
+	return found;
+}
+
 static void file_request(s32 s, const u8 *hdr) {
 	char path[DEVNET_PATH_MAX];
 	char part[DEVNET_PATH_MAX + 8];
 	u8 op = hdr[4];
 	u16 path_len = get_u16(hdr + 6);
 	u32 size = get_u32(hdr + 8);
+	bool trailing_slash;
 	struct stat st;
 	s32 err;
 
@@ -309,6 +418,7 @@ static void file_request(s32 s, const u8 *hdr) {
 		return;
 	}
 	path[path_len] = 0;
+	trailing_slash = path[path_len - 1] == '/';
 
 	// Strip one trailing slash so "sd:/apps/" lists like "sd:/apps".
 	if (path_len > 4 && path[path_len - 1] == '/' && path[path_len - 2] != ':')
@@ -329,11 +439,21 @@ static void file_request(s32 s, const u8 *hdr) {
 			devnet_reply(s, -EFBIG, NULL, 0);
 			break;
 		}
+		// "sd:/apps/new/" names a directory, not a file to create.
+		if (trailing_slash) {
+			devnet_reply(s, -EISDIR, NULL, 0);
+			break;
+		}
 		make_parents(path);
 		snprintf(part, sizeof(part), "%s.part", path);
 		err = op == 'p' ? devstream_put(s, path, part, size, &last.st)
 						: file_put_raw(s, path, part, size);
+		if (!err)
+			note_app_change(path);
 		devnet_reply(s, err, NULL, 0);
+		break;
+	case 'C':
+		file_checksum(s, path);
 		break;
 	case 'G':
 		file_get_raw(s, path);
@@ -351,6 +471,8 @@ static void file_request(s32 s, const u8 *hdr) {
 			err = rmdir(path) ? -errno : 0;
 		else
 			err = unlink(path) ? -errno : 0;
+		if (!err)
+			note_app_change(path);
 		devnet_reply(s, err, NULL, 0);
 		break;
 	case 'M':
@@ -398,9 +520,14 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		memset(&last, 0, sizeof(last));
 		last.op = hdr[4];
 		last.bytes = get_u32(hdr + 8);
+		abort_requested = false;
+		active_socket = s;
+		busy = true;
 		LWP_SetThreadPriority(LWP_GetSelf(), DEVNET_THREAD_PRIO);
 		file_request(s, hdr);
 		LWP_SetThreadPriority(LWP_GetSelf(), LD_THREAD_PRIO);
+		active_socket = -1;
+		busy = false;
 		last.total = diff_ticks(start, gettime());
 		return true;
 	}
@@ -414,4 +541,43 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	}
 
 	return false;
+}
+
+bool devnet_aborted(void) {
+	return abort_requested;
+}
+
+void devnet_abort(void) {
+	s32 sock = active_socket;
+	int i;
+
+	if (!busy)
+		return;
+
+	gprintf("devnet: aborting the active transfer\n");
+	abort_requested = true;
+	// Unblock a read or write that is waiting on the PC.
+	if (sock >= 0)
+		net_shutdown(sock, 2);
+
+	for (i = 0; i < 150 && busy; ++i)
+		usleep(20 * 1000);
+	if (busy)
+		gprintf("devnet: transfer did not stop\n");
+}
+
+void devnet_init(void) {
+	hbc_netlog_block *block = (hbc_netlog_block *) HBC_NETLOG_ADDR;
+
+	// A target registered before the last app launch survives in low memory.
+	DCInvalidateRange(block, sizeof(*block));
+	if (block->magic == HBC_NETLOG_MAGIC && block->version == HBC_NETLOG_VERSION &&
+			block->check == hbc_netlog_check(block) && block->port) {
+		log_ip = block->ip;
+		log_port = block->port;
+	}
+}
+
+void devnet_set_init_ms(u32 ms) {
+	init_ms = ms;
 }

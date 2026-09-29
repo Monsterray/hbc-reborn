@@ -132,21 +132,44 @@ static void ipc_send_request(void)
 	ipc_irq_ack();
 }
 
-void ipc_send_twoack(void)
+// Send a request that reboots IOS, such as ES_Launch. IOS acknowledges it
+// twice when it goes ahead, but answers with a reply when it refuses (for
+// example, a title that is not installed). Returns 0 for the second ack,
+// or the refusal's error, so the caller can try something else.
+static int ipc_send_twoack(void)
 {
+	u32 status;
+
 	DCFlushRange(&ipc, 0x40);
-	
+
 	ipc_write(0, (u32)virt_to_phys(&ipc));
 	ipc_bell(1);
-	
-	ipc_wait_ack();
-	ipc_irq_ack();
-	ipc_bell(2);
 
 	ipc_wait_ack();
 	ipc_irq_ack();
 	ipc_bell(2);
-	ipc_bell(8);
+
+	for (;;) {
+		status = ipc_read(1);
+
+		if ((status & 0x22) == 0x22) {
+			udelay(100);
+			ipc_irq_ack();
+			ipc_bell(2);
+			ipc_bell(8);
+			return 0;
+		}
+
+		if ((status & 0x14) == 0x14) {
+			udelay(100);
+			ipc_read(2);
+			ipc_bell(4);
+			ipc_irq_ack();
+			ipc_bell(8);
+			DCInvalidateRange(&ipc, sizeof ipc);
+			return ipc.result < 0 ? ipc.result : -1;
+		}
+	}
 }
 
 static void ipc_recv_reply(void)
@@ -227,8 +250,7 @@ int _ios_ioctlv(int fd, u32 n, u32 in_count, u32 out_count, struct ioctlv *vec, 
 	ipc.arg[3] = (u32)virt_to_phys(vec);
 
 	if(reboot) {
-		ipc_send_twoack();
-		return 0;
+		return ipc_send_twoack();
 	} else {
 		ipc_send_request();
 		ipc_recv_reply();

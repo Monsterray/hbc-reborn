@@ -1,6 +1,9 @@
 """Check tools/hbc.py against a fake HBC that follows docs/devnet.md."""
 
+import contextlib
+import io
 import json
+import os
 import pathlib
 import socket
 import struct
@@ -14,35 +17,66 @@ root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tools"))
 import hbc  # noqa: E402
 
-ENOENT, EINVAL = 2, 22
+ENOENT, ENOTDIR, EISDIR, EINVAL, ENOTEMPTY = 2, 20, 21, 22, 90
+WII = "127.0.0.1"
+
+
+def parent(path):
+    head = path.rsplit("/", 1)[0]
+    return head + "/" if head.endswith(":") else head
 
 
 class FakeHBC:
     def __init__(self):
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
-        self.sock.listen(4)
+        self.sock.listen(8)
         self.port = self.sock.getsockname()[1]
         self.files = {}
+        self.dirs = {"sd:/"}
         self.log = None
+        self.log_ports = []
         self.uploads = []
+        self.requests = []  # (op, path) of every HBCF request
+        self.truncate = False
+        self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
 
     def serve(self):
         while True:
             conn, (addr, _) = self.sock.accept()
-            with conn:
-                self.handle(conn, addr)
+            with conn, self.lock:
+                try:
+                    self.handle(conn, addr)
+                except OSError:
+                    pass
 
     @staticmethod
     def recv(conn, n):
         data = b""
         while len(data) < n:
-            data += conn.recv(n - len(data))
+            chunk = conn.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("client closed")
+            data += chunk
         return data
 
     def reply(self, conn, status, payload=b""):
         conn.sendall(struct.pack(">iI", status, len(payload)) + payload)
+
+    def make_dirs(self, path):
+        while path not in self.dirs:
+            self.dirs.add(path)
+            path = parent(path)
+
+    def children(self, path):
+        return ([("d", p) for p in sorted(self.dirs) if p != path and parent(p) == path] +
+                [("f", p) for p in sorted(self.files) if parent(p) == path])
+
+    def send_log(self, text):
+        addr, port = self.log.rsplit(":", 1)
+        with socket.create_connection((addr, int(port)), timeout=5) as log:
+            log.sendall(text)
 
     def handle(self, conn, addr):
         hdr = self.recv(conn, 16)
@@ -53,27 +87,46 @@ class FakeHBC:
             self.reply(conn, 0, json.dumps({"version": "1.2.0", "proto": 2,
                                              "log": self.log}).encode())
         elif magic == b"HBCN":
-            self.log = f"{addr}:{struct.unpack('>H', hdr[4:6])[0]}"
+            port = struct.unpack(">H", hdr[4:6])[0]
+            self.log_ports.append(port)
+            self.log = f"{addr}:{port}" if port else None
             self.reply(conn, 0)
         elif magic == b"HAXX":
             args_len, size, size_un = struct.unpack(">HII", hdr[6:16])
             data = self.recv(conn, size)
             args = self.recv(conn, args_len)
             self.uploads.append((zlib.decompress(data) if size_un else data, args))
+            if self.log and b"log-me" in args:
+                threading.Thread(target=self.send_log, args=(b"hello from the app\n",),
+                                 daemon=True).start()
         elif magic == b"HBCF":
             op = chr(hdr[4])
             path_len, size = struct.unpack(">HI", hdr[6:12])
             path = self.recv(conn, path_len).decode()
-            if ".." in path:
+            self.requests.append((op, path))
+            if op in "pP" and path.endswith("/"):
+                self.reply(conn, -EISDIR)  # refused before any data is read
+                conn.shutdown(socket.SHUT_WR)
+                while conn.recv(4096):
+                    pass
+                return
+            if len(path) > 4 and path.endswith("/") and path[-2] != ":":
+                path = path[:-1]
+            if ".." in path or "//" in path:
                 self.reply(conn, -EINVAL)
+            elif op in "pP" and path in self.dirs:
+                self.reply(conn, -EISDIR)
             elif op == "P":
+                self.make_dirs(parent(path))
                 self.files[path] = self.recv(conn, size)
                 self.reply(conn, 0)
+            elif op in "GgC" and path not in self.files:
+                self.reply(conn, -(EISDIR if path in self.dirs and op == "C" else ENOENT))
             elif op == "G":
-                if path in self.files:
-                    self.reply(conn, 0, self.files[path])
-                else:
-                    self.reply(conn, -ENOENT)
+                self.reply(conn, 0, self.files[path])
+            elif op == "C":
+                data = self.files[path]
+                self.reply(conn, 0, struct.pack(">II", len(data), zlib.crc32(data)))
             elif op == "p":
                 data, left = bytearray(), size
                 while left:
@@ -85,25 +138,42 @@ class FakeHBC:
                         return
                     data += raw
                     left -= raw_len
+                self.make_dirs(parent(path))
                 self.files[path] = bytes(data)
                 self.reply(conn, 0)
             elif op == "g":
-                data = self.files.get(path)
-                if data is None:
-                    self.reply(conn, -ENOENT)
-                    return
+                data = self.files[path]
                 conn.sendall(struct.pack(">iI", 0, len(data)))
                 for frame in hbc.frames(data, level=6 if hdr[5] & 1 else 0):
                     conn.sendall(frame)
                 conn.sendall(bytes(12))
             elif op == "L":
-                lines = "".join(f"f {len(v)} {k.rsplit('/', 1)[1]}\n"
-                                for k, v in self.files.items() if k.startswith(path + "/"))
+                if path not in self.dirs:
+                    self.reply(conn, -(ENOTDIR if path in self.files else ENOENT))
+                    return
+                lines = "".join(f"d {p.rsplit('/', 1)[1]}\n" if kind == "d" else
+                                f"f {len(self.files[p])} {p.rsplit('/', 1)[1]}\n"
+                                for kind, p in self.children(path))
+                if self.truncate:
+                    lines += "! truncated\n"
                 self.reply(conn, 0, lines.encode())
             elif op == "D":
-                self.reply(conn, 0 if self.files.pop(path, None) is not None else -ENOENT)
-            else:
+                if path in self.files:
+                    del self.files[path]
+                    self.reply(conn, 0)
+                elif path in self.dirs:
+                    if self.children(path):
+                        self.reply(conn, -ENOTEMPTY)
+                    else:
+                        self.dirs.discard(path)
+                        self.reply(conn, 0)
+                else:
+                    self.reply(conn, -ENOENT)
+            elif op == "M":
+                self.make_dirs(path)
                 self.reply(conn, 0)
+            else:
+                self.reply(conn, -88)  # newlib ENOSYS
 
 
 class HBCToolTest(unittest.TestCase):
@@ -112,27 +182,57 @@ class HBCToolTest(unittest.TestCase):
         cls.fake = FakeHBC()
         hbc.PORT = cls.fake.port
 
+    def setUp(self):
+        self.fake.truncate = False
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = pathlib.Path(tmp.name)
+
+    def cli(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            hbc.main(["--wii", WII, *argv])
+        return out.getvalue()
+
+    def make_tree(self, base, files):
+        for rel, data in files.items():
+            path = pathlib.Path(base, *rel.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+    def remote(self, prefix):
+        return {k: v for k, v in self.fake.files.items() if k.startswith(prefix)}
+
     def test_version_and_status(self):
-        self.assertEqual(hbc.version("127.0.0.1"), "1.2.0")
-        self.assertEqual(hbc.status("127.0.0.1")["version"], "1.2.0")
+        self.assertEqual(hbc.version(WII), "1.2.0")
+        self.assertEqual(hbc.status(WII)["version"], "1.2.0")
 
     def test_file_round_trip(self):
         data = bytes(range(256)) * 300
-        hbc.file_request("127.0.0.1", "P", "sd:/apps/x/data.bin", len(data), data)
-        self.assertEqual(hbc.file_request("127.0.0.1", "G", "sd:/apps/x/data.bin"), data)
-        listing = hbc.file_request("127.0.0.1", "L", "sd:/apps/x").decode()
+        hbc.file_request(WII, "P", "sd:/apps/x/data.bin", len(data), data)
+        self.assertEqual(hbc.file_request(WII, "G", "sd:/apps/x/data.bin"), data)
+        listing = hbc.file_request(WII, "L", "sd:/apps/x").decode()
         self.assertIn(f"f {len(data)} data.bin", listing)
-        hbc.file_request("127.0.0.1", "D", "sd:/apps/x/data.bin")
+        self.assertEqual(hbc.checksum(WII, "sd:/apps/x/data.bin"), (len(data), zlib.crc32(data)))
+        hbc.file_request(WII, "D", "sd:/apps/x/data.bin")
         with self.assertRaisesRegex(hbc.HBCError, "ENOENT"):
-            hbc.file_request("127.0.0.1", "G", "sd:/apps/x/data.bin")
+            hbc.file_request(WII, "G", "sd:/apps/x/data.bin")
         with self.assertRaisesRegex(hbc.HBCError, "EINVAL"):
-            hbc.file_request("127.0.0.1", "L", "sd:/../x")
+            hbc.file_request(WII, "L", "sd:/../x")
+        with self.assertRaises(hbc.HBCError) as cm:
+            hbc.checksum(WII, "sd:/apps/x")
+        self.assertEqual(cm.exception.code, EISDIR)
 
     def test_framed_round_trip(self):
+        seen = []
         for data in (b"", b"a", bytes(200_000), bytes(range(256)) * 700):
-            hbc.put_file("127.0.0.1", "sd:/f.bin", data)
+            hbc.put_file(WII, "sd:/f.bin", data, progress=lambda d, t: seen.append((d, t)))
             self.assertEqual(self.fake.files["sd:/f.bin"], data)
-            self.assertEqual(hbc.get_file("127.0.0.1", "sd:/f.bin"), data)
+            self.assertEqual(hbc.get_file(WII, "sd:/f.bin"), data)
+        self.assertEqual(seen[-1], (179_200, 179_200))
+        got = []
+        hbc.get_file(WII, "sd:/f.bin", progress=lambda d, t: got.append(d))
+        self.assertEqual(got, [65536, 131072, 179_200])
 
     def test_frames_compress_only_when_smaller(self):
         zeros = list(hbc.frames(bytes(70_000)))
@@ -140,20 +240,34 @@ class HBCToolTest(unittest.TestCase):
         raw_len, wire_len, _ = struct.unpack(">III", zeros[0][:12])
         self.assertEqual(raw_len, 65536)
         self.assertLess(wire_len, 1000)
-        noise = list(hbc.frames(bytes((i * 7919) & 0xff ^ (i >> 8) for i in range(4096)) ))
+        noise = list(hbc.frames(bytes((i * 7919) & 0xff ^ (i >> 8) for i in range(4096))))
         raw_len, wire_len, _ = struct.unpack(">III", noise[0][:12])
         self.assertLessEqual(wire_len, raw_len)
 
+    def test_progress_only_on_a_tty(self):
+        class Tty(io.StringIO):
+            def isatty(self):
+                return True
+
+        stream = Tty()
+        progress = hbc.Progress("x", stream)
+        progress(1000, 1000)  # below the threshold
+        progress(hbc.PROGRESS_MIN, hbc.PROGRESS_MIN)
+        self.assertRegex(stream.getvalue(), r"^\rx: 100% +[\d.]+ MB/s\n$")
+        quiet = io.StringIO()
+        hbc.Progress("x", quiet)(hbc.PROGRESS_MIN, hbc.PROGRESS_MIN)
+        self.assertEqual(quiet.getvalue(), "")
+
     def test_send_compresses_and_terminates_arguments(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            app = pathlib.Path(tmp, "app.dol")
-            app.write_bytes(bytes(4096))
-            hbc.send("127.0.0.1", str(app), ["a", "b c"])
-            zipped = pathlib.Path(tmp, "app.zip")
-            zipped.write_bytes(bytes(4096))
-            hbc.send("127.0.0.1", str(zipped), [])
+        start = len(self.fake.uploads)
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(4096))
+        hbc.send(WII, str(app), ["a", "b c"])
+        zipped = self.tmp / "app.zip"
+        zipped.write_bytes(bytes(4096))
+        hbc.send(WII, str(zipped), [])
         for _ in range(100):
-            if len(self.fake.uploads) >= 2:
+            if len(self.fake.uploads) >= start + 2:
                 break
             threading.Event().wait(0.05)
         (data, args), (zdata, zargs) = self.fake.uploads[-2:]
@@ -164,9 +278,131 @@ class HBCToolTest(unittest.TestCase):
 
     def test_log_registration(self):
         server = hbc.LogServer(0)
-        server.register("127.0.0.1")
-        self.assertTrue(hbc.status("127.0.0.1")["log"].endswith(f":{server.port}"))
-        server.sock.close()
+        server.register(WII)
+        self.assertTrue(hbc.status(WII)["log"].endswith(f":{server.port}"))
+        server.unregister(WII)
+        self.assertIsNone(hbc.status(WII)["log"])
+        with self.assertRaises(OSError):
+            hbc.LogServer(server.port)  # a second listener cannot share the port
+        server.close()
+
+    def test_run_prints_log_and_unregisters(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(1024))
+        out = self.cli("run", str(app), "log-me", "-v")
+        self.assertIn("hello from the app", out)
+        self.assertEqual(self.fake.uploads[-1][1], b"app.dol\0log-me\0-v\0\0")
+        self.assertEqual(self.fake.log_ports[-1], 0)
+        self.assertIsNone(self.fake.log)
+
+    def test_run_unregisters_on_timeout(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(1024))
+        with self.assertRaisesRegex(SystemExit, "did not close its log"):
+            self.cli("--timeout", "0.2", "run", str(app))
+        self.assertNotEqual(self.fake.log_ports[-2], 0)
+        self.assertEqual(self.fake.log_ports[-1], 0)
+
+    def test_put_to_directory_appends_basename(self):
+        local = self.tmp / "boot.dol"
+        local.write_bytes(b"dol")
+        self.cli("put", str(local), "sd:/apps/slash/")
+        self.assertEqual(self.fake.files["sd:/apps/slash/boot.dol"], b"dol")
+        with self.assertRaisesRegex(hbc.HBCError, "EISDIR"):
+            hbc.put_file(WII, "sd:/apps/slash/", b"x")  # the Wii refuses it
+        with self.assertRaisesRegex(SystemExit, "is a directory; use put -r"):
+            self.cli("put", str(self.tmp), "sd:/apps/slash")
+        with self.assertRaisesRegex(SystemExit, "is a directory; use get -r"):
+            self.cli("get", "sd:/apps/slash", str(self.tmp / "x"))
+
+    def test_recursive_put_get_round_trip(self):
+        tree = {"boot.dol": b"a" * 100, "meta.xml": b"<app/>",
+                "data/one.bin": bytes(300_000), "data/deep/two.bin": b"2"}
+        src = self.tmp / "src"
+        self.make_tree(src, tree)
+        (src / "empty").mkdir()
+        self.cli("put", "-r", str(src), "sd:/apps/tree")
+        self.assertEqual(self.remote("sd:/apps/tree/"),
+                         {f"sd:/apps/tree/{k}": v for k, v in tree.items()})
+        self.assertIn("sd:/apps/tree/empty", self.fake.dirs)
+        self.cli("get", "-r", "sd:/apps/tree", str(self.tmp / "dst"))
+        for rel, data in tree.items():
+            self.assertEqual((self.tmp / "dst" / rel).read_bytes(), data)
+        self.assertTrue((self.tmp / "dst" / "empty").is_dir())
+        self.cli("put", "--recursive", str(src), "sd:/apps/")
+        self.assertIn("sd:/apps/src/data/deep/two.bin", self.fake.files)
+
+    def test_recursive_rm_deletes_bottom_up(self):
+        self.make_tree(self.tmp, {"a.txt": b"a", "sub/b.txt": b"b", "sub/deeper/c.txt": b"c"})
+        hbc.put_tree(WII, str(self.tmp), "sd:/apps/gone", out=lambda _: None)
+        start = len(self.fake.requests)
+        self.cli("rm", "-r", "sd:/apps/gone/")
+        deletes = [p for op, p in self.fake.requests[start:] if op == "D"]
+        self.assertEqual(deletes[-3:], ["sd:/apps/gone/sub/deeper", "sd:/apps/gone/sub",
+                                        "sd:/apps/gone"])
+        self.assertEqual(set(deletes[:3]), {"sd:/apps/gone/a.txt", "sd:/apps/gone/sub/b.txt",
+                                            "sd:/apps/gone/sub/deeper/c.txt"})
+        self.assertFalse(self.remote("sd:/apps/gone"))
+        self.assertNotIn("sd:/apps/gone", self.fake.dirs)
+
+    def test_recursive_rm_refuses_roots_and_apps(self):
+        start = len(self.fake.requests)
+        for path in ("sd:/", "sd:", "SD:/", "usb:/", "carda:", "cardb:/", "sd:/apps",
+                     "sd:/apps/", "SD:/Apps//", "usb:/./apps"):
+            with self.assertRaisesRegex(SystemExit, "refusing"):
+                self.cli("rm", "-r", path)
+        with self.assertRaisesRegex(SystemExit, "refusing"):
+            self.cli("sync", "--delete", str(self.tmp), "sd:/apps/")
+        self.assertEqual(self.fake.requests[start:], [])
+        self.assertFalse(hbc.protected("sd:/apps/myapp"))
+
+    def test_sync_uploads_only_changes(self):
+        src = self.tmp / "src"
+        self.make_tree(src, {"boot.dol": b"one", "data/a.bin": b"a" * 50, "data/b.bin": b"b"})
+        quiet = lambda _: None  # noqa: E731
+        self.assertEqual(hbc.sync(WII, str(src), "sd:/apps/sync", out=quiet), (3, 0, 0, 54))
+        self.assertEqual(hbc.sync(WII, str(src), "sd:/apps/sync", out=quiet), (0, 3, 0, 0))
+        (src / "boot.dol").write_bytes(b"two")  # same size, different CRC
+        start = len(self.fake.requests)
+        self.assertEqual(hbc.sync(WII, str(src), "sd:/apps/sync", out=quiet), (1, 2, 0, 3))
+        puts = [p for op, p in self.fake.requests[start:] if op in "pP"]
+        self.assertEqual(puts, ["sd:/apps/sync/boot.dol"])
+        hbc.put_file(WII, "sd:/apps/sync/extra.txt", b"x")
+        hbc.put_file(WII, "sd:/apps/sync/old/stale.bin", b"y")
+        out = self.cli("sync", str(src), "sd:/apps/sync", "--delete")
+        self.assertIn("sync: 0 uploaded (0 bytes), 3 unchanged, 3 deleted", out)
+        self.assertEqual(set(self.remote("sd:/apps/sync/")),
+                         {"sd:/apps/sync/boot.dol", "sd:/apps/sync/data/a.bin",
+                          "sd:/apps/sync/data/b.bin"})
+        self.assertNotIn("sd:/apps/sync/old", self.fake.dirs)
+
+    def test_truncated_listing_stops_recursive_ops(self):
+        hbc.put_file(WII, "sd:/apps/trunc/a.bin", b"a")
+        self.fake.truncate = True
+        start = len(self.fake.requests)
+        for argv in (("rm", "-r", "sd:/apps/trunc"),
+                     ("get", "-r", "sd:/apps/trunc", str(self.tmp / "t")),
+                     ("sync", "--delete", str(self.tmp), "sd:/apps/trunc")):
+            with self.assertRaisesRegex(SystemExit, "truncated"):
+                self.cli(*argv)
+        self.assertEqual({op for op, _ in self.fake.requests[start:]}, {"L", "C"})
+        self.assertIn("sd:/apps/trunc/a.bin", self.fake.files)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):
+            hbc.main(["--wii", WII, "ls", "sd:/apps/trunc"])
+        self.assertEqual(out.getvalue(), "f 1 a.bin\n")
+        self.assertIn("warning", err.getvalue())
+
+    def test_json_output(self):
+        hbc.put_file(WII, "sd:/apps/js/f.bin", b"12345")
+        hbc.file_request(WII, "M", "sd:/apps/js/sub")
+        self.assertEqual(json.loads(self.cli("--json", "version")), {"version": "1.2.0"})
+        text = self.cli("status", "--json")
+        self.assertEqual(json.loads(text)["proto"], 2)
+        self.assertNotIn(" ", text.strip())
+        self.assertEqual(json.loads(self.cli("--json", "ls", "sd:/apps/js")),
+                         [{"name": "sub", "type": "d", "size": 0},
+                          {"name": "f.bin", "type": "f", "size": 5}])
 
 
 if __name__ == "__main__":

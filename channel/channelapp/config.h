@@ -1,8 +1,8 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define CHANNEL_VERSION_DATE 202609291300llu
-#define CHANNEL_VERSION_STR "1.3.6"
+#define CHANNEL_VERSION_DATE 202609291800llu
+#define CHANNEL_VERSION_STR "1.4.0"
 
 //#define DEBUG_APP
 //#define DEBUG_STUB
@@ -119,6 +119,10 @@ void memstats(int reset);
 #define LD_THREAD_STACKSIZE (1024 * 8)
 #define LD_THREAD_PRIO 48
 #define LD_TIMEOUT 3000
+// A request header must arrive this soon after the connection is accepted.
+#define LD_HEADER_TIMEOUT 2000
+// Compressed Wiiload uploads are received and inflated in pieces this size.
+#define LD_STREAM_CHUNK (16 * 1024)
 #define LD_MIN_ADDR 0x80003400
 #define LD_MAX_ADDR (BASE_ADDR - 1 - ARGS_MAX_LEN)
 #define LD_MAX_SIZE (LD_MAX_ADDR - LD_MIN_ADDR)
