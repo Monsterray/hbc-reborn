@@ -121,6 +121,23 @@ closes the installed-WAD return test on Dolphin; a real Wii install remains
 a separate, deliberate step. The 1.3.0 DOL passed `tests/wii_devnet.py` on
 the bench Wii.
 
+### 1.3.1 installed WAD on the dev Wii
+
+The 1.3.0 retail WAD was installed on the bench Wii. Started from the Wii
+Menu, it answered `HBCS` as 1.3.0 (IOS58 rev 6175, AHBPROT, 14 apps, SD), and
+`tests/wii_devnet.py --installed --expect 1.3.0` passed: framed and raw
+transfers, CRC rejection, path checks, the network log, and
+`netlog_app`'s exit relaunching the installed channel through HBC's own
+reload stub. This is the first real-hardware pass of the installed-title
+return path.
+
+Starting the installed title with `tests/launch_title` (libogc
+`WII_LaunchTitle`) sent from the stock HBC left a black screen: ping still
+answered and port 4299 refused, consistent with ES never completing the IOS
+reload, and Reset returned to the stock HBC. The same launcher starts the
+channel in Dolphin within 5 s, so real IOS behaves differently here; start
+installed titles from the Wii Menu on hardware.
+
 The disc and partition tools (`discinfo`, `extract*`, `inject*`, `partsetios`,
 `rsapatch`, `getappldr`) run only their usage paths in tests; no disc image
 was available.
