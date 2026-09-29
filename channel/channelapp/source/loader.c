@@ -22,6 +22,7 @@
 
 #include "loader.h"
 #include "devnet.h"
+#include "zmem.h"
 
 #define USBGECKO_RETRIES 1000
 
@@ -598,24 +599,39 @@ typedef struct {
 // Receive a compressed Wiiload upload in LD_STREAM_CHUNK pieces and inflate
 // each as it arrives, so decompression overlaps the transfer and the
 // compressed data never needs a buffer of its own.
+static ld_load_state ld_tcp_inflate_run (ld_load_arg *ta, z_stream *z, u32 left,
+										 u32 received, int zres);
+
 static ld_load_state ld_tcp_inflate (ld_load_arg *ta) {
 	z_stream z = { 0 };  // zlib reads zalloc/zfree/opaque from here
 	u32 left = ta->data_len, received = 0;
 	int zres = Z_OK;
+	bool in_mem1 = zmem_use (&z);
+	ld_load_state state;
 
-	if (inflateInit (&z) != Z_OK)
+	if (inflateInit (&z) != Z_OK) {
+		if (in_mem1)
+			zmem_release ();
 		return LDS_ERR_UNCOMPRESS;
+	}
 
-	z.next_out = ta->data_un;
-	z.avail_out = ta->data_len_un;
+	state = ld_tcp_inflate_run (ta, &z, left, received, zres);
+	inflateEnd (&z);
+	if (in_mem1)
+		zmem_release ();
+	return state;
+}
+
+static ld_load_state ld_tcp_inflate_run (ld_load_arg *ta, z_stream *z, u32 left,
+										 u32 received, int zres) {
+	z->next_out = ta->data_un;
+	z->avail_out = ta->data_len_un;
 
 	while (left) {
 		u32 block = left > LD_STREAM_CHUNK ? LD_STREAM_CHUNK : left;
 
-		if (!tcp_read (ta->fd, ta->data, block, NULL, NULL)) {
-			inflateEnd (&z);
+		if (!tcp_read (ta->fd, ta->data, block, NULL, NULL))
 			return LDS_ERR_RECEIVE;
-		}
 
 		received += block;
 		left -= block;
@@ -627,23 +643,20 @@ static ld_load_state ld_tcp_inflate (ld_load_arg *ta) {
 		if (zres == Z_STREAM_END)
 			continue;
 
-		z.next_in = ta->data;
-		z.avail_in = block;
-		zres = inflate (&z, Z_NO_FLUSH);
+		z->next_in = ta->data;
+		z->avail_in = block;
+		zres = inflate (z, Z_NO_FLUSH);
 		if (zres != Z_OK && zres != Z_STREAM_END) {
 			gprintf ("error uncompressing: %d\n", zres);
-			inflateEnd (&z);
 			return LDS_ERR_UNCOMPRESS;
 		}
 	}
 
-	inflateEnd (&z);
-
 	if (ta->args_len && !tcp_read (ta->fd, ta->args, ta->args_len, NULL, NULL))
 		return LDS_ERR_RECEIVE;
 
-	if (zres != Z_STREAM_END || z.total_out != ta->data_len_un) {
-		gprintf ("short uncompress: %u\n", (u32) z.total_out);
+	if (zres != Z_STREAM_END || z->total_out != ta->data_len_un) {
+		gprintf ("short uncompress: %u\n", (u32) z->total_out);
 		return LDS_ERR_UNCOMPRESS;
 	}
 

@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.4.0**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.4.1**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -234,6 +234,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
 | Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.4.0 WII-IP` | installed channel running |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
+| MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |
 | Start an installed title from HBC | `python3 tools/hbc.py send tests/launch_title/launch_title.dol 000100014f484243` | Wii in any HBC |
 
 The Dolphin tests use a throwaway profile, pass every setting on the command
@@ -243,9 +244,16 @@ the Wii's network quirks; measure speed and network reliability on hardware.
 
 The real-Wii tests send the DOL over Wiiload, clean up after themselves on
 the SD card (`sd:/hbctest`, `sd:/hbcbench`), and leave the Wii in HBC. They
-need inbound TCP on the log port (`--log-port`) allowed on the PC. On the
-project's workstation, queue hardware jobs through the shared bench:
-`python C:/tools/wii-bench/wiibench.py add --name NAME --cwd DIR -- CMD`.
+need inbound TCP on the log port (`--log-port`) allowed on the PC.
+
+When several people or agents share one Wii, queue hardware jobs through
+[`tools/wii-bench`](tools/wii-bench/README.md): one queue and one dispatcher,
+which starts a job only once HBC has been idle for 20 s.
+
+```sh
+python3 tools/wii-bench/wiibench.py add --name "devnet" --cwd . -- python3 tests/wii_devnet.py --log-port 4300
+python3 tools/wii-bench/wiibench.py wait <id>
+```
 
 ## Contributing
 

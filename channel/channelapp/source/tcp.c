@@ -194,15 +194,34 @@ char * tcp_readln (s32 s, u16 max_length, s64 start_time, u16 timeout) {
 #define TCP_POLLERR 0x0020
 #define TCP_POLLHUP 0x0040
 
+// What the last failed read saw from IOS, for the developer status reply:
+// "r<n>" for each net_read result and "p<revents>/<poll result>" for each
+// wait, then the reason it gave up.
+static char trace[128];
+static char last_failure[128];
+static u32 trace_len;
+
+static void trace_add (const char *fmt, s32 a, s32 b) {
+	if (trace_len < sizeof (trace) - 16)
+		trace_len += snprintf (trace + trace_len, sizeof (trace) - trace_len, fmt, a, b);
+}
+
+const char *tcp_last_failure (void) {
+	return last_failure;
+}
+
 // Sleep until the socket is ready, instead of polling with fixed delays.
 // Returns the events IOS reported, or 0 on a timeout or poll error.
 static u32 tcp_wait (s32 s, u32 events, s32 ms) {
 	struct pollsd sd;
+	s32 res;
 
 	sd.socket = s;
 	sd.events = events;
 	sd.revents = 0;
-	if (net_poll (&sd, 1, ms > 0 ? ms : 0) < 0) {
+	res = net_poll (&sd, 1, ms > 0 ? ms : 0);
+	trace_add ("p%x/%d ", sd.revents, res);
+	if (res < 0) {
 		usleep (1000);
 		return 0;
 	}
@@ -210,18 +229,22 @@ static u32 tcp_wait (s32 s, u32 events, s32 ms) {
 }
 
 // Reads exactly length bytes. Fails on a timeout (no progress for
-// timeout_ms), an error, or end of stream: a read of 0 bytes right after
-// IOS reported the socket readable or hung up means the peer closed it.
+// timeout_ms), an error, or end of stream. On IOS a read of 0 bytes means
+// the peer closed the connection, while an open connection with no data
+// gives -EAGAIN (30 probes on a Wii, idle connections included). IOS's poll
+// can report a closed socket readable only at its timeout, so waiting for
+// it cost up to 2 s per closed connection.
 bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
 					   u32 *progress, s32 timeout_ms) {
 	u32 step, left, block, received;
-	bool ready = false;
 	s64 t;
 	s32 res;
 
 	step = 0;
 	left = length;
 	received = 0;
+	trace_len = 0;
+	trace[0] = 0;
 
 	t = gettime ();
 	while (left) {
@@ -229,6 +252,7 @@ bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
 
 		if (idle > timeout_ms) {
 			gprintf ("tcp_read timeout\n");
+			trace_add ("timeout after %d of %d", received, length);
 
 			break;
 		}
@@ -238,27 +262,29 @@ bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
 			block = TCP_IO_BLOCK;
 
 		res = net_read (s, buffer, block);
+		if (res <= 0)
+			trace_add ("r%d ", res, 0);
 
-		if (res == 0 && ready) {
+		if (res == 0) {
 			gprintf ("tcp_read: peer closed\n");
+			trace_add ("closed after %d of %d", received, length);
 
 			break;
 		}
 
-		if ((res == 0) || (res == -EAGAIN)) {
-			ready = tcp_wait (s, TCP_POLLIN, timeout_ms - idle) &
-					(TCP_POLLIN | TCP_POLLHUP | TCP_POLLERR);
+		if (res == -EAGAIN) {
+			tcp_wait (s, TCP_POLLIN, timeout_ms - idle);
 
 			continue;
 		}
 
 		if (res < 0) {
 			gprintf ("net_read failed: %d\n", res);
+			trace_add ("error after %d of %d", received, length);
 
 			break;
 		}
 
-		ready = false;
 		received += res;
 		left -= res;
 		buffer += res;
@@ -274,6 +300,9 @@ bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
 			LWP_MutexUnlock (*mutex);
 		}
 	}
+
+	if (left)
+		memcpy (last_failure, trace, sizeof (last_failure));
 
 	return left == 0;
 }

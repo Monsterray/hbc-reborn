@@ -15,6 +15,7 @@ bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
 bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 				u32 *progress);
 void tcp_close (s32 s);
+const char *tcp_last_failure (void);
 
 #endif
 

@@ -31,6 +31,7 @@
 #include "m_main.h"
 #include "loader.h"
 #include "devnet.h"
+#include "zmem.h"
 #ifdef ENABLE_UPDATES
 #include "http.h"
 #include "update.h"
@@ -844,6 +845,7 @@ void main_real(void) {
 
 int main(int argc, char *argv[]) {
 	hbc_start = gettime();
+	zmem_init();
 	main_pre();
 	main_real();
 	gprintf("uh oh\n");

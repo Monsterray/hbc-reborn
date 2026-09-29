@@ -23,6 +23,7 @@
 #include "devstream.h"
 #include "loader.h"
 #include "tcp.h"
+#include "zmem.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../../../sdk/hbc_netlog.h"
@@ -145,7 +146,8 @@ static s32 status_json(char *buf, size_t size) {
 				"\"wire\":%u,\"ms\":%u,\"net_ms\":%u,\"disk_ms\":%u,\"cpu_ms\":%u}",
 				last.op, last.bytes, last.st.wire, MS(last.total),
 				MS(last.st.net), MS(last.st.disk), MS(last.st.cpu));
-	n += snprintf(buf + n, size - n, "}");
+	n += snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"tcp_last_failure\":\"%s\"}",
+			zmem_where(), tcp_last_failure());
 
 	return n;
 }
@@ -504,7 +506,7 @@ static void set_log_target(u32 ip, u16 port) {
 }
 
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[640];
+	char json[800];
 
 	if (!memcmp(hdr, "HBCS", 4)) {
 		s32 n = status_json(json, sizeof(json));

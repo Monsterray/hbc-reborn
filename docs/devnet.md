@@ -14,8 +14,10 @@ for `HBCN`: any host on the `/16` can point the next app's log output at
 itself, just as it could send that app in the first place.
 
 HBC waits at most 2 s for a request's 16-byte header after accepting a
-connection, and treats a closed connection as the end of a request, so a
-client that connects and closes without sending anything costs nothing.
+connection, and ends a request as soon as IOS reports the connection closed.
+IOS usually does so at once, but sometimes reports a closed socket only as
+"readable" with no data until that limit, so a client that connects and
+closes without sending anything costs between nothing and 2 s.
 
 ## Framing
 
@@ -64,7 +66,10 @@ Network and SD overlap in framed transfers, so their sum can exceed `ms`.
 `heap_free` is newlib's free heap (its "used" figure would count the gap
 between MEM1 and MEM2), `tcp_stack_used` is the loader thread's stack
 high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
-`scan_ms` is the last full app scan.
+`scan_ms` is the last full app scan. `zlib_mem` says where the zlib arena
+landed (see Performance), and `tcp_last_failure` records what IOS returned
+during the last receive that failed: `r<n>` per `net_read` result,
+`p<events>/<result>` per poll, then the reason.
 
 ### Files
 
@@ -125,6 +130,28 @@ Measured on the bench Wii (802.11g, IOS58) with `tests/wii_netbench.py`:
 | 4 MiB random | 0.93 / 0.57 MB/s | 0.90 / 0.60 MB/s |
 | 4 MiB zeros | 0.95 / 0.56 MB/s | 4.19 / 4.86 MB/s |
 | 5.3 MB ELF | 0.87 / 0.57 MB/s | 1.45 / 0.91 MB/s |
+
+A back-to-back A/B on the bench Wii (three interleaved rounds) found no
+difference between 1.3.0 and 1.4.0: ELF downloads 0.89 against 0.88 MB/s,
+uploads 1.44 against 1.46. Single runs vary by 30% or more with Wi-Fi
+conditions, so compare interleaved runs.
+
+zlib's state lives in a 320 KiB MEM1 arena reserved at startup, because by
+the time a transfer runs the menu has filled MEM1 and the heap returns MEM2.
+`tests/membench` measured, on the Wii:
+
+| | MEM1 | MEM2 | Locked cache, DMA from MEM2 |
+| --- | --- | --- | --- |
+| memcpy | 213 MB/s | 70 MB/s | |
+| CRC-32 | 173 MB/s | 100 MB/s | 244 MB/s |
+| inflate (state there) | 44.5 MB/s | 35.5 MB/s | |
+| deflate level 1 / 3 / 6 (state there) | 7.9 / 6.3 / 3.3 MB/s | 7.0 / 5.7 / 3.1 MB/s | |
+
+With the arena, a 5.3 MB ELF download spent 653 ms of Wii CPU instead of
+729 ms. The frame buffers stay in MEM2: IOS DMAs them and the CPU streams
+through them once. HBC does not use the locked cache: it would save about
+30 ms of CRC per 5 MB, while taking half the L1 data cache from the menu
+thread for the whole transfer.
 
 Incompressible data is bound by the IOS network stack: about 1.35 MB/s
 received and 0.63 MB/s sent. Larger IOS blocks helped (4 KiB to 16 KiB,

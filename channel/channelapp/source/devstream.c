@@ -24,6 +24,7 @@
 #include "devnet.h"
 #include "devstream.h"
 #include "tcp.h"
+#include "zmem.h"
 
 #define FRAME_MAX (64 * 1024)
 #define FRAME_HDR 12
@@ -122,6 +123,7 @@ static slot_t *take(mqbox_t q) {
 // Worker for uploads: inflate, verify and write each frame.
 static void *put_worker(void *arg) {
 	z_stream z = { 0 };  // zlib reads zalloc/zfree/opaque from here
+	bool in_mem1 = zmem_use(&z);
 	bool z_ok = inflateInit(&z) == Z_OK;
 	s32 err = 0;
 	(void) arg;
@@ -164,6 +166,8 @@ static void *put_worker(void *arg) {
 
 	if (z_ok)
 		inflateEnd(&z);
+	if (in_mem1)
+		zmem_release();
 	job.result = err;
 	return NULL;
 }
@@ -246,6 +250,7 @@ s32 devstream_put(s32 s, const char *path, const char *part, u32 size,
 // Worker for downloads: read, checksum and compress each frame.
 static void *get_worker(void *arg) {
 	z_stream z = { 0 };  // zlib reads zalloc/zfree/opaque from here
+	bool in_mem1 = job.compress && zmem_use(&z);
 	bool z_ok = job.compress && deflateInit(&z, DEFLATE_LEVEL) == Z_OK;
 	u32 left = job.size, backoff = 0;
 	s32 err = 0;
@@ -293,6 +298,8 @@ static void *get_worker(void *arg) {
 
 	if (z_ok)
 		deflateEnd(&z);
+	if (in_mem1)
+		zmem_release();
 
 	slot_t *end = take(q_free);
 	end->raw_len = 0;

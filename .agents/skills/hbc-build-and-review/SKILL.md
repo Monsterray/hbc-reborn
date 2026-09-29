@@ -48,7 +48,7 @@ The append-only log is `$profile/Logs/dolphin.log`; inspect only its latest `Sta
 
 For a WAD boot, use a new profile and pass `channel/title/channel_retail.wad` to `-e` in the same `open` command. Dolphin imports the ticket and title into that profile's `Wii/` NAND. Check the menu visually and test app return separately. For an interactive return test, omit `-b`, add `-C Dolphin.Core.EnableCheats=True` with no cheat codes, and add `-C Dolphin.Interface.ConfirmStop=False`. Dolphin otherwise replaces the HBC stub at `0x80001800` with its own stop-emulation hook. Check the actual stub bytes or PC in the debugger before interpreting an exit result. See `WII_DEVELOPMENT.md`.
 
-The bench Wii on this workstation is shared. Queue hardware jobs through `python C:/tools/wii-bench/wiibench.py add --name NAME --cwd DIR -- CMD` and `wait ID`; the job gets `WII_BENCH_IP` and must leave the Wii in HBC. Probe HBC only with a request that sends data (`HBCV` or `PING` + 12 bytes); bare connect-and-close probes fill its listen backlog.
+The bench Wii on this workstation is shared. Queue hardware jobs through `python tools/wii-bench/wiibench.py add --name NAME --cwd DIR -- CMD` and `wait ID` (git-controlled here; `C:/tools/wii-bench/wiibench.py` is a shim to it and holds the shared queue state); the job gets `WII_BENCH_IP` and must leave the Wii in HBC. Probe HBC only with a request that sends data (`HBCV` or `PING` + 12 bytes); bare connect-and-close probes fill its listen backlog.
 
 For a real Wii check, send the DOL through the existing Homebrew Channel with Wiiload, then launch a known DOL such as Wii64 through the new menu. Keep an installable WAD off the real Wii until installation is an explicit test objective.
 

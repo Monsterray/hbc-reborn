@@ -155,6 +155,26 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.4.1 measurements
+
+- **A/B:** three interleaved rounds of 1.3.0 and 1.4.0 on the bench Wii showed no
+  regression (ELF download 0.89 against 0.88 MB/s). The apparent downward trend across
+  earlier single runs was Wi-Fi variance; one round in the same session dropped to
+  0.30 MB/s.
+- **End of stream on IOS:** traced over 30 probes. `net_read` gives `-EAGAIN` for an open,
+  idle connection and `0` once the peer has closed, so 1.4.1 ends a request on the first
+  `0`. IOS sometimes reports a closed socket readable while `net_read` still returns
+  `-EAGAIN` until the 2 s header limit; nothing on the Wii can see that close sooner.
+  `HBCS` keeps the trace (`tcp_last_failure`).
+- **Memory:** `tests/membench` on the Wii measured MEM1 at 3x MEM2 for memcpy, and zlib
+  25% (inflate) and 14% (deflate) faster with its state in MEM1; the locked cache ran
+  CRC-32 at 244 MB/s from MEM2. 1.4.1 reserves a 320 KiB MEM1 arena for zlib at startup
+  (`zlib_mem` in `HBCS`), which cut an ELF download's Wii CPU time from 729 to 653 ms.
+  Transfers stay link-bound, frame buffers stay in MEM2, and HBC leaves the locked cache
+  alone (docs/devnet.md explains the trade).
+- **Bench queue:** `tools/wii-bench` is now git-controlled here, with portable process
+  handling and unit tests; its state stays in one shared directory.
+
 The disc and partition tools (`discinfo`, `extract*`, `inject*`, `partsetios`,
 `rsapatch`, `getappldr`) run only their usage paths in tests; no disc image
 was available.
