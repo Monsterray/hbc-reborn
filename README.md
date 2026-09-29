@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.3.4**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.3.5**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 

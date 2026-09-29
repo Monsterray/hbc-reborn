@@ -16,14 +16,16 @@ jobs:
     env:
       EXTRA_CFLAGS: -Werror
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install host tools and PowerPC libraries
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends build-essential zlib1g-dev xxd gettext python3 python3-venv
-          dkp-pacman -Sy --needed --noconfirm ppc-zlib ppc-libpng ppc-mxml ppc-freetype ppc-bzip2 ppc-brotli
-          dkp-pacman -Q | grep -E 'devkitPPC|libogc|ppc-'
+          # Package mirrors time out now and then; retry before failing.
+          retry() { for i in 1 2 3; do "$@" && return 0; echo "retry $i: $*"; sleep 20; done; return 1; }
+          retry apt-get update
+          retry apt-get install -y --no-install-recommends build-essential zlib1g-dev xxd gettext python3 python3-venv
+          retry dkp-pacman -Sy --needed --noconfirm --disable-download-timeout ppc-zlib ppc-libpng ppc-mxml ppc-freetype ppc-bzip2 ppc-brotli
+          dkp-pacman -Q | grep -E 'devkitPPC|libogc|ppc-' || true
           python3 -m venv .venv
           .venv/bin/python -m pip install -r requirements.txt
 
@@ -74,7 +76,7 @@ jobs:
       run:
         shell: ${{ matrix.os == 'windows-latest' && 'msys2 {0}' || 'bash' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - if: matrix.os == 'windows-latest'
         uses: msys2/setup-msys2@v2
