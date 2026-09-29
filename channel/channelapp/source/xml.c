@@ -544,13 +544,14 @@ bool load_theme_xml(char *buf) {
 	mxml_node_t *root, *node, *fnode;
 
 	// free prior theme
-	if (theme.description)
-		free(theme.description);
-	if (theme.default_font.file)
-		free(theme.default_font.file);
-	for (i=0; i<FONT_MAX; i++)
-		if (theme.fonts[i].file)
-			free(theme.fonts[i].file);
+	free(theme.description);
+	theme.description = NULL;
+	free(theme.default_font.file);
+	theme.default_font.file = NULL;
+	for (i=0; i<FONT_MAX; i++) {
+		free(theme.fonts[i].file);
+		theme.fonts[i].file = NULL;
+	}
 
 	root = mxmlLoadString(NULL, buf, MXML_OPAQUE_CALLBACK);
 

@@ -179,7 +179,8 @@ bool manage_check_zip_app(u8 *data, u32 data_len, char *dirname, u32 *bytes) {
 
 		gprintf("found '%s' %lu -> %lu\n", filename, fi.compressed_size, fi.uncompressed_size);
 
-		if (filename[0] == '/' || strchr(filename, '\\') || strchr(filename, ':')) {
+		if (filename[0] == '/' || strchr(filename, '\\') || strchr(filename, ':') ||
+				strstr(filename, "..")) {
 			gprintf("invalid char in filename\n");
 			goto error;
 		}
@@ -281,7 +282,8 @@ bool manage_check_zip_theme(u8 *data, u32 data_len) {
 
 		gprintf("found '%s' %lu -> %lu\n", filename, fi.compressed_size, fi.uncompressed_size);
 
-		if (filename[0] == '/' || strchr(filename, '\\') || strchr(filename, ':')) {
+		if (filename[0] == '/' || strchr(filename, '\\') || strchr(filename, ':') ||
+				strstr(filename, "..")) {
 			gprintf("invalid char in filename\n");
 			goto error;
 		}

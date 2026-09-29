@@ -1,0 +1,12 @@
+# Shell scripts keep LF endings on every platform, including Windows checkouts.
+*.sh text eol=lf
+
+# WAD templates, certificates, and assets are binary data.
+*.template binary
+channel/title/footer binary
+channel/title/*/certs binary
+*.png binary
+*.ppm binary
+*.ttf binary
+*.wav binary
+*.bin binary

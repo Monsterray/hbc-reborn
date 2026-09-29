@@ -5,7 +5,8 @@ PREFIX = $(DEVKITPPC)/bin/powerpc-eabi-
 CC = $(PREFIX)gcc
 AS = $(PREFIX)as
 OBJCOPY = $(PREFIX)objcopy
-ELF2DOL =$(DEVKITPRO)/tools/bin/elf2dol
+# Windows installs elf2dol.exe; make needs the real file name.
+ELF2DOL := $(firstword $(wildcard $(DEVKITPRO)/tools/bin/elf2dol.exe) $(DEVKITPRO)/tools/bin/elf2dol)
 GDB = $(PREFIX)gdb
 BIN2S = $(DEVKITPRO)/tools/bin/bin2s
 TARGET_STUB = stub

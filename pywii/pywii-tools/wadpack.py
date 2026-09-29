@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import os
 import sys
 
@@ -16,19 +17,28 @@ else:
 
 wadfile = args.pop(0)
 indir = args.pop(0)
+# Contents and footer may live outside the ticket/TMD directory.
+contentdir = args.pop(0) if args else indir
 
 tmd = wii.WiiTmd(open(os.path.join(indir, "tmd"), "rb").read())
 tik = wii.WiiTik(open(os.path.join(indir, "cetk"), "rb").read())
 
 certs, certlist = wii.parse_certs(open(os.path.join(indir, "certs"), "rb").read())
 
-footer = open(os.path.join(indir, "footer"), "rb").read()
+footer = open(os.path.join(contentdir, "footer"), "rb").read()
+
+contents = []
+for ct in tmd.get_content_records():
+	data = open(os.path.join(contentdir, "%08X" % ct.cid), "rb").read()
+	# Refuse contents the TMD does not describe, such as an unresolved symlink.
+	if len(data) != ct.size or hashlib.sha1(data).digest() != ct.sha:
+		sys.exit("content %08X does not match the TMD size and SHA-1" % ct.cid)
+	contents.append((data, ct.cid))
 
 wad = wii.WiiWadMaker(wadfile, tmd, tik, certlist, footer)
 
-for i,ct in enumerate(tmd.get_content_records()):
-	data = open(os.path.join(indir, "%08X" % ct.cid), "rb").read()
-	wad.adddata(data,ct.cid)
+for data, cid in contents:
+	wad.adddata(data, cid)
 
 wad.finish()
 

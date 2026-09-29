@@ -19,9 +19,13 @@ make -C channel/title PYTHON="$(pwd)/.venv/bin/python" check
 tests/host_bounds.sh
 ```
 
+On Windows, run these from the devkitPro MSYS2 shell (`C:/devkitPro/msys2/usr/bin/bash.exe -lc '...'`) and use `.venv/Scripts/python`. Git Bash sets `DEVKITPRO=/opt/devkitpro`, which only exists inside that MSYS2. The tree has no symlinks; keep it that way, because Windows checkouts store them as text files.
+
 The full build needs `pycryptodomex` in `.venv`, SoX, `msgfmt`, host libpng, and a private 16-byte `~/.wii/common-key`. Use `make -C channel clean` when testing a clean build. The retail WAD is `channel/title/channel_retail.wad`. The optional DPKI target needs separate private signing keys.
 
 ## Runtime checks
+
+`python3 tests/dolphin_smoke.py [image] [seconds]` boots the DOL in a throwaway Dolphin profile and passes when the guest answers `HBCV` with this release's version. Dolphin binds the guest socket to the host's LAN address, not loopback. The script passes every setting with `-C`, kills only its own process, and greps the log for faults.
 
 Test a new DOL in an isolated Dolphin profile. The sibling Wii64 project's `.dev/dolphin_test.sh` shows the local Intel Mac profile and log setup; adapt its steps to this DOL rather than reusing a Wii64 ROM workflow. Read only the latest boot segment in Dolphin's append-only log. Match guest fault addresses to the ELF from the same build. A link result alone does not show that the menu or loader works.
 
@@ -43,6 +47,8 @@ open -n -a /Applications/Dolphin.app --args -b \
 The append-only log is `$profile/Logs/dolphin.log`; inspect only its latest `Starting core = Wii mode` segment. Launch Dolphin through `open`; direct executable launch caused a Qt/Cocoa startup abort on this Mac. Logs can end at `Setup Wii Memory` even when the guest menu is visible, so confirm the display too. The 1.1.7 retail WAD installed and showed the HBC menu in an isolated Dolphin NAND; app return from that installed title still needs a separate test.
 
 For a WAD boot, use a new profile and pass `channel/title/channel_retail.wad` to `-e` in the same `open` command. Dolphin imports the ticket and title into that profile's `Wii/` NAND. Check the menu visually and test app return separately. For an interactive return test, omit `-b`, add `-C Dolphin.Core.EnableCheats=True` with no cheat codes, and add `-C Dolphin.Interface.ConfirmStop=False`. Dolphin otherwise replaces the HBC stub at `0x80001800` with its own stop-emulation hook. Check the actual stub bytes or PC in the debugger before interpreting an exit result. See `WII_DEVELOPMENT.md`.
+
+The bench Wii on this workstation is shared. Queue hardware jobs through `python C:/tools/wii-bench/wiibench.py add --name NAME --cwd DIR -- CMD` and `wait ID`; the job gets `WII_BENCH_IP` and must leave the Wii in HBC. Probe HBC only with a request that sends data (`HBCV` or `PING` + 12 bytes); bare connect-and-close probes fill its listen backlog.
 
 For a real Wii check, send the DOL through the existing Homebrew Channel with Wiiload, then launch a known DOL such as Wii64 through the new menu. Keep an installable WAD off the real Wii until installation is an explicit test objective.
 

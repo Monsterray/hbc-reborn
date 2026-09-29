@@ -1,1 +1,0 @@
-../stub/stub_mini_debug.c

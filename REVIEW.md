@@ -37,6 +37,23 @@ malformed-input test.
 | WiiPAX and Wiiload | An oversized upload argument could overrun its buffer. Short USB Gecko writes used the original byte count. ELF section names could read past their string table. | `tests/host_bounds.sh` passes; a forced short-write check sent exactly 5,000 bytes. |
 | Documentation | `channel/README` reads as current release instructions despite describing v1.1.2. | It now points to current build instructions while retaining historical text. |
 
+### 1.1.8 review
+
+| Area | Fixed defect | Check |
+| --- | --- | --- |
+| Channel services | Theme zip entry sizes were unbounded; `0xffffffff` wrapped `pmalloc(size + 1)` to zero before a copy into it. Zip entries could contain `..` and extract outside `/apps/<name>`. | Entries above `MAX_THEME_ZIP_SIZE` are skipped; `..` rejects the zip. |
+| Channel services | Long `meta.xml` arguments overran `result->args`; a long app name overran the loading caption. Uncompressed Wiiload transfers dropped their arguments. | Arguments are bounded by `ARGS_MAX_LEN`; the caption uses `snprintf`; arguments are copied for both transfer kinds. |
+| Channel services | A short SD read looped forever; the TCP command reset wrote the Gecko state; NAND read errors freed blob memory with `free`; a malformed second `theme.xml` left dangling theme strings. | Read loop stops at EOF; each state and allocator is matched; freed strings are cleared. |
+| Host tools | GCC 15 (C23) rejected wiiload's own `bool`; small incompressible files failed `compress2`; a failed Gecko block and a failed transfer still exited 0. | `stdbool.h`, `compressBound`, and failing exit codes. |
+| Build | Git symlinks broke Windows checkouts. In particular, `retail/00000001` became an 11-byte text file that `wadpack.py` would have packed as channel content. | Symlinks removed; `wadpack.py` checks each content's size and SHA-1 against the TMD. |
+| Tests | `stub_layout.sh` allowed a stub up to `0x1800` bytes, but the return-title magic starts at `0x1700`. `host_bounds.sh` relied on dead stripping that PE linkers do not perform. | Limit is `0x1700`; the check links the real WiiPAX objects. |
+
+The 1.1.8 DOL built on Windows 11 with devkitPPC r50-1 and libogc 3.1.0.
+`tests/dolphin_smoke.py` booted it in a fresh Dolphin profile, and it
+answered `HBCV` with `1.1.8`. Still open: the SD-app descriptor leaks on the
+loader's out-of-memory paths, and a failed `ES_Launch` in the stub waits
+forever for a second acknowledgment, so its system-menu fallback cannot run.
+
 No measured hot spot emerged from this source review. Measure startup app scan
 and theme load time in Dolphin before changing caches, image formats, or draw
 paths.
@@ -87,4 +104,4 @@ use `open -n -a /Applications/Dolphin.app` for an isolated profile.
    current window. Verify app return to the installed WAD before a real Wii
    test.
 4. Record supported devkitPro package versions in a repeatable build check.
-   Current validation is on Intel macOS with devkitPPC r50-1 and libogc 3.1.0.
+   Current validation is on Intel macOS and Windows 11 with devkitPPC r50-1 and libogc 3.1.0.

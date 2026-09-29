@@ -7,6 +7,9 @@ OBJS += stub_dkpc.o stub_dkpc_debug.o
 
 NOMAPFILE = 1
 
+# The stub sources are generated in ../stub by xxd.
+vpath stub_%.c ../stub
+
 include ../../common.mk
 
 install: all

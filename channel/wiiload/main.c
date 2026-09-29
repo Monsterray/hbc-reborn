@@ -61,7 +61,7 @@ typedef signed short s16;
 typedef signed int s32;
 typedef signed long long s64;
 
-typedef enum { false, true } bool;
+#include <stdbool.h>
 
 #ifndef __WIN32__
 static const char *desc_export = "export";
@@ -149,7 +149,8 @@ static bool send_gecko (const char *dev, const u8 *buf, u32 len, u32 len_un,
 
 		if (gecko_write (p, block)) {
 			fprintf (stderr, "error sending block\n");
-			break;
+			gecko_close ();
+			return false;
 		}
 		p += block;
 
@@ -436,7 +437,7 @@ int main (int argc, char **argv) {
 		compress = false;
 
 	if (compress) {
-		bufzlen = (uLongf) ((float) fsize * 1.02);
+		bufzlen = compressBound (fsize);
 
 		bufz = malloc (bufzlen);
 		if (!bufz) {
@@ -525,6 +526,6 @@ int main (int argc, char **argv) {
 
 	free (buf);
 
-	return 0;
+	return res ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

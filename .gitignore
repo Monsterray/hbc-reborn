@@ -5,6 +5,20 @@
 .*.swp
 *.dSYM
 *.pyc
+*.exe
 .venv/
 .DS_Store
-/keys/
+# Wii keys: keep the keys/ folder, never its contents
+/keys/*
+!/keys/.gitkeep
+*keys.bin
+otp.bin
+common-key
+sd-key
+sd-iv
+md5-blanker
+root-key
+korean-key
+*.pem
+# Local hardware settings such as the Wii IP
+.dev/

@@ -8,12 +8,12 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 make -C "$root/channel/wiiload"
 make -C "$root/wiipax/client"
 
-case "$(uname -s)" in
-	Darwin) gc=-Wl,-dead_strip ;;
-	*) gc=-Wl,--gc-sections ;;
-esac
-${CC:-cc} -std=gnu11 -ffunction-sections -fdata-sections "$gc" \
-	-o "$tmp/wiipax-section-check" "$root/tests/wiipax_section_bounds.c"
+# Link the real WiiPAX objects so the check does not rely on dead stripping.
+client="$root/wiipax/client"
+${CC:-cc} -std=gnu11 -o "$tmp/wiipax-section-check" \
+	"$root/tests/wiipax_section_bounds.c" \
+	"$client"/LzFind.o "$client"/LzmaEnc.o "$client"/LzmaDec.o \
+	"$client"/lzma.o "$client"/stub_*.o
 
 if "$tmp/wiipax-section-check" >"$tmp/wiipax.out" 2>&1; then
 	echo "WiiPAX accepted a section name outside .shstrtab" >&2

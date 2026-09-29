@@ -209,8 +209,9 @@ static void theme_load_fonts(unzFile uf) {
 					gprintf("unzGetCurrentFileInfo failed: %d\n", res);
 					continue;
 				}
-				if (fi.uncompressed_size == 0) {
-					gprintf("Font file is empty\n");
+				if (fi.uncompressed_size == 0 ||
+						fi.uncompressed_size > MAX_THEME_ZIP_SIZE) {
+					gprintf("Invalid font file size\n");
 					continue;
 				}
 
@@ -273,6 +274,7 @@ static void theme_load(u8 *data, u32 data_len) {
 		}
 
 		if ((fi.uncompressed_size > 0) &&
+				(fi.uncompressed_size <= MAX_THEME_ZIP_SIZE) &&
 				((!strcasecmp(filename, theme_fn_xml)) ||
 				((theme_get_index(&index, &ws, filename)) &&
 				(!theme_data[index].data_ws || (widescreen == ws))))) {

@@ -594,7 +594,7 @@ static void * ld_load_func (void *arg) {
 
 			block = read (ta->fd, d, block);
 
-			if (block < 0) {
+			if (block <= 0) {
 				gprintf ("read failed: %d\n", block);
 				close (ta->fd);
 
@@ -742,7 +742,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 
 	if (LWP_MutexTryLock (ta_tcp.cmutex) == 0) {
 		tcp_handshaked = ta_tcp.handshaked;
-		ta_gecko.cmd = LDTCPCMD_IDLE;
+		ta_tcp.cmd = LDTCPCMD_IDLE;
 		LWP_MutexUnlock (ta_tcp.cmutex);
 	}
 
@@ -767,7 +767,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		else
 			name = entry->dirname;
 
-		sprintf (caption, _("Loading %s"), name);
+		snprintf (caption, sizeof (caption), _("Loading %s"), name);
 	} else if (gecko_handshaked) {
 		ta.cmd = LDC_GECKO;
 		ta_gecko.handshaked = false;
@@ -864,12 +864,12 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 
 	LWP_MutexDestroy (ta.mutex);
 
-	if (ta.data_len_un) {
-		if (ta.args_len) {
-			memcpy(result->args, &ta.data[ta.data_len], ta.args_len);
-			result->args_len = ta.args_len;
-		}
+	if (ta.args_len) {
+		memcpy(result->args, &ta.data[ta.data_len], ta.args_len);
+		result->args_len = ta.args_len;
+	}
 
+	if (ta.data_len_un) {
 		blob_free(ta.data);
 		ta.data = ta.data_un;
 		ta.data_len = ta.data_len_un;
@@ -919,7 +919,9 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		strcpy(result->args, filename);
 		result->args_len = strlen (result->args);
 
-		if (entry->meta && entry->meta->args) {
+		if (entry->meta && entry->meta->args &&
+				result->args_len + 1 + entry->meta->argslen + 2 <=
+				ARGS_MAX_LEN) {
 			result->args_len++;
 			memcpy(result->args + result->args_len,
 					entry->meta->args, entry->meta->argslen);

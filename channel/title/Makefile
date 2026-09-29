@@ -1,4 +1,4 @@
-CHANNEL_VERSION = 1.1.7
+CHANNEL_VERSION = 1.1.8
 
 TOOLS = ../../pywii/pywii-tools
 PYWII = ../../pywii/Common/pywii/wii.py
@@ -11,11 +11,11 @@ all: channel_retail.wad
 
 dpki: channel_dpki.wad
 
-channel_retail.wad: Makefile $(TOOLS)/wadpack.py $(PYWII) retail/cetk retail/tmd 00000000 00000001
-	@"$(PYTHON)" "$(TOOLS)/wadpack.py" $@ retail/
+channel_retail.wad: Makefile $(TOOLS)/wadpack.py $(PYWII) retail/cetk retail/tmd 00000000 00000001 footer
+	@"$(PYTHON)" "$(TOOLS)/wadpack.py" $@ retail/ .
 
-channel_dpki.wad: Makefile $(TOOLS)/wadpack.py $(PYWII) dpki/cetk dpki/tmd 00000000 00000001
-	@"$(PYTHON)" "$(TOOLS)/wadpack.py" -dpki $@ dpki/
+channel_dpki.wad: Makefile $(TOOLS)/wadpack.py $(PYWII) dpki/cetk dpki/tmd 00000000 00000001 footer
+	@"$(PYTHON)" "$(TOOLS)/wadpack.py" -dpki $@ dpki/ .
 
 00000000: ../banner/channel.imet footer Makefile
 	@cat footer $< > $@

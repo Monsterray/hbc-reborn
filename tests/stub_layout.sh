@@ -12,5 +12,6 @@ size=$(wc -c < "$bin")
 
 [ "$start" = 80001800 ] || { echo "stub entry linked at $start, expected 80001800" >&2; exit 1; }
 [ "$((0x$sbss))" -ge $((0x80005000)) ] || { echo "stub BSS overlaps Wii low-memory state" >&2; exit 1; }
-[ "$size" -le $((0x1800)) ] || { echo "stub image overlaps return-title configuration" >&2; exit 1; }
+# The return-title magic starts at 0x80002f00, 0x1700 bytes after the stub.
+[ "$size" -le $((0x1700)) ] || { echo "stub image overlaps return-title configuration" >&2; exit 1; }
 echo "stub entry and return-title memory layout: PASS"

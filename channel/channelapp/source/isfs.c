@@ -11,6 +11,13 @@
 
 #define ROUNDUP32B(x) ((x + 32 - 1) & ~(32 - 1))
 
+static void isfs_free(u8 *buf, bool use_blob) {
+	if (use_blob)
+		blob_free(buf);
+	else
+		free(buf);
+}
+
 static fstats __st ATTRIBUTE_ALIGN(32);
 
 s32 isfs_get(const char *path, u8 **buf, u32 expected, u32 maxsize, bool use_blob) {
@@ -55,7 +62,7 @@ s32 isfs_get(const char *path, u8 **buf, u32 expected, u32 maxsize, bool use_blo
 	ret = ISFS_Read(fd, __buf, __st.file_length);
 	if (ret < 0) {
 		gprintf("ISFS_Read failed (%d)\n", ret);
-		free(__buf);
+		isfs_free(__buf, use_blob);
 		ISFS_Close(fd);
 		return ret;
 	}
@@ -64,7 +71,7 @@ s32 isfs_get(const char *path, u8 **buf, u32 expected, u32 maxsize, bool use_blo
 
 	if (ret != __st.file_length) {
 		gprintf("ISFS_Read short read (%d)\n", ret);
-		free(__buf);
+		isfs_free(__buf, use_blob);
 		ISFS_Close(fd);
 		return -1;
 	}
@@ -72,7 +79,7 @@ s32 isfs_get(const char *path, u8 **buf, u32 expected, u32 maxsize, bool use_blo
 	ret = ISFS_Close(fd);
 	if (ret < 0) {
 		gprintf("ISFS_Close failed (%d)\n", ret);
-		free(__buf);
+		isfs_free(__buf, use_blob);
 		return ret;
 	}
 

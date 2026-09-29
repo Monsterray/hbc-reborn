@@ -1,6 +1,7 @@
 #!/usr/bin/env python2
 
 import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii as wii
 
 if len(sys.argv) != 2:

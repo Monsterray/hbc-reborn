@@ -2,6 +2,7 @@
 
 import sys, os, os.path
 sys.path.append(os.path.realpath(os.path.dirname(sys.argv[0]))+"/../Common")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii as wii
 
 wii.loadkeys(os.environ["HOME"]+os.sep+".wii")

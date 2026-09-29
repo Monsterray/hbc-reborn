@@ -1,6 +1,8 @@
 #!/usr/bin/env python2
 import sys
 import re
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii as wii
 
 hash = wii.SHA.new(open(sys.argv[2]).read()).digest().encode("hex")
