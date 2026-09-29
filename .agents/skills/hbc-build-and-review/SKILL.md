@@ -25,7 +25,7 @@ The full build needs `pycryptodomex` in `.venv`, SoX, `msgfmt`, host libpng, and
 
 ## Runtime checks
 
-`python3 tests/dolphin_smoke.py [image] [seconds]` boots the DOL in a throwaway Dolphin profile and passes when the guest answers `HBCV` with this release's version. Dolphin binds the guest socket to the host's LAN address, not loopback. The script passes every setting with `-C`, kills only its own process, and greps the log for faults.
+`python3 tests/dolphin_smoke.py [image] [seconds]` boots the DOL in a throwaway Dolphin profile and passes when the guest answers `HBCV` with this release's version. Dolphin binds the guest socket to the host's LAN address, not loopback. The script passes every setting with `-C`, kills only its own process, and greps the log for faults. Build `tests/netlog_app` first and add `--devnet` to also run status, SD file requests, bad-path rejection, and the network-log round trip against an emulated SD card; see `docs/devnet.md`. Use `tools/hbc.py` (status, run, put, get, ls, rm, mkdir, log) rather than ad hoc sockets for real-Wii work.
 
 Test a new DOL in an isolated Dolphin profile. The sibling Wii64 project's `.dev/dolphin_test.sh` shows the local Intel Mac profile and log setup; adapt its steps to this DOL rather than reusing a Wii64 ROM workflow. Read only the latest boot segment in Dolphin's append-only log. Match guest fault addresses to the ELF from the same build. A link result alone does not show that the menu or loader works.
 

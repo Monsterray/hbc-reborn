@@ -21,6 +21,7 @@
 #include "panic.h"
 
 #include "loader.h"
+#include "devnet.h"
 
 #define USBGECKO_RETRIES 1000
 
@@ -309,6 +310,11 @@ static void * ld_tcp_func (void *arg) {
 			if (!memcmp(buf, "HBCV", 4)) {
 				tcp_write(sn, (const u8 *)CHANNEL_VERSION_STR,
 						sizeof(CHANNEL_VERSION_STR), NULL, NULL);
+				net_close(sn);
+				continue;
+			}
+
+			if (devnet_handle(sn, buf, sa.sin_addr.s_addr)) {
 				net_close(sn);
 				continue;
 			}

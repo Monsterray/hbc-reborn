@@ -64,6 +64,16 @@ forever for a second acknowledgment, so its system-menu fallback cannot run.
 | WAD and Python tools | Fourteen PyWii tools were still Python 2, and `ec.py` compared, divided, and hashed with Python 2 semantics. | `tests/test_pywii.py` covers ECDSA, U8 archives, the ticket and TMD templates, and every tool's usage path. With a fake key, the ticket, TMD, and WAD match the 1.1.8 tools byte for byte. |
 | Documentation and release | No CI. | `.github/workflows/ci.yml` builds in `devkitpro/devkitppc` and runs host checks on Windows, Linux, and macOS. |
 
+### 1.2.0 developer network
+
+HBC 1.2.0 adds `HBCS` status, `HBCF` SD/USB file requests, and `HBCN` app log
+registration on port 4299 (`docs/devnet.md`), with `tools/hbc.py` and
+`sdk/hbc_netlog.h`. `tests/dolphin_smoke.py --devnet` passed in Dolphin on
+Windows 11: status, a 100 KB put/get round trip, listing, deletion, four
+rejected paths, and a logged `netlog_app` run with arguments.
+`tests/test_hbc_tool.py` checks the client framing against a fake server.
+Not yet run on the dev Wii.
+
 The disc and partition tools (`discinfo`, `extract*`, `inject*`, `partsetios`,
 `rsapatch`, `getappldr`) run only their usage paths in tests; no disc image
 was available.

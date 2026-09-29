@@ -28,7 +28,7 @@ apps can return to the installed channel after exit.
 The retail WAD builds with the current toolchain and has booted to the HBC
 menu in an isolated Dolphin NAND. It has not yet been installed on a Wii.
 
-The current channel release is **1.1.9**. The displayed channel version and
+The current channel release is **1.2.0**. The displayed channel version and
 retail WAD title version use the same SemVer value. The Wii TMD stores a
 16-bit title version, so packaging encodes `major.minor.patch` as 5/6/5 bits
 (`major << 11 | minor << 5 | patch`), preserving version order within those
@@ -107,6 +107,24 @@ this retail build. `wadpack.py` refuses a content whose size or SHA-1 does not
 match the TMD. The resulting file is `channel/title/channel_retail.wad`. NAND
 save and theme storage need the channel's title identity and permissions, so
 they do not work properly from a direct DOL launch.
+
+## Developer network tools
+
+While its menu is shown, HBC answers developer requests on its Wiiload port
+from hosts on the same LAN. [`tools/hbc.py`](tools/hbc.py) needs only Python:
+
+    export HBC_WII=<wii-ip>
+    python3 tools/hbc.py status                  # version, IOS, AHBPROT, memory, devices
+    python3 tools/hbc.py run myapp.dol arg1      # send and print the app's output
+    python3 tools/hbc.py put data.bin sd:/apps/myapp/data.bin
+    python3 tools/hbc.py ls sd:/apps/myapp       # also get, rm, mkdir
+
+To stream an app's `stdout` and `stderr` to the PC, copy
+[`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) into the app and call
+`hbc_netlog_init()` after any console setup. `tests/netlog_app` is a minimal
+example. [docs/devnet.md](docs/devnet.md) describes the protocol.
+`python3 tests/dolphin_smoke.py --devnet` runs every request end to end
+against the DOL in Dolphin, with an emulated SD card.
 
 ## Testing on a real Wii
 

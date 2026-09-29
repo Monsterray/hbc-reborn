@@ -33,6 +33,9 @@ jobs:
       - name: Build the channel DOL
         run: make -C channel/channelapp channel EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
+      - name: Build the network log test app
+        run: make -C tests/netlog_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
+
       - name: Build the banner
         run: make -C channel/banner PYTHON="$PWD/.venv/bin/python" EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
@@ -56,6 +59,7 @@ jobs:
             channel/channelapp/channelapp-channel.dol
             channel/channelapp/channelapp_nopax.elf
             channel/channelapp/channelapp.map
+            tests/netlog_app/netlog_app.dol
 
   host:
     name: Host tools and Python (${{ matrix.os }})
