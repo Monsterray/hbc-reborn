@@ -70,8 +70,9 @@ character, and paths of 256 bytes or more.
 | `D` | delete a file or an empty directory | none |
 | `M` | create a directory and its parents | none |
 
-HBC rescans the app list every 30 frames, so an app put under `sd:/apps/`
-appears in the menu without a restart.
+HBC only rescans the app list when the device is inserted or removed, so an
+app put under `sd:/apps/` appears in the menu the next time the channel
+starts.
 
 ### Framed transfers
 

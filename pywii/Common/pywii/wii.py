@@ -223,11 +223,12 @@ def loadkeys(path = None):
     if path is None:
         path = key_dir()
 
+    # Every key is optional; code that needs a missing one reports it.
     for key in keylist:
         try:
-            keys[key] = open(path + os.sep + key, "rb").read()
-        except:
-            print("Warning: failed to load key %s"%key)
+            keys[key] = open(os.path.join(path, key), "rb").read()
+        except OSError:
+            pass
 
 def loadkeys_dpki(path = None):
     if path is None:

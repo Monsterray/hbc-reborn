@@ -57,10 +57,10 @@ To confirm the running DOL version before launching another app, use the local W
 ```sh
 wii_ip="$(sed -n 's/^WII64_WII_IP=//p' ../Wii64/.dev/hardware.env)"
 WIILOAD="tcp:$wii_ip" /opt/devkitpro/tools/bin/wiiload channel/channelapp/channelapp-channel.dol
-python3 tests/wii_version.py "$wii_ip"
+python3 tools/hbc.py --wii "$wii_ip" wait
 ```
 
-The second command sends a read-only `HBCV` query to port 4299 and requires the reply to match `CHANNEL_VERSION_STR`.
+The second command polls port 4299 with a read-only `HBCV` query until HBC answers and prints its version; compare it with `CHANNEL_VERSION_STR`.
 
 ## Packaging and release checks
 

@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.3.5**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.3.6**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -76,8 +76,8 @@ The Wii address comes from `--wii`, then `$HBC_WII`, `$WII_BENCH_IP`, or
 
 Remote paths are `<device>:/<path>` with device `sd`, `usb`, `carda`, or
 `cardb`; paths containing `..`, `//`, or backslashes are refused. An app you
-`put` under `sd:/apps/` appears in the menu within a second, without a
-restart.
+`put` under `sd:/apps/` shows up in the menu the next time the channel
+starts; `send` runs it right away.
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame

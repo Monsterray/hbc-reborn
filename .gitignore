@@ -1,14 +1,4 @@
-.*.swp
-*.o
-*.d
-*~
-.*.swp
-*.dSYM
-*.pyc
-*.exe
-.venv/
-.DS_Store
-# Wii keys: keep the keys/ folder, never its contents
+# --- Wii keys: keep the keys/ folder, never its contents -------------------
 /keys/*
 !/keys/.gitkeep
 *keys.bin
@@ -20,9 +10,60 @@ md5-blanker
 root-key
 korean-key
 *.pem
-tests/netlog_app/*.elf
-tests/netlog_app/*.dol
-tests/launch_title/*.elf
-tests/launch_title/*.dol
+
+# --- Build output -----------------------------------------------------------
+*.o
+*.d
+.deps/
+*.a
+*.exe
+*.elf
+*.dol
+*.map
+*.wad
+*.part
+
+# Channel app
+/channel/channelapp/build/
+/channel/channelapp/dist/
+/channel/channelapp/stub.bin
+/channel/channelapp/i18n/merge
+/channel/channelapp/i18n/*.gen
+/channel/channelapp/banner/twintig
+/channel/channelapp/banner/banner.bin
+
+# Banner and WAD packaging
+/channel/banner/build/
+/channel/banner/channel.imet
+/channel/banner/tools/mkbns
+/channel/banner/tools/lz77
+/channel/title/00000000
+/channel/title/00000001
+/channel/title/*/cetk
+/channel/title/*/tmd
+
+# Host tools
+/channel/wiiload/wiiload
+/wiipax/client/wiipax
+/wiipax/client/x.lzma
+/wiipax/stub/stub_*.c
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- Local settings, editors and OS files -----------------------------------
 # Local hardware settings such as the Wii IP
 .dev/
+.vscode/
+.idea/
+*.swp
+*~
+*.dSYM/
+.DS_Store
+Thumbs.db
+desktop.ini

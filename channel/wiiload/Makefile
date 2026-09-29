@@ -1,15 +1,9 @@
 CFLAGS += -Wall -Wextra -Os -g -pipe $(EXTRA_CFLAGS)
 
-ifeq ($(WIN32), 1)
-PREFIX ?= i586-mingw32msvc-
-BIN_EXT = .exe
-CFLAGS += -Iwin32/include
-LDFLAGS += -Lwin32/lib -lws2_32 -lz
-else
+# Build natively on each platform; MSYS2 and Cygwin compilers add .exe.
 PREFIX ?=
-BIN_EXT =
+BIN_EXT := $(if $(findstring _NT,$(shell uname -s)),.exe)
 LDFLAGS += -lz
-endif
 
 ifeq ($(FTDI), 1)
 CFLAGS += -DUSE_LIBFTDI
@@ -37,17 +31,8 @@ install: strip
 $(BIN): $(OBJS)
 	$(CC) $^ $(CFLAGS) $(LDFLAGS) -o $@
 
-%o: %.c
+%.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-osx:
-	$(MAKE) clean
-	PREFIX=/opt/toolchains/powerpc-apple-darwin8-10.2/bin/ppc-apple-darwin8- CFLAGS=-fabi-version=1 $(MAKE) strip
-	cp $(BIN) $(BIN)_ppc
-	$(MAKE) clean
-	PREFIX=/opt/toolchains/i686-apple-darwin9-10.4/bin/i686-apple-darwin9- $(MAKE) strip
-	cp $(BIN) $(BIN)_intel
-	$(MAKE) clean
-	/opt/toolchains/i686-apple-darwin9-10.4/bin/i686-apple-darwin9-lipo -create $(BIN)_ppc $(BIN)_intel -output $(BIN)
-	rm $(BIN)_ppc $(BIN)_intel
+.PHONY: all clean strip install
 

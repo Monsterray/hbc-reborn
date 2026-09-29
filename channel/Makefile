@@ -10,5 +10,4 @@ clean:
 	@$(MAKE) -C banner clean
 	@$(MAKE) -C title clean
 	@$(MAKE) -C wiiload clean
-	@$(MAKE) -C wiiload clean WIN32=1
 

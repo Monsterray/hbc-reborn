@@ -1,0 +1,22 @@
+# https://editorconfig.org. Line endings are left alone on purpose: some
+# PyWii and Wiiload files use CRLF and must keep it (see AGENTS.md).
+root = true
+
+[*]
+insert_final_newline = true
+
+[*.{c,h,S,s,ld,spec}]
+indent_style = tab
+tab_width = 4
+
+[{Makefile,Makefile.*,*.mk}]
+indent_style = tab
+tab_width = 4
+
+[{tools,tests}/**.py]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2

@@ -1,13 +1,6 @@
-ifeq ($(WIN32), 1)
-export PREFIX = i586-mingw32msvc-
-export EXE := .exe
-export LFLAGS = -lws2_32
-else
 export PREFIX =
 # Native Windows compilers (MSYS2, Cygwin) add .exe to their output.
 export EXE := $(if $(findstring _NT,$(shell uname -s)),.exe)
-export LFLAGS =
-endif
 
 empty :=
 space := $(empty) $(empty)

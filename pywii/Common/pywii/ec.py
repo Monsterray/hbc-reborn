@@ -32,14 +32,6 @@ def hexdump(s,sep=""):
 def bhex(s,sep=""):
 	return hexdump(long_to_bytes(s,30),sep)
 
-fastelt = False
-try:
-	import _ec
-	fastelt = True
-except ImportError:
-	#print "C Elliptic Curve functions not available. EC certificate checking will be much slower."
-	pass
-
 # GF(2^233) arithmetic on Python ints, reduction polynomial x^233 + x^74 + 1
 _GF_POLY = (1 << 233) | (1 << 74) | 1
 _GF_MASK = (1 << 233) - 1
@@ -217,22 +209,7 @@ class ELT_PY:
 	def tobytes(self):
 		return self.d.tobytes()
 
-class ELT_C(ELT_PY):
-	def __mul__(self,other):
-		if not isinstance(other,ELT):
-			return NotImplemented
-		return ELT(_ec.elt_mul(self.d.tobytes(),other.d.tobytes()))
-	def __rtruediv__(self,other):
-		if other != 1:
-			return ELT_PY.__rtruediv__(self,other)
-		return ELT(_ec.elt_inv(self.d.tobytes()))
-	def _square(self):
-		return ELT(_ec.elt_square(self.d.tobytes()))
-
-if fastelt:
-	ELT = ELT_C
-else:
-	ELT = ELT_PY
+ELT = ELT_PY
 
 class Point:
 	def __init__(self,x,y=None):
