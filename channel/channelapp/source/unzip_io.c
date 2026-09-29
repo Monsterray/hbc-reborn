@@ -68,11 +68,7 @@ typedef struct _MEMFILE
   long position; /* Current offset in the area */
 } MEMFILE;
 
-static voidpf ZCALLBACK mem_open (opaque, buffer, buf_len, mode)
-   voidpf opaque;
-   void* buffer;
-   size_t buf_len;
-   int mode;
+static voidpf ZCALLBACK mem_open (voidpf opaque, void *buffer, size_t buf_len, int mode)
 {
     MEMFILE* handle = pmalloc(sizeof(*handle));
 
@@ -82,11 +78,7 @@ static voidpf ZCALLBACK mem_open (opaque, buffer, buf_len, mode)
     return handle;
 }
 
-static uLong ZCALLBACK mem_read (opaque, stream, buf, size)
-   voidpf opaque;
-   voidpf stream;
-   void* buf;
-   uLong size;
+static uLong ZCALLBACK mem_read (voidpf opaque, voidpf stream, void *buf, uLong size)
 {
    MEMFILE* handle = (MEMFILE*) stream;
 
@@ -99,19 +91,13 @@ static uLong ZCALLBACK mem_read (opaque, stream, buf, size)
    return size;
 }
 
-static long ZCALLBACK mem_tell (opaque, stream)
-   voidpf opaque;
-   voidpf stream;
+static long ZCALLBACK mem_tell (voidpf opaque, voidpf stream)
 {
    MEMFILE *handle = (MEMFILE *)stream;
    return handle->position;
 }
 
-static long ZCALLBACK mem_seek (opaque, stream, offset, origin)
-   voidpf opaque;
-   voidpf stream;
-   uLong offset;
-   int origin;
+static long ZCALLBACK mem_seek (voidpf opaque, voidpf stream, uLong offset, int origin)
 {
    MEMFILE* handle = (MEMFILE*)stream;
 
@@ -137,9 +123,7 @@ static long ZCALLBACK mem_seek (opaque, stream, offset, origin)
    return bOK ? 0 : -1;
 }
 
-int ZCALLBACK mem_close (opaque, stream)
-   voidpf opaque;
-   voidpf stream;
+int ZCALLBACK mem_close (voidpf opaque, voidpf stream)
 {
     MEMFILE *handle = (MEMFILE *)stream;
 
@@ -147,9 +131,7 @@ int ZCALLBACK mem_close (opaque, stream)
     return 0;
 }
 
-int ZCALLBACK mem_error (opaque, stream)
-   voidpf opaque;
-   voidpf stream;
+int ZCALLBACK mem_error (voidpf opaque, voidpf stream)
 {
     //MEMFILE *handle = (MEMFILE *)stream;
     /* We never return errors */

@@ -1,4 +1,4 @@
-CFLAGS += -Wall -Wextra -Os -g -pipe
+CFLAGS += -Wall -Wextra -Os -g -pipe $(EXTRA_CFLAGS)
 
 ifeq ($(WIN32), 1)
 PREFIX ?= i586-mingw32msvc-

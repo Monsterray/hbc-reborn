@@ -478,7 +478,6 @@ u16 font_get_string_width (font_id id, const char *s, int count) {
 	int i = 0;
 	u32 mbc;
 	int cx = 0;
-	int cy = 0;
 
 	FT_Pos cdx = 0, cdy = 0;
 	u32 previous = 0;
@@ -500,7 +499,6 @@ u16 font_get_string_width (font_id id, const char *s, int count) {
 			font_kern(id, previous, glyph->glyph_index, &cdx, &cdy);
 
 		cx += (cdx+32) >> 6;
-		cy += (cdy+32) >> 6;
 
 		cdx = glyph->dx;
 		cdy = glyph->dy;
@@ -511,7 +509,6 @@ u16 font_get_string_width (font_id id, const char *s, int count) {
 	}
 
 	cx += (cdx+32) >> 6;
-	cy += (cdy+32) >> 6;
 
 	return cx;
 }
@@ -521,7 +518,6 @@ int font_get_char_count (font_id id, const char *s, u16 max_width) {
 	int i = 0;
 	u32 mbc;
 	int cx = 0;
-	int cy = 0;
 
 	FT_Pos cdx = 0, cdy = 0;
 	u32 previous = 0;
@@ -545,7 +541,6 @@ int font_get_char_count (font_id id, const char *s, u16 max_width) {
 			font_kern(id, previous, glyph->glyph_index, &cdx, &cdy);
 
 		cx += (cdx+32) >> 6;
-		cy += (cdy+32) >> 6;
 
 		if (max_width && (cx >= max_width))
 			return i;
@@ -570,7 +565,6 @@ int font_wrap_string (char ***lines, font_id id, const char *s,
 	bool lb;
 
 	int cx = 0;
-	int cy = 0;
 
 	int i = 0;
 	u32 mbc;
@@ -603,7 +597,6 @@ int font_wrap_string (char ***lines, font_id id, const char *s,
 				font_kern(id, previous, glyph->glyph_index, &cdx, &cdy);
 
 			cx += (cdx+32) >> 6;
-			cy += (cdy+32) >> 6;
 
 			int w = (glyph->dx+32) >> 6;
 			if ((glyph->w + glyph->x) > w)
@@ -639,7 +632,6 @@ int font_wrap_string (char ***lines, font_id id, const char *s,
 			line++;
 			start = i;
 			cx = 0;
-			cy = 0;
 			cdx = 0;
 			cdy = 0;
 			previous = 0;

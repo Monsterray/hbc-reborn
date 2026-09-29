@@ -9,7 +9,7 @@ ENTRY(__mem1_entry)
 
 PHDRS {
 	realmode	PT_LOAD FLAGS(5);
-	paxx		PT_LOAD FLAGS(7);
+	paxx		PT_LOAD FLAGS(5);
 }
 
 SECTIONS {

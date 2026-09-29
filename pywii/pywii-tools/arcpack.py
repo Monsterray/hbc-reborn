@@ -4,6 +4,10 @@ import sys, os, os.path, struct
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii as wii
 
+if len(sys.argv) < 3:
+	print("Usage: %s <arc file> <input dir>" % sys.argv[0])
+	sys.exit(1)
+
 fstb = wii.WiiFSTBuilder(0x20)
 
 fstb.addfrom(sys.argv[2])

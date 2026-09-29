@@ -234,7 +234,7 @@ class TPL(object):
 		if rgba == None:
 			rgba = '\0\0\0\0' * texHeader.Size[0] * texHeader.Size[1]
 
-		image = ImageData(texHeader.Size[1], texHeader.Size[0], 'RGBA', rgba)
+		image = ImageData(texHeader.Size[1], texHeader.Size[0], 'RGBA', rgba.encode('latin-1'))
 		print(format)
 		return image
 
@@ -261,7 +261,7 @@ class TPL(object):
 						inp += 1
 
 					ofs += x
-					inp += (8 - off) / 2
+					inp += (8 - off) // 2
 				outp += off
 			outp += x * 7
 
@@ -1749,4 +1749,7 @@ class Alameda(object):
 			renderer.MainLoop(True)
 
 if __name__=='__main__':
+	if len(sys.argv) not in (2, 3):
+		print("Usage: python %s <banner file> [icon|banner]" % sys.argv[0])
+		sys.exit(1)
 	Alameda(*sys.argv[1:])

@@ -1,4 +1,4 @@
-CFLAGS = -Wall -W -Os -g
+CFLAGS = -Wall -W -Os -g $(EXTRA_CFLAGS)
 TARGET = wiipax
 OBJS = LzFind.o LzmaEnc.o LzmaDec.o lzma.o main.o
 OBJS += stub_mini.o stub_mini_debug.o

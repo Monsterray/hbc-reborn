@@ -20,5 +20,7 @@ md5-blanker
 root-key
 korean-key
 *.pem
+tests/netlog_app/*.elf
+tests/netlog_app/*.dol
 # Local hardware settings such as the Wii IP
 .dev/

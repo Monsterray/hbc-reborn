@@ -6,6 +6,10 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Common")))
 import pywii
 
+if len(sys.argv) != 6:
+	print("Usage: %s -cetk|-tmd <infile> <outfile> <certs> <issuer>" % sys.argv[0])
+	sys.exit(1)
+
 pywii.loadkeys_dpki()
 
 args = sys.argv[1:]

@@ -28,7 +28,7 @@ apps can return to the installed channel after exit.
 The retail WAD builds with the current toolchain and has booted to the HBC
 menu in an isolated Dolphin NAND. It has not yet been installed on a Wii.
 
-The current channel release is **1.1.8**. The displayed channel version and
+The current channel release is **1.1.9**. The displayed channel version and
 retail WAD title version use the same SemVer value. The Wii TMD stores a
 16-bit title version, so packaging encodes `major.minor.patch` as 5/6/5 bits
 (`major << 11 | minor << 5 | patch`), preserving version order within those
@@ -62,13 +62,13 @@ dkp-pacman` and export `DEVKITPRO=/opt/devkitpro` and
 | C compiler, zlib | WiiPAX, banner tools, host `wiiload`, tests | `pacman -S gcc zlib-devel` | `apt install build-essential zlib1g-dev` | Xcode command-line tools |
 | `xxd` | WiiPAX stub embedding | `pacman -S vim` | `apt install xxd` | included |
 | `msgfmt` | translations | included | `apt install gettext` | `brew install gettext` |
-| Python 3 | WAD packaging and tests | [python.org](https://www.python.org/) | `apt install python3-venv` | `brew install python` |
-| libpng headers, SoX | channel banner (WAD only) | see below | `apt install libpng-dev sox` | `brew install libpng sox` |
+| Python 3.10+ | banner, WAD packaging, tests | [python.org](https://www.python.org/) | `apt install python3-venv` | `brew install python` |
 
-devkitPro's Windows MSYS2 does not carry host libpng or SoX, so on Windows the
-WAD banner needs a separate [MSYS2](https://www.msys2.org/) UCRT64 shell with
-`pacman -S mingw-w64-ucrt-x86_64-{gcc,libpng,sox}`, or WSL. The DOL build does
-not need either.
+The banner's PNG and sound conversion is pure Python, so no host libpng or
+SoX is needed. [CI](.github/workflows/ci.yml) builds the DOL, banner, and TMD
+in the `devkitpro/devkitppc` container with warnings as errors, and builds the
+host tools and runs the Python tests on Windows, Linux, and macOS. Pass
+`EXTRA_CFLAGS=-Werror` to any `make` to check locally.
 
 ### 3. Build and check the channel DOL
 

@@ -7,9 +7,9 @@ import pywii as wii
 wii.loadkeys()
 
 if len(sys.argv) != 4:
-	print "Usage:"
-	print " python %s <encrypted ISO> <partition number> <IOS version>"%sys.argv[0]
-	print " IOS version should be just the minor number (16, 33, etc) in decimal"
+	print("Usage:")
+	print(" python %s <encrypted ISO> <partition number> <IOS version>"%sys.argv[0])
+	print(" IOS version should be just the minor number (16, 33, etc) in decimal")
 	sys.exit(1)
 
 iso_name, partno, ios = sys.argv[1:4]

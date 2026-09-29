@@ -4,6 +4,7 @@
 # Licensed under the terms of the GNU GPL, version 2
 # http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 
+import os
 from array import array
 from struct import pack, unpack
 try:
@@ -39,6 +40,37 @@ except ImportError:
 	#print "C Elliptic Curve functions not available. EC certificate checking will be much slower."
 	pass
 
+# GF(2^233) arithmetic on Python ints, reduction polynomial x^233 + x^74 + 1
+_GF_POLY = (1 << 233) | (1 << 74) | 1
+_GF_MASK = (1 << 233) - 1
+
+def _gf_reduce(r):
+	while r >> 233:
+		h = r >> 233
+		r = (r & _GF_MASK) ^ h ^ (h << 74)
+	return r
+
+def _gf_mul(a, b):
+	r = 0
+	while b:
+		if b & 1:
+			r ^= a
+		a <<= 1
+		b >>= 1
+	return _gf_reduce(r)
+
+def _gf_inv(a):
+	if a == 0:
+		return 0 # matches the old Itoh-Tsujii chain, which mapped 0 to 0
+	u, v, g1, g2 = a, _GF_POLY, 1, 0
+	while u != 1:
+		j = u.bit_length() - v.bit_length()
+		if j < 0:
+			u, v, g1, g2 = v, u, g2, g1
+			j = -j
+		u ^= v << j
+		g1 ^= g2 << j
+	return _gf_reduce(g1)
 
 class ByteArray(array):
 	def __new__(cls, initializer=None):
@@ -52,7 +84,7 @@ class ByteArray(array):
 			array.__setitem__(self, item, [x & 0xFF for x in value])
 		else:
 			array.__setitem__(self, item, value & 0xFF)
-	def __long__(self):
+	def __int__(self):
 		return bytes_to_long(self.tobytes())
 	def __str__(self):
 		return ''.join(["%02x"%x for x in self])
@@ -81,17 +113,19 @@ class ELT_PY:
 		if len(self.d) != self.SIZE:
 			raise ValueError("ELT size must be 30")
 		
-	def __cmp__(self, other):
-		if other == 0: #exception
-			if self:
-				return 1
-			else:
-				return 0
+	def __eq__(self, other):
+		if isinstance(other, int) and other == 0: #exception
+			return not self
 		if not isinstance(other,ELT):
 			return NotImplemented
-		return cmp(self.d,other.d)
+		return self.d == other.d
+	def __lt__(self, other):
+		if not isinstance(other,ELT):
+			return NotImplemented
+		return self.d < other.d
+	__hash__ = None
 
-	def __long__(self):
+	def __int__(self):
 		return int(self.d)
 	def __repr__(self):
 		return repr(self.d).replace("ByteArray","ELT")
@@ -125,25 +159,14 @@ class ELT_PY:
 	def __mul__(self,other):
 		if not isinstance(other,ELT):
 			return NotImplemented
-		d = ELT()
-		i = 0
-		mask = 1
-		for n in range(self.SIZEBITS):
-			d = d._mul_x()
-			if (self[i] & mask) != 0:
-				d += other
-			mask >>= 1
-			if mask == 0:
-				mask = 0x80
-				i+=1
-		return d
+		return ELT(_gf_mul(self.tobignum(), other.tobignum()))
 	def __pow__(self,other):
 		if other == -1:
 			return 1/self
 		if other < 1:
 			return NotImplemented
 		if other % 2 == 0:
-			return self._square()**(other/2)
+			return self._square()**(other//2)
 		x = self
 		for i in range(other-1):
 			x *= self
@@ -173,21 +196,15 @@ class ELT_PY:
 	def _itoh_tsujii(self,b,j):
 		t = ELT(self)
 		return t**(2**j) * b
-	def __rdiv__(self,other):
+	def __truediv__(self,other):
+		if not isinstance(other,ELT):
+			return NotImplemented
+		return other.__rtruediv__(self)
+	def __rtruediv__(self,other):
 		if isinstance(other,ELT):
 			return 1/self * other
 		elif other == 1:
-			t = self._itoh_tsujii(self, 1)
-			s = t._itoh_tsujii(self, 1)
-			t = s._itoh_tsujii(s, 3)
-			s = t._itoh_tsujii(self, 1)
-			t = s._itoh_tsujii(s, 7)
-			s = t._itoh_tsujii(t, 14)
-			t = s._itoh_tsujii(self, 1)
-			s = t._itoh_tsujii(t, 29)
-			t = s._itoh_tsujii(s, 58)
-			s = t._itoh_tsujii(t, 116)
-			return s**2
+			return ELT(_gf_inv(self.tobignum()))
 		else:
 			return NotImplemented
 
@@ -205,9 +222,9 @@ class ELT_C(ELT_PY):
 		if not isinstance(other,ELT):
 			return NotImplemented
 		return ELT(_ec.elt_mul(self.d.tobytes(),other.d.tobytes()))
-	def __rdiv__(self,other):
+	def __rtruediv__(self,other):
 		if other != 1:
-			return ELT_PY.__rdiv__(self,other)
+			return ELT_PY.__rtruediv__(self,other)
 		return ELT(_ec.elt_inv(self.d.tobytes()))
 	def _square(self):
 		return ELT(_ec.elt_square(self.d.tobytes()))
@@ -230,18 +247,17 @@ class Point:
 			self.y = ELT(y)
 	def on_curve(self):
 		return (self.x**3 + self.x**2 + self.y**2 + self.x*self.y + ELT(ec_b)) == 0
-	def __cmp__(self, other):
-		if other == 0:
-			if self.x or self.y:
-				return 1
-			else:
-				return 0
+	def __eq__(self, other):
+		if isinstance(other, int) and other == 0:
+			return not self
 		elif isinstance(other, Point):
-			ca = cmp(self.x,other.x)
-			if ca != 0:
-				return ca
-			return cmp(self.y,other.y)
+			return self.x == other.x and self.y == other.y
 		return NotImplemented
+	def __lt__(self, other):
+		if not isinstance(other, Point):
+			return NotImplemented
+		return (self.x.d, self.y.d) < (other.x.d, other.y.d)
+	__hash__ = None
 	def _double(self):
 		if self.x == 0:
 			return Point(0,0)
@@ -281,7 +297,7 @@ class Point:
 			mask = 0x80
 			while mask != 0:
 				d = d._double()
-				if ((ord(bts[i]) & mask) != 0):
+				if ((bts[i] & mask) != 0):
 					d += self
 				mask >>=1
 		return d
@@ -305,7 +321,7 @@ class Point:
 	def __repr__(self):
 		return "Point"+str(self)
 	def __bool__(self):
-		return self.x or self.y
+		return bool(self.x or self.y)
 	def tobytes(self):
 		return self.x.tobytes() + self.y.tobytes()
 
@@ -335,7 +351,7 @@ def generate_ecdsa(k, sha):
 
 	e = bytes_to_long(sha)
 
-	m = open("/dev/random","rb").read(30)
+	m = os.urandom(30)
 	if len(m) != 30:
 		raise Exception("Failed to get random data")
 	m = bytes_to_long(m) % ec_N
@@ -373,7 +389,7 @@ def priv_to_pub(k):
 	return q.tobytes()
 
 def gen_priv_key():
-	k = open("/dev/random","rb").read(30)
+	k = os.urandom(30)
 	if len(k) != 30:
 		raise Exception("Failed to get random data")
 

@@ -14,6 +14,10 @@ wii.loadkeys()
 
 args = sys.argv[1:]
 
+if len(args) < 2:
+	print("Usage: %s <tmd> <content dir>" % sys.argv[0])
+	sys.exit(1)
+
 tmdfile = args.pop(0)
 indir = args.pop(0)
 

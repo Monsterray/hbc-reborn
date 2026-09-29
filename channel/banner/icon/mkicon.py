@@ -111,7 +111,7 @@ brlyt.RootPane.Add(tit)
 
 brldata = brlyt.Pack()
 
-open(sys.argv[1],"w").write(brldata)
+open(sys.argv[1], "wb").write(brldata.encode("latin-1"))
 
 
 brlan = Brlan()

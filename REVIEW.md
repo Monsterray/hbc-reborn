@@ -54,6 +54,20 @@ answered `HBCV` with `1.1.8`. Still open: the SD-app descriptor leaks on the
 loader's out-of-memory paths, and a failed `ES_Launch` in the stub waits
 forever for a second acknowledgment, so its system-menu fallback cannot run.
 
+### 1.1.9 review
+
+| Area | Fixed defect | Check |
+| --- | --- | --- |
+| UI, media, and language | `mkicon.py` wrote the binary icon layout in text mode. macOS stored it as UTF-8, so the 1.1.7 WAD's `icon.brlyt` begins `RLYT c3 be c3 bf` instead of `RLYT fe ff`; Windows could not build it at all. **Do not install a WAD built before 1.1.9.** | The layout is written as bytes; every other banner output is byte-identical to the macOS build. |
+| Build | The banner needed host libpng and SoX. | `png2tpl.py` (25 of 25 textures identical) and `wav2raw.py` (both sounds identical) use only the standard library. |
+| Build | 47 compiler warnings, an assembler warning per embedded file (`bin2s` output fed to `as` without the preprocessor), and linker and `elf2dol` warnings about executable segments. | Clean builds pass with `EXTRA_CFLAGS=-Werror`; the channel DOL is byte-identical to the 1.1.8 build. |
+| WAD and Python tools | Fourteen PyWii tools were still Python 2, and `ec.py` compared, divided, and hashed with Python 2 semantics. | `tests/test_pywii.py` covers ECDSA, U8 archives, the ticket and TMD templates, and every tool's usage path. With a fake key, the ticket, TMD, and WAD match the 1.1.8 tools byte for byte. |
+| Documentation and release | No CI. | `.github/workflows/ci.yml` builds in `devkitpro/devkitppc` and runs host checks on Windows, Linux, and macOS. |
+
+The disc and partition tools (`discinfo`, `extract*`, `inject*`, `partsetios`,
+`rsapatch`, `getappldr`) run only their usage paths in tests; no disc image
+was available.
+
 No measured hot spot emerged from this source review. Measure startup app scan
 and theme load time in Dolphin before changing caches, image formats, or draw
 paths.

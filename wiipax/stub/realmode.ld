@@ -9,7 +9,7 @@ ENTRY(_realmode_vector)
 
 PHDRS {
 	realmode	PT_LOAD FLAGS(5);
-	paxx		PT_LOAD FLAGS(7);
+	paxx		PT_LOAD FLAGS(5);
 }
 
 SECTIONS {

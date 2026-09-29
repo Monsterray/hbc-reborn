@@ -8,7 +8,7 @@ __mem1_entry = _start - __mem2_start + __mem1_start;
 ENTRY(__mem1_entry)
 
 PHDRS {
-	paxx		PT_LOAD FLAGS(7);
+	paxx		PT_LOAD FLAGS(5);
 }
 
 SECTIONS {

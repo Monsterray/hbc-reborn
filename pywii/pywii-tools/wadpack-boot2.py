@@ -6,6 +6,10 @@ import pywii as wii
 
 wii.loadkeys()
 
+if len(sys.argv) < 3:
+	print("Usage: %s <wad> <indir>" % sys.argv[0])
+	sys.exit(1)
+
 wadfile = sys.argv[1]
 indir = sys.argv[2]
 

@@ -46,7 +46,7 @@ sigtypes = [ "RSA-4096", "RSA-2048", "EC-DSA" ]
 
 def load_rsa_key(issuer):
     print("Loading private key for %s" % issuer)
-    path = os.path.join(os.environ["HOME"], ".wii", "dpki", issuer + ".pem")
+    path = os.path.join(os.path.expanduser("~"), ".wii", "dpki", issuer + ".pem")
     return RSA.importKey(open(path, "r").read())
 
 signkeyfuncs = [ load_rsa_key, load_rsa_key, None ]
@@ -207,7 +207,7 @@ def get_readable_title(titleid, shortname = False):
 def loadkeys(path = None):
     keys.clear()
     if path is None:
-        path = os.path.join(os.environ["HOME"], ".wii")
+        path = os.path.join(os.path.expanduser("~"), ".wii")
 
     for key in keylist:
         try:
@@ -217,7 +217,7 @@ def loadkeys(path = None):
 
 def loadkeys_dpki(path = None):
     if path is None:
-        path = os.path.join(os.environ["HOME"], ".wii", "dpki")
+        path = os.path.join(os.path.expanduser("~"), ".wii", "dpki")
     loadkeys(path)
 
 def parse_certs(blob):
@@ -352,7 +352,7 @@ class WiiDisc:
         return self.partitions
 
     def showinfo(self):
-        print("Game %s, maker %s, magic %08x: %s"%(self.gamecode, self.makercode, self.magic, self.gamename))
+        print("Game %s, maker %s, magic %08x: %s"%(self.gamecode.decode("latin-1"), self.makercode.decode("latin-1"), self.magic, self.gamename))
         self.read_partitions()
         print("%d partitions in ISO:"%len(self.partitions))
         for p_num,p_dat in enumerate(self.partitions):
@@ -398,7 +398,7 @@ class WiiSigned:
         cert = certs[self.issuer[-1]]
         if cert.key_type != self.sigtype:
             raise ValueError("Signature type %s does not match certificate type %s!"%(sigtypes[self.sigtype],sigtypes[cert.key_type]))
-        return cert.pkalgo.get_digest(self.sigtype, self.signature)
+        return cert.pkalgo.get_digest(self.signature)
 
     def brute_sha(self, match = b"\x00", fillshort = None):
         l = len(match)
@@ -675,7 +675,7 @@ class WiiPartition:
     SHA_SIZE = 0x400
     DATA_SIZE = CIPHER_BLOCK_SIZE - SHA_SIZE
     DATA_CHUNK_SIZE = 0x400
-    DATA_CHUNKS_PER_BLOCK = DATA_SIZE / DATA_CHUNK_SIZE
+    DATA_CHUNKS_PER_BLOCK = DATA_SIZE // DATA_CHUNK_SIZE
     PLAIN_BLOCK_SIZE = DATA_SIZE
     PLAIN_SUBGROUP_SIZE = BLOCKS_PER_SUBGROUP*PLAIN_BLOCK_SIZE
     PLAIN_GROUP_SIZE = SUBGROUPS_PER_GROUP*PLAIN_SUBGROUP_SIZE
@@ -709,7 +709,7 @@ class WiiPartition:
         self._seek(self.offsets.cert_offset)
         certdata = self.f.read(self.offsets.cert_size)
         self.certlist = []
-        while certdata != "":
+        while certdata:
             cert = WiiCert(certdata)
             self.certs[cert.name] = cert
             self.certlist.append(cert)
@@ -720,13 +720,13 @@ class WiiPartition:
         for i in range(self.NUM_H3):
             self.h3.append(h3data[20*i:20*(i+1)])
         self.data_offset = self.offsets.data_offset + self.offset
-        self.data_blocks = self.offsets.data_size / self.CIPHER_BLOCK_SIZE
+        self.data_blocks = self.offsets.data_size // self.CIPHER_BLOCK_SIZE
         if self.offsets.data_size % self.CIPHER_BLOCK_SIZE != 0:
             raise ValueError("Data size (0x%x) not a multiple of block size (0x%x)"%(
                 self.offsets.data_size, self.CIPHER_BLOCK_SIZE))
         self.data_bytes = self.data_blocks * self.PLAIN_BLOCK_SIZE
-        self.data_subgroups = self.data_blocks / self.BLOCKS_PER_SUBGROUP
-        self.data_groups = self.data_subgroups / self.SUBGROUPS_PER_GROUP
+        self.data_subgroups = self.data_blocks // self.BLOCKS_PER_SUBGROUP
+        self.data_groups = self.data_subgroups // self.SUBGROUPS_PER_GROUP
         self.extra_subgroup_blocks = self.data_blocks % self.BLOCKS_PER_SUBGROUP
         self.extra_group_blocks = self.data_blocks % self.BLOCKS_PER_GROUP
         self.partition_end = self.data_offset + self.data_blocks * self.CIPHER_BLOCK_SIZE
@@ -768,14 +768,14 @@ class WiiPartition:
             cert.showsig(self.certs,it+"    ")
 
     def geth4hash(self):
-        return SHA.new(''.join(self.h3) + "\x00"*self.TAIL_H3).digest()
+        return SHA.new(b''.join(self.h3) + b"\x00"*self.TAIL_H3).digest()
 
     def checkh4hash(self):
         return self.geth4hash() == self.tmd.get_content_records()[0].sha
 
     def updateh3(self):
         self._seek(self.offsets.h3_offset)
-        self.f.write(''.join(self.h3))
+        self.f.write(b''.join(self.h3))
 
     def updateh4(self):
         cr = self.tmd.get_content_records()[0]
@@ -831,7 +831,7 @@ class WiiPartition:
         if header:
             data = self.readblock(bstart - 1)[hdroff:hdroff+header]
         else:
-            data = ""
+            data = b""
         for block in xrangel(bstart, bnum):
             data += self.readblock(block)
         if footer:
@@ -896,7 +896,7 @@ class WiiPartition:
             else:
                 raise ValueError("Attempted to read subgroup past the end of the partition data")
 
-        data = ""
+        data = b""
         for i in range(nblocks):
             data += self.readblock(blockoff+i)
         return data
@@ -916,7 +916,7 @@ class WiiPartition:
             else:
                 raise ValueError("Attempted to read group past the end of the partition data")
 
-        data = ""
+        data = b""
         for i in range(nblocks):
             data += self.readblock(blockoff+i)
         return data
@@ -932,7 +932,7 @@ class WiiPartition:
             if groupnum == self.data_groups and self.extra_group_blocks > 0 and len(data) == (self.extra_group_blocks * self.PLAIN_BLOCK_SIZE):
                 blocks = self.extra_group_blocks
                 writesize = blocks * self.CIPHER_BLOCK_SIZE
-                data += "\x00" * (self.PLAIN_BLOCK_SIZE * self.BLOCKS_PER_GROUP - blocks)
+                data += b"\x00" * (self.PLAIN_BLOCK_SIZE * self.BLOCKS_PER_GROUP - blocks)
             else:
                 raise ValueError("Attempted to write group past the end of the partition data")
         else:
@@ -943,12 +943,12 @@ class WiiPartition:
 
         h0 = []
         h1 = []
-        h2 = ""
+        h2 = b""
         for subgroup in range(self.SUBGROUPS_PER_GROUP):
-            bh1 = ""
+            bh1 = b""
             sh0 = []
             for block in range(self.BLOCKS_PER_SUBGROUP):
-                bh0 = ""
+                bh0 = b""
                 for chunk in range(self.DATA_CHUNKS_PER_BLOCK):
                     offset = subgroup * self.PLAIN_SUBGROUP_SIZE + block * self.PLAIN_BLOCK_SIZE + chunk * self.DATA_CHUNK_SIZE
                     bh0 += SHA.new(data[offset:offset+self.DATA_CHUNK_SIZE]).digest()
@@ -959,16 +959,16 @@ class WiiPartition:
             h2 += SHA.new(bh1).digest()
         h3 = SHA.new(h2).digest()
 
-        data_out = ""
+        data_out = b""
         for subgroup in range(self.SUBGROUPS_PER_GROUP):
             for block in range(self.BLOCKS_PER_SUBGROUP):
-                shablock = ""
+                shablock = b""
                 shablock += h0[subgroup][block]
-                shablock += "\x00"*20
+                shablock += b"\x00"*20
                 shablock += h1[subgroup]
-                shablock += "\x00"*32
+                shablock += b"\x00"*32
                 shablock += h2
-                shablock += "\x00"*32
+                shablock += b"\x00"*32
                 assert len(shablock) == self.SHA_SIZE, "sha block size messed up"
                 aes = AES.new(self.tik.title_key, AES.MODE_CBC, NULL_IV)
                 shablock = aes.encrypt(shablock)
@@ -1042,7 +1042,7 @@ class WiiCachedPartition(WiiPartition):
 
     def _flushgroup(self, groupno):
         self._dprint("_flushgroup(0x%x)",groupno)
-        groupdata = ""
+        groupdata = b""
         startblock = groupno * self.BLOCKS_PER_GROUP
         if groupno == self.data_groups and self.extra_group_blocks > 0:
             self._dprint(" Last group")
@@ -1075,7 +1075,7 @@ class WiiCachedPartition(WiiPartition):
             groups = {}
             for key in self.cache:
                 if self.cache[key].dirty:
-                    grnum = key/self.BLOCKS_PER_GROUP
+                    grnum = key//self.BLOCKS_PER_GROUP
                     if grnum in groups:
                         groups[grnum] = max(groups[grnum], self.cache[key].lastuse)
                     else:
@@ -1087,7 +1087,7 @@ class WiiCachedPartition(WiiPartition):
             for key in self.cache:
                 # if dirty, return the lastop of the entire group
                 if self.cache[key].dirty:
-                    groupno = key/self.BLOCKS_PER_GROUP
+                    groupno = key//self.BLOCKS_PER_GROUP
                     if groups[groupno] < lruop:
                         lru = key
                         lruop = groups[groupno]
@@ -1202,7 +1202,7 @@ class WiiCachedPartition(WiiPartition):
         groups = []
         for key in self.cache:
             if self.cache[key].dirty:
-                grnum = key/self.BLOCKS_PER_GROUP
+                grnum = key//self.BLOCKS_PER_GROUP
                 if grnum not in groups:
                     groups.append(grnum)
         for group in groups:
@@ -1224,7 +1224,7 @@ class WiiPartitionFile:
         if n > leftn:
             n = leftn
         if n < 0:
-            return ""
+            return b""
         d = self.part.read(self.pointer + self.offset, n)
         self.pointer += len(d)
         return d
@@ -1326,6 +1326,7 @@ class FakeFile:
             return self.data[self.offset:]
         r =  self.data[self.offset:self.offset+size]
         self.offset=min(len(self.data),self.offset+size)
+        return r
     def tell(self):
         return self.offset
     def seek(self, offset, whence=0):
@@ -1564,13 +1565,13 @@ class WiiLZSS:
 
         hdr = unpack("<I",self.file.read(4))[0]
         self.uncompressed_length = hdr>>8
-        self.compression_type = hdr>4 & 0xF
+        self.compression_type = (hdr>>4) & 0xF
 
         if self.compression_type != self.TYPE_LZSS:
             raise ValueError("Unsupported compression method %d"%self.compression_type)
     
     def uncompress(self):
-        dout = ""
+        dout = bytearray()
 
         self.file.seek(self.offset + 0x4)
         while len(dout) < self.uncompressed_length:
@@ -1592,7 +1593,7 @@ class WiiLZSS:
                         num = ((info>>12)&0xf) + 0x1
                     ptr = len(dout) - (info&0xfff) - 1
                     for i in range(num):
-                        dout += dout[ptr]
+                        dout.append(dout[ptr])
                         ptr+=1
                         if len(dout) >= self.uncompressed_length:
                             break
@@ -1602,7 +1603,7 @@ class WiiLZSS:
                 if len(dout) >= self.uncompressed_length:
                     break
 
-        self.data = dout
+        self.data = bytes(dout)
         return self.data
 
 class WiiLZ77:
@@ -1615,13 +1616,13 @@ class WiiLZ77:
 
         hdr = unpack("<I",self.file.read(4))[0]
         self.uncompressed_length = hdr>>8
-        self.compression_type = hdr>4 & 0xF
+        self.compression_type = (hdr>>4) & 0xF
 
         if self.compression_type != self.TYPE_LZ77:
             raise ValueError("Unsupported compression method %d"%self.compression_type)
 
     def uncompress(self):
-        dout = ""
+        dout = bytearray()
 
         self.file.seek(self.offset + 0x4)
 
@@ -1635,7 +1636,7 @@ class WiiLZ77:
                     disp = info & 0xFFF
                     ptr = len(dout) - (info & 0xFFF) - 1
                     for i in range(num):
-                        dout += dout[ptr]
+                        dout.append(dout[ptr])
                         ptr+=1
                         if len(dout) >= self.uncompressed_length:
                             break
@@ -1645,7 +1646,7 @@ class WiiLZ77:
                 if len(dout) >= self.uncompressed_length:
                     break
 
-        self.data = dout
+        self.data = bytes(dout)
         return self.data
 
 class WiiFSTFile:
@@ -1696,7 +1697,7 @@ class WiiFSTDir:
                 self.entries.append(WiiFSTFile(getcstring(stringtable[etype&0xFFFFFF:]), a, b))
                 off += 1
             else:
-                raise ValueError("Bad file/dir type: %d"%etype>>24)
+                raise ValueError("Bad file/dir type: %d"%(etype>>24))
         if off != size:
             raise ValueError("WTF")
     def show(self, it=""):

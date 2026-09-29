@@ -8,6 +8,10 @@ import pywii as wii
 
 wii.loadkeys()
 
+if len(sys.argv) < 2:
+	print("Usage: %s <ticket>" % sys.argv[0])
+	sys.exit(1)
+
 tikfile = sys.argv[1]
 print("fixing Tik file %s " % tikfile)
 tik = wii.WiiTik(open(tikfile, "rb").read())

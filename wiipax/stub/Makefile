@@ -1,7 +1,7 @@
 include ../../broadway.mk
 
 CFLAGS += -mno-eabi -mno-sdata -O2 -ffreestanding
-CFLAGS += -Wall -Wextra
+CFLAGS += -Wall -Wextra $(EXTRA_CFLAGS)
 DEFINES =
 LDFLAGS += -nostartfiles -nodefaultlibs
 

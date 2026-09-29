@@ -9,7 +9,7 @@ class Waffle:
 	def __init__(self, waffle):
 		self.waffle = waffle
 	def display(self, file=sys.stdout):
-		file.write(self.waffle)
+		file.write(self.waffle.decode("latin-1"))
 
 class WaffleIron:
 	def __init__(self):
@@ -55,9 +55,9 @@ class Waffles(BreakfastType):
 		cooktime = iron.fill(batter)
 		cm, cs = divmod(cooktime,60)
 		if cm > 0:
-			print "Cooking time will be approximately %d minute%s and %d second%s"%(cm, 's'*(cm!=1), cs, 's'*(cs!=1))
+			print("Cooking time will be approximately %d minute%s and %d second%s"%(cm, 's'*(cm!=1), cs, 's'*(cs!=1)))
 		else:
-			print "Cooking time will be approximately %d second%s"%(cs, 's'*(cs!=1))
+			print("Cooking time will be approximately %d second%s"%(cs, 's'*(cs!=1)))
 		while not iron.contentsAreCooked():
 			left = iron.getTimeLeft()
 			m,s = divmod(left+0.99,60)
@@ -66,7 +66,7 @@ class Waffles(BreakfastType):
 			time.sleep(0.5)
 			sys.stdout.write("\x08"*5)
 			sys.stdout.flush()
-		print
+		print()
 		waffle = iron.getContents()
 		iron.switchPower(False)
 		return waffle
@@ -82,13 +82,13 @@ class BreakfastMaker:
 		breakfast = maker().make()
 		return breakfast
 
-print "Breakfast Maker v0.2.0"
-user = raw_input("Please enter your username: ")
+print("Breakfast Maker v0.2.0")
+user = input("Please enter your username: ")
 maker = BreakfastMaker()
-print "Making breakfast for %s..."%user
+print("Making breakfast for %s..."%user)
 breakfast = maker.makeBreakfastFor(user)
-print
-print "Your breakfast is ready!"
-print
+print()
+print("Your breakfast is ready!")
+print()
 breakfast.display()
-print "\a"
+print("\a")

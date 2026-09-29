@@ -4,7 +4,8 @@ export EXE := .exe
 export LFLAGS = -lws2_32
 else
 export PREFIX =
-export EXE =
+# Native Windows compilers (MSYS2, Cygwin) add .exe to their output.
+export EXE := $(if $(findstring _NT,$(shell uname -s)),.exe)
 export LFLAGS =
 endif
 
@@ -17,12 +18,12 @@ export ALAMEDA := $(CURDIR)/../../pywii/Alameda
 export PYTHON ?= python3
 export PYTHONPATH := $(CURDIR)/../../pywii/Common:$(PYTHONPATH)
 
-export PNG2TPL := $(call escape,$(CURDIR))/tools/png2tpl$(EXE)
+export PNG2TPL := "$(PYTHON)" $(call escape,$(CURDIR))/tools/png2tpl.py
 export MKBNS := $(call escape,$(CURDIR))/tools/mkbns$(EXE)
 export LZ77 := $(call escape,$(CURDIR))/tools/lz77$(EXE)
 export ADDIMD5 := "$(PYTHON)" $(call escape,$(CURDIR))/tools/addimd5.py
 export ARCPACK := "$(PYTHON)" "$(PYWII)/arcpack.py"
-export SOX := sox
+export WAV2RAW := "$(PYTHON)" $(call escape,$(CURDIR))/tools/wav2raw.py
 
 all: channel.imet
 
@@ -32,10 +33,10 @@ channel.imet: build/data.arc names.txt tools/join-imet.py
 build/data.arc : build/data/meta/icon.bin build/data/meta/banner.bin build/data/meta/sound.bin
 	$(ARCPACK) $@ build/data
 
-build/data/meta/icon.bin : icon/* $(PNG2TPL) $(LZ77)
+build/data/meta/icon.bin : icon/* tools/png2tpl.py $(LZ77)
 	$(MAKE) -C icon -f ../Makefile.section TYPE=icon
 
-build/data/meta/banner.bin : banner/* $(PNG2TPL) $(LZ77)
+build/data/meta/banner.bin : banner/* tools/png2tpl.py $(LZ77)
 	$(MAKE) -C banner -f ../Makefile.section TYPE=banner
 
 build/data/meta/sound.bin : build/sound.bns
@@ -46,17 +47,14 @@ build/sound.bns : build/wiibrew-banner-intro-part.raw build/wiibrew-banner-loop-
 	@[ ! -d build ] && mkdir -p build || true
 	$(MKBNS) build/wiibrew-banner-intro-part.raw $@ 1 build/wiibrew-banner-loop-part.raw
 
-build/%.raw : sound/%.wav
+build/%.raw : sound/%.wav tools/wav2raw.py
 	@[ ! -d build ] && mkdir -p build || true
-	$(SOX) $< -r 32000 -c 2 -e signed-integer -b 16 -t raw $@
+	$(WAV2RAW) $< $@
 
 testi : channel.imet
 	"$(PYTHON)" "$(ALAMEDA)/Alameda.py" channel.imet icon
 testb : channel.imet
 	"$(PYTHON)" "$(ALAMEDA)/Alameda.py" channel.imet banner
-
-$(PNG2TPL): tools/*.c
-	$(MAKE) -C tools png2tpl$(EXE)
 
 $(MKBNS): tools/*.c
 	$(MAKE) -C tools mkbns$(EXE)

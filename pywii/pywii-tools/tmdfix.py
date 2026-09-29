@@ -6,8 +6,12 @@ import pywii as wii
 
 wii.loadkeys()
 
+if len(sys.argv) < 2:
+	print("Usage: %s <tmd>" % sys.argv[0])
+	sys.exit(1)
+
 tmdfile = sys.argv[1]
-print "TMD file %s:"%tmdfile
+print("TMD file %s:"%tmdfile)
 tmd = wii.WiiTmd(open(tmdfile, "rb").read())
 tmd.null_signature()
 tmd.brute_sha()

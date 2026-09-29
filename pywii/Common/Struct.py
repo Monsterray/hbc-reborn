@@ -188,7 +188,7 @@ class Struct(object):
 					raise StructException('Expected %i byte string, got %i' % (size, len(temp)))
 
 				if encoding != None:
-					temp = temp.decode(encoding)
+					temp = temp.encode('latin-1').decode(encoding)
 
 				if stripNulls:
 					temp = temp.rstrip('\0')
@@ -251,7 +251,7 @@ class Struct(object):
 					temp = self.__values__[attrs]
 
 				if encoding != None:
-					temp = temp.encode(encoding)
+					temp = temp.encode(encoding).decode('latin-1')
 
 				temp = temp[:size]
 				ret += temp + ('\0' * (size - len(temp)))

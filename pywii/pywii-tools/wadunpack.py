@@ -6,6 +6,10 @@ import pywii as wii
 
 args = sys.argv[1:]
 
+if len(args) < 2 or (args[0] == "-dpki" and len(args) < 3):
+	print("Usage: %s [-dpki] <wad> <outdir>" % sys.argv[0])
+	sys.exit(1)
+
 if args[0] == "-dpki":
 	wii.loadkeys_dpki()
 	args.pop(0)

@@ -37,14 +37,16 @@ DIR_LIBS = \
 LIBS = mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
 
 MACHDEP = -g -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
-CFLAGS = $(MACHDEP) -Os -Wall -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
+CFLAGS = $(MACHDEP) -Os -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
 # using -Os for the stub makes it dependent on libgcc
-CFLAGS_STUB = $(MACHDEP) -O2 -Wall -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
+CFLAGS_STUB = $(MACHDEP) -O2 -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
 ASFLAGS = -D_LANGUAGE_ASSEMBLY -DHW_RVL
-LDFLAGS_STUB = $(MACHDEP) -Wl,-Ttext=0x80001800 -Wl,--section-start,.sbss=0x80005000 -Wl,-e,_start -nostartfiles -nodefaultlibs
-LDFLAGS_APP = $(MACHDEP) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) \
+# The Wii has no no-execute stack; say so, since toolchain crt objects lack the note.
+LDFLAGS_COMMON = -Wl,-z,noexecstack
+LDFLAGS_STUB = $(MACHDEP) $(LDFLAGS_COMMON) -Wl,-Ttext=0x80001800 -Wl,--section-start,.sbss=0x80005000 -Wl,-e,_start -nostartfiles -nodefaultlibs
+LDFLAGS_APP = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) \
 	      $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp.map
-LDFLAGS_CHAN = $(MACHDEP) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) -Wl,-e,_stub_start $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp_chan.map
+LDFLAGS_CHAN = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) -Wl,-e,_stub_start $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp_chan.map
 
 FILES_STUB = $(wildcard $(DIR_STUB)/*.S) $(wildcard $(DIR_STUB)/*.c)
 FILES_STUB_OBJx = $(FILES_STUB:$(DIR_STUB)/%.S=$(DIR_BUILD)/%.o)
@@ -120,42 +122,42 @@ $(TARGET_CHAN).elf: $(TARGET_APP)_nopax.elf
 
 $(DIR_BUILD)/$(TARGET_STUB)_bin.o: $(TARGET_STUB).bin
 	@echo $(@F)
-	@$(BIN2S) -a 32 $< | $(AS) -o $@
+	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $@ -
 
 $(BANNER_BIN):
 	@$(MAKE) -C banner
 
 $(BANNER_OBJ): $(BANNER_BIN)
 	@echo $(@F)
-	@$(BIN2S) -a 32 $< | $(AS) -o $@
+	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $@ -
 	@echo "extern const u8 $(<F:%.bin=%_bin)[];" > $(@:%.o=%.h)
 	@echo "extern const u8 $(<F:%.bin=%_bin)_end;" >> $(@:%.o=%.h)
 	@echo "extern const u32 $(<F:%.bin=%_bin)_size;" >> $(@:%.o=%.h)
 
 $(DIR_BUILD)/%_png.o: $(DIR_DATA)/%.png
 	@echo $(@F)
-	@$(BIN2S) -a 32 $< | $(AS) -o $@
+	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $@ -
 	@echo "extern const u8 $(<F:%.png=%_png)[];" > $(@:%.o=%.h)
 	@echo "extern const u8 $(<F:%.png=%_png)_end;" >> $(@:%.o=%.h)
 	@echo "extern const u32 $(<F:%.png=%_png)_size;" >> $(@:%.o=%.h)
 
 $(DIR_BUILD)/%_ttf.o: $(DIR_DATA)/%.ttf
 	@echo $(@F)
-	@$(BIN2S) -a 32 $< | $(AS) -o $@
+	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $@ -
 	@echo "extern const u8 $(<F:%.ttf=%_ttf)[];" > $(@:%.o=%.h)
 	@echo "extern const u8 $(<F:%.ttf=%_ttf)_end;" >> $(@:%.o=%.h)
 	@echo "extern const u32 $(<F:%.ttf=%_ttf)_size;" >> $(@:%.o=%.h)
 
 $(DIR_BUILD)/%_mo.o: $(DIR_BUILD)/%.mo
 	@echo $(@F)
-	@$(BIN2S) -a 32 $< | $(AS) -o $@
+	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $@ -
 	@echo "extern const u8 $(<F:%.mo=%_mo)[];" > $(@:%.o=%.h)
 	@echo "extern const u8 $(<F:%.mo=%_mo)_end;" >> $(@:%.o=%.h)
 	@echo "extern const u32 $(<F:%.mo=%_mo)_size;" >> $(@:%.o=%.h)
 
 $(DIR_BUILD)/%.o: $(DIR_INT)/%
 	@echo $(@F)
-	@$(BIN2S) -a 32 $< | $(AS) -o $@
+	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $@ -
 	@echo "extern const u8 $(subst .,_,$(<F))[];" > $(@:%.o=%.h)
 	@echo "extern const u8 $(subst .,_,$(<F))_end;" >> $(@:%.o=%.h)
 	@echo "extern const u32 $(subst .,_,$(<F))_size;" >> $(@:%.o=%.h)

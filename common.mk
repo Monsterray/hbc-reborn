@@ -48,7 +48,7 @@ clean:
 
 define bin2o
 	@echo "  BIN2S     $(notdir $<)"
-	@$(BIN2S) -a 32 $< | $(AS) -o $(@)
+	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $(@) -
 	@echo "extern const u8" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"_end[];" > `(echo $(<F) | tr . _)`.h
 	@echo "extern const u8" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`"[];" >> `(echo $(<F) | tr . _)`.h
 	@echo "extern const u32" `(echo $(<F) | sed -e 's/^\([0-9]\)/_\1/' | tr . _)`_size";" >> `(echo $(<F) | tr . _)`.h
