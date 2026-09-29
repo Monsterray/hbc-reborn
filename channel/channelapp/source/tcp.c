@@ -184,6 +184,25 @@ char * tcp_readln (s32 s, u16 max_length, s64 start_time, u16 timeout) {
 	return ret;
 }
 
+// IOS transfers each block through libogc's 64 KiB network heap; 16 KiB
+// keeps IPC overhead low with room for concurrent sockets.
+#define TCP_IO_BLOCK (16 * 1024)
+
+// IOS poll events (libogc 3.1 does not export them): read, write.
+#define TCP_POLLIN 0x0003
+#define TCP_POLLOUT 0x0008
+
+// Sleep until the socket is ready, instead of polling with fixed delays.
+static void tcp_wait (s32 s, u32 events, s32 ms) {
+	struct pollsd sd;
+
+	sd.socket = s;
+	sd.events = events;
+	sd.revents = 0;
+	if (net_poll (&sd, 1, ms) < 0)
+		usleep (1000);
+}
+
 bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progress) {
 	u32 step, left, block, received;
 	s64 t;
@@ -195,21 +214,22 @@ bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progres
 
 	t = gettime ();
 	while (left) {
-		if (ticks_to_millisecs (diff_ticks (t, gettime ())) >
-				TCP_BLOCK_RECV_TIMEOUT) {
+		s32 idle = ticks_to_millisecs (diff_ticks (t, gettime ()));
+
+		if (idle > TCP_BLOCK_RECV_TIMEOUT) {
 			gprintf ("tcp_read timeout\n");
 
 			break;
 		}
 
 		block = left;
-		if (block > 2048)
-			block = 2048;
+		if (block > TCP_IO_BLOCK)
+			block = TCP_IO_BLOCK;
 
 		res = net_read (s, buffer, block);
 
 		if ((res == 0) || (res == -EAGAIN)) {
-			usleep (20 * 1000);
+			tcp_wait (s, TCP_POLLIN, TCP_BLOCK_RECV_TIMEOUT - idle);
 
 			continue;
 		}
@@ -253,21 +273,22 @@ bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 
 	t = gettime ();
 	while (left) {
-		if (ticks_to_millisecs (diff_ticks (t, gettime ())) >
-				TCP_BLOCK_SEND_TIMEOUT) {
+		s32 idle = ticks_to_millisecs (diff_ticks (t, gettime ()));
+
+		if (idle > TCP_BLOCK_SEND_TIMEOUT) {
 
 			gprintf ("tcp_write timeout\n");
 			break;
 		}
 
 		block = left;
-		if (block > 2048)
-			block = 2048;
+		if (block > TCP_IO_BLOCK)
+			block = TCP_IO_BLOCK;
 
 		res = net_write (s, p, block);
 
 		if ((res == 0) || (res == -EAGAIN)) {
-			usleep (20 * 1000);
+			tcp_wait (s, TCP_POLLOUT, TCP_BLOCK_SEND_TIMEOUT - idle);
 			continue;
 		}
 

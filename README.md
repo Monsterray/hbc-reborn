@@ -28,7 +28,7 @@ apps can return to the installed channel after exit.
 The retail WAD builds with the current toolchain and has booted to the HBC
 menu in an isolated Dolphin NAND. It has not yet been installed on a Wii.
 
-The current channel release is **1.2.2**. The displayed channel version and
+The current channel release is **1.3.0**. The displayed channel version and
 retail WAD title version use the same SemVer value. The Wii TMD stores a
 16-bit title version, so packaging encodes `major.minor.patch` as 5/6/5 bits
 (`major << 11 | minor << 5 | patch`), preserving version order within those
@@ -124,7 +124,15 @@ To stream an app's `stdout` and `stderr` to the PC, copy
 `hbc_netlog_init()` after any console setup. `tests/netlog_app` is a minimal
 example. [docs/devnet.md](docs/devnet.md) describes the protocol.
 `python3 tests/dolphin_smoke.py --devnet` runs every request end to end
-against the DOL in Dolphin, with an emulated SD card.
+against the DOL in Dolphin, with an emulated SD card; pass
+`channel/title/channel_retail.wad` instead to install the WAD into a
+throwaway Dolphin NAND and also check that an app's exit returns to the
+installed channel. On a real Wii, `tests/wii_devnet.py` runs the same checks
+through Wiiload and `tests/wii_netbench.py` measures throughput.
+
+Framed uploads and downloads carry a CRC-32 on every 64 KiB frame and use
+zlib where it helps. On an 802.11g Wii a typical ELF moves at about
+1.5 MB/s up and 0.9 MB/s down, and compressible data at 4 to 5 MB/s.
 
 ## Testing on a real Wii
 

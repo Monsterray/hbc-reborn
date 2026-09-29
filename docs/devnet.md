@@ -25,6 +25,9 @@ Replies to `HBCS`, `HBCF` and `HBCN` start with an 8-byte header:
 | 0 | 4 | status: 0, or a negative newlib `errno` |
 | 4 | 4 | payload length |
 
+Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
+`ENOSYS` is 88. `tools/hbc.py` has the table.
+
 ## Requests
 
 | Magic | Header bytes 4-15 | Payload | Reply |
@@ -32,19 +35,24 @@ Replies to `HBCS`, `HBCF` and `HBCN` start with an 8-byte header:
 | `HAXX` | Wiiload 0.5 upload | data, then arguments | none |
 | `HBCV` | zero | none | NUL-terminated version string (no reply header) |
 | `HBCS` | zero | none | JSON status |
-| `HBCF` | op (1), 0 (1), path length (2), size (4), 0 (4) | path, then `size` bytes for a put | see below |
+| `HBCF` | op (1), flags (1), path length (2), size (4), 0 (4) | path, then the data for a put | see below |
 | `HBCN` | log port (2), zero | none | empty; sets the app log target |
 
 ### Status
 
 ```json
-{"version":"1.2.0","ios":58,"ios_revision":6176,"ahbprot":true,
- "mem1_free":4080,"mem2_free":50546528,"ip":"192.168.8.213","apps":12,
- "device":"sd","inserted":["sd"],"log":"192.168.8.147:4405"}
+{"version":"1.3.0","proto":2,"ios":58,"ios_revision":6175,"ahbprot":true,
+ "mem1_free":4080,"mem2_free":50546528,"ip":"192.168.8.213","apps":14,
+ "device":"sd","inserted":["sd"],"log":"192.168.8.147:4405",
+ "last":{"op":"p","bytes":5328444,"wire":2663251,"ms":3674,
+         "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`device` is the mounted device that file requests can use; `inserted` also
-lists devices that were present at the last device poll.
+`proto` is 2 when the framed ops below exist. `device` is the mounted device
+that file requests can use; `inserted` also lists devices that were present
+at the last device poll. `last` describes the most recent file transfer:
+bytes on the network, and time the Wii spent on Wi-Fi, SD, and zlib/CRC.
+Network and SD overlap in framed transfers, so their sum can exceed `ms`.
 
 ### Files
 
@@ -54,14 +62,57 @@ character, and paths of 256 bytes or more.
 
 | Op | Action | Reply payload |
 | --- | --- | --- |
-| `P` | write `size` bytes (at most 512 MiB) to `path.part`, then rename to `path`; parent directories are created | none |
-| `G` | read a file | the file |
+| `p` | framed upload of `size` bytes (at most 512 MiB) to `path.part`, then rename to `path`; parent directories are created | none |
+| `g` | framed download; flags bit 0 allows zlib frames | reply header with the file size, then frames |
+| `P` | protocol 1 upload of `size` raw bytes, as `p` without checks | none |
+| `G` | protocol 1 download | the file |
 | `L` | list a directory | lines of `d <name>` or `f <size> <name>` |
 | `D` | delete a file or an empty directory | none |
 | `M` | create a directory and its parents | none |
 
 HBC rescans the app list every 30 frames, so an app put under `sd:/apps/`
 appears in the menu without a restart.
+
+### Framed transfers
+
+Ops `p` and `g` move data in frames of at most 64 KiB:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | raw length, 1 to 65536 |
+| 4 | 4 | wire length; equal to the raw length for stored data, smaller for one zlib stream |
+| 8 | 4 | CRC-32 of the raw bytes |
+| 12 | wire length | data |
+
+An upload sends frames until their raw lengths add up to `size`. HBC checks
+every CRC and answers `EBADMSG` if any frame fails, deleting the partial file.
+A download ends with a terminator frame whose raw and wire lengths are 0 and
+whose CRC field holds the read status (0, or a negative errno). The client
+must check every CRC and the total length.
+
+On the Wii, the loader thread handles the network while a worker thread
+handles SD and zlib, passing four MEM2 buffer pairs through message queues.
+IOS then services Wi-Fi and SDIO concurrently, and Broadway compresses while
+the radio is busy. HBC compresses downloads with zlib level 1 and skips
+compression for 8 frames after one that did not shrink. Transfers run above
+the UI thread's priority; the thread mostly waits on IOS, so the menu keeps
+drawing.
+
+### Performance
+
+Measured on the bench Wii (802.11g, IOS58) with `tests/wii_netbench.py`:
+
+| Data | Protocol 1 up / down | Framed up / down |
+| --- | --- | --- |
+| 4 MiB random | 0.93 / 0.57 MB/s | 0.90 / 0.60 MB/s |
+| 4 MiB zeros | 0.95 / 0.56 MB/s | 4.19 / 4.86 MB/s |
+| 5.3 MB ELF | 0.87 / 0.57 MB/s | 1.45 / 0.91 MB/s |
+
+Incompressible data is bound by the IOS network stack: about 1.35 MB/s
+received and 0.63 MB/s sent. Larger IOS blocks helped (4 KiB to 16 KiB,
+libogc's heap limit, raised uploads from 0.67 to 0.94 MB/s); socket buffer
+sizes, blocking receives, and zlib level 6 did not. Before 1.2.3 the loader
+slept 20 ms whenever IOS had no data ready and uploads ran at 0.62 MB/s.
 
 ### Network log
 

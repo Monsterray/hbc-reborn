@@ -13,11 +13,13 @@
 
 #include <ogcsys.h>
 #include <ogc/machine/processor.h>
+#include <ogc/lwp_watchdog.h>
 #include <network.h>
 
 #include "../config.h"
 #include "appentry.h"
 #include "devnet.h"
+#include "devstream.h"
 #include "tcp.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
@@ -32,6 +34,16 @@ static const char *device_names[DEVICE_COUNT] = { "sd", "usb", "carda", "cardb" 
 static u8 chunk[DEVNET_CHUNK] ATTRIBUTE_ALIGN(32);
 static u32 log_ip;
 static u16 log_port;
+
+// Timing of the last file transfer, reported in the status reply.
+static struct {
+	char op;
+	u32 bytes;
+	u64 total;
+	devstream_stats st;
+} last;
+
+#define MS(t) ((u32) ticks_to_millisecs (t))
 
 static u16 get_u16(const u8 *p) {
 	return (p[0] << 8) | p[1];
@@ -50,8 +62,8 @@ static void put_u32(u8 *p, u32 v) {
 
 // On a non-blocking socket whose send buffer fills, IOS can report a whole
 // block as sent after queueing only part of it (seen on a Wii at the 4 KiB
-// mark; Dolphin uses host sockets and does not). Send replies blocking.
-static bool send_all(s32 s, const void *data, u32 len) {
+// mark; Dolphin uses host sockets and does not). Send blocking instead.
+bool devnet_send_all(s32 s, const void *data, u32 len) {
 	s32 flags = net_fcntl(s, F_GETFL, 0);
 	bool ok;
 
@@ -64,14 +76,14 @@ static bool send_all(s32 s, const void *data, u32 len) {
 }
 
 // Reply header: s32 status (0 or -errno), u32 payload length.
-static bool reply(s32 s, s32 status, const void *data, u32 len) {
+bool devnet_reply(s32 s, s32 status, const void *data, u32 len) {
 	u8 hdr[8];
 
 	put_u32(hdr, status);
 	put_u32(hdr + 4, len);
-	if (!send_all(s, hdr, sizeof(hdr)))
+	if (!devnet_send_all(s, hdr, sizeof(hdr)))
 		return false;
-	return !len || send_all(s, data, len);
+	return !len || devnet_send_all(s, data, len);
 }
 
 static s32 status_json(char *buf, size_t size) {
@@ -81,10 +93,10 @@ static s32 status_json(char *buf, size_t size) {
 	int i, n;
 
 	n = snprintf(buf, size,
-			"{\"version\":\"%s\",\"ios\":%d,\"ios_revision\":%d,"
+			"{\"version\":\"%s\",\"proto\":%d,\"ios\":%d,\"ios_revision\":%d,"
 			"\"ahbprot\":%s,\"mem1_free\":%u,\"mem2_free\":%u,"
 			"\"ip\":\"%u.%u.%u.%u\",\"apps\":%u,\"device\":",
-			CHANNEL_VERSION_STR, IOS_GetVersion(), IOS_GetRevision(),
+			CHANNEL_VERSION_STR, DEVNET_PROTO, IOS_GetVersion(), IOS_GetRevision(),
 			read32(0x0d800064) == 0xffffffff ? "true" : "false",
 			SYS_GetArena1Size(), SYS_GetArena2Size(),
 			ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff,
@@ -102,11 +114,18 @@ static s32 status_json(char *buf, size_t size) {
 					buf[n - 1] == '[' ? "" : ",", device_names[i]);
 
 	if (log_port)
-		n += snprintf(buf + n, size - n, "],\"log\":\"%u.%u.%u.%u:%u\"}",
+		n += snprintf(buf + n, size - n, "],\"log\":\"%u.%u.%u.%u:%u\"",
 				log_ip >> 24, (log_ip >> 16) & 0xff, (log_ip >> 8) & 0xff,
 				log_ip & 0xff, log_port);
 	else
-		n += snprintf(buf + n, size - n, "],\"log\":null}");
+		n += snprintf(buf + n, size - n, "],\"log\":null");
+
+	if (last.op)
+		n += snprintf(buf + n, size - n, ",\"last\":{\"op\":\"%c\",\"bytes\":%u,"
+				"\"wire\":%u,\"ms\":%u,\"net_ms\":%u,\"disk_ms\":%u,\"cpu_ms\":%u}",
+				last.op, last.bytes, last.st.wire, MS(last.total),
+				MS(last.st.net), MS(last.st.disk), MS(last.st.cpu));
+	n += snprintf(buf + n, size - n, "}");
 
 	return n;
 }
@@ -150,17 +169,12 @@ static void make_parents(char *path) {
 	}
 }
 
-static s32 file_put(s32 s, char *path, u32 size) {
-	char part[DEVNET_PATH_MAX + 8];
+// Protocol 1 upload: raw bytes, no checksum. Kept for older clients.
+static s32 file_put_raw(s32 s, const char *path, const char *part, u32 size) {
 	FILE *f;
 	u32 left = size;
 	s32 err = 0;
 
-	if (size > DEVNET_PUT_MAX)
-		return -EFBIG;
-
-	make_parents(path);
-	snprintf(part, sizeof(part), "%s.part", path);
 	f = fopen(part, "wb");
 	if (!f)
 		err = -errno;
@@ -168,13 +182,18 @@ static s32 file_put(s32 s, char *path, u32 size) {
 	// Read the whole upload even after an error, so the reply stays in sync.
 	while (left) {
 		u32 block = left > DEVNET_CHUNK ? DEVNET_CHUNK : left;
+		u64 t0 = gettime();
 
 		if (!tcp_read(s, chunk, block, NULL, NULL)) {
 			err = -EIO;
 			break;
 		}
+		u64 t1 = gettime();
 		if (f && !err && fwrite(chunk, 1, block, f) != block)
 			err = errno ? -errno : -ENOSPC;
+		last.st.net += diff_ticks(t0, t1);
+		last.st.disk += diff_ticks(t1, gettime());
+		last.st.wire += block;
 		left -= block;
 	}
 
@@ -192,35 +211,42 @@ static s32 file_put(s32 s, char *path, u32 size) {
 	return err;
 }
 
-static void file_get(s32 s, const char *path) {
+// Protocol 1 download: reply header, then raw bytes.
+static void file_get_raw(s32 s, const char *path) {
 	struct stat st;
 	u8 hdr[8];
 	FILE *f;
 	u32 left;
 
 	if (stat(path, &st) || !S_ISREG(st.st_mode)) {
-		reply(s, -ENOENT, NULL, 0);
+		devnet_reply(s, -ENOENT, NULL, 0);
 		return;
 	}
 
 	f = fopen(path, "rb");
 	if (!f) {
-		reply(s, -errno, NULL, 0);
+		devnet_reply(s, -errno, NULL, 0);
 		return;
 	}
 
 	left = st.st_size;
 	put_u32(hdr, 0);
 	put_u32(hdr + 4, left);
-	if (send_all(s, hdr, sizeof(hdr))) {
+	if (devnet_send_all(s, hdr, sizeof(hdr))) {
 		while (left) {
 			u32 block = left > DEVNET_CHUNK ? DEVNET_CHUNK : left;
+			u64 t0 = gettime();
 
 			// A short read means the file changed; pad so the length holds.
 			size_t got = fread(chunk, 1, block, f);
 			if (got < block)
 				memset(chunk + got, 0, block - got);
-			if (!send_all(s, chunk, block))
+			u64 t1 = gettime();
+			bool ok = devnet_send_all(s, chunk, block);
+			last.st.disk += diff_ticks(t0, t1);
+			last.st.net += diff_ticks(t1, gettime());
+			last.st.wire += block;
+			if (!ok)
 				break;
 			left -= block;
 		}
@@ -238,14 +264,14 @@ static void file_list(s32 s, const char *path) {
 
 	d = opendir(path);
 	if (!d) {
-		reply(s, -errno, NULL, 0);
+		devnet_reply(s, -errno, NULL, 0);
 		return;
 	}
 
 	buf = malloc(DEVNET_LIST_MAX);
 	if (!buf) {
 		closedir(d);
-		reply(s, -ENOMEM, NULL, 0);
+		devnet_reply(s, -ENOMEM, NULL, 0);
 		return;
 	}
 
@@ -264,12 +290,13 @@ static void file_list(s32 s, const char *path) {
 	}
 	closedir(d);
 
-	reply(s, 0, buf, n);
+	devnet_reply(s, 0, buf, n);
 	free(buf);
 }
 
 static void file_request(s32 s, const u8 *hdr) {
 	char path[DEVNET_PATH_MAX];
+	char part[DEVNET_PATH_MAX + 8];
 	u8 op = hdr[4];
 	u16 path_len = get_u16(hdr + 6);
 	u32 size = get_u32(hdr + 8);
@@ -278,7 +305,7 @@ static void file_request(s32 s, const u8 *hdr) {
 
 	if (!path_len || path_len >= sizeof(path) ||
 			!tcp_read(s, (u8 *) path, path_len, NULL, NULL)) {
-		reply(s, -EINVAL, NULL, 0);
+		devnet_reply(s, -EINVAL, NULL, 0);
 		return;
 	}
 	path[path_len] = 0;
@@ -288,7 +315,7 @@ static void file_request(s32 s, const u8 *hdr) {
 		path[path_len - 1] = 0;
 
 	if (!valid_path(path)) {
-		reply(s, -EINVAL, NULL, 0);
+		devnet_reply(s, -EINVAL, NULL, 0);
 		return;
 	}
 
@@ -296,10 +323,23 @@ static void file_request(s32 s, const u8 *hdr) {
 
 	switch (op) {
 	case 'P':
-		reply(s, file_put(s, path, size), NULL, 0);
+	case 'p':
+		// An oversized upload cannot be drained sensibly; the reply closes it.
+		if (size > DEVNET_PUT_MAX) {
+			devnet_reply(s, -EFBIG, NULL, 0);
+			break;
+		}
+		make_parents(path);
+		snprintf(part, sizeof(part), "%s.part", path);
+		err = op == 'p' ? devstream_put(s, path, part, size, &last.st)
+						: file_put_raw(s, path, part, size);
+		devnet_reply(s, err, NULL, 0);
 		break;
 	case 'G':
-		file_get(s, path);
+		file_get_raw(s, path);
+		break;
+	case 'g':
+		devstream_get(s, path, hdr[5] & DEVNET_FLAG_COMPRESS, &last.st);
 		break;
 	case 'L':
 		file_list(s, path);
@@ -311,15 +351,15 @@ static void file_request(s32 s, const u8 *hdr) {
 			err = rmdir(path) ? -errno : 0;
 		else
 			err = unlink(path) ? -errno : 0;
-		reply(s, err, NULL, 0);
+		devnet_reply(s, err, NULL, 0);
 		break;
 	case 'M':
 		make_parents(path);
 		err = mkdir(path, 0777) && errno != EEXIST ? -errno : 0;
-		reply(s, err, NULL, 0);
+		devnet_reply(s, err, NULL, 0);
 		break;
 	default:
-		reply(s, -ENOSYS, NULL, 0);
+		devnet_reply(s, -ENOSYS, NULL, 0);
 		break;
 	}
 }
@@ -342,16 +382,26 @@ static void set_log_target(u32 ip, u16 port) {
 }
 
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[512];
+	char json[640];
 
 	if (!memcmp(hdr, "HBCS", 4)) {
 		s32 n = status_json(json, sizeof(json));
-		reply(s, 0, json, n);
+		devnet_reply(s, 0, json, n);
 		return true;
 	}
 
 	if (!memcmp(hdr, "HBCF", 4)) {
+		// The UI thread outranks the loader; run transfers above it. The
+		// thread mostly waits on IOS, so the menu keeps drawing meanwhile.
+		u64 start = gettime();
+
+		memset(&last, 0, sizeof(last));
+		last.op = hdr[4];
+		last.bytes = get_u32(hdr + 8);
+		LWP_SetThreadPriority(LWP_GetSelf(), DEVNET_THREAD_PRIO);
 		file_request(s, hdr);
+		LWP_SetThreadPriority(LWP_GetSelf(), LD_THREAD_PRIO);
+		last.total = diff_ticks(start, gettime());
 		return true;
 	}
 
@@ -359,7 +409,7 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		u16 port = get_u16(hdr + 4);
 
 		set_log_target(client_ip, port);
-		reply(s, 0, NULL, 0);
+		devnet_reply(s, 0, NULL, 0);
 		return true;
 	}
 

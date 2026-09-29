@@ -10,6 +10,11 @@ With --devnet the run also enables an emulated SD card and exercises the
 developer protocol through tools/hbc.py: status, mkdir, put, ls, get, rm,
 and a network-log round trip with tests/netlog_app.
 
+A .wad image is installed into the profile's NAND and booted from there.
+Cheats are enabled (with no codes) so Dolphin does not replace HBC's reload
+stub with its own HBReload hook; with --devnet the run then requires the
+installed channel to come back after netlog_app exits.
+
 usage: tests/dolphin_smoke.py [--devnet] [DOL-or-WAD] [seconds]
 Set DOLPHIN to the Dolphin executable if it is not in a standard location.
 """
@@ -83,6 +88,8 @@ class Dolphin:
         self.dolphin = find_dolphin()
         self.profile = pathlib.Path(tempfile.mkdtemp(prefix="hbc-dolphin-"))
         settings = SETTINGS + (SD_SETTINGS if sd else [])
+        if str(image).lower().endswith(".wad"):
+            settings.append("Dolphin.Core.EnableCheats=True")
         if sd:
             (self.profile / "Load/WiiSDSync/apps").mkdir(parents=True)
         args = ["-b", "-e", str(image), "-u", str(self.profile)]
@@ -151,6 +158,34 @@ def check_devnet(run, log_port=0):
         except hbc.HBCError:
             continue
         raise AssertionError(f"accepted bad path {bad!r}")
+    # Protocol 2: framed, CRC-checked, compressed where it helps.
+    hbc._proto.pop(wii, None)
+    assert hbc.proto(wii) >= 2
+    samples = {"random": os.urandom(300_001), "zeros": bytes(200_000),
+               "text": b"hbc devnet " * 30_000, "tiny": b"x", "exact": os.urandom(65536)}
+    for name, blob in samples.items():
+        path = f"sd:/hbctest/sub/{name}.bin"
+        hbc.put_file(wii, path, blob)
+        up = hbc.status(wii)["last"]
+        assert hbc.get_file(wii, path) == blob, name
+        down = hbc.status(wii)["last"]
+        assert hbc.file_request(wii, "G", path) == blob, f"{name} (protocol 1 read)"
+        print(f"  {name}: {len(blob)} bytes, wire up {up['wire']} / down {down['wire']}")
+        hbc.file_request(wii, "D", path)
+
+    # A frame with a wrong CRC must fail the upload and leave no file behind.
+    bad = bytearray(next(hbc.frames(b"corrupt me" * 100, level=0)))
+    bad[8] ^= 0xff
+    with socket.create_connection((wii, hbc.PORT), timeout=15) as conn:
+        conn.sendall(hbc.file_header("p", "sd:/hbctest/sub/bad.bin", 1000) + bytes(bad))
+        try:
+            hbc.recv_reply(conn)
+            raise AssertionError("the Wii accepted a frame with a bad CRC")
+        except hbc.HBCError as exc:
+            assert "EBADMSG" in str(exc), exc
+    assert "bad.bin" not in hbc.file_request(wii, "L", "sd:/hbctest/sub").decode()
+    print("devnet framed transfers: PASS")
+
     hbc.file_request(wii, "D", "sd:/hbctest/sub/blob.bin")
     assert "blob.bin" not in hbc.file_request(wii, "L", "sd:/hbctest/sub").decode()
     hbc.file_request(wii, "D", "sd:/hbctest/sub")
@@ -197,8 +232,17 @@ def main():
     try:
         wait_version(run, seconds)
         print(f"PASS: HBC {expected} answered on {run.address}:4299")
+        if image.suffix.lower() == ".wad":
+            title = run.profile / "Wii/title/00010001/4f484243/content"
+            apps = sorted(p.name for p in title.glob("*.app")) if title.exists() else []
+            assert apps, f"no installed content under {title}"
+            print(f"PASS: WAD installed to NAND ({', '.join(apps)})")
         if devnet:
             check_devnet(run)
+            if image.suffix.lower() == ".wad":
+                # netlog_app exits through HBC's own stub, which relaunches the title.
+                wait_version(run, 60)
+                print(f"PASS: app exit returned to the installed HBC {expected}")
         result = 0
     except (AssertionError, OSError, hbc.HBCError) as exc:
         print(f"FAIL: {exc!r}")

@@ -91,6 +91,36 @@ The WAD build also found that an MSYS2 login shell gives native Python no
 `key_dir()` (or `$WII_KEYS_DIR`), `wadpack.py` writes to a temporary name,
 and the title Makefile deletes the target of any failed step.
 
+### 1.3.0 network performance and installed-WAD return
+
+Measured on the bench Wii with `tests/wii_netbench.py`, protocol 1 moved
+0.62 MB/s up and 0.42 MB/s down. Four causes, each checked on hardware:
+
+| Cause | Change | Effect |
+| --- | --- | --- |
+| `tcp_read`/`tcp_write` slept 20 ms whenever IOS had no data ready, in 2 KiB steps. | Wait with `net_poll`; 16 KiB IOS blocks (libogc's 64 KiB network heap is the limit). | Up 0.62 to 0.90 MB/s. |
+| The loader thread (48) ran below the UI thread (64). | Transfers run at 80. | Worst status round trip 531 to 47 ms. |
+| Network and SD ran strictly in turn. | A worker thread and four MEM2 buffer pairs overlap them. | A 5.3 MB ELF upload dropped from 6.0 s of combined work to 3.7 s. |
+| Every byte crossed the slowest link. | Per-frame zlib, stored when it does not shrink, with a CRC-32 on every frame. | ELF 1.45 MB/s up and 0.91 down; zeros 4.2 and 4.9 MB/s. |
+
+Socket buffer sizes, blocking receives, and zlib level 6 on the Wii were
+measured and rejected (docs/devnet.md). Incompressible data stays bound by
+the IOS stack at about 1.35 MB/s received and 0.63 MB/s sent. Every framed
+transfer is checked end to end; a frame with a bad CRC is rejected with
+`EBADMSG` and leaves no file.
+
+A stack `z_stream` passed to `inflateInit` without zeroing made zlib call a
+garbage allocator; Dolphin caught the jump into BSS. `hbc.py` also decoded
+the Wii's newlib error numbers with the host's table.
+
+The retail WAD now installs into an isolated Dolphin NAND and passes the
+full developer suite from there. With cheats enabled, so Dolphin does not
+substitute its `HBReload` hook, `netlog_app`'s exit ran HBC's own reload
+stub and the installed title relaunched and answered `HBCV` with 1.3.0. This
+closes the installed-WAD return test on Dolphin; a real Wii install remains
+a separate, deliberate step. The 1.3.0 DOL passed `tests/wii_devnet.py` on
+the bench Wii.
+
 The disc and partition tools (`discinfo`, `extract*`, `inject*`, `partsetios`,
 `rsapatch`, `getappldr`) run only their usage paths in tests; no disc image
 was available.

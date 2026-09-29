@@ -57,16 +57,10 @@ def main():
 
     print(f"sending {snap.name} ({snap.stat().st_size} bytes) to {wii}")
     hbc.send(wii, str(snap), [])
-    deadline, last = time.monotonic() + 90, None
-    while time.monotonic() < deadline:
-        try:
-            if hbc.version(wii) == expected:
-                break
-        except (OSError, hbc.HBCError) as exc:
-            last = exc
-        time.sleep(2)
-    else:
-        raise SystemExit(f"FAIL: HBC {expected} did not answer: {last}")
+    try:
+        hbc.relaunch_wait(wii, expected)
+    except hbc.HBCError as exc:
+        raise SystemExit(f"FAIL: {exc}")
     print(f"PASS: HBC {expected} is running on the Wii")
 
     dolphin_smoke.check_devnet(Target(wii), log_port=opts.log_port)
