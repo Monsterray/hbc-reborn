@@ -12,8 +12,6 @@
 #include <ogc/lwp_watchdog.h>
 
 #include "../config.h"
-#include "panic.h"
-
 #include "tcp.h"
 
 s32 tcp_socket (void) {
@@ -132,56 +130,6 @@ s32 tcp_listen (u16 port, s32 backlog) {
 	}
 
 	return s;
-}
-
-char * tcp_readln (s32 s, u16 max_length, s64 start_time, u16 timeout) {
-	char *buf;
-	u16 c;
-	s32 res;
-	char *ret;
-
-	buf = (char *) pmalloc (max_length);
-
-	c = 0;
-	ret = NULL;
-	while (true) {
-		if (ticks_to_millisecs (diff_ticks (start_time, gettime ())) > timeout)
-			break;
-
-		res = net_read (s, &buf[c], 1);
-
-		if ((res == 0) || (res == -EAGAIN)) {
-			usleep (20 * 1000);
-
-			continue;
-		}
-
-		if (res < 0) {
-			gprintf ("tcp_readln failed: %d\n", res);
-
-			break;
-		}
-
-		if ((c > 0) && (buf[c - 1] == '\r') && (buf[c] == '\n')) {
-			if (c == 1) {
-				ret = pstrdup ("");
-
-				break;
-			}
-
-			ret = strndup (buf, c - 1);
-
-			break;
-		}
-
-		c++;
-
-		if (c == max_length)
-			break;
-	}
-
-	free (buf);
-	return ret;
 }
 
 // IOS transfers each block through libogc's 64 KiB network heap; 16 KiB

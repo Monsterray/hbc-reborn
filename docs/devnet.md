@@ -45,6 +45,8 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCS` | zero | none | JSON status |
 | `HBCF` | op (1), flags (1), path length (2), size (4), 0 (4) | path, then the data for a put | see below |
 | `HBCN` | log port (2), zero | none | empty; sets the app log target |
+| `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
+| `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
 
 ### Status
 
@@ -58,7 +60,8 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 2 when the framed ops below exist. `device` is the mounted device
+`proto` is 2 when the framed ops below exist, and 3 when `HBCC`, the
+`crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
 at the last device poll. `last` describes the most recent file transfer:
 bytes on the network, and time the Wii spent on Wi-Fi, SD, and zlib/CRC.
@@ -69,7 +72,9 @@ high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
 `scan_ms` is the last full app scan. `zlib_mem` says where the zlib arena
 landed (see Performance), and `tcp_last_failure` records what IOS returned
 during the last receive that failed: `r<n>` per `net_read` result,
-`p<events>/<result>` per poll, then the reason.
+`p<events>/<result>` per poll, then the reason. `crash` is `null`, or the
+crash an agent app reported before it returned to this HBC (see
+[Crash reports](#crash-reports)).
 
 ### Files
 
@@ -178,6 +183,54 @@ Port 0 clears the block. The block survives the jump to the next app. An app
 that includes [`sdk/hbc_netlog.h`](../sdk/hbc_netlog.h) and calls
 `hbc_netlog_init()` connects to that address and copies `stdout` and `stderr`
 to it, still writing to any console it set up first.
+
+IOS clears low memory (`0x0` to `0x3fff`) whenever it boots a title, so the
+block is gone once an app exits and the reload stub starts the installed
+channel again (Dolphin's `IOS.cpp` `SetupMemory` models the same clear). HBC
+therefore writes a copy of the block to MEM2 at `0x91800000`, reads it first
+thing in `main()`, and restores the target from it. An app that happens to
+use that memory costs only the copy, which its check word then rejects.
+
+## In-app agent
+
+An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent.h) answers on port
+4299 while it runs, with the same framing:
+
+| Request | Agent's answer |
+| --- | --- |
+| `HBCV` | `<version> agent`, so clients can tell the app from HBC |
+| `HBCS` | JSON status: `"agent":true`, `app`, `app_version`, `uptime_ms`, IOS, memory, `agent_stack_used`/`agent_stack_size`, `ip`, mounted devices (`inserted`, `device`), `log`, `last`, `exit_requested` |
+| `HBCF` | every file op above, on the devices the app mounted |
+| `HBCN` | sets the log target for the apps after this one |
+| `HBCX` | replies, then the app exits to HBC |
+| `HAXX` | closes the connection without reading, then exits to HBC: the upload fails once, and the retry reaches HBC |
+
+The agent is HBC's own `devfile.c`, `devstream.c` and `tcp.c` built into a
+library, with two transfer slots instead of four and a 16 KiB worker stack.
+Its thread runs at priority 40 (libogc's main thread runs at 64) and at 48
+during a transfer, and it frees its transfer buffers after each request.
+
+### Crash reports
+
+The agent installs a libogc panic handler. On a fatal exception it writes a
+120-byte block to MEM2 at `0x91800020`, then lets libogc show its crash
+screen for 3 s and return through the reload stub. HBC takes the block in
+`main()`, clears it, and reports it in `HBCS` until `HBCC`:
+
+```json
+"crash":{"app":"agent_app","exception":3,"name":"DSI","pc":"80004cac",
+         "lr":"800047a8","msr":"00009032","cr":"20002494","ctr":"00000000",
+         "dar":"00000010","dsisr":"42000000","sp":"8008b160",
+         "uptime_ms":1002,"frames":["80004004"]}
+```
+
+`frames` are return addresses found by walking the stack's back chain; a
+leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
+`sdk/hbc_agent.h`: magic `HBCC`, version 1, the exception number
+(`PPC_EXCPT_*`), `pc`, `msr`, `lr`, `cr`, `ctr`, `dar`, `dsisr`, `sp`,
+`uptime_ms`, twelve frames, the app name (20 bytes), and a rotate-and-XOR
+check word over the rest. `hbc.py crash --elf app.elf` adds function names
+and lines with `powerpc-eabi-addr2line`.
 
 ## Workflow
 

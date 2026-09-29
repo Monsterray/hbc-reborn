@@ -16,7 +16,8 @@
  * Output still reaches any console installed before hbc_netlog_init(). The
  * connection closes at exit(); call hbc_netlog_close() before leaving any
  * other way. hbc_netlog_init() gives up within about 5 s when the network
- * or the PC is unavailable. The header needs nothing beyond libogc.
+ * or the PC is unavailable, and waits for a network start-up another thread
+ * began (such as hbc_agent.h's). The header needs nothing beyond libogc.
  *
  * Define HBC_NETLOG_LAYOUT_ONLY to get only the shared block layout.
  *
@@ -28,8 +29,12 @@
 
 #include <gctypes.h>
 
-/* The block sits just past the reload stub's return-title words. */
+/* The block sits just past the reload stub's return-title words, where the
+ * next app HBC starts finds it. IOS clears low memory when it boots a title,
+ * so HBC also keeps a copy in MEM2 to restore after an app returns to the
+ * installed channel; an app that uses that memory only costs the copy. */
 #define HBC_NETLOG_ADDR 0x80002f20
+#define HBC_NETLOG_KEEP_ADDR 0x91800000
 #define HBC_NETLOG_MAGIC 0x4842434e /* 'HBCN' */
 #define HBC_NETLOG_VERSION 1
 #define HBC_NETLOG_DEFAULT_PORT 4405
@@ -55,14 +60,17 @@ static inline u32 hbc_netlog_check(const hbc_netlog_block *b) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/iosupport.h>
 #include <network.h>
 #include <ogc/cache.h>
 #include <ogc/lwp_watchdog.h>
 #include <ogc/mutex.h>
 
-/* How long hbc_netlog_init waits for the network and for the PC. */
+/* How long hbc_netlog_init waits for the network and for the PC, and for a
+ * network start-up another thread began (hbc_agent.h starts one). */
 #define HBC_NETLOG_INIT_MS 3000
+#define HBC_NETLOG_BUSY_MS 10000
 #define HBC_NETLOG_CONNECT_MS 2000
 /* IOS poll event for "writable" (libogc does not export it). */
 #define HBC_NETLOG_POLLOUT 0x0008
@@ -183,13 +191,23 @@ static inline s32 hbc_netlog_init(void) {
 			block.check != hbc_netlog_check(&block) || !block.port)
 		return -ENOENT;
 
+	/* libogc's net_init() never returns if it runs while another thread's
+	 * start-up is in progress, so wait for that one instead. */
 	start = gettime();
-	do {
-		res = net_init();
-	} while (res == -EAGAIN &&
-			 ticks_to_millisecs(diff_ticks(start, gettime())) < HBC_NETLOG_INIT_MS);
-	if (res < 0)
-		return res;
+	while ((res = net_get_status()) == -EBUSY &&
+		   ticks_to_millisecs(diff_ticks(start, gettime())) < HBC_NETLOG_BUSY_MS)
+		usleep(20 * 1000);
+	if (res == -EBUSY)
+		return -ETIMEDOUT;
+	if (res < 0) {
+		start = gettime();
+		do {
+			res = net_init();
+		} while (res == -EAGAIN &&
+				 ticks_to_millisecs(diff_ticks(start, gettime())) < HBC_NETLOG_INIT_MS);
+		if (res < 0)
+			return res;
+	}
 
 	if (hbc_netlog_lock == LWP_MUTEX_NULL && LWP_MutexInit(&hbc_netlog_lock, false) < 0)
 		return -ENOMEM;

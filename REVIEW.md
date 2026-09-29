@@ -155,6 +155,31 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.5.0: the in-app agent
+
+- **Agent:** `sdk/hbc_agent` builds HBC's `devfile.c` (file requests, split out of
+  `devnet.c`), `devstream.c` and `tcp.c` into `libhbcagent.a`, so an app answers the
+  developer protocol while it runs. On the bench Wii (`tests/wii_agent.py`) framed
+  transfers inside the app ran at 0.92 to 1.09 times HBC's speed with two buffer slots
+  instead of four; the agent thread peaked at 3952 of 12288 bytes of stack.
+- **Low memory does not survive a title launch.** IOS clears `0x0` to `0x3fff` when it
+  boots a title (Dolphin's `IOS.cpp` `SetupMemory` does the same), so the 1.4.0 restore
+  of the log target from `0x80002f20` never worked after an app returned to the
+  installed channel: a long-running `hbc.py log` went quiet after the first app. HBC now
+  keeps a copy in MEM2 at `0x91800000`, and the agent's crash block sits at
+  `0x91800020`; HBC reads both first thing in `main()`. On the bench Wii a crash block
+  survived the reload stub, IOS58's title launch, a stay in the installed 1.4.1, and a
+  Wiiload launch of 1.5.0.
+- **libogc's `net_init()` hangs** when it runs while another thread's start-up is in
+  progress: `net_init_async()` returns `-EBUSY`, and `net_init()` ignores that and
+  sleeps on a queue nobody wakes. The agent starts the network with
+  `net_init_async()` and polls `net_get_status()`, as HBC's loader does, and
+  `hbc_netlog_init()` now waits while the status is `-EBUSY`. Apps that call
+  `net_init()` themselves must do so before `hbc_agent_init()`.
+- **Polling through a reboot:** `hbc.py` waited with 15 s connects, and a SYN sent
+  while the Wii reboots can go unanswered, so `exit` took 15.6 s on hardware.
+  Polls now use 2 s connects (6.1 s).
+
 ### 1.4.1 measurements
 
 - **A/B:** three interleaved rounds of 1.3.0 and 1.4.0 on the bench Wii showed no

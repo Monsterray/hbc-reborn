@@ -35,9 +35,13 @@ jobs:
       - name: Build the channel DOL
         run: make -C channel/channelapp channel EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
+      - name: Build the in-app agent library
+        run: make -C sdk/hbc_agent EXTRA_CFLAGS="$EXTRA_CFLAGS"
+
       - name: Build the test apps
         run: |
           make -C tests/netlog_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
+          make -C tests/agent_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C tests/launch_title EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C tests/membench EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
@@ -65,6 +69,10 @@ jobs:
             channel/channelapp/channelapp_nopax.elf
             channel/channelapp/channelapp.map
             tests/netlog_app/netlog_app.dol
+            tests/agent_app/agent_app.dol
+            sdk/hbc_agent/libhbcagent.a
+            sdk/hbc_agent.h
+            sdk/hbc_netlog.h
 
   host:
     name: Host tools and Python (${{ matrix.os }})

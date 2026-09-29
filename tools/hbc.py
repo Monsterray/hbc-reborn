@@ -3,11 +3,18 @@
 
 usage: hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout SECONDS] COMMAND ...
 
-  version                     print the running HBC version
-  status                      print HBC's JSON status
+  version                     print the running HBC version ("... agent" when
+                              an app with sdk/hbc_agent answers instead)
+  status                      print HBC's (or the running app's) JSON status
   wait [SECONDS]              wait until HBC answers (default 90 s)
   send FILE [ARG ...]         send a DOL, ELF or ZIP (Wiiload)
   run FILE [ARG ...]          register for logs, send FILE, print its output
+  exit                        ask the running agent app to exit to HBC, and
+                              wait for HBC
+  crash [--elf FILE] [--clear]
+                              print the crash an agent app reported (with
+                              source lines from FILE via addr2line), or
+                              clear it
   log                         register for logs and print app output until ^C
   ls REMOTE                   list a directory, e.g. sd:/apps
   get REMOTE [LOCAL]          download a file
@@ -31,6 +38,8 @@ Options:
   --timeout SECONDS   how long `run` waits for the app to close its log (300)
   -r, --recursive     get, put, rm: work on a directory tree
   --delete            sync: remove remote entries not present locally
+  --elf FILE          crash: the app's ELF, for function names and lines
+  --clear             crash: forget the reported crash
 
 Options may also follow the command, except for send and run, where
 everything after FILE goes to the app. `--` ends option parsing.
@@ -45,6 +54,12 @@ device root (sd:/, usb:/, carda:/, cardb:/) and <device>:/apps itself.
 `run` and `log` clear the Wii's log target when they exit. Transfers of
 256 KiB or more show progress on stderr when it is a terminal.
 
+While an app built with sdk/hbc_agent runs, the file commands, status and
+log registration reach the app instead of HBC. `send` and `run` first ask
+it to exit to HBC and wait for HBC, so a rebuilt app replaces the running
+one. When an agent app that `run` started crashes, `run` waits for HBC and
+prints the crash report (exit status 3).
+
 The Wii address comes from --wii, $HBC_WII, $WII_BENCH_IP, or $WIILOAD
 ("tcp:ADDR"). Only hosts on the Wii's own /16 network are answered.
 """
@@ -53,8 +68,10 @@ import argparse
 import errno
 import json
 import os
+import shutil
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -65,6 +82,9 @@ LOG_PORT = 4405
 TIMEOUT = 15
 DEVICES = ("sd", "usb", "carda", "cardb")
 PROGRESS_MIN = 256 * 1024
+# Waits poll with short connects: while the Wii reboots, a connection attempt
+# can go unanswered, and one full TIMEOUT per attempt made each wait 15 s.
+POLL_TIMEOUT = 2
 
 # newlib errno values the client acts on
 ENOENT, EISDIR = 2, 21
@@ -132,8 +152,8 @@ def request(wii, header, payload=b"", timeout=TIMEOUT):
         return recv_reply(conn)
 
 
-def version(wii):
-    with connect(wii) as conn:
+def version(wii, timeout=TIMEOUT):
+    with connect(wii, timeout) as conn:
         conn.sendall(b"HBCV" + bytes(12))
         reply = bytearray()
         while b"\0" not in reply:
@@ -147,20 +167,93 @@ def version(wii):
     return text
 
 
+AGENT_SUFFIX = " agent"
+
+
+def is_agent(text):
+    """True when a version reply comes from an app's agent, not HBC."""
+    return text.endswith(AGENT_SUFFIX)
+
+
+def hbc_wait(wii, seconds=90):
+    """Wait until HBC itself (not an agent app) answers; return its version."""
+    deadline, last = time.monotonic() + seconds, None
+    while time.monotonic() < deadline:
+        try:
+            last = version(wii, POLL_TIMEOUT)
+            if not is_agent(last):
+                return last
+        except (OSError, HBCError) as exc:
+            last = exc
+        time.sleep(0.5)
+    raise HBCError(f"HBC did not answer within {seconds} s: {last}")
+
+
+def exit_app(wii, seconds=90):
+    """Ask a running agent app to exit, then wait for HBC. Returns whether an
+    app was running."""
+    try:
+        running = is_agent(version(wii))
+    except (OSError, HBCError):
+        return False
+    if not running:
+        return False
+    request(wii, b"HBCX")
+    hbc_wait(wii, seconds)
+    return True
+
+
+def devkit_tool(name):
+    """A devkitPPC binutils program: on PATH, else in the usual install places."""
+    found = shutil.which(name)
+    if found:
+        return found
+    dirs = [os.path.join(os.environ[var], sub) for var, sub in
+            (("DEVKITPPC", "bin"), ("DEVKITPRO", "devkitPPC/bin")) if os.environ.get(var)]
+    dirs += ["/opt/devkitpro/devkitPPC/bin", "C:/devkitPro/devkitPPC/bin"]
+    for d in dirs:
+        found = shutil.which(name, path=d)
+        if found:
+            return found
+    return None
+
+
+def crash_report(crash, elf=None):
+    """Format a crash reply's fields, with source lines when elf is given."""
+    addrs = [crash["pc"], crash["lr"]] + crash.get("frames", [])
+    where = {}
+    tool = devkit_tool("powerpc-eabi-addr2line")
+    if elf and tool:
+        out = subprocess.run([tool, "-f", "-C", "-p", "-e", elf] + [f"0x{a}" for a in addrs],
+                             capture_output=True, text=True).stdout.splitlines()
+        where = dict(zip(addrs, out))
+    lines = [f"{crash['app']} crashed after {crash['uptime_ms'] / 1000:.1f} s: "
+             f"{crash['name']} exception ({crash['exception']})"]
+    for label, key in (("pc", "pc"), ("lr", "lr")):
+        lines.append(f"  {label:5} {crash[key]}  {where.get(crash[key], '')}".rstrip())
+    lines.append(f"  dar   {crash['dar']}  dsisr {crash['dsisr']}  sp {crash['sp']}  "
+                 f"msr {crash['msr']}  cr {crash['cr']}  ctr {crash['ctr']}")
+    for i, frame in enumerate(crash.get("frames", [])):
+        lines.append(f"  #{i:<3} {frame}  {where.get(frame, '')}".rstrip())
+    if elf and not tool:
+        lines.append("  (install devkitPPC or put powerpc-eabi-addr2line on PATH for source lines)")
+    return "\n".join(lines)
+
+
 def relaunch_wait(wii, expected, seconds=90):
     """After a send, wait for the old program to stop answering, then for
     HBC `expected` to answer; a same-version rebuild cannot pass early."""
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         try:
-            version(wii)
+            version(wii, POLL_TIMEOUT)
         except (OSError, HBCError):
             break
         time.sleep(0.2)
     deadline, last = time.monotonic() + seconds, None
     while time.monotonic() < deadline:
         try:
-            last = version(wii)
+            last = version(wii, POLL_TIMEOUT)
             if last == expected:
                 return
         except (OSError, HBCError) as exc:
@@ -177,7 +270,7 @@ def wait(wii, seconds):
     deadline, last = time.monotonic() + seconds, None
     while time.monotonic() < deadline:
         try:
-            return version(wii)
+            return version(wii, POLL_TIMEOUT)
         except (OSError, HBCError) as exc:
             last = exc
             time.sleep(1)
@@ -549,7 +642,9 @@ def send(wii, path, args):
 class LogServer:
     """Accept app log connections and copy them to stdout."""
 
-    def __init__(self, port):
+    def __init__(self, port, wii=None):
+        self.wii = wii
+        self.agent = False  # the app that connected answers as an agent
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # On Windows SO_REUSEADDR would let a second `log` share the port.
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -580,6 +675,8 @@ class LogServer:
             except OSError:
                 return  # the socket was closed
             print(f"[hbc log] {addr} connected", file=sys.stderr, flush=True)
+            if once and self.wii:
+                threading.Thread(target=self.probe_agent, daemon=True).start()
             with conn:
                 conn.settimeout(0.5)
                 while True:
@@ -597,6 +694,19 @@ class LogServer:
                 self.done.set()
                 return
 
+    def probe_agent(self, seconds=5):
+        """Note whether the app that connected runs an agent, so `run` can
+        wait for its crash report."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not self.done.is_set():
+            try:
+                if is_agent(version(self.wii, POLL_TIMEOUT)):
+                    self.agent = True
+                    return
+            except (OSError, HBCError):
+                pass
+            time.sleep(0.5)
+
     def register(self, wii):
         request(wii, b"HBCN" + struct.pack(">H", self.port))
 
@@ -612,12 +722,28 @@ class LogServer:
         self.sock.close()
 
 
+def run_outcome(wii, seconds=30):
+    """After an agent app closed its log: None if it still runs or exited
+    cleanly, else the crash HBC reported."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            if is_agent(version(wii, POLL_TIMEOUT)):
+                return None  # still running; it closed its log itself
+            return status(wii).get("crash")
+        except (OSError, HBCError):
+            time.sleep(0.5)  # on its way back to HBC
+    return None
+
+
 # Options accepted after the command: flag -> (destination, takes a value)
 GLOBAL_FLAGS = {"--wii": ("wii", True), "--log-port": ("log_port", True),
                 "--timeout": ("timeout", True), "--json": ("json", False)}
 COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--recursive": ("recursive", ("get", "put", "rm")),
-                 "--delete": ("delete", ("sync",))}
+                 "--delete": ("delete", ("sync",)),
+                 "--clear": ("clear", ("crash",))}
+VALUE_FLAGS = {"--elf": ("elf", ("crash",))}
 
 
 def split_flags(cmd, args):
@@ -625,6 +751,8 @@ def split_flags(cmd, args):
     stop at FILE so the app gets the rest untouched."""
     known = dict(GLOBAL_FLAGS)
     known.update({flag: (dest, False) for flag, (dest, cmds) in COMMAND_FLAGS.items()
+                  if cmd in cmds})
+    known.update({flag: (dest, True) for flag, (dest, cmds) in VALUE_FLAGS.items()
                   if cmd in cmds})
     flags, rest, i = {}, [], 0
     while i < len(args):
@@ -692,11 +820,36 @@ def main(argv=None):
             print(wait(wii, float(args[0]) if args else 90))
         elif cmd == "send":
             need(1, "FILE [ARG ...]")
+            if exit_app(wii):
+                print("hbc.py: the running app exited to HBC", file=sys.stderr)
             send(wii, args[0], args[1:])
+        elif cmd == "exit":
+            if not exit_app(wii):
+                raise HBCError("no agent app is running (HBC answers itself)")
+            print(hbc_wait(wii, 5))
+        elif cmd == "crash":
+            if flags.get("clear"):
+                request(wii, b"HBCC")
+                return
+            st = status(wii)
+            if st.get("agent"):
+                raise HBCError("an agent app is running; crash reports come from HBC")
+            crash = st.get("crash")
+            if opts.json:
+                print(json.dumps(crash))
+            elif crash:
+                print(crash_report(crash, flags.get("elf")))
+            else:
+                print("no crash reported")
         elif cmd in ("run", "log"):
             if cmd == "run":
                 need(1, "FILE [ARG ...]")
-            server = LogServer(opts.log_port)
+                if exit_app(wii):
+                    print("[hbc log] the running app exited to HBC", file=sys.stderr, flush=True)
+                if proto(wii) >= 3:
+                    request(wii, b"HBCC")  # so a crash after this is this app's
+            server = LogServer(opts.log_port, wii if cmd == "run" else None)
+            crashed = None
             try:
                 server.register(wii)
                 print(f"[hbc log] listening on port {server.port}", file=sys.stderr, flush=True)
@@ -709,9 +862,14 @@ def main(argv=None):
                 while not server.done.wait(0.5):  # short waits keep ^C working
                     if time.monotonic() >= deadline:
                         raise HBCError(f"the app did not close its log within {opts.timeout} s")
+                if server.agent:
+                    crashed = run_outcome(wii)
             finally:
                 server.unregister(wii)
                 server.close()
+            if crashed:
+                print(crash_report(crashed), file=sys.stderr)
+                raise SystemExit(3)
         elif cmd == "ls":
             need(1, "REMOTE")
             entries, truncated = list_dir(wii, args[0])

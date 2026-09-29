@@ -845,6 +845,7 @@ void main_real(void) {
 
 int main(int argc, char *argv[]) {
 	hbc_start = gettime();
+	devnet_early_init();
 	zmem_init();
 	main_pre();
 	main_real();

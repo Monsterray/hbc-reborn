@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zlib
 
@@ -39,6 +40,9 @@ class FakeHBC:
         self.uploads = []
         self.requests = []  # (op, path) of every HBCF request
         self.truncate = False
+        self.agent = False  # an agent app answers instead of HBC
+        self.crash = None
+        self.exits = 0
         self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -82,10 +86,21 @@ class FakeHBC:
         hdr = self.recv(conn, 16)
         magic = hdr[:4]
         if magic == b"HBCV":
-            conn.sendall(b"1.2.0\0")
+            conn.sendall(b"1.5.0 agent\0" if self.agent else b"1.2.0\0")
         elif magic == b"HBCS":
-            self.reply(conn, 0, json.dumps({"version": "1.2.0", "proto": 2,
-                                             "log": self.log}).encode())
+            st = {"version": "1.2.0", "proto": 2, "log": self.log}
+            if self.agent:
+                st = {"agent": True, "version": "1.5.0", "proto": 3, "log": self.log}
+            elif self.crash is not None:
+                st.update(proto=3, crash=self.crash or None)
+            self.reply(conn, 0, json.dumps(st).encode())
+        elif magic == b"HBCX" and self.agent:
+            self.reply(conn, 0)
+            self.agent = False  # the app exits to HBC
+            self.exits += 1
+        elif magic == b"HBCC":
+            self.crash = {}
+            self.reply(conn, 0)
         elif magic == b"HBCN":
             port = struct.unpack(">H", hdr[4:6])[0]
             self.log_ports.append(port)
@@ -184,6 +199,9 @@ class HBCToolTest(unittest.TestCase):
 
     def setUp(self):
         self.fake.truncate = False
+        self.fake.agent = False
+        self.fake.crash = None
+        self.fake.exits = 0
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = pathlib.Path(tmp.name)
@@ -206,6 +224,45 @@ class HBCToolTest(unittest.TestCase):
     def test_version_and_status(self):
         self.assertEqual(hbc.version(WII), "1.2.0")
         self.assertEqual(hbc.status(WII)["version"], "1.2.0")
+
+    def test_send_exits_a_running_agent_app_first(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(100))
+        self.fake.agent = True
+        self.cli("send", str(app))
+        self.assertEqual(self.fake.exits, 1)
+        self.assertFalse(self.fake.agent)
+        # send() returns once the data is sent; the fake records it after.
+        deadline = time.monotonic() + 5
+        while self.fake.uploads[-1][1] != b"app.dol\0\0" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(self.fake.uploads[-1][1], b"app.dol\0\0")
+
+    def test_exit_needs_an_agent_app(self):
+        self.fake.agent = True
+        self.assertEqual(self.cli("exit").strip(), "1.2.0")
+        with self.assertRaisesRegex(SystemExit, "no agent app"):
+            self.cli("exit")
+
+    def test_crash_report_and_clear(self):
+        self.fake.crash = {"app": "demo", "exception": 3, "name": "DSI", "pc": "80004cac",
+                           "lr": "800047a8", "msr": "00009032", "cr": "20002494",
+                           "ctr": "00000000", "dar": "00000010", "dsisr": "42000000",
+                           "sp": "8008b160", "uptime_ms": 1002, "frames": ["80004004"]}
+        out = self.cli("crash")
+        self.assertIn("demo crashed after 1.0 s: DSI exception (3)", out)
+        self.assertIn("dar   00000010", out)
+        self.assertIn("#0   80004004", out)
+        self.assertEqual(json.loads(self.cli("crash", "--json"))["pc"], "80004cac")
+        self.cli("crash", "--clear")
+        self.assertEqual(self.cli("crash").strip(), "no crash reported")
+        self.fake.agent = True
+        with self.assertRaisesRegex(SystemExit, "agent app is running"):
+            self.cli("crash")
+
+    def test_agent_versions(self):
+        self.assertTrue(hbc.is_agent("1.5.0 agent"))
+        self.assertFalse(hbc.is_agent("1.5.0"))
 
     def test_file_round_trip(self):
         data = bytes(range(256)) * 300

@@ -1,0 +1,44 @@
+# libhbcagent.a: the in-app agent (../hbc_agent.h). It shares HBC's file
+# request, framed transfer and TCP code from channel/channelapp/source, built
+# with two transfer slots and a smaller worker stack.
+#
+#   make -C sdk/hbc_agent
+#   app: -I<hbc-reborn>/sdk ... -L<hbc-reborn>/sdk/hbc_agent -lhbcagent -lfat -lz -logc
+
+ifeq ($(strip $(DEVKITPPC)),)
+$(error "Set DEVKITPPC in your environment.")
+endif
+
+PREFIX = $(DEVKITPPC)/bin/powerpc-eabi-
+CC = $(PREFIX)gcc
+AR = $(PREFIX)ar
+
+HBC_SRC = ../../channel/channelapp/source
+BUILD = build
+
+CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall $(EXTRA_CFLAGS) \
+	-DDEVSTREAM_SLOTS=2 -DDEVSTREAM_WORKER_STACK=16384 \
+	-I$(HBC_SRC) -I.. \
+	-I$(DEVKITPRO)/libogc/include -I$(DEVKITPRO)/portlibs/ppc/include
+
+SRC = agent.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/zmem.c
+OBJ = $(addprefix $(BUILD)/,$(notdir $(SRC:.c=.o)))
+HDR = ../hbc_agent.h ../hbc_netlog.h $(wildcard $(HBC_SRC)/*.h) ../../channel/channelapp/config.h
+
+libhbcagent.a: $(OBJ)
+	rm -f $@
+	$(AR) rcs $@ $^
+
+$(BUILD)/agent.o: agent.c $(HDR) | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: $(HBC_SRC)/%.c $(HDR) | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD):
+	mkdir -p $@
+
+clean:
+	rm -rf $(BUILD) libhbcagent.a
+
+.PHONY: clean

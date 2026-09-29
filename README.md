@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.4.1**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.5.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -19,6 +19,7 @@ replacing it.
 | Developer network (Wii side) | [`channel/channelapp/source/devnet.c`](channel/channelapp/source/devnet.c), [`devstream.c`](channel/channelapp/source/devstream.c) |
 | PC client for the developer network | [`tools/hbc.py`](tools/hbc.py) |
 | App-side network log header | [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) |
+| In-app agent: the tools and crash reports inside a running app | [`sdk/hbc_agent.h`](sdk/hbc_agent.h), [`sdk/hbc_agent`](sdk/hbc_agent) |
 | Banner, WAD packaging, PyWii | [`channel/banner`](channel/banner), [`channel/title`](channel/title), [`pywii`](pywii) |
 | WiiPAX executable packer, host `wiiload` | [`wiipax`](wiipax), [`channel/wiiload`](channel/wiiload) |
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
@@ -71,8 +72,10 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `sync [--delete] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only files whose size or CRC-32 differ; `--delete` also removes remote extras. |
 | `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
 | `mkdir REMOTE` | Create a directory and its parents. |
+| `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
+| `crash [--elf FILE] [--clear]` | Print the crash an agent app reported: exception, registers, backtrace, and with `--elf` function names and source lines (needs devkitPPC's `addr2line`). `--clear` forgets it. |
 
-`--json` makes `version`, `status`, and `ls` print JSON. Options can follow
+`--json` makes `version`, `status`, `ls`, and `crash` print JSON. Options can follow
 the command; for `send` and `run`, everything after the file goes to the app,
 and `--` ends option parsing. Large transfers show progress on a terminal.
 
@@ -119,7 +122,7 @@ python3 tools/hbc.py run myapp.dol -- --verbose   # "--" before app arguments th
 `stdout` and `stderr` still reach any on-screen console you set up first.
 When you start apps from the Wii's own menu instead, keep
 `python3 tools/hbc.py log` running on the PC: HBC remembers the PC's address
-for the next app it launches. Call `hbc_netlog_close()` if your app leaves
+for the apps it launches, also after one returns to the installed channel. Call `hbc_netlog_close()` if your app leaves
 without `exit()`. [`tests/netlog_app`](tests/netlog_app) is a complete
 example.
 
@@ -142,6 +145,60 @@ To install an app permanently, `sync` or `put -r` its folder (with
 `hbc_netlog_init()` gives up within about 5 s when the PC is unreachable, and
 `run` and `log` clear HBC's log target when they exit, so a stale target
 never stalls later apps.
+
+### Keeping the tools inside your app
+
+Link the agent into a development build and `hbc.py` keeps working while
+your app runs: `status`, the file commands, and `log` reach the app instead
+of HBC, `run` and `send` ask it to exit to HBC before sending the next
+build, and a crash comes back as a report instead of a frozen screen.
+
+```sh
+make -C sdk/hbc_agent            # builds sdk/hbc_agent/libhbcagent.a
+```
+
+```c
+#include <fat.h>
+#include "hbc_netlog.h"
+#include "hbc_agent.h"
+
+int main(int argc, char **argv) {
+    // ... video setup ...
+    fatInitDefault();                 // mount first; the agent serves what the app mounted
+    hbc_netlog_init();
+    hbc_agent_init(NULL);             // one low-priority thread, about 20 KiB while idle
+    while (!hbc_agent_exit_requested()) {
+        // ... one frame ...
+    }
+    return 0;                         // back to HBC
+}
+```
+
+Link with `-I<hbc-reborn>/sdk -L<hbc-reborn>/sdk/hbc_agent -lhbcagent -lfat -lz -logc`.
+Then:
+
+```sh
+python3 tools/hbc.py run myapp.dol        # again and again: each run replaces the last
+python3 tools/hbc.py status               # the app's name, uptime, memory, agent stack
+python3 tools/hbc.py get sd:/apps/myapp/save.dat   # while the app runs
+python3 tools/hbc.py crash --elf myapp.elf         # after a crash: where it happened
+```
+
+The agent's thread runs below your main thread, so a loop that waits for
+each frame never loses time to it; an app that never blocks starves it and
+the tools time out. It holds no transfer buffers while idle and frees them
+after each transfer (about 280 KiB, plus up to 260 KiB of zlib state for a
+compressed download). If your app calls `net_init()` itself, do it before
+`hbc_agent_init()`: libogc's `net_init()` hangs if it runs while another
+thread is starting the network. After a crash the agent shows libogc's crash
+screen for 3 s and returns to HBC, which keeps the report until you read or
+clear it; `run` prints it and exits with status 3. A plain `wiiload` to a
+running agent app fails once and leaves the Wii in HBC, so the retry works.
+[`sdk/hbc_agent.h`](sdk/hbc_agent.h) has the options (priority, crash
+screen time, exit callback) and [`tests/agent_app`](tests/agent_app) is a
+complete example. The agent contains HBC's own code, so it is GPL like the
+rest of HBC: keep it in development builds (for example behind an
+`#ifdef`), or release your app under a compatible license.
 
 ## Installing the channel on a Wii
 
@@ -231,8 +288,10 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Boot in Dolphin | `python3 tests/dolphin_smoke.py` | Dolphin |
 | Developer network in Dolphin | `make -C tests/netlog_app` then `python3 tests/dolphin_smoke.py --devnet` | Dolphin |
 | Installed WAD in Dolphin, including app exit back to it | `python3 tests/dolphin_smoke.py --devnet channel/title/channel_retail.wad 120` | Dolphin, WAD |
+| In-app agent in Dolphin: status, files, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.4.0 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.5.0 WII-IP` | installed channel running |
+| In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |
 | Start an installed title from HBC | `python3 tools/hbc.py send tests/launch_title/launch_title.dol 000100014f484243` | Wii in any HBC |
@@ -278,4 +337,5 @@ python3 tools/wii-bench/wiibench.py wait <id>
 Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
 [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) is public domain so apps can include
-it freely.
+it freely. The agent library (`sdk/hbc_agent`) is built from HBC's own
+sources and is GPL.

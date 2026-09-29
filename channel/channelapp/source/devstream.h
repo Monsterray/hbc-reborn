@@ -16,4 +16,7 @@ s32 devstream_put(s32 s, const char *path, const char *part, u32 size,
 // Sends path as a reply header followed by frames and a terminator frame.
 void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stats);
 
+// Frees the buffer pool, which transfers otherwise keep for the next one.
+void devstream_release(void);
+
 #endif

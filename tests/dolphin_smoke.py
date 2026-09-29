@@ -8,14 +8,17 @@ brought up networking.
 
 With --devnet the run also enables an emulated SD card and exercises the
 developer protocol through tools/hbc.py: status, mkdir, put, ls, get, rm,
-and a network-log round trip with tests/netlog_app.
+and a network-log round trip with tests/netlog_app. --agent (which implies
+the SD card) runs tests/agent_app, built with sdk/hbc_agent, through the
+checks in tests/agent_checks.py, including a crash and its report. It turns
+on Dolphin's MMU emulation so the app's store to address 0x10 faults.
 
 A .wad image is installed into the profile's NAND and booted from there.
 Cheats are enabled (with no codes) so Dolphin does not replace HBC's reload
 stub with its own HBReload hook; with --devnet the run then requires the
 installed channel to come back after netlog_app exits.
 
-usage: tests/dolphin_smoke.py [--devnet] [DOL-or-WAD] [seconds]
+usage: tests/dolphin_smoke.py [--devnet] [--agent] [DOL-or-WAD] [seconds]
 Set DOLPHIN to the Dolphin executable if it is not in a standard location.
 """
 
@@ -85,10 +88,12 @@ def host_address():
 
 
 class Dolphin:
-    def __init__(self, image, sd=False):
+    def __init__(self, image, sd=False, mmu=False):
         self.dolphin = find_dolphin()
         self.profile = pathlib.Path(tempfile.mkdtemp(prefix="hbc-dolphin-"))
         settings = SETTINGS + (SD_SETTINGS if sd else [])
+        if mmu:
+            settings.append("Dolphin.Core.MMU=True")
         if str(image).lower().endswith(".wad"):
             settings.append("Dolphin.Core.EnableCheats=True")
         if sd:
@@ -113,12 +118,15 @@ class Dolphin:
         self.proc.kill()  # this run's process only
         self.proc.wait()
 
-    def faults(self):
+    def faults(self, expected=()):
+        """Log lines that suggest a fault, except those matching a pattern in
+        expected (a deliberate crash)."""
         log = self.profile / "Logs/dolphin.log"
         if not log.exists():
             return []
         return [line for line in log.read_text(errors="replace").splitlines()
-                if re.search(r"Unknown instruction|Invalid (read|write)|PANIC|Exception", line)]
+                if re.search(r"Unknown instruction|Invalid (read|write)|PANIC|Exception", line)
+                and not any(re.search(p, line) for p in expected)]
 
 
 def wait_version(run, seconds):
@@ -296,14 +304,16 @@ def check_devnet(run, log_port=0):
 def main():
     args = sys.argv[1:]
     devnet = "--devnet" in args
-    args = [a for a in args if a != "--devnet"]
+    agent = "--agent" in args
+    args = [a for a in args if a not in ("--devnet", "--agent")]
     image = pathlib.Path(args[0] if args else
                          root / "channel/channelapp/channelapp-channel.dol").resolve()
     seconds = int(args[1]) if len(args) > 1 else 60
     if not image.is_file():
         raise SystemExit(f"no such image: {image}")
 
-    run = Dolphin(image, sd=devnet)
+    run = Dolphin(image, sd=devnet or agent, mmu=agent)
+    expected_faults = []
     result = 1
     try:
         wait_version(run, seconds)
@@ -319,13 +329,21 @@ def main():
                 # netlog_app exits through HBC's own stub, which relaunches the title.
                 wait_version(run, 60)
                 print(f"PASS: app exit returned to the installed HBC {expected}")
+        if agent:
+            import agent_checks
+            # The deliberate crash's store to 0x10.
+            expected_faults = [r"0x00000010", r"DSI"]
+            crash = agent_checks.check_agent(run.address)
+            assert crash, "HBC reported no crash"
+            wait_version(run, 60)
+            print("agent: PASS")
         result = 0
     except (AssertionError, OSError, hbc.HBCError) as exc:
         print(f"FAIL: {exc!r}")
     finally:
         run.stop()
 
-    for line in run.faults()[:20]:
+    for line in run.faults(expected_faults)[:20]:
         print("log:", line)
         result = 1
     if result == 0:

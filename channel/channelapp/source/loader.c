@@ -21,6 +21,7 @@
 #include "panic.h"
 
 #include "loader.h"
+#include "devfile.h"
 #include "devnet.h"
 #include "zmem.h"
 
@@ -430,7 +431,7 @@ void loader_deinit (void) {
 	u8 i;
 
 	// A developer file transfer must stop before the card is unmounted.
-	devnet_abort ();
+	devfile_abort ();
 
 	// the tcp thread does stuff on exit; the ideal order is stopping it first
 	if (ta_tcp.running) {

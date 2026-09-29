@@ -4,10 +4,9 @@
 #include <stddef.h>
 #include <gctypes.h>
 
-// Developer protocol version reported by HBCS; 2 adds framed transfers.
-#define DEVNET_PROTO 2
-// HBCF header byte 5 for op 'g': the client accepts zlib frames.
-#define DEVNET_FLAG_COMPRESS 0x01
+// Developer protocol version reported by HBCS; 2 adds framed transfers, 3
+// crash reports (HBCC) and the in-app agent's exit request (HBCX).
+#define DEVNET_PROTO 3
 // Transfers run above the UI thread (64) and the loader's usual 48.
 #define DEVNET_THREAD_PRIO 80
 
@@ -15,19 +14,13 @@
 // when the header is not a developer request.
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip);
 
-// Blocking send of all of data; see devnet.c for why.
-bool devnet_send_all(s32 s, const void *data, u32 len);
-// Reply header (s32 status, u32 length) plus payload.
-bool devnet_reply(s32 s, s32 status, const void *data, u32 len);
-
+// Takes the crash report an agent-enabled app left and the kept log target
+// from MEM2. Call first in main(), before allocations can reach them.
+void devnet_early_init(void);
 // Restores the app log target that survived the last app launch.
 void devnet_init(void);
 // Records how long HBC took to reach its menu, for the status reply.
 void devnet_set_init_ms(u32 ms);
-// Stops a running file transfer and waits (up to 3 s) for it to unwind,
-// before an app launch unmounts the card.
-void devnet_abort(void);
-bool devnet_aborted(void);
 // Takes the next app folder name a file request changed under
 // "<device>:/apps/", so the menu can reload that entry.
 bool devnet_take_app_change(char *dirname, size_t size);

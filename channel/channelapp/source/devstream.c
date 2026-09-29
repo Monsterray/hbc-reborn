@@ -21,15 +21,22 @@
 #include <zlib.h>
 
 #include "../config.h"
-#include "devnet.h"
+#include "devfile.h"
 #include "devstream.h"
 #include "tcp.h"
 #include "zmem.h"
 
 #define FRAME_MAX (64 * 1024)
 #define FRAME_HDR 12
-#define SLOTS 4
-#define WORKER_STACK (32 * 1024)
+// HBC keeps four slots; the in-app agent builds with two to stay small.
+#ifndef DEVSTREAM_SLOTS
+#define DEVSTREAM_SLOTS 4
+#endif
+#define SLOTS DEVSTREAM_SLOTS
+#ifndef DEVSTREAM_WORKER_STACK
+#define DEVSTREAM_WORKER_STACK (32 * 1024)
+#endif
+#define WORKER_STACK DEVSTREAM_WORKER_STACK
 // Each slot holds a raw and a wire buffer, each 32-byte aligned for SD DMA
 // with headroom for the frame header in front.
 #define HEADROOM 64
@@ -104,13 +111,18 @@ static bool setup(void) {
 
 static bool start_worker(void *(*fn)(void *)) {
 	return LWP_CreateThread(&worker, fn, NULL, pool + SLOTS * SLOT_BYTES,
-			WORKER_STACK, DEVNET_THREAD_PRIO) == 0;
+			WORKER_STACK, devfile_prio()) == 0;
 }
 
 static void teardown(void) {
 	LWP_JoinThread(worker, NULL);
 	MQ_Close(q_full);
 	MQ_Close(q_free);
+}
+
+void devstream_release(void) {
+	free(pool);
+	pool = NULL;
 }
 
 static slot_t *take(mqbox_t q) {
@@ -201,7 +213,7 @@ s32 devstream_put(s32 s, const char *path, const char *part, u32 size,
 		slot_t *slot = take(q_free);
 		u64 t0 = gettime();
 
-		if (devnet_aborted()) {
+		if (devfile_aborted()) {
 			err = -EINTR;
 		} else if (!tcp_read(s, hdr, FRAME_HDR, NULL, NULL)) {
 			err = -EIO;
@@ -256,7 +268,7 @@ static void *get_worker(void *arg) {
 	s32 err = 0;
 	(void) arg;
 
-	while (left && !abort_flag && !devnet_aborted()) {
+	while (left && !abort_flag && !devfile_aborted()) {
 		slot_t *slot = take(q_free);
 		u32 n = left > FRAME_MAX ? FRAME_MAX : left;
 		u64 t0 = gettime();
@@ -314,13 +326,13 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 	bool sending = true;
 
 	if (stat(path, &st) || !S_ISREG(st.st_mode)) {
-		devnet_reply(s, -ENOENT, NULL, 0);
+		devfile_reply(s, -ENOENT, NULL, 0);
 		return;
 	}
 
 	job.f = fopen(path, "rb");
 	if (!job.f) {
-		devnet_reply(s, -errno, NULL, 0);
+		devfile_reply(s, -errno, NULL, 0);
 		return;
 	}
 	job.size = st.st_size;
@@ -329,21 +341,21 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 
 	if (!setup()) {
 		fclose(job.f);
-		devnet_reply(s, -ENOMEM, NULL, 0);
+		devfile_reply(s, -ENOMEM, NULL, 0);
 		return;
 	}
 	if (!start_worker(get_worker)) {
 		MQ_Close(q_full);
 		MQ_Close(q_free);
 		fclose(job.f);
-		devnet_reply(s, -ENOMEM, NULL, 0);
+		devfile_reply(s, -ENOMEM, NULL, 0);
 		return;
 	}
 
 	put_u32(hdr, 0);
 	put_u32(hdr + 4, job.size);
 	u64 t0 = gettime();
-	sending = devnet_send_all(s, hdr, sizeof(hdr));
+	sending = devfile_send_all(s, hdr, sizeof(hdr));
 	stats->net += diff_ticks(t0, gettime());
 
 	while (true) {
@@ -356,7 +368,7 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 		put_u32(frame + 4, done ? 0 : slot->wire_len);
 		put_u32(frame + 8, done ? (u32) slot->err : slot->crc);
 
-		if (sending && devnet_aborted()) {
+		if (sending && devfile_aborted()) {
 			sending = false;
 			abort_flag = true;
 		}
@@ -364,7 +376,7 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 			u64 t1 = gettime();
 			u32 len = FRAME_HDR + (done ? 0 : slot->wire_len);
 
-			sending = devnet_send_all(s, frame, len);
+			sending = devfile_send_all(s, frame, len);
 			stats->net += diff_ticks(t1, gettime());
 			stats->wire += len;
 			if (!sending)
