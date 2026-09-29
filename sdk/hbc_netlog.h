@@ -14,7 +14,8 @@
  *     }
  *
  * Output still reaches any console installed before hbc_netlog_init(). The
- * header has no dependencies beyond libogc and needs no extra library.
+ * connection closes at exit(); call hbc_netlog_close() before leaving any
+ * other way. The header needs nothing beyond libogc.
  *
  * Define HBC_NETLOG_LAYOUT_ONLY to get only the shared block layout.
  *
@@ -50,6 +51,7 @@ static inline u32 hbc_netlog_check(const hbc_netlog_block *b) {
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/iosupport.h>
 #include <network.h>
@@ -97,6 +99,19 @@ static devoptab_t hbc_netlog_dotab_out = { .name = "hbclog",
 static devoptab_t hbc_netlog_dotab_err = { .name = "hbclog",
 										   .write_r = hbc_netlog_write_err };
 
+/* Flush and close the log so the PC sees its end. Safe to call twice. */
+static inline void hbc_netlog_close(void) {
+	if (hbc_netlog_socket < 0)
+		return;
+	fflush(stdout);
+	fflush(stderr);
+	devoptab_list[STD_OUT] = hbc_netlog_prev_out;
+	devoptab_list[STD_ERR] = hbc_netlog_prev_err;
+	net_shutdown(hbc_netlog_socket, 2);
+	net_close(hbc_netlog_socket);
+	hbc_netlog_socket = -1;
+}
+
 /* Returns 0 when connected, or a negative error code. */
 static inline s32 hbc_netlog_init(void) {
 	hbc_netlog_block block;
@@ -141,6 +156,8 @@ static inline s32 hbc_netlog_init(void) {
 	devoptab_list[STD_ERR] = &hbc_netlog_dotab_err;
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
+	/* The reload stub drops the socket without a FIN, so close it first. */
+	atexit(hbc_netlog_close);
 	return 0;
 }
 

@@ -146,9 +146,12 @@ class LogServer:
             conn, (addr, _) = self.sock.accept()
             print(f"[hbc log] {addr} connected", file=sys.stderr, flush=True)
             with conn:
-                while chunk := conn.recv(4096):
-                    sys.stdout.buffer.write(chunk)
-                    sys.stdout.flush()
+                try:
+                    while chunk := conn.recv(4096):
+                        sys.stdout.buffer.write(chunk)
+                        sys.stdout.flush()
+                except ConnectionResetError:
+                    pass  # IOS closes sockets with a reset
             print(f"[hbc log] {addr} closed", file=sys.stderr, flush=True)
             if once:
                 self.done.set()

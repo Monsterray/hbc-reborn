@@ -12,6 +12,7 @@ char * tcp_readln (s32 s, u16 max_length, s64 start_time, u16 timeout);
 bool tcp_read (s32 s, u8 *buffer, u32 length, const mutex_t *mutex, u32 *progress);
 bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 				u32 *progress);
+void tcp_close (s32 s);
 
 #endif
 

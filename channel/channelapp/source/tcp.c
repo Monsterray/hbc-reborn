@@ -295,3 +295,29 @@ bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 	return left == 0;
 }
 
+// IOS closes a socket with a reset, which drops any reply still queued.
+// Half-close first and give the peer up to a second to finish reading.
+void tcp_close (s32 s) {
+	u8 drain[64];
+	s64 t;
+	s32 res;
+
+	res = net_fcntl (s, F_GETFL, 0);
+	if (res >= 0)
+		net_fcntl (s, F_SETFL, res | 4);
+
+	net_shutdown (s, 1);
+
+	t = gettime ();
+	while (ticks_to_millisecs (diff_ticks (t, gettime ())) < 1000) {
+		res = net_read (s, drain, sizeof (drain));
+		if (res == -EAGAIN) {
+			usleep (10 * 1000);
+			continue;
+		}
+		if (res <= 0)
+			break;
+	}
+
+	net_close (s);
+}

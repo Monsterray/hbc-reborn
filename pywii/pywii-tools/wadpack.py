@@ -19,6 +19,9 @@ if args[0] == "-dpki":
 else:
 	wii.loadkeys()
 
+if "common-key" not in wii.keys:
+	sys.exit("no Wii common key in %s" % wii.key_dir())
+
 wadfile = args.pop(0)
 indir = args.pop(0)
 # Contents and footer may live outside the ticket/TMD directory.
@@ -39,19 +42,29 @@ for ct in tmd.get_content_records():
 		sys.exit("content %08X does not match the TMD size and SHA-1" % ct.cid)
 	contents.append((data, ct.cid))
 
-wad = wii.WiiWadMaker(wadfile, tmd, tik, certlist, footer)
+# Write to a temporary name so a failed build never leaves a partial WAD.
+partfile = wadfile + ".part"
+try:
+	wad = wii.WiiWadMaker(partfile, tmd, tik, certlist, footer)
 
-for data, cid in contents:
-	wad.adddata(data, cid)
+	for data, cid in contents:
+		wad.adddata(data, cid)
 
-wad.finish()
+	wad.finish()
 
-if not wad.tik.signcheck(wad.certs):
-	wad.tik.null_signature()
-	wad.tik.brute_sha()
-	wad.updatetik()
+	if not wad.tik.signcheck(wad.certs):
+		wad.tik.null_signature()
+		wad.tik.brute_sha()
+		wad.updatetik()
 
-if not wad.tmd.signcheck(wad.certs):
-	wad.tmd.null_signature()
-	wad.tmd.brute_sha()
-	wad.updatetmd()
+	if not wad.tmd.signcheck(wad.certs):
+		wad.tmd.null_signature()
+		wad.tmd.brute_sha()
+		wad.updatetmd()
+	wad.f.close()
+except BaseException:
+	if os.path.exists(partfile):
+		os.remove(partfile)
+	raise
+
+os.replace(partfile, wadfile)

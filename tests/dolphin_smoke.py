@@ -127,7 +127,7 @@ def wait_version(run, seconds):
     raise AssertionError(last)
 
 
-def check_devnet(run):
+def check_devnet(run, log_port=0):
     wii = run.address
     status = hbc.status(wii)
     print("status:", status)
@@ -153,10 +153,12 @@ def check_devnet(run):
         raise AssertionError(f"accepted bad path {bad!r}")
     hbc.file_request(wii, "D", "sd:/hbctest/sub/blob.bin")
     assert "blob.bin" not in hbc.file_request(wii, "L", "sd:/hbctest/sub").decode()
+    hbc.file_request(wii, "D", "sd:/hbctest/sub")
+    hbc.file_request(wii, "D", "sd:/hbctest")
     print("devnet files: PASS")
 
     app = root / "tests/netlog_app/netlog_app.dol"
-    server = hbc.LogServer(0)
+    server = hbc.LogServer(log_port)
     server.register(wii)
     assert hbc.status(wii)["log"].endswith(f":{server.port}")
     output = bytearray()
@@ -164,8 +166,11 @@ def check_devnet(run):
     def serve():
         conn, _ = server.sock.accept()
         with conn:
-            while chunk := conn.recv(4096):
-                output.extend(chunk)
+            try:
+                while chunk := conn.recv(4096):
+                    output.extend(chunk)
+            except ConnectionResetError:
+                pass  # IOS closes sockets with a reset
         server.done.set()
 
     threading.Thread(target=serve, daemon=True).start()

@@ -74,6 +74,23 @@ rejected paths, and a logged `netlog_app` run with arguments.
 `tests/test_hbc_tool.py` checks the client framing against a fake server.
 Not yet run on the dev Wii.
 
+### 1.2.2 dev Wii run
+
+`tests/wii_devnet.py` passed on the bench Wii (IOS58 rev 6175) after three
+hardware-only defects were fixed:
+
+| Defect | Evidence | Fix |
+| --- | --- | --- |
+| IOS closes sockets with a reset, dropping a reply still queued. | `HBCS` returned its 8-byte header, then `WSAECONNRESET`. | `tcp_close()` half-closes and drains for up to 1 s before `net_close`. |
+| On a non-blocking socket with a full send buffer, IOS reports a 2048-byte `net_write` as complete after queueing 2040 bytes. | Every download lost 8 bytes at stream offset 4 KiB and ended with stale buffer bytes; a PC-written text file came back broken at `0xff8`. | Devnet replies are sent with the socket in blocking mode. |
+| The reload stub drops the app's log socket without a FIN, so the PC never saw the log end. | All app output arrived, then the PC waited until timeout. | `hbc_netlog.h` closes the socket from an `atexit` handler; the PC treats a reset as the end. |
+
+The WAD build also found that an MSYS2 login shell gives native Python no
+`USERPROFILE`, so PyWii looked for keys under a literal `~`, and a failed
+`wadpack.py` left a 3,884-byte partial WAD. Keys now resolve through
+`key_dir()` (or `$WII_KEYS_DIR`), `wadpack.py` writes to a temporary name,
+and the title Makefile deletes the target of any failed step.
+
 The disc and partition tools (`discinfo`, `extract*`, `inject*`, `partsetios`,
 `rsapatch`, `getappldr`) run only their usage paths in tests; no disc image
 was available.

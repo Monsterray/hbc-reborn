@@ -1,4 +1,4 @@
-CHANNEL_VERSION = 1.2.0
+CHANNEL_VERSION = 1.2.2
 
 TOOLS = ../../pywii/pywii-tools
 PYWII = ../../pywii/Common/pywii/wii.py
@@ -54,3 +54,6 @@ clean:
 	rm -f retail/cetk dpki/cetk retail/tmd retail/tmd 00000000 00000001 channel_retail.wad channel_dpki.wad
 
 .PHONY: all dpki check check-retail check-dpki clean
+
+# A failed step must not leave a partial ticket, TMD, or WAD behind.
+.DELETE_ON_ERROR:

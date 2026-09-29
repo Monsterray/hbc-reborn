@@ -4,6 +4,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -47,15 +48,30 @@ static void put_u32(u8 *p, u32 v) {
 	p[3] = v;
 }
 
+// On a non-blocking socket whose send buffer fills, IOS can report a whole
+// block as sent after queueing only part of it (seen on a Wii at the 4 KiB
+// mark; Dolphin uses host sockets and does not). Send replies blocking.
+static bool send_all(s32 s, const void *data, u32 len) {
+	s32 flags = net_fcntl(s, F_GETFL, 0);
+	bool ok;
+
+	if (flags >= 0)
+		net_fcntl(s, F_SETFL, flags & ~4);
+	ok = tcp_write(s, data, len, NULL, NULL);
+	if (flags >= 0)
+		net_fcntl(s, F_SETFL, flags);
+	return ok;
+}
+
 // Reply header: s32 status (0 or -errno), u32 payload length.
 static bool reply(s32 s, s32 status, const void *data, u32 len) {
 	u8 hdr[8];
 
 	put_u32(hdr, status);
 	put_u32(hdr + 4, len);
-	if (!tcp_write(s, hdr, sizeof(hdr), NULL, NULL))
+	if (!send_all(s, hdr, sizeof(hdr)))
 		return false;
-	return !len || tcp_write(s, data, len, NULL, NULL);
+	return !len || send_all(s, data, len);
 }
 
 static s32 status_json(char *buf, size_t size) {
@@ -196,7 +212,7 @@ static void file_get(s32 s, const char *path) {
 	left = st.st_size;
 	put_u32(hdr, 0);
 	put_u32(hdr + 4, left);
-	if (tcp_write(s, hdr, sizeof(hdr), NULL, NULL)) {
+	if (send_all(s, hdr, sizeof(hdr))) {
 		while (left) {
 			u32 block = left > DEVNET_CHUNK ? DEVNET_CHUNK : left;
 
@@ -204,7 +220,7 @@ static void file_get(s32 s, const char *path) {
 			size_t got = fread(chunk, 1, block, f);
 			if (got < block)
 				memset(chunk + got, 0, block - got);
-			if (!tcp_write(s, chunk, block, NULL, NULL))
+			if (!send_all(s, chunk, block))
 				break;
 			left -= block;
 		}

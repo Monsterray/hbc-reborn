@@ -44,9 +44,23 @@ WII_ECDSA = 2
 
 sigtypes = [ "RSA-4096", "RSA-2048", "EC-DSA" ]
 
+def key_dir(*parts):
+    """Return $WII_KEYS_DIR or ~/.wii, joined with parts.
+
+    An MSYS2 login shell passes native Python no USERPROFILE, so
+    expanduser() returns "~" there; fall back to HOME in that case.
+    """
+    base = os.environ.get("WII_KEYS_DIR")
+    if not base:
+        home = os.path.expanduser("~")
+        if home == "~":
+            home = os.environ.get("HOME", "")
+        base = os.path.join(home, ".wii")
+    return os.path.join(base, *parts)
+
 def load_rsa_key(issuer):
     print("Loading private key for %s" % issuer)
-    path = os.path.join(os.path.expanduser("~"), ".wii", "dpki", issuer + ".pem")
+    path = key_dir("dpki", issuer + ".pem")
     return RSA.importKey(open(path, "r").read())
 
 signkeyfuncs = [ load_rsa_key, load_rsa_key, None ]
@@ -207,7 +221,7 @@ def get_readable_title(titleid, shortname = False):
 def loadkeys(path = None):
     keys.clear()
     if path is None:
-        path = os.path.join(os.path.expanduser("~"), ".wii")
+        path = key_dir()
 
     for key in keylist:
         try:
@@ -217,7 +231,7 @@ def loadkeys(path = None):
 
 def loadkeys_dpki(path = None):
     if path is None:
-        path = os.path.join(os.path.expanduser("~"), ".wii", "dpki")
+        path = key_dir("dpki")
     loadkeys(path)
 
 def parse_certs(blob):
