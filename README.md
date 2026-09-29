@@ -25,10 +25,10 @@ Dolphin and on a dev Wii; on the Wii it launched the Wii64 DOL through wiiload.
 The 1.1.7 DOL also answered a live version query on the dev Wii. When loaded
 through an installed Homebrew Channel, it keeps that channel's return stub so
 apps can return to the installed channel after exit.
-The retail WAD builds with the current toolchain and has booted to the HBC
-menu in an isolated Dolphin NAND. It has not yet been installed on a Wii.
+The 1.3.0 retail WAD is installed on the dev Wii: started from the Wii Menu it
+passes the developer-network suite, and apps exit back to it.
 
-The current channel release is **1.3.2**. The displayed channel version and
+The current channel release is **1.3.3**. The displayed channel version and
 retail WAD title version use the same SemVer value. The Wii TMD stores a
 16-bit title version, so packaging encodes `major.minor.patch` as 5/6/5 bits
 (`major << 11 | minor << 5 | patch`), preserving version order within those
