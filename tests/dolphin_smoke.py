@@ -170,6 +170,12 @@ def check_devnet(run, log_port=0):
     # Protocol 2: framed, CRC-checked, compressed where it helps.
     hbc._proto.pop(wii, None)
     assert hbc.proto(wii) >= 2
+    # The session's first framed download, of three frames: its end frame
+    # goes in a buffer slot that never held data (a NULL write before 1.7.0).
+    first = os.urandom(140_000)
+    hbc.put_file(wii, "sd:/hbctest/sub/first.bin", first)
+    assert hbc.get_file(wii, "sd:/hbctest/sub/first.bin") == first
+    hbc.file_request(wii, "D", "sd:/hbctest/sub/first.bin")
     samples = {"random": os.urandom(300_001), "zeros": bytes(200_000),
                "text": b"hbc devnet " * 30_000, "tiny": b"x", "exact": os.urandom(65536)}
     for name, blob in samples.items():

@@ -155,6 +155,21 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.6.2: small downloads crashed a fresh HBC
+
+- **Symptom (reported from WiiStation's bench jobs):** after a reset, `hbc.py get` of some
+  logs timed out and HBC died with a DSI at `devstream_get`, DAR `0xFFFFFFF4`.
+- **Cause:** a download's terminator frame takes the next free buffer slot, and its
+  header was written at `slot->data - 12`. A file of one to three frames (up to 192 KiB)
+  downloaded before any larger transfer left the terminator in a slot that never held
+  data, whose `data` was still NULL. Present since framed transfers (1.3.x); the tests
+  always moved a 300 KB file first. The agent, which frees its slots after each
+  transfer, wrote that header into freed memory instead.
+- **Fix:** slots start with `data = raw`, and the terminator's header goes in front of
+  `raw`. Checked on the bench Wii with the log that crashed it
+  (`sd:/wiisxrx/atrace.log`, 135,816 bytes) as a fresh session's first transfer; the
+  Dolphin suite now makes a 3-frame download its first framed transfer.
+
 ### 1.6.0: the HOME overlay
 
 - **Overlay:** `hbc_agent_home()` draws a status strip and slide-in menus over the

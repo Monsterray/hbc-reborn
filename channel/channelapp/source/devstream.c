@@ -94,6 +94,7 @@ static bool setup(void) {
 
 		slots[i].raw = base + HEADROOM;
 		slots[i].wire = base + 2 * HEADROOM + FRAME_MAX;
+		slots[i].data = slots[i].raw;
 	}
 
 	if (MQ_Init(&q_free, SLOTS) != MQ_ERROR_SUCCESSFUL)
@@ -360,8 +361,12 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 
 	while (true) {
 		slot_t *slot = take(q_full);
-		u8 *frame = slot->data - FRAME_HDR;
 		bool done = !slot->raw_len;
+		// A terminator carries no data, and its slot may never have held
+		// any (a file of three frames or fewer, first in this session):
+		// its data pointer would then be stale or NULL. Its header goes
+		// in front of the raw buffer, which every slot has.
+		u8 *frame = (done ? slot->raw : slot->data) - FRAME_HDR;
 
 		// The terminator frame carries the read status in its CRC field.
 		put_u32(frame, slot->raw_len);
