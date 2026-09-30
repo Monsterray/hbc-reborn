@@ -143,7 +143,7 @@ static void ir_restore(void) {
 }
 
 // Where each remote points, in framebuffer pixels.
-static unsigned ir_read(int x[4], int y[4]) {
+static unsigned ir_read(int x[4], int y[4], float angle[4]) {
 	unsigned valid = 0;
 	int chan;
 
@@ -152,6 +152,7 @@ static unsigned ir_read(int x[4], int y[4]) {
 
 		x[chan] = y[chan] = 0;
 		if (ir[chan].set && d && d->err == WPAD_ERR_NONE && d->ir.valid) {
+			angle[chan] = -d->ir.angle;
 			x[chan] = (int) d->ir.x;
 			y[chan] = (int) d->ir.y;
 			valid |= 1u << chan;
@@ -258,84 +259,164 @@ static void keeper_start(void) {
 		LWP_CreateThread(&keeper, keeper_thread, NULL, keeper_stack, sizeof(keeper_stack), 90);
 }
 
-// ---- Find: blink the LEDs, pulse the rumble, and chime, getting louder ----
+// ---- Find, and rumble feedback, run from the overlay's frame loop ------------
+//
+// A remote takes commands (LEDs, rumble, speaker data) from a small queue
+// that libogc drops commands from when it is full, so these send a command
+// only when the state they want changes, never every frame.
 
-static lwp_t finder = LWP_THREAD_NULL;
-static u8 finder_stack[8192] ATTRIBUTE_ALIGN(32);
-static int find_chan;
+#define FIND_FRAMES 180                  // 3 s at 60 Hz
+#define CHIME_SAMPLES (SPEAKER_RATE * 3)
 
-static void *find_thread(void *arg) {
-	int chan = find_chan, n = 0;
-	u64 start = gettime();
+static struct {
+	u32 find_end, pulse_end;             // frame numbers; 0 when idle
+	u32 restore_end;                     // re-sending the resting state until
+	u32 find_start;
+	int led, rumble;                     // what was last sent; -1 unknown
+	bool speaker_was_on, sent;
+} fx[4];
+static u32 fx_frame;
+
+// One chime for every remote, made once: two notes a quarter-second apart,
+// each faded in and out, the whole getting louder over 3 s. libogc plays it
+// from its own 6.67 ms timer, 20 bytes (40 samples) a tick, from this
+// buffer, so it has to outlive the overlay.
+static u8 *chime;
+
+static u8 *make_chime(void) {
 	WPADEncStatus enc;
-	bool speaker = WPAD_ControlSpeaker(chan, 1) == WPAD_ERR_NONE;
 	s16 pcm[40];
-	u8 data[20];
-	u32 level;
-	(void) arg;
+	u8 *out = memalign(32, CHIME_SAMPLES / 2);
+	int i, j;
 
+	if (!out)
+		return NULL;
 	memset(&enc, 0, sizeof(enc));
-	ses.finding[chan] = true;
-	while (true) {
-		u32 ms = ticks_to_millisecs(diff_ticks(start, gettime()));
-		wiimote *wm = remote(chan);
-		int i;
+	for (i = 0; i < CHIME_SAMPLES; i += 40) {
+		for (j = 0; j < 40; ++j) {
+			int n = i + j, note = n % (SPEAKER_RATE / 4);
+			float f = (n / (SPEAKER_RATE / 4)) & 1 ? 1320.f : 880.f;
+			float env = note < 60 ? note / 60.f : note > SPEAKER_RATE / 4 - 120 ?
+					(SPEAKER_RATE / 4 - note) / 120.f : 1.f;
+			float amp = (3000.f + 24000.f * n / CHIME_SAMPLES) * env;
 
-		if (ms >= FIND_MS || !wm)
-			break;
-		_CPU_ISR_Disable(level);
-		if ((ms / 200) != (u32) n) {
-			n = ms / 200;
-			wiiuse_set_leds(wm, n & 1 ? 0xf0 : WIIMOTE_LED_1 << chan, NULL);
-			wiiuse_rumble(wm, (ms % 600) < 150);
+			pcm[j] = (s16) (amp * sinf(2.f * 3.14159265f * f * n / SPEAKER_RATE));
 		}
-		_CPU_ISR_Restore(level);
-
-		if (!speaker) {
-			usleep(20 * 1000);
-			continue;
-		}
-		// Two alternating tones, their volume ramping up over the 3 s.
-		for (i = 0; i < 40; ++i) {
-			u32 s = (ms * SPEAKER_RATE) / 1000 + i;
-			float f = (s / (SPEAKER_RATE / 4)) & 1 ? 1320.f : 880.f;
-			float amp = 2000.f + 18000.f * ms / FIND_MS;
-
-			pcm[i] = (s16) (amp * sinf(2.f * (float) M_PI * f * s / SPEAKER_RATE));
-		}
-		WPAD_EncodeData(&enc, ms ? WPAD_ENC_CONT : 0, pcm, 40, data);
-		WPAD_SendStreamData(chan, data, sizeof(data));
-		usleep(1000000 * 40 / SPEAKER_RATE);
+		WPAD_EncodeData(&enc, i ? WPAD_ENC_CONT : 0, pcm, 40, out + i / 2);
 	}
-	if (speaker)
-		WPAD_ControlSpeaker(chan, 0);
-	{
-		wiimote *wm = remote(chan);
+	return out;
+}
 
-		_CPU_ISR_Disable(level);
-		if (wm) {
-			wiiuse_rumble(wm, 0);
-			wiiuse_set_leds(wm, WIIMOTE_LED_1 << chan, NULL);
-		}
-		_CPU_ISR_Restore(level);
-	}
-	if (!remote(chan))
-		WPAD_Rumble(chan, 0);
-	ses.finding[chan] = false;
-	finder = LWP_THREAD_NULL;
-	return NULL;
+static void fx_leds(int chan, int leds) {
+	wiimote *wm = remote(chan);
+	u32 level;
+
+	if (!wm || fx[chan].led == leds)
+		return;
+	_CPU_ISR_Disable(level);
+	wiiuse_set_leds(wm, leds, NULL);
+	_CPU_ISR_Restore(level);
+	fx[chan].led = leds;
+}
+
+static void fx_rumble(int chan, int on) {
+	if (fx[chan].rumble == on)
+		return;
+	WPAD_Rumble(chan, on);
+	fx[chan].rumble = on;
 }
 
 static void find_start(int chan) {
-	if (finder != LWP_THREAD_NULL)
+	if (fx[chan].find_end)
 		return;
-	find_chan = chan;
-	if (!remote(chan)) {
-		// Without handles: rumble only, from this thread's frame loop.
-		ses.finding[chan] = true;
+	if (!chime)
+		chime = make_chime();
+	fx[chan].find_start = fx_frame;
+	fx[chan].find_end = fx_frame + FIND_FRAMES;
+	fx[chan].led = fx[chan].rumble = -1;
+	fx[chan].sent = false;
+	fx[chan].speaker_was_on = WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE;
+	ses.finding[chan] = true;
+	if (chime && !fx[chan].speaker_was_on)
+		WPAD_ControlSpeaker(chan, 1);
+}
+
+static void find_stop(int chan) {
+	fx_rumble(chan, 0);
+	fx_leds(chan, WIIMOTE_LED_1 << chan);
+	if (!fx[chan].speaker_was_on)
+		WPAD_ControlSpeaker(chan, 0);
+	fx[chan].find_end = 0;
+	ses.finding[chan] = false;
+	// A full command queue drops commands, so say it a few more times.
+	fx[chan].restore_end = fx_frame + 30;
+}
+
+// A short buzz when rumble is switched on.
+static void pulse(int chan) {
+	u32 type;
+
+	if (WPAD_Probe(chan, &type) != WPAD_ERR_NONE || fx[chan].find_end)
 		return;
+	fx[chan].rumble = -1;
+	fx_rumble(chan, 1);
+	fx[chan].pulse_end = fx_frame + 12;
+}
+
+static void fx_tick(void) {
+	int chan;
+
+	fx_frame++;
+	for (chan = 0; chan < 4; ++chan) {
+		u32 type;
+
+		if (fx[chan].pulse_end && fx_frame >= fx[chan].pulse_end) {
+			fx_rumble(chan, 0);
+			fx[chan].pulse_end = 0;
+		}
+		if (fx[chan].restore_end) {
+			if (fx_frame >= fx[chan].restore_end) {
+				fx[chan].restore_end = 0;
+			} else if (fx_frame % 6 == 0) {
+				fx[chan].led = fx[chan].rumble = -1;
+				fx_leds(chan, WIIMOTE_LED_1 << chan);
+				if (!fx[chan].pulse_end)
+					fx_rumble(chan, 0);
+			}
+		}
+		if (!fx[chan].find_end)
+			continue;
+		if (WPAD_Probe(chan, &type) != WPAD_ERR_NONE || fx_frame >= fx[chan].find_end) {
+			find_stop(chan);
+			continue;
+		}
+		{
+			u32 t = fx_frame - fx[chan].find_start;
+
+			// All four LEDs and the player's LED in turn, and a rumble
+			// pulse of 150 ms every 600 ms.
+			fx_leds(chan, (t / 12) & 1 ? 0xf0 : WIIMOTE_LED_1 << chan);
+			fx_rumble(chan, t % 36 < 9);
+		}
+		// The speaker takes a few reports to start; play once it has.
+		if (chime && !fx[chan].sent && WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE) {
+			WPAD_SendStreamData(chan, chime, CHIME_SAMPLES / 2);
+			fx[chan].sent = true;
+		}
 	}
-	LWP_CreateThread(&finder, find_thread, NULL, finder_stack, sizeof(finder_stack), 70);
+}
+
+static void fx_stop_all(void) {
+	int chan;
+
+	for (chan = 0; chan < 4; ++chan) {
+		if (fx[chan].find_end)
+			find_stop(chan);
+		if (fx[chan].pulse_end) {
+			fx_rumble(chan, 0);
+			fx[chan].pulse_end = 0;
+		}
+	}
 }
 
 // ---- Calibration --------------------------------------------------------
@@ -709,6 +790,9 @@ static void act(int action, int arg, void *user) {
 	case OVA_RUMBLE:
 		ses.rumble_off[arg] = !ses.rumble_off[arg];
 		keeper_start();
+		// Feel it: a short buzz when rumble comes on.
+		if (!ses.rumble_off[arg] && !ses.rumble_all_off)
+			pulse(arg);
 		break;
 	case OVA_DISCONNECT:
 		WPAD_Disconnect(arg);
@@ -752,6 +836,13 @@ static void act(int action, int arg, void *user) {
 	case OVA_RUMBLE_ALL:
 		ses.rumble_all_off = !arg;
 		keeper_start();
+		if (arg) {
+			int chan;
+
+			for (chan = 0; chan < 4; ++chan)
+				if (!ses.rumble_off[chan])
+					pulse(chan);
+		}
 		break;
 	}
 }
@@ -882,6 +973,12 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	memcpy(r.frozen, app_fb, size);
 	LWP_CreateThread(&sd, sd_thread, &r, NULL, 16 * 1024, 30);
 
+	// Like the Wii's HOME Menu, pausing stops every remote's rumble; an app
+	// (HBC's hover buzz, for one) may have started one its loop would stop.
+	WPAD_Rumble(WPAD_CHAN_ALL, 0);
+	// A 16:9 TV stretches the 640-pixel picture: use condensed text and
+	// pointer so they look right.
+	ov_set_widescreen(CONF_GetAspectRatio() == CONF_ASPECT_16_9);
 	ov_init(&ui, r.w, r.h);
 	last_chan = -1;
 	memset(&cost, 0, sizeof(cost));
@@ -893,6 +990,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		ov_canvas c;
 		unsigned pressed, pointing;
 		int px[4], py[4];
+		float pa[4] = { 0, 0, 0, 0 };
 		u8 *back = fb[fb[1] ? cur : 0];
 		u64 t0 = gettime();
 		u32 us;
@@ -902,21 +1000,10 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		poll(&r);
 		ir_update(r.w, r.h);
 		pressed = read_input();
-		pointing = ir_read(px, py);
-		ov_point(&ui, px, py, pointing, last_chan);
+		pointing = ir_read(px, py, pa);
+		ov_point(&ui, px, py, pa, pointing, last_chan);
 		cal_sample();
-		// Find without handles: pulse the rumble from here.
-		for (i = 0; i < 4; ++i)
-			if (ses.finding[i] && finder == LWP_THREAD_NULL) {
-				static u32 f;
-
-				WPAD_Rumble(i, (++f % 36) < 9);
-				if (f > 180) {
-					WPAD_Rumble(i, 0);
-					ses.finding[i] = false;
-					f = 0;
-				}
-			}
+		fx_tick();
 		// An Exit choice the app handles: close everything first.
 		if (r.exit_choice && !ui.closing)
 			pressed = OV_HOME;
@@ -961,6 +1048,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	VIDEO_SetNextFramebuffer(app_fb);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
+	fx_stop_all();
 	ir_restore();
 	if (sd != LWP_THREAD_NULL)
 		LWP_JoinThread(sd, NULL);

@@ -189,19 +189,27 @@ int main(int argc, char **argv) {
 	// The Wii Remote pointer: over WiiMote on the bar, then press A.
 	{
 		int x[OV_REMOTES] = { 553, 200 }, y[OV_REMOTES] = { 434, 150 };
+		float a[OV_REMOTES] = { 0, 25 };
 
-		ov_point(&ui, x, y, 3, 0);
+		ov_point(&ui, x, y, a, 3, 0);
 		keys(&ui, "");
 		capture(&ui, "15-pointer-hover");
 		printf("hover %d\n", ui.hover);
-		ov_point(&ui, x, y, 3, 0);
+		ov_point(&ui, x, y, a, 3, 0);
 		ov_step(&ui, &ext, OV_A, act, NULL);
 		for (i = 0; i < 20; ++i) {
-			ov_point(&ui, x, y, 3, 0);
+			ov_point(&ui, x, y, a, 3, 0);
 			ov_step(&ui, &ext, 0, act, NULL);
 		}
 		capture(&ui, "16-pointer-press");
-		ov_point(&ui, x, y, 0, -1);
+
+		// On a 16:9 TV: condensed text and pointer (the TV widens them back).
+		ov_set_widescreen(true);
+		ui.drawn = 0;
+		keys(&ui, "");
+		capture(&ui, "17-widescreen");
+		ov_set_widescreen(false);
+		ov_point(&ui, x, y, a, 0, -1);
 	}
 	ext.toast[0] = 0;
 	keys(&ui, "h");

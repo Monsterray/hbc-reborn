@@ -122,6 +122,7 @@ typedef struct {
 	/* The Wii Remotes' pointers (ov_point), and the item under the one in
 	   use; while it points at the screen, A presses that item. */
 	int px[OV_REMOTES], py[OV_REMOTES];
+	float pa[OV_REMOTES];  /* each remote's twist, degrees */
 	unsigned pointing;    /* bit per remote on screen */
 	int pointer;          /* the remote in use, or -1 */
 	int hover;            /* item under it, or 0 */
@@ -135,8 +136,8 @@ typedef struct {
 void ov_init(ov_ui *ui, int w, int h);
 /* Before each ov_step: where each remote points (valid: a bit per remote)
  * and which remote is in use (the last to press a button), or -1. */
-void ov_point(ov_ui *ui, const int x[OV_REMOTES], const int y[OV_REMOTES], unsigned valid,
-			  int active);
+void ov_point(ov_ui *ui, const int x[OV_REMOTES], const int y[OV_REMOTES],
+			  const float angle[OV_REMOTES], unsigned valid, int active);
 /* One frame: handle presses, advance animations, lay out. Returns false
  * once the overlay has fully closed; ui->after then names an action
  * (OVA_SLOT or OVA_RESTART_APP) to run in the app, or 0. */

@@ -1,8 +1,20 @@
 // Software drawing into a YUYV framebuffer; see ov_draw.h.
 
+#include <math.h>
 #include <string.h>
 
 #include "ov_draw.h"
+#include "ov_font.h"
+
+static const ov_theme theme_4x3 = { &ov_font_regular, &ov_font_bold, &ov_font_title,
+									&ov_cursor, 256 };
+static const ov_theme theme_16x9 = { &ov_font_regular_wide, &ov_font_bold_wide,
+									 &ov_font_title_wide, &ov_cursor, 192 };
+const ov_theme *ov_th = &theme_4x3;
+
+void ov_set_widescreen(bool wide) {
+	ov_th = wide ? &theme_16x9 : &theme_4x3;
+}
 
 ov_color ov_rgb(int r, int g, int b) {
 	ov_color c;
@@ -175,6 +187,28 @@ void ov_disc(ov_canvas *c, int cx, int cy, int r, ov_color col) {
 
 			if (d <= r * r)
 				put(c, cx + i, cy + j, col, d > (r - 1) * (r - 1) ? 140 : 255);
+		}
+}
+
+void ov_sprite_at(ov_canvas *c, const ov_sprite *s, int x, int y, float angle, int sx) {
+	float a = angle * 3.14159265f / 180.f, ca = cosf(a), sa = sinf(a);
+	float kx = sx / 256.f;
+	int r = (int) sqrtf((float) (s->w * s->w + s->h * s->h)) + 1, i, j;
+
+	// Every screen pixel near the hotspot, mapped back into the sprite:
+	// undo the squeeze, then the turn, then sample the nearest texel.
+	for (j = -r; j <= r; ++j)
+		for (i = -r; i <= r; ++i) {
+			float dx = i / kx, dy = (float) j;
+			int u = (int) floorf(ca * dx + sa * dy + 0.5f) + s->hot_x;
+			int v = (int) floorf(-sa * dx + ca * dy + 0.5f) + s->hot_y;
+			const uint8_t *px;
+
+			if (u < 0 || v < 0 || u >= s->w || v >= s->h)
+				continue;
+			px = s->rgba + (v * s->w + u) * 4;
+			if (px[3])
+				put(c, x + i, y + j, ov_rgb(px[0], px[1], px[2]), px[3]);
 		}
 }
 

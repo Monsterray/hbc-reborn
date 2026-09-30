@@ -21,7 +21,7 @@ class OverlayUITest(unittest.TestCase):
             exe = pathlib.Path(tmp, "preview.exe" if os.name == "nt" else "preview")
             subprocess.run([CC, "-O1", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
                             "-I", str(agent), str(root / "tests/overlay_preview/preview.c"),
-                            str(agent / "ov_ui.c"), str(agent / "ov_draw.c"), "-o", str(exe)],
+                            str(agent / "ov_ui.c"), str(agent / "ov_draw.c"), "-o", str(exe)] + ([] if os.name == "nt" else ["-lm"]),
                            check=True, env=dict(os.environ, TMP=tmp, TEMP=tmp, TMPDIR=tmp))
             out = subprocess.run([str(exe), tmp], check=True, capture_output=True,
                                  text=True).stdout

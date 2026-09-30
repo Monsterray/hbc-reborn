@@ -194,6 +194,11 @@ home_action home_show(void) {
 	else
 		snprintf(network_text, sizeof(network_text), "Not initialized");
 
+	// HBC buzzes the remote when the pointer enters a button and stops it a
+	// few frames later from its own loop, which the overlay pauses: stop it
+	// now, or it would buzz until the overlay closed.
+	controls_rumble(0);
+
 	// Runs its own frame loop until the user closes it (B at the top, or
 	// HOME), calling pick() or exit_choice() on the way out.
 	picked = HOME_NONE;

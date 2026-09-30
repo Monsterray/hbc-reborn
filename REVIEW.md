@@ -155,6 +155,27 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.7.2: Find, rumble, the pointer on 16:9, the bloom
+
+- **Find sent the speaker the wrong thing.** `WPAD_SendStreamData` takes a whole sound,
+  which libogc plays 20 bytes a tick from its own 6.67 ms timer; Find called it every
+  6.7 ms with a 20-byte stack buffer, before the speaker was even ready, and the flood
+  of commands filled the remote's command queue, which drops what does not fit. On a
+  real remote: no sound, LEDs stuck on, no rumble. Find now runs from the overlay's
+  frame loop, sends LED and rumble commands only when they change, plays one prebuilt
+  3 s chime once the speaker reports ready, and re-sends the resting state after.
+- **HBC's hover buzz ran on under the overlay.** HBC starts a rumble when the pointer
+  enters a button and stops it from its main loop, which the overlay pauses. The
+  overlay now stops every remote's rumble on opening, and `home.c` stops HBC's first.
+- **The pointer:** HBC draws its shade 2 pixels right and 4 down under the hand, and
+  turns both with the remote (`cursors.c`); the overlay had put the shade straight under
+  the hand. On a 16:9 TV the Wii stretches the 640-pixel picture by a third, so the
+  overlay now uses fonts and a pointer condensed to three quarters when
+  `CONF_GetAspectRatio()` says 16:9.
+- **Look:** a blue bloom around the highlighted button and a smaller one around buttons
+  that are On, with no black edge on glowing buttons; a short buzz when rumble is
+  switched on.
+
 ### 1.7.1: the pointer, and the overlay's cost
 
 - **Pointer:** the overlay turns on IR for every connected remote while open (restoring

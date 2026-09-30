@@ -40,7 +40,7 @@ def main():
     agent = root / "sdk/hbc_agent"
     subprocess.run([cc, "-O2", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I", str(agent),
                     str(root / "tests/overlay_preview/preview.c"), str(agent / "ov_ui.c"),
-                    str(agent / "ov_draw.c"), "-o", str(exe)], check=True,
+                    str(agent / "ov_draw.c"), "-o", str(exe)] + ([] if os.name == "nt" else ["-lm"]), check=True,
                    env=dict(os.environ, TMP=str(out), TEMP=str(out), TMPDIR=str(out)))
     subprocess.run([str(exe), str(out)], check=True)
     shots = sorted(out.glob("*.yuyv"))

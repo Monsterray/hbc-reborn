@@ -77,7 +77,7 @@ static ov_item *add(ov_ui *ui, int kind, int id, int x, int y, int w, int h, int
 	it->w = w;
 	it->h = h;
 	it->flags = flags;
-	it->font = &ov_font_regular;
+	it->font = ov_th->regular;
 	if (text)
 		snprintf(it->text, sizeof(it->text), "%s", text);
 	return it;
@@ -98,7 +98,7 @@ static void value(ov_ui *ui, int x, int y, int w, const char *text, int flags) {
 static void title(ov_ui *ui, int x, int y, int w, const char *text) {
 	ov_item *it = add(ui, K_TEXT, 0, x, y, w, 22, 0, text);
 
-	it->font = &ov_font_title;
+	it->font = ov_th->title;
 }
 
 // "label  [On]": one toggle, highlighted when on.
@@ -180,7 +180,7 @@ static int build_dev(ov_ui *ui, const ov_ext *e) {
 					w = n < LOG_COLS ? n : LOG_COLS;
 					memcpy(tmp, p, w);
 					tmp[w] = 0;
-					if (ov_text_width(&ov_font_regular, tmp) <= IW || w <= 1)
+					if (ov_text_width(ov_th->regular, tmp) <= IW || w <= 1)
 						break;
 					n = w - 1;
 				}
@@ -485,7 +485,7 @@ static void layout(ov_ui *ui, const ov_ext *e) {
 		int y = strip_y + PAD + EH * ex / 256;
 		ov_item *it = add(ui, K_TEXT, 0, M + PAD, y, sw / 2, STATUS_H, 0, e->app);
 
-		it->font = &ov_font_bold;
+		it->font = ov_th->bold;
 		x = ui->w - M - PAD;
 		for (i = OV_REMOTES - 1; i >= 0; --i) {
 			x -= e->remote[i].connected ? 80 : 50;
@@ -513,7 +513,7 @@ static void layout(ov_ui *ui, const ov_ext *e) {
 	add(ui, K_NOCLIP, 0, 0, 0, 0, 0, 0, NULL);
 
 	if (e->toast[0]) {
-		int w = ov_text_width(&ov_font_regular, e->toast) + 32;
+		int w = ov_text_width(ov_th->regular, e->toast) + 32;
 		// At the top, clear of the menus.
 		add(ui, K_PANEL, 0, (ui->w - w) / 2, 24, w, 32, 0, NULL);
 		add(ui, K_TEXT, 0, (ui->w - w) / 2, 24, w, 32, F_CENTER, e->toast);
@@ -603,13 +603,14 @@ void ov_init(ov_ui *ui, int w, int h) {
 	ui->pointer = -1;
 }
 
-void ov_point(ov_ui *ui, const int x[OV_REMOTES], const int y[OV_REMOTES], unsigned valid,
-			  int active) {
+void ov_point(ov_ui *ui, const int x[OV_REMOTES], const int y[OV_REMOTES],
+			  const float angle[OV_REMOTES], unsigned valid, int active) {
 	int i;
 
 	for (i = 0; i < OV_REMOTES; ++i) {
 		ui->px[i] = x[i];
 		ui->py[i] = y[i];
+		ui->pa[i] = angle ? angle[i] : 0;
 	}
 	ui->pointing = valid;
 	// Keep the remote in use while it points; otherwise take any that does.
@@ -868,6 +869,7 @@ bool ov_changed(ov_ui *ui, const ov_ext *e) {
 	h = fnv(h, &ui->pointer, sizeof(ui->pointer));
 	h = fnv(h, ui->px, sizeof(ui->px));
 	h = fnv(h, ui->py, sizeof(ui->py));
+	h = fnv(h, ui->pa, sizeof(ui->pa));
 	h = fnv(h, &ui->open_t, sizeof(ui->open_t));
 	h = fnv(h, &ui->menu, sizeof(ui->menu));
 	h = fnv(h, &ui->paused, sizeof(ui->paused));
@@ -895,7 +897,7 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 	const ov_color on_bot = ov_rgb(0x1d, 0x4a, 0x60);
 	const ov_color white = ov_rgb(0xff, 0xff, 0xff), grey = ov_rgb(0xa8, 0xa8, 0xa8);
 	const ov_color labelc = ov_rgb(0xc9, 0xd6, 0xde), dimc = ov_rgb(0x5a, 0x60, 0x66);
-	const ov_color focus = ov_rgb(0xf4, 0xfb, 0xff), card = ov_rgb(0x1c, 0x3a, 0x4c);
+	const ov_color bloom = ov_rgb(0x4f, 0xb8, 0xff), card = ov_rgb(0x1c, 0x3a, 0x4c);
 	const ov_color hi_top = ov_rgb(0x8a, 0x8a, 0x8a), hi_mid = ov_rgb(0x55, 0x55, 0x55);
 	const ov_color hi_bot = ov_rgb(0x40, 0x40, 0x40), on_hi = ov_rgb(0x8c, 0xc8, 0xe6);
 	const ov_color led_on = ov_rgb(0x7f, 0xc4, 0xe0), led_off = ov_rgb(0x38, 0x38, 0x38);
@@ -946,7 +948,7 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 		}
 		case K_BUTTON: {
 			bool focused = !(it->flags & F_BLANK) && it->id == target(ui);
-			const ov_font *f = (it->flags & (F_ON | F_SEL)) || focused ? &ov_font_bold : &ov_font_regular;
+			const ov_font *f = (it->flags & (F_ON | F_SEL)) || focused ? ov_th->bold : ov_th->regular;
 			ov_color tc = dis ? dimc : (it->flags & (F_ON | F_SEL)) || focused ? white : grey;
 			int tw = ov_text_width(f, it->text);
 
@@ -954,16 +956,22 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, black, black, black, dimc, 110);
 				break;
 			}
-			// The highlight has to survive a TV's blur and interlacing: a
-			// 3-pixel white frame around a brighter body, not a thin line.
-			if (focused)
-				ov_panel(c, it->x - 4, it->y - 4, it->w + 8, it->h + 8, 9, focus, focus, focus,
-						 focus, 255);
+			// A blue bloom, like HBC's focused buttons: stacked translucent
+			// rounded boxes, strongest nearest the button. Wide and bright
+			// for the highlight, soft for a button that is On.
+			if (!dis && (focused || (it->flags & F_ON))) {
+				int k, rad = focused ? 7 : 4, a = focused ? 44 : 24;
+
+				for (k = rad; k > 0; --k)
+					ov_panel(c, it->x - k, it->y - k, it->w + 2 * k, it->h + 2 * k, 6 + k, bloom,
+							 bloom, bloom, bloom, a);
+			}
+			// A glowing button has no black edge, so the bloom runs into it.
 			if (it->flags & F_ON)
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, focused ? on_hi : on_top, on_mid, on_bot,
-						 edge, dis ? 110 : 255);
+						 dis ? edge : on_mid, dis ? 110 : 255);
 			else if (focused)
-				ov_panel(c, it->x, it->y, it->w, it->h, 6, hi_top, hi_mid, hi_bot, edge, 255);
+				ov_panel(c, it->x, it->y, it->w, it->h, 6, hi_top, hi_mid, hi_bot, hi_mid, 255);
 			else
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, btn_top, btn_mid, btn_bot,
 						 it->flags & F_SEL ? on_mid : edge, dis ? 110 : 255);
@@ -995,8 +1003,7 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 
 			if (k < 0 || !(ui->pointing & (1u << k)) || (r < OV_REMOTES && k == ui->pointer))
 				continue;
-			ov_image(c, ui->px[k] - OV_CURSOR_HOT_X, ui->py[k] - OV_CURSOR_HOT_Y, OV_CURSOR_W,
-					 OV_CURSOR_H, ov_cursor_rgba);
+			ov_sprite_at(c, ov_th->cursor, ui->px[k], ui->py[k], ui->pa[k], ov_th->sx);
 		}
 	}
 }

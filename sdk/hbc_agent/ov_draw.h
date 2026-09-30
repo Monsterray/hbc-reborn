@@ -8,7 +8,34 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "ov_font.h"
+typedef struct {
+	uint8_t w, h;      /* bitmap size */
+	int8_t x, y;       /* bitmap offset from the pen, y from the line top */
+	uint8_t adv;       /* pen advance */
+	uint16_t off;      /* offset into the bits */
+} ov_glyph;
+
+typedef struct {
+	const ov_glyph *glyphs;   /* ASCII 32 to 126 */
+	const uint8_t *bits;      /* 8-bit coverage */
+	int ascent, height;
+} ov_font;
+
+typedef struct {
+	const uint8_t *rgba;
+	int w, h, hot_x, hot_y;
+} ov_sprite;
+
+/* The fonts and pointer to draw with: condensed ones on a 16:9 TV, which
+ * stretches the 640-pixel picture sideways (ov_set_widescreen). */
+typedef struct {
+	const ov_font *regular, *bold, *title;
+	const ov_sprite *cursor;
+	int sx;               /* horizontal scale for sprites, in 1/256: 192 on 16:9 */
+} ov_theme;
+
+extern const ov_theme *ov_th;
+void ov_set_widescreen(bool wide);
 
 typedef struct {
 	uint8_t *fb;     /* YUYV pairs */
@@ -33,6 +60,9 @@ void ov_fill(ov_canvas *c, int x, int y, int w, int h, ov_color col, int alpha);
 void ov_panel(ov_canvas *c, int x, int y, int w, int h, int radius, ov_color top,
 			  ov_color mid, ov_color bot, ov_color border, int alpha);
 void ov_disc(ov_canvas *c, int cx, int cy, int r, ov_color col);
+/* A sprite with its hotspot at x, y, turned by angle degrees (clockwise, as
+ * the remote twists) and scaled horizontally by sx/256, as HBC draws it. */
+void ov_sprite_at(ov_canvas *c, const ov_sprite *s, int x, int y, float angle, int sx);
 /* An RGBA image (8 bits each, rows top to bottom) with its top-left at x, y. */
 void ov_image(ov_canvas *c, int x, int y, int w, int h, const uint8_t *rgba);
 int ov_text_width(const ov_font *f, const char *s);
