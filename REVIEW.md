@@ -155,6 +155,52 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.7.6: a speaker driver after Nintendo's
+
+- **A recording of 1.7.5's Test sounds (ADPCM, then PCM) settled the rate.**
+  - **ADPCM:** every note came out an octave high (523 Hz as 1047, 659 as 1310,
+    784 as about 1570). The top note also appeared at 3906 Hz, which is 6000 minus 2094,
+    a mirror image. So the speaker plays rate `0x07d0` ADPCM at 6 kHz (12,000,000 /
+    rate, not WiiBrew's 6,000,000), and 1.7.5's 13.3 ms pace starved it. 1.7.4's
+    pace was right.
+  - **PCM** (3 kHz) played at the right pitch and length.
+  - **Both** had held notes chopped by 10 to 30 dB dips every 10 to 40 ms, and loud
+    mirror images from 2.5 to 5 kHz (the speaker holds each sample, and it is loud
+    there).
+- **Nintendo's SDK** (research from the doldecomp/ogws Wii Sports and Rhae Wii Play
+  decompilations: WPAD, WUD, WENC, nw4r::snd::RemoteSpeaker):
+  - **Sniff mode:** WUD puts every remote's link in sniff mode at 8 slots (5 ms),
+    attempt 1, timeout 0, so the link runs at 200 Hz. libogc never does this: the call
+    in `bte.c` is commented out. Dolphin notes that remotes run at about 100 Hz
+    without it and drop speaker reports, which desyncs the decoder. **This is the
+    chopping.**
+  - **Start-up:** enable, mute, `0x01` to 0xa20009, **`0x80`** to 0xa20001 (libogc
+    writes `0x08`), the config block `00 00 D0 07 VV 0C 0E`, unmute, and a status
+    request. Play (`0x01` to 0xa20008) is sent only after all of that is answered.
+  - **Pacing:** NW4R sends 40 samples every 6.67 ms (150 Hz alarm).
+  - **Backpressure:** a packet is refused when the controller holds more than 3
+    unacknowledged ACL packets, among other checks. A refused block is skipped
+    without encoding it, so the encoder and the decoder stay in step. The encoder
+    carries on across sounds and silence, and is reset only after a start-up.
+  - **Encoder (WENC):** successive approximation, with the same step table and nibble
+    order as libogc's `wencdata`. The rounding differs (Nintendo halves with
+    truncation), so the result drifts from libogc's by 1 or 2 LSB a sample.
+- **lwbt bug, confirmed in the libbte we link (disassembly):** with no controller
+  buffer free and nothing queued, `lp_acl_write` queues the packet and then sends it
+  anyway. The packet goes out twice (the queued copy again on the next completion),
+  and the u16 free count at `hci_dev + 10` wraps to 0xffff.
+- **The driver (overlay.c):** does all of the above. It uses sniff mode through
+  `hci_sniff_mode`, the SDK's start-up sequence, and a per-report WENC port inside
+  the 6.67 ms alarm. It reads the free count at `hci_dev + 10` to skip a block when
+  more than 3 packets are in flight. A wrapped count is trusted again every 30 ticks,
+  so a count that stays wrong cannot silence the speaker. It restarts the speaker
+  when the format or volume changes, and restores libogc's speaker set-up on close if
+  the app had it on. `status` shows the driver's counters (`spk`).
+- **Still to measure on hardware:** the `spk` counters while a sound plays (skips,
+  credits, worst gap, sniff), and whether a recording is still chopped. Sniff mode
+  stays on after the overlay closes, as it does under Nintendo's SDK; an app's
+  remotes then report at 200 Hz.
+
 ### 1.7.5: the speaker's pace, and a PCM/ADPCM test
 
 - **Reported on hardware:** 1.7.4's volume chirp sounded cut off, and Find made only

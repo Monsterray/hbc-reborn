@@ -38,13 +38,19 @@
 #define TOAST_FRAMES 150
 #define CAL_FRAMES 60
 #define FIND_MS 3000
-#define SPEAKER_RATE 3000   // samples a second, both formats (see Sounds below)
 
 extern void __exception_setreload(int t);
 
 // wiiuse internals, exported by libwiiuse but not declared in its headers.
 extern int wiiuse_io_write(struct wiimote_t *wm, ubyte *buf, int len);
 extern void wiiuse_send_next_command(struct wiimote_t *wm);
+extern int wiiuse_sendcmd(struct wiimote_t *wm, ubyte report_type, ubyte *msg, int len, cmd_blk_cb cb);
+// lwbt, in libbte: sniff mode for a link, and the host's HCI state, whose
+// u16 at offset 10 is how many ACL packets the Bluetooth controller has
+// room for (lp_acl_write in hci.c).
+extern s8 hci_sniff_mode(struct bd_addr *bdaddr, u16 max_interval, u16 min_interval, u16 attempt,
+						 u16 timeout);
+extern void *hci_dev;
 
 #define WM_RPT_SPEAKER_DATA 0x18
 #define WM_REG_SPEAKER_BLOCK 0x04a20001
@@ -363,6 +369,14 @@ static void reset_remotes(void) {
 	}
 }
 
+// The speaker driver's counters for `status` (see Sounds below).
+static struct {
+	u32 sent, skipped, wrapped;      // reports sent; blocks skipped, busy; ticks with a wrapped count
+	u32 gap_max;                     // longest time between two ticks, in time-base ticks
+	u16 credits_min, credits_peak;   // the controller's free ACL buffers
+	bool sniff;
+} sst[4] = { [0 ... 3] = { .credits_min = 0xffff } };
+
 int agent_remote_diag(char *buf, int size) {
 	int n = 0, chan;
 
@@ -378,48 +392,55 @@ int agent_remote_diag(char *buf, int size) {
 		head = *head_of(wm);
 		if (head)
 			snprintf(rpt, sizeof(rpt), "\"%02x\"", head->data[0]);
+		// spk: [sent, skipped, wrapped, worst gap us, fewest free ACL buffers,
+		// most, sniff]
 		n += snprintf(buf + n, size - n, "%s{\"chan\":%d,\"state\":\"%06x\",\"leds\":\"%02x\","
 				"\"exp\":%d,\"queued\":%d,\"head\":%s,\"head_sent\":%s,\"resent\":%u,"
-				"\"dropped\":%u}", n > 1 ? "," : "", chan, wm->state, wm->leds, wm->exp.type,
-				queued(wm), rpt, head && head->state == CMD_SENT ? "true" : "false",
-				q[chan].resent, q[chan].dropped);
+				"\"dropped\":%u,\"spk\":[%u,%u,%u,%u,%u,%u,%d]}", n > 1 ? "," : "", chan, wm->state,
+				wm->leds, wm->exp.type, queued(wm), rpt, head && head->state == CMD_SENT ? "true" : "false",
+				q[chan].resent, q[chan].dropped, sst[chan].sent, sst[chan].skipped, sst[chan].wrapped,
+				(u32) ticks_to_microsecs(sst[chan].gap_max), sst[chan].credits_min, sst[chan].credits_peak,
+				sst[chan].sniff);
 	}
 	n += snprintf(buf + n, size - n, "]");
 	return n;
 }
 
-// ---- Sounds for the remote's speaker -------------------------------------
+// ---- The remote's speaker: a driver after Nintendo's --------------------
 //
-// The speaker takes 4-bit Yamaha ADPCM or signed 8-bit PCM, up to 20 bytes
-// a report (0x18), at the rate in its configuration block (WiiBrew,
-// Wiimote#Speaker): ADPCM plays 6,000,000 / rate samples a second, PCM
-// 12,000,000 / rate. libogc sets ADPCM at rate 0x07d0, which is 3 kHz, but
-// streams 40 samples every 6.67 ms, 6 kHz: twice what the speaker plays.
-// Its small buffer overflows, what doesn't fit is lost, and ADPCM, which
-// codes each sample as a step from the last, turns a gap into noise. A short
-// sound loses its end. So each sound here is sent at the pace its format
-// and rate play it: ADPCM (40 samples a report) every 13.3 ms, PCM (20) every
-// 6.67 ms, both at 3 kHz, the same rate, so Test can compare the formats
-// fairly. Each report carries the remote's rumble bit, as every output report
-// must, or it would switch the rumble off.
-//
-// Sounds are made for the speaker: notes under 1.5 kHz (half the rate),
-// about half scale (a louder signal only distorts; the volume byte is the
-// loudness control), 12 ms raised-cosine fades so nothing clicks, 40 ms of
-// silence first so the speaker's amplifier is awake, and 200 ms after so
-// its buffer plays out before the stream stops.
+// libogc's speaker streaming sounds broken on a real remote, and a recording
+// of 1.7.5 showed why: every held note chopped by 10 to 30 dB dips every
+// 10 to 40 ms, both formats. This follows Nintendo's SDK instead (WPAD, WENC
+// and NW4R's RemoteSpeaker, from the doldecomp/ogws decompilation of Wii
+// Sports; REVIEW.md 1.7.6 has the details):
+//  - Sniff mode at 5 ms (8 slots) on the remote's link, as WUD does for
+//    every remote. Without it the link runs at about 100 Hz, less than the
+//    150 speaker reports a second; libogc never sets it.
+//  - Nintendo's start-up: enable, mute, 0x01 to 0xa20009, 0x80 to 0xa20001,
+//    the configuration block, unmute, a status request; then, once all of
+//    that is answered, 0x01 to 0xa20008 (play).
+//  - ADPCM at 6 kHz: 40 samples, 20 bytes, every 6.67 ms. The rate value
+//    0x07d0 means 12,000,000 / rate for ADPCM too, whatever WiiBrew says;
+//    the recording's notes came out an octave high at 3 kHz pacing.
+//  - Each report encoded just before it goes, with Nintendo's encoder.
+//    When the Bluetooth controller already holds more than 3 packets, the
+//    block is skipped without encoding it, so encoder and the remote's
+//    decoder stay in step; a pre-encoded sound loses its place at the
+//    first lost report and turns to noise.
+//  - The encoder carries on from sound to sound while the speaker is on,
+//    and starts fresh only after a start-up.
+// PCM (signed 8-bit) runs at 3 kHz, 20 samples a report at the same pace,
+// for Test to compare with.
 
 #define SND_ADPCM 0x00
 #define SND_PCM 0x40
-#define SND_LEAD 0.04f
-#define SND_TAIL 0.20f
+#define ADPCM_RATE 6000
+#define PCM_RATE 3000
 
 typedef struct {
-	u8 *data;
-	u32 len;                                 // bytes
-	u8 format;                               // SND_ADPCM or SND_PCM
-	u16 rate;                                // the configuration block's rate value
-	u32 period_ns;                           // how long one 20-byte report plays
+	s16 *pcm;                                // at the format's rate
+	u32 count;
+	u8 format;
 } snd;
 
 typedef struct {
@@ -445,48 +466,35 @@ static float note_value(const snd_note *notes, int count, float t) {
 }
 
 static void snd_make(snd *out, const snd_note *notes, int count, u8 format) {
-	int per = format == SND_PCM ? 20 : 40;   // samples a report
+	int rate = format == SND_PCM ? PCM_RATE : ADPCM_RATE;
 	float end = 0;
-	u32 n, i, j;
+	u32 i;
 	int k;
 
-	memset(out, 0, sizeof(*out));
 	for (k = 0; k < count; ++k)
 		if (notes[k].start + notes[k].len > end)
 			end = notes[k].start + notes[k].len;
-	n = ((u32) ((SND_LEAD + end + SND_TAIL) * SPEAKER_RATE) / per + 1) * per;
 	out->format = format;
-	out->len = format == SND_PCM ? n : n / 2;
-	out->rate = format == SND_PCM ? 12000000 / SPEAKER_RATE : 6000000 / SPEAKER_RATE;
-	out->period_ns = (u32) (1000000000ull * per / SPEAKER_RATE);
-	out->data = memalign(32, out->len);
-	if (!out->data)
+	out->count = (u32) (end * rate) + 1;
+	out->pcm = malloc(out->count * sizeof(s16));
+	if (!out->pcm) {
+		out->count = 0;
 		return;
-	if (format == SND_PCM) {
-		for (i = 0; i < n; ++i)
-			out->data[i] = (u8) (s8) (note_value(notes, count, (float) i / SPEAKER_RATE - SND_LEAD) * 64.f);
-	} else {
-		WPADEncStatus enc;
-		s16 pcm[40];
-
-		memset(&enc, 0, sizeof(enc));
-		for (i = 0; i < n; i += 40) {
-			for (j = 0; j < 40; ++j)
-				pcm[j] = (s16) (note_value(notes, count, (float) (i + j) / SPEAKER_RATE - SND_LEAD) * 16000.f);
-			WPAD_EncodeData(&enc, i ? WPAD_ENC_CONT : 0, pcm, 40, out->data + i / 2);
-		}
 	}
+	for (i = 0; i < out->count; ++i)
+		out->pcm[i] = (s16) (note_value(notes, count, (float) i / rate) * 16000.f);
 }
 
-// Find's chime: a ding-dong (B5, G5), three times, each louder.
+// Find's chime: a ding-dong (E6, C6), three times, each louder.
 static const snd_note chime_notes[] = {
-	{ 988, 0.00f, 0.22f, 0.45f }, { 784, 0.25f, 0.40f, 0.45f },
-	{ 988, 0.95f, 0.22f, 0.70f }, { 784, 1.20f, 0.40f, 0.70f },
-	{ 988, 1.90f, 0.22f, 1.00f }, { 784, 2.15f, 0.40f, 1.00f },
+	{ 1319, 0.00f, 0.22f, 0.45f }, { 1047, 0.25f, 0.40f, 0.45f },
+	{ 1319, 0.95f, 0.22f, 0.70f }, { 1047, 1.20f, 0.40f, 0.70f },
+	{ 1319, 1.90f, 0.22f, 1.00f }, { 1047, 2.15f, 0.40f, 1.00f },
 };
-// The volume chirp: one short A5 blip, at the new volume.
-static const snd_note chirp_notes[] = { { 880, 0.00f, 0.15f, 1.00f } };
-// Test's sound: C5 E5 G5 C6 up, then a held G5.
+// The volume chirp: one short E6 blip, at the new volume.
+static const snd_note chirp_notes[] = { { 1319, 0.00f, 0.12f, 1.00f } };
+// Test's tune, the same in both formats (under PCM's 1.5 kHz limit):
+// C5 E5 G5 C6 up, then a held G5.
 static const snd_note test_notes[] = {
 	{ 523, 0.00f, 0.18f, 1.00f }, { 659, 0.20f, 0.18f, 1.00f }, { 784, 0.40f, 0.18f, 1.00f },
 	{ 1047, 0.60f, 0.18f, 1.00f }, { 784, 0.85f, 0.60f, 1.00f },
@@ -494,12 +502,12 @@ static const snd_note test_notes[] = {
 
 #define COUNT(a) ((int) (sizeof(a) / sizeof((a)[0])))
 
-// Made the first time a sound is wanted; the speaker's alarm reads them, so
-// they stay for the life of the app.
+// Made the first time a sound is wanted, kept for the life of the app (the
+// speaker's alarm reads them).
 static snd chime, chirp, test_adpcm, test_pcm;
 
 static void snd_init(void) {
-	if (chime.data)
+	if (chime.pcm)
 		return;
 	snd_make(&chime, chime_notes, COUNT(chime_notes), SND_ADPCM);
 	snd_make(&chirp, chirp_notes, COUNT(chirp_notes), SND_ADPCM);
@@ -507,98 +515,280 @@ static void snd_init(void) {
 	snd_make(&test_pcm, test_notes, COUNT(test_notes), SND_PCM);
 }
 
-// Raw reports from a periodic alarm, outside wiiuse's command queue (which
-// waits for answers that speaker data never gets). One alarm serves every
-// remote, at the pace of the sound started last.
+// Nintendo's 4-bit ADPCM encoder (WENCGetEncodeData in the RVL SDK):
+// successive approximation against the step and its halves, the step then
+// scaled by k/256 (230 ... 614) and kept within 127 to 0x6000.
+typedef struct {
+	int xn, dl;
+} wenc;
+
+static const u16 wenc_scale[8] = { 230, 230, 230, 230, 307, 409, 512, 614 };
+
+static u8 wenc_nibble(wenc *e, int x) {
+	int l3 = x < e->xn, dn = l3 ? e->xn - x : x - e->xn;
+	int dl = e->dl, dlh = dl / 2, dlq = dlh / 2, l2, l1, l0, qn;
+
+	l2 = dn >= dl;
+	if (l2)
+		dn -= dl;
+	l1 = dn >= dlh;
+	if (l1)
+		dn -= dlh;
+	l0 = dn >= dlq;
+	qn = dl * l2 + dlh * l1 + dlq * l0 + dlq / 2;
+	if (l3)
+		qn = -qn;
+	qn += e->xn;
+	e->xn = qn > 32767 ? 32767 : qn < -32768 ? -32768 : qn;
+	dl = (dl * wenc_scale[l2 << 2 | l1 << 1 | l0]) >> 8;
+	e->dl = dl < 127 ? 127 : dl > 0x6000 ? 0x6000 : dl;
+	return l3 << 3 | l2 << 2 | l1 << 1 | l0;
+}
+
+// Speaker volume per remote, 0 to 10. 10 is 0x40, libogc's and the
+// configuration block's default (WiiBrew gives 0x40 as ADPCM's top; the SDK
+// allows 127); the steps below fall off as the ear hears loudness. PCM gets
+// twice the byte.
+static const u8 volume_byte[11] = { 0x00, 0x03, 0x05, 0x08, 0x0b, 0x10, 0x16, 0x1e, 0x28, 0x33, 0x40 };
+static int volume[4] = { 10, 10, 10, 10 };
+
+enum { SPK_OFF, SPK_STARTING, SPK_PLAY_SENT, SPK_READY };
+
 static struct {
-	const u8 *data;
-	u32 len, off;
-	bool on;
+	int st;
+	bool was_on;                         // libogc's speaker was on before ours
+	u8 format, vol;                      // as configured
+	const snd *want;                     // to play once ready
+	const snd *sound;                    // playing (read by the alarm)
+	u32 pos;
+	bool playing;
+	wenc enc;
 	u8 report[22] ATTRIBUTE_ALIGN(32);
-} spk[4];
+} sp[4];
+
 static syswd_t spk_alarm;
 static bool spk_alarm_made, spk_alarm_running;
-static u32 spk_period;
+static u64 spk_last_tick;
+
+// Whether the controller can take a speaker report now. Nintendo refuses a
+// packet with more than 3 un-acknowledged ones in the controller. lwbt's
+// count can wrap below 0 (lp_acl_write sends even when it has no room),
+// which is counted and then trusted again after 30 ticks.
+static bool acl_busy(int chan) {
+	u16 free = hci_dev ? *(volatile u16 *) ((u8 *) hci_dev + 10) : 0;
+
+	if (free >= 0x8000) {
+		return ++sst[chan].wrapped % 30 != 0;
+	}
+	if (free > sst[chan].credits_peak && free < 0x100)
+		sst[chan].credits_peak = free;
+	if (free < sst[chan].credits_min)
+		sst[chan].credits_min = free;
+	return !free || sst[chan].credits_peak - free > 3;
+}
 
 static void spk_tick(syswd_t alarm, void *arg) {
+	u64 now = gettime();
 	bool any = false;
 	int chan;
 	(void) arg;
 
 	for (chan = 0; chan < 4; ++chan) {
 		wiimote *wm = handles ? handles[chan] : NULL;
-		u32 n;
+		const snd *so = sp[chan].sound;
+		u32 per, n, i, bytes;
+		u8 *d = sp[chan].report;
 
-		if (!spk[chan].on)
+		if (!sp[chan].playing)
 			continue;
-		if (!wm || !(wm->state & WM_STATE_CONNECTED) || spk[chan].off >= spk[chan].len) {
-			spk[chan].on = false;
+		if (!wm || !(wm->state & WM_STATE_CONNECTED) || !so || sp[chan].pos >= so->count) {
+			sp[chan].playing = false;
 			continue;
 		}
-		n = spk[chan].len - spk[chan].off > 20 ? 20 : spk[chan].len - spk[chan].off;
-		memset(spk[chan].report, 0, sizeof(spk[chan].report));
-		spk[chan].report[0] = WM_RPT_SPEAKER_DATA;
-		spk[chan].report[1] = (n << 3) | (wm->state & WM_STATE_RUMBLE ? 1 : 0);
-		memcpy(spk[chan].report + 2, spk[chan].data + spk[chan].off, n);
-		wiiuse_io_write(wm, spk[chan].report, 22);
-		spk[chan].off += n;
 		any = true;
+		if (spk_last_tick && now - spk_last_tick > sst[chan].gap_max)
+			sst[chan].gap_max = now - spk_last_tick;
+		per = so->format == SND_PCM ? 20 : 40;
+		n = so->count - sp[chan].pos < per ? so->count - sp[chan].pos : per;
+		if (acl_busy(chan)) {
+			// Skip this block unencoded: the remote hears a 6.67 ms gap,
+			// and its decoder and ours stay in step.
+			sp[chan].pos += n;
+			sst[chan].skipped++;
+			continue;
+		}
+		memset(d, 0, sizeof(sp[chan].report));
+		if (so->format == SND_PCM) {
+			for (i = 0; i < n; ++i)
+				d[2 + i] = (u8) (s8) (so->pcm[sp[chan].pos + i] >> 8);
+			bytes = n;
+		} else {
+			for (i = 0; i < n; ++i) {
+				u8 nib = wenc_nibble(&sp[chan].enc, so->pcm[sp[chan].pos + i]);
+
+				d[2 + i / 2] |= i & 1 ? nib : nib << 4;
+			}
+			bytes = (n + 1) / 2;
+		}
+		d[0] = WM_RPT_SPEAKER_DATA;
+		d[1] = (bytes << 3) | (wm->state & WM_STATE_RUMBLE ? 1 : 0);
+		wiiuse_io_write(wm, d, 22);
+		sp[chan].pos += n;
+		sst[chan].sent++;
 	}
+	spk_last_tick = now;
 	if (!any) {
 		SYS_CancelAlarm(alarm);
 		spk_alarm_running = false;
+		spk_last_tick = 0;
 	}
 }
 
-static void spk_play(int chan, const snd *sound) {
-	struct timespec tb = { 0, sound->period_ns };
+static void spk_stream(int chan, const snd *so) {
+	struct timespec tb = { 0, 6666667 };
 	u32 level;
 
 	_CPU_ISR_Disable(level);
-	spk[chan].data = sound->data;
-	spk[chan].len = sound->len;
-	spk[chan].off = 0;
-	spk[chan].on = true;
+	sp[chan].sound = so;
+	sp[chan].pos = 0;
+	sp[chan].playing = true;
 	_CPU_ISR_Restore(level);
 	if (!spk_alarm_made) {
 		SYS_CreateAlarm(&spk_alarm);
 		spk_alarm_made = true;
 	}
-	if (!spk_alarm_running || spk_period != sound->period_ns) {
+	if (!spk_alarm_running) {
 		spk_alarm_running = true;
-		spk_period = sound->period_ns;
 		SYS_SetPeriodicAlarm(spk_alarm, &tb, &tb, spk_tick, NULL);
 	}
 }
 
-static void spk_stop(int chan) {
-	spk[chan].on = false;
+static void spk_halt(int chan) {
+	sp[chan].playing = false;
 }
 
-// Speaker volume per remote, 0 to 10. In ADPCM the volume byte tops out at
-// 0x40 (WiiBrew; libogc's default), and more overdrives it, so 10 is 0x40
-// and the steps below fall off roughly as the ear hears loudness. PCM's byte
-// goes to 0xff; it gets twice ADPCM's, which WiiBrew's PCM examples bracket.
-static const u8 volume_byte[11] = { 0x00, 0x03, 0x05, 0x08, 0x0b, 0x10, 0x16, 0x1e, 0x28, 0x33, 0x40 };
-static int volume[4] = { 10, 10, 10, 10 };
-
-// The configuration block for a sound: its format, rate and the remote's
-// volume. Writing it also restarts the speaker's decoder, which every sound
-// here is encoded from the start for.
-static void write_config(int chan, const snd *sound) {
+// Queue Nintendo's start-up for a format and volume (WPADControlSpeaker,
+// WPAD_SPEAKER_ON); play follows once it is answered (spk_frame).
+static void spk_start(int chan, u8 format, u8 vol) {
 	wiimote *wm = remote(chan);
-	u8 conf[7] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0e };
+	u8 conf[7] = { 0x00, format, 0, 0, vol, 0x0c, 0x0e };
+	u16 rate = 12000000 / (format == SND_PCM ? PCM_RATE : ADPCM_RATE);
+	u8 b;
 	u32 level;
 
-	if (!wm || !(wm->state & WM_STATE_SPEAKER))
+	if (!wm)
 		return;
-	conf[1] = sound->format;
-	conf[2] = sound->rate & 0xff;
-	conf[3] = sound->rate >> 8;
-	conf[4] = volume_byte[volume[chan]] * (sound->format == SND_PCM ? 2 : 1);
+	conf[2] = rate & 0xff;
+	conf[3] = rate >> 8;
+	spk_halt(chan);
 	_CPU_ISR_Disable(level);
+	if (hci_sniff_mode((struct bd_addr *) &wm->bdaddr, 8, 8, 1, 0) == 0)
+		sst[chan].sniff = true;
+	b = 0x04;
+	wiiuse_sendcmd(wm, 0x14, &b, 1, NULL);                // speaker enable
+	b = 0x04;
+	wiiuse_sendcmd(wm, 0x19, &b, 1, NULL);                // mute
+	b = 0x01;
+	wiiuse_write_data(wm, 0x04a20009, &b, 1, NULL);
+	b = 0x80;
+	wiiuse_write_data(wm, 0x04a20001, &b, 1, NULL);
 	wiiuse_write_data(wm, WM_REG_SPEAKER_BLOCK, conf, sizeof(conf), NULL);
+	b = 0x00;
+	wiiuse_sendcmd(wm, 0x19, &b, 1, NULL);                // unmute
+	wiiuse_status(wm, NULL);
 	_CPU_ISR_Restore(level);
+	sp[chan].format = format;
+	sp[chan].vol = vol;
+	sp[chan].st = SPK_STARTING;
+}
+
+static void spk_stop_remote(int chan) {
+	wiimote *wm = remote(chan);
+	u8 b;
+	u32 level;
+
+	spk_halt(chan);
+	sp[chan].want = NULL;
+	if (sp[chan].st == SPK_OFF)
+		return;
+	sp[chan].st = SPK_OFF;
+	if (!wm)
+		return;
+	if (sp[chan].was_on) {
+		// Leave it as libogc set it up: ADPCM, its volume, playing.
+		spk_start(chan, SND_ADPCM, 0x40);
+		sp[chan].st = SPK_OFF;
+		b = 0x01;
+		_CPU_ISR_Disable(level);
+		wiiuse_write_data(wm, 0x04a20008, &b, 1, NULL);
+		_CPU_ISR_Restore(level);
+		return;
+	}
+	_CPU_ISR_Disable(level);
+	b = 0x04;
+	wiiuse_sendcmd(wm, 0x19, &b, 1, NULL);                // mute
+	b = 0x01;
+	wiiuse_write_data(wm, 0x04a20001, &b, 1, NULL);
+	b = 0x00;
+	wiiuse_write_data(wm, 0x04a20009, &b, 1, NULL);
+	b = 0x00;
+	wiiuse_sendcmd(wm, 0x14, &b, 1, NULL);                // speaker off
+	wiiuse_status(wm, NULL);
+	_CPU_ISR_Restore(level);
+}
+
+static u8 vol_for(int chan, u8 format) {
+	return volume_byte[volume[chan]] * (format == SND_PCM ? 2 : 1);
+}
+
+// Play a sound on a remote, starting or re-starting the speaker when its
+// format or volume differs from what it is set up for.
+static void spk_play_sound(int chan, const snd *so) {
+	if (!so->pcm || !remote(chan))
+		return;
+	spk_halt(chan);
+	sp[chan].want = so;
+	if (sp[chan].st == SPK_OFF) {
+		if (!sp[chan].was_on)
+			sp[chan].was_on = WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE;
+		spk_start(chan, so->format, vol_for(chan, so->format));
+	} else if (sp[chan].format != so->format || sp[chan].vol != vol_for(chan, so->format)) {
+		spk_start(chan, so->format, vol_for(chan, so->format));
+	}
+}
+
+// From the frame loop: play after the start-up is answered, then the sound.
+static void spk_frame(int chan) {
+	wiimote *wm = remote(chan);
+	u32 type;
+	u8 b = 0x01;
+	u32 level;
+
+	if (sp[chan].st == SPK_OFF)
+		return;
+	if (!wm || WPAD_Probe(chan, &type) != WPAD_ERR_NONE) {
+		spk_halt(chan);
+		sp[chan].st = SPK_OFF;
+		sp[chan].want = NULL;
+		return;
+	}
+	if (*head_of(wm))
+		return;
+	if (sp[chan].st == SPK_STARTING) {
+		_CPU_ISR_Disable(level);
+		wiiuse_write_data(wm, 0x04a20008, &b, 1, NULL);   // play
+		_CPU_ISR_Restore(level);
+		sp[chan].st = SPK_PLAY_SENT;
+	} else if (sp[chan].st == SPK_PLAY_SENT) {
+		// A fresh start-up: the remote's decoder starts from rest.
+		sp[chan].enc.xn = 0;
+		sp[chan].enc.dl = 127;
+		sp[chan].st = SPK_READY;
+	}
+	if (sp[chan].st == SPK_READY && sp[chan].want) {
+		spk_stream(chan, sp[chan].want);
+		sp[chan].want = NULL;
+	}
 }
 
 // ---- Find, sounds, and rumble feedback, run from the overlay's frame loop ----
@@ -611,9 +801,6 @@ static void write_config(int chan, const snd *sound) {
 static struct {
 	u32 find_end, pulse_end;             // frame numbers; 0 when idle
 	int rumble;                          // what was last sent; -1 unknown
-	bool speaker_was_on;
-	int speaker;                         // 0 off, 1 starting, 2 configured, 3 playing, 4 on and quiet
-	const snd *sound;                    // what to play once the speaker is ready
 } fx[4];
 
 static void fx_rumble(int chan, int on) {
@@ -623,19 +810,8 @@ static void fx_rumble(int chan, int on) {
 	fx[chan].rumble = on;
 }
 
-// Turns the speaker on if it needs to, then plays the sound once the
-// remote has answered the set-up (fx_tick).
-static void fx_sound(int chan, const snd *sound) {
-	if (!sound->data || !remote(chan))
-		return;
-	spk_stop(chan);
-	fx[chan].sound = sound;
-	if (!fx[chan].speaker) {
-		fx[chan].speaker_was_on = WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE;
-		if (!fx[chan].speaker_was_on)
-			WPAD_ControlSpeaker(chan, 1);
-	}
-	fx[chan].speaker = 1;
+static void fx_sound(int chan, const snd *so) {
+	spk_play_sound(chan, so);
 }
 
 static void find_start(int chan) {
@@ -648,8 +824,11 @@ static void find_start(int chan) {
 }
 
 static void find_stop(int chan) {
-	if (fx[chan].sound == &chime)
-		spk_stop(chan);
+	if (sp[chan].sound == &chime || sp[chan].want == &chime) {
+		spk_halt(chan);
+		if (sp[chan].want == &chime)
+			sp[chan].want = NULL;
+	}
 	fx[chan].find_end = 0;
 	ses.finding[chan] = false;
 }
@@ -670,41 +849,22 @@ static void fx_tick(void) {
 
 	fx_frame++;
 	for (chan = 0; chan < 4; ++chan) {
-		u32 type;
-		bool here = WPAD_Probe(chan, &type) == WPAD_ERR_NONE;
-
 		queue_guard(chan);
+		spk_frame(chan);
 
 		if (fx[chan].pulse_end && fx_frame >= fx[chan].pulse_end) {
 			fx_rumble(chan, 0);
 			fx[chan].pulse_end = 0;
 		}
-		// The speaker's set-up is a run of queued commands: wait for the
-		// remote to answer them all, write the sound's configuration, then
-		// stream once that is answered too.
-		if (fx[chan].speaker == 1 || fx[chan].speaker == 2) {
-			wiimote *wm = remote(chan);
-
-			if (!wm || !here) {
-				fx[chan].speaker = 0;
-			} else if (!*head_of(wm) && (wm->state & WM_STATE_SPEAKER)) {
-				if (fx[chan].speaker == 1) {
-					write_config(chan, fx[chan].sound);
-					fx[chan].speaker = 2;
-				} else {
-					spk_play(chan, fx[chan].sound);
-					fx[chan].speaker = 3;
-				}
-			}
-		}
-		// Once on, the speaker stays on until the overlay closes, so the
-		// next sound needs no set-up (a volume chirp comes at once).
-		if (fx[chan].speaker == 3 && !spk[chan].on)
-			fx[chan].speaker = 4;
 		// Find lasts as long as its chime.
-		if (fx[chan].find_end && (!here || fx_frame >= fx[chan].find_end ||
-				fx[chan].sound != &chime || fx[chan].speaker == 4 || !fx[chan].speaker))
-			find_stop(chan);
+		if (fx[chan].find_end) {
+			bool queued_chime = sp[chan].want == &chime;
+			bool playing_chime = sp[chan].sound == &chime && sp[chan].playing;
+
+			if (fx_frame >= fx[chan].find_end || sp[chan].st == SPK_OFF ||
+					(!queued_chime && !playing_chime))
+				find_stop(chan);
+		}
 	}
 }
 
@@ -712,14 +872,9 @@ static void fx_stop_all(void) {
 	int chan;
 
 	for (chan = 0; chan < 4; ++chan) {
-		spk_stop(chan);
-		if (fx[chan].speaker) {
-			if (!fx[chan].speaker_was_on)
-				WPAD_ControlSpeaker(chan, 0);
-			fx[chan].speaker = 0;
-		}
 		if (fx[chan].find_end)
 			find_stop(chan);
+		spk_stop_remote(chan);
 		if (fx[chan].pulse_end) {
 			fx_rumble(chan, 0);
 			fx[chan].pulse_end = 0;
@@ -1159,12 +1314,10 @@ static void act(int action, int arg, void *user) {
 			volume[chan] = 0;
 		if (volume[chan] > 10)
 			volume[chan] = 10;
-		// Let them hear it: a blip at the new level.
+		// Let them hear it: a blip at the new level (re-starting the speaker
+		// with the new volume, as the SDK applies one).
 		snd_init();
-		if (volume[chan])
-			fx_sound(chan, &chirp);
-		else
-			write_config(chan, &chirp);
+		fx_sound(chan, &chirp);
 		break;
 	}
 	case OVA_SOUND_TEST:

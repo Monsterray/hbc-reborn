@@ -253,13 +253,23 @@ on for every connected remote, mapped to the framebuffer; each remote gets
 back its previous data format on close (left on if the handles are missing
 and the format is unknown).
 
-Find streams a chime to the remote's speaker and sends it nothing else.
-Sounds play at 3 kHz, paced as the speaker plays them: 4-bit ADPCM (rate
-`0x07d0`) a 20-byte report every 13.3 ms, 8-bit PCM (rate `0x0fa0`) every
-6.67 ms. Changing a remote's volume in More plays a short chirp at the new
-level (volume 10 is `0x40`, the ADPCM maximum; PCM gets twice the byte). The
-Test page plays one tune in each format (1: ADPCM, 2: PCM, or point and press
-A). See REVIEW.md 1.7.4 and 1.7.5 for what limits the speaker.
+The overlay drives the remote's speaker itself, after Nintendo's SDK
+(REVIEW.md 1.7.6):
+- It puts the remote's link in sniff mode (5 ms) and runs the SDK's start-up
+  sequence.
+- It encodes each 20-byte report just before sending it, every 6.67 ms:
+  4-bit ADPCM at 6 kHz (rate `0x07d0`), or 8-bit PCM at 3 kHz (rate `0x0fa0`).
+- It skips a block unencoded when the Bluetooth controller already holds more
+  than 3 packets.
+
+Find plays only a chime. Changing a remote's volume in More plays a chirp at
+the new level; volume 10 is `0x40`, and PCM gets twice the byte. The Test page
+plays one tune in each format: press 1 for ADPCM or 2 for PCM, or point at a
+button and press A.
+
+In `status`, each remote's `spk` is `[sent, skipped, wrapped, worst gap in us,
+fewest free ACL buffers, most, sniff]`. `wrapped` counts ticks where lwbt's
+buffer count had gone below zero.
 
 ### Crash reports
 
