@@ -155,6 +155,16 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.4: the line-ending test in CI's container
+
+- 1.8.3's CI failed in the devkitPPC job's Tests step. The checkout there
+  belongs to another user than the container's root, so git refused the
+  repository ("dubious ownership", exit 128), and `tests/test_line_endings.py`
+  errored on `git ls-files`. It now runs git with `-c safe.directory=<repo>`,
+  which trusts only this checkout for that one read-only command. It was
+  reproduced and checked in `devkitpro/devkitppc:latest` with the checkout
+  owned by uid 1001. The host jobs (Windows, macOS, Linux) had passed.
+
 ### 1.8.3: crash reports on libogc2 and libogc 1.x, LF line endings
 
 - **The agent on libogc2 and libogc 1.x.** Apps still built on those (WiiStation,

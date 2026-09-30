@@ -12,8 +12,10 @@ root = pathlib.Path(__file__).resolve().parents[1]
 
 
 def eol_listing():
-    out = subprocess.run(["git", "ls-files", "--eol"], cwd=root, capture_output=True,
-                         text=True, check=True).stdout
+    # safe.directory: in CI's devkitPPC container the checkout belongs to
+    # another user, and git refuses to read it (exit 128) without this.
+    out = subprocess.run(["git", "-c", f"safe.directory={root.as_posix()}", "ls-files", "--eol"],
+                         cwd=root, capture_output=True, text=True, check=True).stdout
     for line in out.splitlines():
         meta, path = line.split("\t", 1)
         index, work, attr = meta.split(None, 2)
