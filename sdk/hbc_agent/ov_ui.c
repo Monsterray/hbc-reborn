@@ -30,7 +30,7 @@ enum {
 	ID_BAR = 100,
 	ID_EX_HBC = 110, ID_EX_SYS, ID_EX_RESTART, ID_EX_POWER,
 	ID_TAB_ACT = 120, ID_TAB_INFO, ID_RESTART_APP, ID_PAUSE, ID_SAVE, ID_LOG,
-	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY, ID_RESET_REMOTES,
+	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY, ID_RESET_REMOTES, ID_SYNC_CLOCK,
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
 	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS, ID_SND_ADPCM, ID_SND_PCM, ID_SND_WAV,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
@@ -226,7 +226,8 @@ static int build_dev(ov_ui *ui, const ov_ext *e) {
 		button(ui, ID_SAVE, 0, y, CW, "Save", e->has_save ? 0 : F_DIS);
 		button(ui, ID_LOG, CW + 10, y, CW, "Log", 0);
 		y += BH + GAP;
-		button(ui, ID_RESET_REMOTES, 0, y, IW, "Reset remotes", 0);
+		button(ui, ID_RESET_REMOTES, 0, y, CW, "Reset remotes", 0);
+		button(ui, ID_SYNC_CLOCK, CW + 10, y, CW, "Sync clock", 0);
 		y += BH + 12;
 		if (e->show_log_pc) {
 			toggle(ui, ID_LOGPC, y, "Log to PC", e->log_pc, 0);
@@ -778,6 +779,7 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 	case ID_VOL_MINUS: act(OVA_VOLUME, ui->wm_sel, user); break;
 	case ID_VOL_PLUS: act(OVA_VOLUME, ui->wm_sel | 16, user); break;
 	case ID_RESET_REMOTES: act(OVA_RESET_REMOTES, 0, user); break;
+	case ID_SYNC_CLOCK: act(OVA_SYNC_CLOCK, 0, user); break;
 	case ID_SND_ADPCM: act(OVA_SOUND_TEST, ui->wm_sel, user); break;
 	case ID_SND_PCM: act(OVA_SOUND_TEST, ui->wm_sel | 16, user); break;
 	case ID_SND_WAV: act(OVA_SOUND_TEST, ui->wm_sel | 32, user); break;

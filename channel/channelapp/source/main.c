@@ -327,6 +327,8 @@ void main_real(void) {
 	app_sel = NULL;
 	v_browser = browser_init();
 	home_init ();
+	hlog("The Homebrew Channel %s, IOS%d v%d\n", CHANNEL_VERSION_STR, IOS_GetVersion(),
+		 IOS_GetRevision());
 	view_bubbles = true;
 
 #ifdef ENABLE_UPDATES

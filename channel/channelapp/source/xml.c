@@ -461,6 +461,10 @@ bool settings_load(void) {
 	return true;
 }
 
+bool settings_changed(void) {
+	return memcmp(&_loaded_settings, &settings, sizeof(settings_t)) != 0;
+}
+
 bool settings_save(void) {
 	s32 res;
 	char *x;

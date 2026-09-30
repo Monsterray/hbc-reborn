@@ -242,11 +242,17 @@ static void * ld_tcp_func (void *arg) {
 
 			if (res < 0) {
 				gprintf ("net_init failed: %d\n", res);
+				hlog("Network: no connection (%d), trying again\n", (int) res);
 				ta->state = LDTCPS_UNINITIALIZED;
 				continue;
 			}
 
 			gprintf ("net_init success: %d\n", res);
+			{
+				struct in_addr ip = { net_gethostip () };
+
+				hlog("Network: up at %s\n", inet_ntoa(ip));
+			}
 
 			mask = net_gethostip () & 0xffff0000;
 
@@ -332,12 +338,14 @@ static void * ld_tcp_func (void *arg) {
 					(!ta->data_len || ta->data_len > LD_MAX_SIZE) ||
 					(ta->data_len_un > LD_MAX_SIZE)) {
 				gprintf ("invalid upload request\n");
+				hlog("Wiiload from %s: refused (bad header)\n", inet_ntoa(sa.sin_addr));
 				net_close (sn);
 				continue;
 			}
 
 			ta->s = sn;
 			ta->client = inet_ntoa (sa.sin_addr);
+			hlog("Wiiload from %s: %u bytes\n", ta->client, (unsigned) ta->data_len);
 			ta->handshaked = true;
 
 			continue;

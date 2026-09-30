@@ -155,6 +155,47 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.1: DEV > Sync clock, Save and Log that say something, a key-queue fix
+
+- **Sync clock (DEV > Actions):** one SNTP exchange over UDP in a thread, with a
+  3 s timeout, corrected by half the round trip. It tries `pool.ntp.org`, then
+  `time.google.com`, then `time.cloudflare.com`.
+  - **Zone:** the Wii's clock is its RTC plus SYSCONF's counter bias, in local
+    time. The difference from UTC is rounded to 15 minutes and kept as the zone;
+    only the rest, the drift, goes into the RTC.
+  - **Writing:** libogc exports `__SYS_GetRTC` but not its writer, so the RTC is
+    written with the same EXI exchange (`0xa0000000`, then the value) and read
+    back. `settime` updates the running app's time.
+  - **Refusal:** a clock more than UTC-12/+14 off is left alone, with "set it in
+    Wii Settings". SYSCONF is never written.
+  - **Found on the bench Wii:**
+    1. `net_socket(..., SOCK_DGRAM, IPPROTO_UDP)` fails (-12). IOS takes protocol
+       0 only; Dolphin's `WiiSockMan::NewSocket` enforces the same.
+    2. The counter bias and the RTC must be added as u32; the Wii relies on the
+       wrap. The first version added them as doubles, saw a clock 136 years off,
+       and, as it then did, set the RTC to UTC. `tests/rtc_shift` (a DOL that
+       moves the RTC) put the bench Wii back to UTC-7, and the fixed sync reported
+       "The clock is right (UTC-7:00)". That version's "set to UTC" fallback is
+       gone.
+  - **Log:** the result also goes to DEV > Log.
+- **HOME ignored after a stray key (found while testing):**
+  `hbc_agent_home_pending()` looked only at the front of the key queue, so any
+  other key queued while the overlay was closed blocked every later HOME. It
+  now drops keys before a HOME.
+- **Save said "Couldn't save" when nothing was wrong.** In HBC,
+  `settings_save()` returns false both for a Wiiload DOL (no NAND data folder:
+  no installed-channel identity) and when nothing has changed.
+  - New `hbc_agent_toast()` lets `on_save` (or a slot item) give its own
+    message.
+  - HBC now says "Wiiload HBC: save needs the installed channel" or "Settings
+    are already saved".
+- **Log was empty in HBC.** HBC's `gprintf` compiles to nothing in a release.
+  A few `hlog()` lines now go to stdout, which the agent keeps: start-up with the
+  IOS, the app scan and its time, the network address, and each Wiiload.
+- **Not re-run on hardware:** the drift-correction path of Sync clock (a job was
+  queued while another workstation had the Wii), and the Dolphin suite (a
+  WiiStation Dolphin with the 1.7.6 agent held port 4299 on this PC).
+
 ### 1.8.0: wiispk, a WAV player, the pointer after a reset, a LULZ build
 
 - **1.7.6 on hardware:** a recording of both Test tunes (`audio2.m4a`) measured:
@@ -205,12 +246,7 @@ From the 1.3.6 review, each verified in the code first:
     their contents match, and the title key is unchanged.
   - **Dolphin:** it installs, boots, and an app's exit returns to the LULZ
     title. `dolphin_smoke.py` reads the title from the WAD.
-- **Future work, trigger: the user wants the Wii's clock right.** An SNTP client
-  in HBC:
-  - The Wii's clock is the RTC plus SYSCONF's counter bias, in local time with
-    no time zone.
-  - Keep the Wii's zone by rounding the difference to the nearest 15 minutes,
-    correct only the drift, and write the RTC (EXI), not SYSCONF.
+- **The Wii's clock:** planned here, built in 1.8.1.
 
 ### 1.7.6: a speaker driver after Nintendo's
 

@@ -193,11 +193,13 @@ bool hbc_agent_home_pending(void) {
 	u32 level;
 	bool home = false;
 
+	// The overlay is closed, so only HOME means anything: drop whatever
+	// comes before it, or a stray key would block every HOME behind it.
 	_CPU_ISR_Disable(level);
-	if (key_count && keys[key_head] == 'h') {
+	while (key_count && !home) {
+		home = keys[key_head] == 'h';
 		key_head = (key_head + 1) % KEYS;
 		key_count--;
-		home = true;
 	}
 	_CPU_ISR_Restore(level);
 	return home;

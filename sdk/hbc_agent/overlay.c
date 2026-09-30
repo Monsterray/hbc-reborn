@@ -5,6 +5,7 @@
 // that never call hbc_agent_home() do not link libwiiuse through it.
 
 #include <errno.h>
+#include <fcntl.h>
 #include <malloc.h>
 #include <math.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@
 
 #include <ogcsys.h>
 #include <ogc/cache.h>
+#include <ogc/exi.h>
 #include <ogc/lwp_watchdog.h>
 #include <ogc/machine/processor.h>
 #include <network.h>
@@ -41,6 +43,7 @@
 #define FIND_MS 3000
 
 extern void __exception_setreload(int t);
+extern u32 __SYS_GetRTC(u32 *gctime);
 
 // wiiuse internals, exported by libwiiuse but not declared in its headers.
 extern int wiiuse_io_write(struct wiimote_t *wm, ubyte *buf, int len);
@@ -70,6 +73,7 @@ static wiimote *remote(int chan) {
 
 static struct cmd_blk_t **head_of(wiimote *wm);
 static void toast(const char *msg);
+static bool app_toasted;                // the app set this action's message
 
 // ---- The pointer -----------------------------------------------------------
 //
@@ -513,6 +517,184 @@ static void *wav_load(void *arg) {
 	return NULL;
 }
 
+// ---- DEV > Sync clock: the Wii's clock from NTP ------------------------------
+//
+// The Wii's clock is its RTC (seconds since 2000, battery-backed) plus a
+// counter bias kept in SYSCONF, and it is local time: the Wii has no time
+// zone. So the zone is taken from the clock itself: the difference between
+// the Wii's time and UTC, rounded to the nearest 15 minutes, is kept, and
+// only what is left (the drift) is corrected, by writing the RTC. SYSCONF
+// is not touched. Daylight-saving changes are the user's, in Wii Settings.
+
+#define NTP_TIMEOUT_MS 3000
+#define NTP_UNIX_OFFSET 2208988800u          // 1900 to 1970
+#define WII_UNIX_OFFSET 946684800u           // 1970 to 2000
+
+static const char *const ntp_hosts[] = { "pool.ntp.org", "time.google.com", "time.cloudflare.com" };
+static lwp_t ntp_thread = LWP_THREAD_NULL;
+static u8 ntp_stack[16384] ATTRIBUTE_ALIGN(32);
+static volatile int ntp_state;               // 0 idle, 1 asking, 2 done
+static char ntp_msg[64];
+
+// libogc reads the RTC (__SYS_GetRTC) but does not export its writer, so
+// this is the same EXI exchange: command 0xa0000000, then the new value.
+static bool rtc_write(u32 value) {
+	u32 cmd = 0xa0000000;
+	bool ok;
+
+	if (!EXI_Lock(EXI_CHANNEL_0, EXI_DEVICE_1, NULL))
+		return false;
+	if (!EXI_Select(EXI_CHANNEL_0, EXI_DEVICE_1, EXI_SPEED8MHZ)) {
+		EXI_Unlock(EXI_CHANNEL_0);
+		return false;
+	}
+	ok = EXI_ImmEx(EXI_CHANNEL_0, &cmd, 4, EXI_WRITE) && EXI_ImmEx(EXI_CHANNEL_0, &value, 4, EXI_WRITE);
+	ok = EXI_Deselect(EXI_CHANNEL_0) && ok;
+	EXI_Unlock(EXI_CHANNEL_0);
+	return ok;
+}
+
+static u32 be32(const u8 *p) {
+	return (u32) p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
+}
+
+static char ntp_err[48];                    // why the last server failed
+
+// UTC now, in seconds since 1970, from one SNTP exchange; 0 on failure,
+// with the reason in ntp_err. The socket is connected, so plain send and
+// recv carry the exchange (IOS is strict about recvfrom's address).
+static double ntp_ask(const char *host) {
+	struct hostent *he = net_gethostbyname(host);
+	struct sockaddr_in sa;
+	u8 pkt[48];
+	s32 sock, n = -EAGAIN;
+	u64 t0;
+	double utc;
+
+	if (!he || he->h_addrtype != PF_INET || !he->h_addr_list[0]) {
+		snprintf(ntp_err, sizeof(ntp_err), "%s: no address", host);
+		return 0;
+	}
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = PF_INET;
+	sa.sin_len = sizeof(sa);
+	sa.sin_port = htons(123);
+	memcpy(&sa.sin_addr, he->h_addr_list[0], 4);
+	// IOS takes protocol 0 only; the type makes it UDP.
+	sock = net_socket(PF_INET, SOCK_DGRAM, 0);
+	if (sock < 0) {
+		snprintf(ntp_err, sizeof(ntp_err), "%s: socket %d", host, (int) sock);
+		return 0;
+	}
+	n = net_connect(sock, (struct sockaddr *) &sa, sizeof(sa));
+	if (n < 0) {
+		snprintf(ntp_err, sizeof(ntp_err), "%s: connect %d", host, (int) n);
+		net_close(sock);
+		return 0;
+	}
+	net_fcntl(sock, F_SETFL, net_fcntl(sock, F_GETFL, 0) | 4);   // non-blocking
+	memset(pkt, 0, sizeof(pkt));
+	pkt[0] = 0x1b;                           // no leap warning, version 3, client
+	t0 = gettime();
+	n = net_send(sock, pkt, sizeof(pkt), 0);
+	if (n != sizeof(pkt)) {
+		snprintf(ntp_err, sizeof(ntp_err), "%s: send %d", host, (int) n);
+		net_close(sock);
+		return 0;
+	}
+	do {
+		usleep(10 * 1000);
+		n = net_recv(sock, pkt, sizeof(pkt), 0);
+	} while (n == -EAGAIN && ticks_to_millisecs(diff_ticks(t0, gettime())) < NTP_TIMEOUT_MS);
+	net_close(sock);
+	if (n == -EAGAIN) {
+		snprintf(ntp_err, sizeof(ntp_err), "%s: no reply in %d s", host, NTP_TIMEOUT_MS / 1000);
+		return 0;
+	}
+	// A server's reply (mode 4), synchronised (stratum 1 to 15).
+	if (n < 48 || (pkt[0] & 7) != 4 || pkt[1] == 0 || pkt[1] > 15) {
+		snprintf(ntp_err, sizeof(ntp_err), "%s: bad reply (%d)", host, (int) n);
+		return 0;
+	}
+	utc = (double) (be32(pkt + 40) - NTP_UNIX_OFFSET) + be32(pkt + 44) / 4294967296.0;
+	// The reply left the server about half the round trip ago.
+	return utc + ticks_to_millisecs(diff_ticks(t0, gettime())) / 2000.0;
+}
+
+static void *ntp_sync(void *arg) {
+	double utc = 0, local;
+	long zone, delta;
+	u32 rtc, bias = 0, back;
+	unsigned i;
+	(void) arg;
+
+	for (i = 0; i < sizeof(ntp_hosts) / sizeof(ntp_hosts[0]) && !utc; ++i)
+		utc = ntp_ask(ntp_hosts[i]);
+	if (!utc) {
+		snprintf(ntp_msg, sizeof(ntp_msg), "No time server: %s", ntp_err);
+		goto done;
+	}
+	if (__SYS_GetRTC(&rtc) != 1) {
+		snprintf(ntp_msg, sizeof(ntp_msg), "Couldn't read the Wii's clock");
+		goto done;
+	}
+	CONF_GetCounterBias(&bias);
+	// The Wii adds them as 32-bit numbers and relies on the wrap (libogc's
+	// __SYS_SetBootTime does the same), so they must be added that way here.
+	local = (double) (u32) (rtc + bias) + WII_UNIX_OFFSET;
+	// Zones run from UTC-12 to UTC+14. A clock further off than that (a
+	// flat battery, a wrong date) has no zone to keep, and guessing one would
+	// be worse than leaving it: the user sets it in Wii Settings first.
+	zone = lround((local - utc) / 900.0) * 900;
+	if (zone < -12 * 3600 || zone > 14 * 3600) {
+		snprintf(ntp_msg, sizeof(ntp_msg), "Clock over a day off: set it in Wii Settings");
+		goto done;
+	}
+	delta = lround(utc + zone - local);
+	if (delta == 0) {
+		snprintf(ntp_msg, sizeof(ntp_msg), "The clock is right (UTC%c%ld:%02ld)", zone < 0 ? '-' : '+',
+				 labs(zone) / 3600, labs(zone) % 3600 / 60);
+		goto done;
+	}
+	if (!rtc_write(rtc + delta) || __SYS_GetRTC(&back) != 1 || back - (rtc + delta) > 2) {
+		snprintf(ntp_msg, sizeof(ntp_msg), "Couldn't set the Wii's clock");
+		goto done;
+	}
+	// And the running app's time, which libogc set from the RTC at boot
+	// (__SYS_SetBootTime: the time base counts local seconds since 2000).
+	settime(secs_to_ticks((u64) (u32) (back + bias)));
+	if (labs(delta) < 60)
+		snprintf(ntp_msg, sizeof(ntp_msg), "Clock set: %+ld s (UTC%c%ld:%02ld)", delta, zone < 0 ? '-' : '+',
+				 labs(zone) / 3600, labs(zone) % 3600 / 60);
+	else
+		snprintf(ntp_msg, sizeof(ntp_msg), "Clock set: %+ld min %ld s (UTC%c%ld:%02ld)", delta / 60,
+				 labs(delta) % 60, zone < 0 ? '-' : '+', labs(zone) / 3600, labs(zone) % 3600 / 60);
+done:
+	ntp_state = 2;
+	return NULL;
+}
+
+static void ntp_start(void) {
+	if (ntp_state)
+		return;
+	ntp_state = 1;
+	toast("Asking a time server...");
+	if (LWP_CreateThread(&ntp_thread, ntp_sync, NULL, ntp_stack, sizeof(ntp_stack), 30) < 0) {
+		ntp_state = 0;
+		toast("Couldn't start the clock sync");
+	}
+}
+
+static void ntp_poll(void) {
+	if (ntp_state != 2)
+		return;
+	LWP_JoinThread(ntp_thread, NULL);
+	ntp_thread = LWP_THREAD_NULL;
+	ntp_state = 0;
+	toast(ntp_msg);
+	printf("Sync clock: %s\n", ntp_msg);        // kept in DEV > Log
+}
+
 // ---- Find, sounds, and rumble feedback, run from the overlay's frame loop ----
 //
 // Find only plays its chime: every LED or rumble change is another command
@@ -613,6 +795,7 @@ static void fx_tick(void) {
 	fx_frame++;
 	wiispk_update();
 	wav_poll();
+	ntp_poll();
 	for (chan = 0; chan < 4; ++chan) {
 		queue_guard(chan);
 
@@ -774,6 +957,13 @@ static ov_run *run;
 static void toast(const char *msg) {
 	snprintf(run->ext.toast, sizeof(run->ext.toast), "%s", msg);
 	run->toast_frames = TOAST_FRAMES;
+}
+
+void hbc_agent_toast(const char *msg) {
+	if (!run || !msg)
+		return;         // the overlay is closed
+	toast(msg);
+	app_toasted = true;
 }
 
 static void *sd_thread(void *arg) {
@@ -1005,9 +1195,15 @@ static void act(int action, int arg, void *user) {
 		toast(screenshot(run->frozen, run->w, run->h, path, sizeof(path)) ? path :
 			  "Couldn't save the screenshot. Is the SD card in?");
 		break;
-	case OVA_SAVE:
-		toast(cfg->on_save && cfg->on_save(cfg->user) ? "Saved" : "Couldn't save");
+	case OVA_SAVE: {
+		bool ok;
+
+		app_toasted = false;
+		ok = cfg->on_save && cfg->on_save(cfg->user);
+		if (!app_toasted)
+			toast(ok ? "Saved" : "Couldn't save");
 		break;
+	}
 	case OVA_LOG_PC:
 		hbc_agent_log_muted = !arg;
 		break;
@@ -1088,6 +1284,9 @@ static void act(int action, int arg, void *user) {
 			wav_play(arg & 15);
 		else
 			fx_sound(arg & 15, arg & 16 ? &test_pcm : &test_adpcm);
+		break;
+	case OVA_SYNC_CLOCK:
+		ntp_start();
 		break;
 	case OVA_RESET_REMOTES:
 		reset_remotes();

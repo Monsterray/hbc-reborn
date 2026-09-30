@@ -185,6 +185,11 @@ s32 hbc_agent_home_fb(const struct _gx_rmodeobj *rmode, void *fb0, void *fb1);
  * HOME button, `if ((down & WPAD_BUTTON_HOME) || hbc_agent_home_pending())`. */
 bool hbc_agent_home_pending(void);
 
+/* Show a short message at the top of the HOME overlay for a few seconds.
+ * From on_save or a slot item, it replaces the overlay's own "Saved" or
+ * "Couldn't save", so an app can say what happened. */
+void hbc_agent_toast(const char *msg);
+
 /* The two bar buttons beside Exit: slot 0 on its left (blank by default),
  * slot 1 on its right (Shot, a screenshot to sd:/screenshots, by default).
  * press runs in the app's thread after the overlay closes. A NULL label

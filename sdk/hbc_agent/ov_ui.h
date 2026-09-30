@@ -101,7 +101,8 @@ enum {
 	OVA_SLOT_ITEM,        /* arg: slot * 16 + item; after closing if OV_ITEM_CLOSE */
 	OVA_VOLUME,           /* arg: remote | 16 for louder */
 	OVA_RESET_REMOTES,
-	OVA_SOUND_TEST        /* arg: remote | 16 for PCM, | 32 for speaker.wav (else ADPCM) */
+	OVA_SOUND_TEST,       /* arg: remote | 16 for PCM, | 32 for speaker.wav (else ADPCM) */
+	OVA_SYNC_CLOCK        /* DEV: set the Wii's clock from NTP */
 };
 
 typedef void (*ov_act_fn)(int action, int arg, void *user);

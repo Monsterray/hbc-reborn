@@ -72,6 +72,8 @@ void update_free(update_info *info);
 
 bool settings_load(void);
 bool settings_save(void);
+// Whether anything differs from the settings last loaded.
+bool settings_changed(void);
 
 void theme_xml_init(void);
 bool load_theme_xml(char *buf);

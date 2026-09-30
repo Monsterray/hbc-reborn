@@ -26,6 +26,7 @@
 #include "gfx.h"
 #include "loader.h"
 #include "panic.h"
+#include "title.h"
 #include "xml.h"
 
 #include "home.h"
@@ -86,9 +87,20 @@ static bool exit_choice(int choice, void *user) {
 	return false;
 }
 
-// DEV > Save: HBC's settings are its only state worth saving by hand.
+// DEV > Save: HBC's settings are its only state worth saving by hand. It
+// says why when there is nothing to do: a DOL sent over Wiiload runs without
+// the installed channel's NAND identity, so it has no data folder to save
+// to, and settings_save() also returns false when nothing has changed.
 static bool save(void *user) {
 	(void) user;
+	if (!title_get_path()[0]) {
+		hbc_agent_toast("Wiiload HBC: save needs the installed channel");
+		return false;
+	}
+	if (!settings_changed()) {
+		hbc_agent_toast("Settings are already saved");
+		return true;
+	}
 	return settings_save();
 }
 

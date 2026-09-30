@@ -461,6 +461,7 @@ static void *ae_func (void *arg) {
 				app_entry_load_all();
 				app_entry_scan_ms =
 					ticks_to_millisecs(diff_ticks(scan_start, gettime()));
+				hlog("Apps: %s read in %u ms\n", cwd, (unsigned) app_entry_scan_ms);
 
 				ta->loading = false;
 

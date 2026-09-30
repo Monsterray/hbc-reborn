@@ -1,8 +1,8 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define CHANNEL_VERSION_DATE 202609300300llu
-#define CHANNEL_VERSION_STR "1.8.0"
+#define CHANNEL_VERSION_DATE 202609300400llu
+#define CHANNEL_VERSION_STR "1.8.1"
 
 //#define DEBUG_APP
 //#define DEBUG_STUB
@@ -29,6 +29,11 @@ void memstats(int reset);
 #define gprintf_enable(...)
 #define CHKBUFACC(...)
 #endif
+
+// A few events, always logged: they go to the HOME menu's DEV > Log (the
+// agent keeps stdout) and, with Log to PC, to `hbc.py log`. gprintf is the
+// debug build's chatter and compiles to nothing in a release.
+#define hlog(...) printf(__VA_ARGS__)
 
 #define UPDATE_URL "http://example.com/update.sxml"
 #define UPDATE_PUBLIC_KEY \

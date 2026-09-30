@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.8.0**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.8.1**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -206,7 +206,7 @@ and batteries, over five buttons:
 
 | Button | What it does |
 | --- | --- |
-| DEV | Actions: Restart app, Pause, Save, Log (the app's recent output), Log to PC, the crash screen's time, and the `hbc.py` connection. Info: time, play time, network, SD space, the app, and MEM1 and MEM2 free, used and total in KB. |
+| DEV | Actions: Restart app, Pause, Save, Log (the app's recent output), Reset remotes, Sync clock (sets the Wii's clock from an NTP server, keeping its time zone), Log to PC, the crash screen's time, and the `hbc.py` connection. Info: time, play time, network, SD space, the app, and MEM1 and MEM2 free, used and total in KB. |
 | (app slot) | Whatever the app puts there with `hbc_agent_set_slot(0, ...)`; blank otherwise. |
 | Exit | The Homebrew Channel, System Menu, Restart Wii, Power off. |
 | Shot | Saves the game's frame to `sd:/screenshots/<app>-NNN.bmp`. An app can replace it with `hbc_agent_set_slot(1, ...)`. |
@@ -396,7 +396,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.8.0 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.8.1 WII-IP` | installed channel running |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |
