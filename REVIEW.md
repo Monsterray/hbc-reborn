@@ -155,6 +155,30 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.7.5: the speaker's pace, and a PCM/ADPCM test
+
+- **Reported on hardware:** 1.7.4's volume chirp sounded cut off, and Find made only
+  noise.
+- **Cause: the speaker got data twice as fast as it plays.** By WiiBrew's formula,
+  ADPCM at rate `0x07d0` plays 6,000,000 / 2000 = 3,000 samples a second, and
+  WiiBrew's PCM example (rate `0x1770`, 20 bytes every 10 ms) checks the same
+  formula. libogc, and 1.7.4 after it, sent 40 ADPCM samples every 6.67 ms, 6,000
+  a second. Dolphin plays ADPCM at twice the configured rate, so the emulator hid the
+  problem. On a remote the buffer overflows. A short sound loses its end, and ADPCM,
+  which codes each sample as a step from the last, turns the gaps into noise.
+- **Fix:** a sound carries its format, rate value and report period; the alarm runs at
+  that period (ADPCM 13.3 ms, PCM 6.67 ms, both 3 kHz). Notes stay under 1.5 kHz,
+  half the rate. Each sound starts with 40 ms of silence and ends with 200 ms, so the
+  amplifier is awake and the buffer plays out. Find now sends only its chime, no LED
+  or rumble commands, and lasts as long as the chime.
+- **Test page:** "Sound: ADPCM (1)" and "Sound: PCM (2)" play the same tune in each
+  format at the same rate, so they can be compared by ear. They respond to the remote's
+  1 and 2, or to A while the pointer is on them (the D-pad and A are under test there,
+  so nothing else is highlighted). `hbc.py key` accepts `1` and `2`.
+- **Trigger for the next step:** if PCM sounds better, make it the default for the
+  chime and chirp, then try PCM at 4 kHz (rate `0x0bb8`, 5 ms reports). If ADPCM is
+  better, try ADPCM at 6 kHz (rate `0x03e8`) at the 6.67 ms pace.
+
 ### 1.7.4: the remote's speaker, Find's lights, the On glow
 
 - **Sensor bar showed the wrong side.** The display took the Wii's setting as 1 for

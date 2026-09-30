@@ -203,7 +203,7 @@ An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent.h) answers on port
 | `HBCF` | every file op above, on the devices the app mounted |
 | `HBCN` | sets the log target for the apps after this one |
 | `HBCX` | replies, then the app exits to HBC |
-| `HBCK` | header bytes 4-5: a count (at most 64), then that many of `udlrabh`; queued as controller presses (`h` is HOME, which apps check with `hbc_agent_home_pending()`) |
+| `HBCK` | header bytes 4-5: a count (at most 64), then that many of `udlrabh12`; queued as controller presses (`h` is HOME, `1` and `2` the remote's buttons, which apps check with `hbc_agent_home_pending()`) |
 | `HBCP` | reply header, then u32 width, u32 height, and the YUYV framebuffer the VI is showing |
 | `HAXX` | closes the connection without reading, then exits to HBC: the upload fails once, and the retry reaches HBC |
 
@@ -253,10 +253,13 @@ on for every connected remote, mapped to the framebuffer; each remote gets
 back its previous data format on close (left on if the handles are missing
 and the format is unknown).
 
-Find runs a light chase and rumble on the remote and streams a chime to its
-speaker (4-bit ADPCM at 6 kHz, libogc's speaker set-up). Changing a remote's
-volume in More plays a short chirp at the new level; volume 10 is libogc's
-`0x40`, the ADPCM maximum. See REVIEW.md 1.7.4 for what limits the speaker.
+Find streams a chime to the remote's speaker and sends it nothing else.
+Sounds play at 3 kHz, paced as the speaker plays them: 4-bit ADPCM (rate
+`0x07d0`) a 20-byte report every 13.3 ms, 8-bit PCM (rate `0x0fa0`) every
+6.67 ms. Changing a remote's volume in More plays a short chirp at the new
+level (volume 10 is `0x40`, the ADPCM maximum; PCM gets twice the byte). The
+Test page plays one tune in each format (1: ADPCM, 2: PCM, or point and press
+A). See REVIEW.md 1.7.4 and 1.7.5 for what limits the speaker.
 
 ### Crash reports
 

@@ -216,8 +216,8 @@ def screen(wii):
 
 def send_keys(wii, keys):
     keys = keys.encode("ascii")
-    if len(keys) > 64 or any(k not in b"udlrabh" for k in keys):
-        raise HBCError("keys are up to 64 of u d l r a b h")
+    if len(keys) > 64 or any(k not in b"udlrabh12" for k in keys):
+        raise HBCError("keys are up to 64 of u d l r a b h 1 2")
     with connect(wii) as conn:
         conn.sendall((b"HBCK" + struct.pack(">H", len(keys))).ljust(16, b"\0") + keys)
         recv_reply(conn)
@@ -756,7 +756,7 @@ Commands
     mkdir PATH          make a folder
   Apps built with the in-app agent (sdk/hbc_agent.h)
     exit                ask the running app to go back to HBC
-    key KEYS            press buttons on it: h (HOME), u d l r, a, b
+    key KEYS            press buttons on it: h (HOME), u d l r, a, b, 1, 2
     screen FILE.png     save a picture of what the TV shows
     crash [--elf ELF]   show the last crash: where, and why
 
@@ -864,7 +864,7 @@ Asks the running agent app to exit to HBC, and waits until HBC answers.""",
 hbc.py key KEYS
 
 Presses buttons on the running agent app, one after another: h (HOME, which
-opens and closes the agent's overlay), u d l r (the D-pad), a, and b. Use it
+opens and closes the agent's overlay), u d l r (the D-pad), a, b, 1 and 2. Use it
 to drive the overlay from a script, or from the PC. HBC's own HOME menu is
 the same overlay, so this works on HBC too.
 

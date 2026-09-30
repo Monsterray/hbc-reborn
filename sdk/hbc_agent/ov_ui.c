@@ -32,7 +32,7 @@ enum {
 	ID_TAB_ACT = 120, ID_TAB_INFO, ID_RESTART_APP, ID_PAUSE, ID_SAVE, ID_LOG,
 	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY, ID_RESET_REMOTES,
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
-	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS,
+	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS, ID_SND_ADPCM, ID_SND_PCM,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
 	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL,
 	ID_SLOT_ITEM = 200    // + slot * 16 + item
@@ -343,6 +343,12 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 			value(ui, 120, y, IW - 120, tab ? tab + 1 : e->test[i], 0);
 			y += 24;
 		}
+		// The speaker, the same notes both ways: point and press A, or
+		// press 1 or 2 (A and the D-pad are being tested here).
+		y += 4;
+		button(ui, ID_SND_ADPCM, 0, y, CW, "Sound: ADPCM (1)", 0);
+		button(ui, ID_SND_PCM, CW + 10, y, CW, "Sound: PCM (2)", 0);
+		y += BH;
 		add(ui, K_TEXT, 0, 0, y + 4, IW, 16, F_LABEL | F_SMALL, "Press + and - together to go back.");
 		return y + 22;
 	case WM_CAL:
@@ -688,6 +694,9 @@ static void back(ov_ui *ui, ov_act_fn act, void *user) {
 static int target(const ov_ui *ui) {
 	if (ui->aiming && ui->pointer >= 0 && ui->hover)
 		return ui->hover;
+	// The Test page's D-pad is under test, so only the pointer highlights.
+	if (ui->menu == MENU_WM && ui->wm_page == WM_TEST)
+		return 0;
 	return in_layer(ui, ui->focus) ? ui->focus : 0;
 }
 
@@ -764,6 +773,8 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 	case ID_VOL_MINUS: act(OVA_VOLUME, ui->wm_sel, user); break;
 	case ID_VOL_PLUS: act(OVA_VOLUME, ui->wm_sel | 16, user); break;
 	case ID_RESET_REMOTES: act(OVA_RESET_REMOTES, 0, user); break;
+	case ID_SND_ADPCM: act(OVA_SOUND_TEST, ui->wm_sel, user); break;
+	case ID_SND_PCM: act(OVA_SOUND_TEST, ui->wm_sel | 16, user); break;
 	case ID_TEST: ui->wm_page = WM_TEST; act(OVA_TEST_START, ui->wm_sel, user); break;
 	case ID_CAL: ui->wm_page = WM_CAL; act(OVA_CAL_START, ui->wm_sel, user); break;
 	case ID_DISC:
@@ -800,9 +811,16 @@ bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *
 	}
 
 	// The Test page shows every button, B included: only + and - together
-	// (or HOME) leave it.
+	// (or HOME) leave it. Its sound buttons play with 1 and 2, or with A
+	// while the pointer is on one.
 	if (ui->menu == MENU_WM && ui->wm_page == WM_TEST) {
-		pressed = (pressed & OV_HOME) | (pressed & OV_TEST_EXIT ? OV_B : 0);
+		bool on_sound = ui->aiming && ui->pointer >= 0 &&
+						(ui->hover == ID_SND_ADPCM || ui->hover == ID_SND_PCM);
+
+		if (pressed & (OV_1 | OV_2))
+			act(OVA_SOUND_TEST, ui->wm_sel | (pressed & OV_2 ? 16 : 0), user);
+		pressed = (pressed & OV_HOME) | (pressed & OV_TEST_EXIT ? OV_B : 0) |
+				  (on_sound ? pressed & OV_A : 0);
 	}
 
 	if (pressed & OV_HOME) {
