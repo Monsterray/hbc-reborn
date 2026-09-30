@@ -20,6 +20,7 @@
 #include <ogc/lwp_watchdog.h>
 #include <ogc/machine/processor.h>
 #include <network.h>
+#include <ogc/lwp_queue.h>
 #include <wiiuse/wpad.h>
 
 #include "../hbc_agent.h"
@@ -31,6 +32,8 @@
 #define WM_STATE_RUMBLE 0x000080
 #define WM_STATE_ACC 0x000100
 #define WM_STATE_IR 0x000400
+#define WM_STATE_SPEAKER 0x000800
+#define WIIMOTE_STATE_RUMBLE_FLAG 0x000080
 
 #define TOAST_FRAMES 150
 #define CAL_FRAMES 60
@@ -38,6 +41,13 @@
 #define SPEAKER_RATE 6000   // libogc's speaker set-up: 4-bit ADPCM at 6 kHz
 
 extern void __exception_setreload(int t);
+
+// wiiuse internals, exported by libwiiuse but not declared in its headers.
+extern int wiiuse_io_write(struct wiimote_t *wm, ubyte *buf, int len);
+extern void wiiuse_send_next_command(struct wiimote_t *wm);
+
+#define WM_RPT_SPEAKER_DATA 0x18
+#define WM_REG_SPEAKER_BLOCK 0x04a20001
 
 // ---- Remote handles ------------------------------------------------------
 //
@@ -152,7 +162,7 @@ static unsigned ir_read(int x[4], int y[4], float angle[4]) {
 
 		x[chan] = y[chan] = 0;
 		if (ir[chan].set && d && d->err == WPAD_ERR_NONE && d->ir.valid) {
-			angle[chan] = -d->ir.angle;
+			angle[chan] = d->ir.angle;
 			x[chan] = (int) d->ir.x;
 			y[chan] = (int) d->ir.y;
 			valid |= 1u << chan;
@@ -259,6 +269,208 @@ static void keeper_start(void) {
 		LWP_CreateThread(&keeper, keeper_thread, NULL, keeper_stack, sizeof(keeper_stack), 90);
 }
 
+// ---- Each remote's command queue ----------------------------------------------
+//
+// wiiuse sends a remote's commands one at a time and sends the next only
+// when the remote acknowledges the last. Speaker data reports are never
+// acknowledged, so libogc's own speaker streaming (WPAD_SendStreamData,
+// which queues each 20-byte chunk as a command) stops the queue for good:
+// no LEDs, no rumble (sent as a bit on the LED command), no extension
+// handshake, until the remote reconnects. A lost acknowledgement does the
+// same. The guard, run each overlay frame, drops a speaker chunk stuck at
+// the head and re-sends any other command left unanswered for half a
+// second. "Reset remotes" (DEV) empties every queue.
+
+#define QUEUE_RESEND_FRAMES 30
+
+static struct {
+	u32 since;            // frame the head was first seen waiting, or 0
+	u32 resent, dropped;
+} q[4];
+static u32 fx_frame;
+
+static struct cmd_blk_t **head_of(wiimote *wm) {
+	return (struct cmd_blk_t **) &wm->cmd_head;
+}
+
+// With interrupts off: take the head off the queue, back to the free pool.
+static void drop_head(wiimote *wm) {
+	struct cmd_blk_t *cmd = *head_of(wm);
+
+	*head_of(wm) = cmd->next;
+	if (!cmd->next)
+		*(struct cmd_blk_t **) &wm->cmd_tail = NULL;
+	cmd->state = CMD_DONE;
+	__lwp_queue_append((lwp_queue *) &wm->cmdq, &cmd->node);
+}
+
+static void queue_guard(int chan) {
+	wiimote *wm = remote(chan);
+	struct cmd_blk_t *head;
+	u32 level;
+
+	if (!wm)
+		return;
+	_CPU_ISR_Disable(level);
+	head = *head_of(wm);
+	if (!head || head->state != CMD_SENT) {
+		q[chan].since = 0;
+	} else if (head->data[0] == WM_RPT_SPEAKER_DATA) {
+		drop_head(wm);
+		q[chan].dropped++;
+		q[chan].since = 0;
+		wiiuse_send_next_command(wm);
+	} else if (!q[chan].since) {
+		q[chan].since = fx_frame;
+	} else if (fx_frame - q[chan].since > QUEUE_RESEND_FRAMES) {
+		head->state = CMD_READY;
+		wiiuse_send_next_command(wm);
+		q[chan].resent++;
+		q[chan].since = fx_frame;
+	}
+	_CPU_ISR_Restore(level);
+}
+
+static int queued(wiimote *wm) {
+	struct cmd_blk_t *cmd;
+	int n = 0;
+
+	for (cmd = *head_of(wm); cmd && n < 99; cmd = cmd->next)
+		n++;
+	return n;
+}
+
+// DEV > Reset remotes: empty every queue and send each remote its resting
+// state again (player LED, no rumble).
+static void reset_remotes(void) {
+	int chan;
+
+	for (chan = 0; chan < 4; ++chan) {
+		wiimote *wm = remote(chan);
+		u32 level;
+
+		if (!wm)
+			continue;
+		_CPU_ISR_Disable(level);
+		while (*head_of(wm)) {
+			drop_head(wm);
+			q[chan].dropped++;
+		}
+		q[chan].since = 0;
+		*(int *) &wm->state &= ~WIIMOTE_STATE_RUMBLE_FLAG;   // rumble off in the next report
+		wiiuse_set_leds(wm, WIIMOTE_LED_1 << chan, NULL);
+		_CPU_ISR_Restore(level);
+	}
+}
+
+int agent_remote_diag(char *buf, int size) {
+	int n = 0, chan;
+
+	n += snprintf(buf + n, size - n, "[");
+	for (chan = 0; chan < 4; ++chan) {
+		wiimote *wm = remote(chan);
+		struct cmd_blk_t *head;
+
+		if (!wm)
+			continue;
+		char rpt[8] = "null";
+
+		head = *head_of(wm);
+		if (head)
+			snprintf(rpt, sizeof(rpt), "\"%02x\"", head->data[0]);
+		n += snprintf(buf + n, size - n, "%s{\"chan\":%d,\"state\":\"%06x\",\"leds\":\"%02x\","
+				"\"exp\":%d,\"queued\":%d,\"head\":%s,\"head_sent\":%s,\"resent\":%u,"
+				"\"dropped\":%u}", n > 1 ? "," : "", chan, wm->state, wm->leds, wm->exp.type,
+				queued(wm), rpt, head && head->state == CMD_SENT ? "true" : "false",
+				q[chan].resent, q[chan].dropped);
+	}
+	n += snprintf(buf + n, size - n, "]");
+	return n;
+}
+
+// Speaker data, sent the way games do: one raw report every 6.67 ms, not
+// through the command queue. Each carries the remote's rumble bit, as every
+// output report must, or it would switch the rumble off.
+static struct {
+	const u8 *data;
+	u32 len, off;
+	bool on;
+	u8 report[22] ATTRIBUTE_ALIGN(32);
+} spk[4];
+static syswd_t spk_alarm;
+static bool spk_alarm_made, spk_alarm_running;
+
+static void spk_tick(syswd_t alarm, void *arg) {
+	bool any = false;
+	int chan;
+	(void) arg;
+
+	for (chan = 0; chan < 4; ++chan) {
+		wiimote *wm = handles ? handles[chan] : NULL;
+		u32 n;
+
+		if (!spk[chan].on)
+			continue;
+		if (!wm || !(wm->state & WM_STATE_CONNECTED) || spk[chan].off >= spk[chan].len) {
+			spk[chan].on = false;
+			continue;
+		}
+		n = spk[chan].len - spk[chan].off > 20 ? 20 : spk[chan].len - spk[chan].off;
+		memset(spk[chan].report, 0, sizeof(spk[chan].report));
+		spk[chan].report[0] = WM_RPT_SPEAKER_DATA;
+		spk[chan].report[1] = (n << 3) | (wm->state & WM_STATE_RUMBLE ? 1 : 0);
+		memcpy(spk[chan].report + 2, spk[chan].data + spk[chan].off, n);
+		wiiuse_io_write(wm, spk[chan].report, 22);
+		spk[chan].off += n;
+		any = true;
+	}
+	if (!any) {
+		SYS_CancelAlarm(alarm);
+		spk_alarm_running = false;
+	}
+}
+
+static void spk_play(int chan, const u8 *data, u32 len) {
+	struct timespec tb = { 0, 6666667 };
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	spk[chan].data = data;
+	spk[chan].len = len;
+	spk[chan].off = 0;
+	spk[chan].on = true;
+	_CPU_ISR_Restore(level);
+	if (!spk_alarm_made) {
+		SYS_CreateAlarm(&spk_alarm);
+		spk_alarm_made = true;
+	}
+	if (!spk_alarm_running) {
+		spk_alarm_running = true;
+		SYS_SetPeriodicAlarm(spk_alarm, &tb, &tb, spk_tick, NULL);
+	}
+}
+
+static void spk_stop(int chan) {
+	spk[chan].on = false;
+}
+
+// Speaker volume per remote, 0 to 10 (5 is libogc's 0x40), written into
+// the speaker's configuration block whenever the speaker is on.
+static int volume[4] = { 5, 5, 5, 5 };
+
+static void write_volume(int chan) {
+	wiimote *wm = remote(chan);
+	u8 conf[7] = { 0x00, 0x00, 0xd0, 0x07, 0x00, 0x0c, 0x0e };
+	u32 level;
+
+	if (!wm || !(wm->state & WM_STATE_SPEAKER))
+		return;
+	conf[4] = volume[chan] * 0x40 / 5;
+	_CPU_ISR_Disable(level);
+	wiiuse_write_data(wm, WM_REG_SPEAKER_BLOCK, conf, sizeof(conf), NULL);
+	_CPU_ISR_Restore(level);
+}
+
 // ---- Find, and rumble feedback, run from the overlay's frame loop ------------
 //
 // A remote takes commands (LEDs, rumble, speaker data) from a small queue
@@ -273,14 +485,13 @@ static struct {
 	u32 restore_end;                     // re-sending the resting state until
 	u32 find_start;
 	int led, rumble;                     // what was last sent; -1 unknown
-	bool speaker_was_on, sent;
+	bool speaker_was_on;
+	int speaker;                         // 0 off, 1 starting, 2 volume sent, 3 playing
 } fx[4];
-static u32 fx_frame;
 
 // One chime for every remote, made once: two notes a quarter-second apart,
-// each faded in and out, the whole getting louder over 3 s. libogc plays it
-// from its own 6.67 ms timer, 20 bytes (40 samples) a tick, from this
-// buffer, so it has to outlive the overlay.
+// each faded in and out, the whole getting louder over 3 s; spk_tick sends
+// it 20 bytes (40 samples) at a time.
 static u8 *chime;
 
 static u8 *make_chime(void) {
@@ -334,18 +545,20 @@ static void find_start(int chan) {
 	fx[chan].find_start = fx_frame;
 	fx[chan].find_end = fx_frame + FIND_FRAMES;
 	fx[chan].led = fx[chan].rumble = -1;
-	fx[chan].sent = false;
 	fx[chan].speaker_was_on = WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE;
+	fx[chan].speaker = chime && remote(chan) ? 1 : 0;
 	ses.finding[chan] = true;
-	if (chime && !fx[chan].speaker_was_on)
+	if (fx[chan].speaker && !fx[chan].speaker_was_on)
 		WPAD_ControlSpeaker(chan, 1);
 }
 
 static void find_stop(int chan) {
+	spk_stop(chan);
 	fx_rumble(chan, 0);
 	fx_leds(chan, WIIMOTE_LED_1 << chan);
-	if (!fx[chan].speaker_was_on)
+	if (fx[chan].speaker && !fx[chan].speaker_was_on)
 		WPAD_ControlSpeaker(chan, 0);
+	fx[chan].speaker = 0;
 	fx[chan].find_end = 0;
 	ses.finding[chan] = false;
 	// A full command queue drops commands, so say it a few more times.
@@ -369,6 +582,8 @@ static void fx_tick(void) {
 	fx_frame++;
 	for (chan = 0; chan < 4; ++chan) {
 		u32 type;
+
+		queue_guard(chan);
 
 		if (fx[chan].pulse_end && fx_frame >= fx[chan].pulse_end) {
 			fx_rumble(chan, 0);
@@ -398,10 +613,20 @@ static void fx_tick(void) {
 			fx_leds(chan, (t / 12) & 1 ? 0xf0 : WIIMOTE_LED_1 << chan);
 			fx_rumble(chan, t % 36 < 9);
 		}
-		// The speaker takes a few reports to start; play once it has.
-		if (chime && !fx[chan].sent && WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE) {
-			WPAD_SendStreamData(chan, chime, CHIME_SAMPLES / 2);
-			fx[chan].sent = true;
+		// The speaker's set-up is a run of queued commands: wait for the
+		// remote to answer them all, set the volume, then stream.
+		if (fx[chan].speaker == 1 || fx[chan].speaker == 2) {
+			wiimote *wm = remote(chan);
+
+			if (wm && !*head_of(wm) && (wm->state & WM_STATE_SPEAKER)) {
+				if (fx[chan].speaker == 1) {
+					write_volume(chan);
+					fx[chan].speaker = 2;
+				} else {
+					spk_play(chan, chime, CHIME_SAMPLES / 2);
+					fx[chan].speaker = 3;
+				}
+			}
 		}
 	}
 }
@@ -422,8 +647,10 @@ static void fx_stop_all(void) {
 // ---- Calibration --------------------------------------------------------
 
 static hbc_agent_cal cal[4];
+#define CAL_WAIT_FRAMES 300          // 5 s to put the remote down
+
 static struct {
-	int chan, frames;
+	int chan, frames, wait;
 	s64 sum[8];
 } cal_run = { -1 };
 
@@ -433,6 +660,10 @@ static void cal_sample(void) {
 
 	if (c < 0 || cal_run.frames >= CAL_FRAMES)
 		return;
+	if (cal_run.wait > 0) {
+		cal_run.wait--;
+		return;
+	}
 	d = WPAD_Data(c);
 	if (!d || d->err != WPAD_ERR_NONE)
 		return;
@@ -633,6 +864,7 @@ static void poll(ov_run *r) {
 		rm->motionplus = d->exp.type == EXP_MOTION_PLUS ||
 				(remote(chan) && remote(chan)->state & 0x100000);
 		rm->rumble = !ses.rumble_off[chan];
+		rm->volume = volume[chan];
 		rm->finding = ses.finding[chan];
 	}
 
@@ -702,6 +934,7 @@ static void poll(ov_run *r) {
 		const hbc_agent_cal *c = &cal[cal_run.chan];
 
 		e->cal_progress = cal_run.frames * 100 / CAL_FRAMES;
+		e->cal_wait_s = (cal_run.wait + 59) / 60;
 		if (c->valid && c->motionplus)
 			snprintf(e->cal_result, sizeof(e->cal_result), "Gyro at rest: %d, %d, %d",
 					 c->gyro[0], c->gyro[1], c->gyro[2]);
@@ -806,6 +1039,7 @@ static void act(int action, int arg, void *user) {
 	case OVA_CAL_START:
 		memset(&cal_run, 0, sizeof(cal_run));
 		cal_run.chan = arg;
+		cal_run.wait = CAL_WAIT_FRAMES;
 		cal[arg].valid = false;
 		break;
 	case OVA_CONNECT:
@@ -832,6 +1066,22 @@ static void act(int action, int arg, void *user) {
 		if (ses.auto_off > 4)
 			ses.auto_off = 4;
 		WPAD_SetIdleTimeout(auto_off_s[ses.auto_off]);
+		break;
+	case OVA_VOLUME: {
+		int chan = arg & 15;
+
+		volume[chan] += arg & 16 ? 1 : -1;
+		if (volume[chan] < 0)
+			volume[chan] = 0;
+		if (volume[chan] > 10)
+			volume[chan] = 10;
+		write_volume(chan);
+		break;
+	}
+	case OVA_RESET_REMOTES:
+		reset_remotes();
+		fx_stop_all();
+		toast("Remotes reset: queues emptied");
 		break;
 	case OVA_RUMBLE_ALL:
 		ses.rumble_all_off = !arg;
@@ -904,6 +1154,10 @@ static unsigned read_input(void) {
 			out |= OV_B;
 		if (b & (WPAD_BUTTON_HOME | WPAD_CLASSIC_BUTTON_HOME))
 			out |= OV_HOME;
+		// + and - together: leave the Test page (which shows every other button).
+		if ((WPAD_ButtonsHeld(chan) & (WPAD_BUTTON_PLUS | WPAD_BUTTON_MINUS)) ==
+				(WPAD_BUTTON_PLUS | WPAD_BUTTON_MINUS) && (b & (WPAD_BUTTON_PLUS | WPAD_BUTTON_MINUS)))
+			out |= OV_TEST_EXIT;
 		if (b) {
 			out |= OV_ANY;
 			last_chan = chan;

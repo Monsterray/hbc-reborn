@@ -30,9 +30,9 @@ enum {
 	ID_BAR = 100,
 	ID_EX_HBC = 110, ID_EX_SYS, ID_EX_RESTART, ID_EX_POWER,
 	ID_TAB_ACT = 120, ID_TAB_INFO, ID_RESTART_APP, ID_PAUSE, ID_SAVE, ID_LOG,
-	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY,
+	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY, ID_RESET_REMOTES,
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
-	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC,
+	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
 	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL,
 	ID_SLOT_ITEM = 200    // + slot * 16 + item
@@ -225,6 +225,8 @@ static int build_dev(ov_ui *ui, const ov_ext *e) {
 		y += BH + GAP;
 		button(ui, ID_SAVE, 0, y, CW, "Save", e->has_save ? 0 : F_DIS);
 		button(ui, ID_LOG, CW + 10, y, CW, "Log", 0);
+		y += BH + GAP;
+		button(ui, ID_RESET_REMOTES, 0, y, IW, "Reset remotes", 0);
 		y += BH + 12;
 		if (e->show_log_pc) {
 			toggle(ui, ID_LOGPC, y, "Log to PC", e->log_pc, 0);
@@ -316,6 +318,9 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 		value(ui, CW + 10, y, CW, sel->motionplus ? "Yes" : "No", 0);
 		y += 30;
 		toggle(ui, ID_RUMBLE, y, "Rumble", sel->rumble, 0);
+		y += BH + GAP;
+		snprintf(buf, sizeof(buf), "%d of 10", sel->volume);
+		stepper(ui, ID_VOL_MINUS, ID_VOL_PLUS, y, "Speaker volume", buf, 0);
 		y += BH + 12;
 		button(ui, ID_TEST, 0, y, CW, "Test", 0);
 		button(ui, ID_CAL, CW + 10, y, CW, "Calibrate", 0);
@@ -338,7 +343,7 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 			value(ui, 120, y, IW - 120, tab ? tab + 1 : e->test[i], 0);
 			y += 24;
 		}
-		add(ui, K_TEXT, 0, 0, y + 4, IW, 16, F_LABEL | F_SMALL, "Press B to go back; other buttons are shown.");
+		add(ui, K_TEXT, 0, 0, y + 4, IW, 16, F_LABEL | F_SMALL, "Press + and - together to go back.");
 		return y + 22;
 	case WM_CAL:
 		remote_tag(ui, 0, y + 5, ui->wm_sel, false);
@@ -359,7 +364,11 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 			bar->arg = e->cal_progress;
 		}
 		y += 16;
-		value(ui, 0, y, IW, e->cal_progress >= 100 ? e->cal_result : "Measuring...", F_LABEL);
+		if (e->cal_wait_s > 0)
+			snprintf(buf, sizeof(buf), "Starting in %d s...", e->cal_wait_s);
+		else
+			snprintf(buf, sizeof(buf), "%s", e->cal_progress >= 100 ? e->cal_result : "Measuring...");
+		value(ui, 0, y, IW, buf, F_LABEL);
 		return y + 24;
 	default:
 		title(ui, 0, y, IW, "Controller settings");
@@ -752,6 +761,9 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 	case ID_HBCPY: act(OVA_HBCPY, !e->hbcpy, user); break;
 	case ID_SETTINGS: ui->wm_page = WM_SETTINGS; ui->focus = ID_CONNECT; break;
 	case ID_RUMBLE: act(OVA_RUMBLE, ui->wm_sel, user); break;
+	case ID_VOL_MINUS: act(OVA_VOLUME, ui->wm_sel, user); break;
+	case ID_VOL_PLUS: act(OVA_VOLUME, ui->wm_sel | 16, user); break;
+	case ID_RESET_REMOTES: act(OVA_RESET_REMOTES, 0, user); break;
 	case ID_TEST: ui->wm_page = WM_TEST; act(OVA_TEST_START, ui->wm_sel, user); break;
 	case ID_CAL: ui->wm_page = WM_CAL; act(OVA_CAL_START, ui->wm_sel, user); break;
 	case ID_DISC:
@@ -787,9 +799,11 @@ bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *
 		pressed = 0;
 	}
 
-	// While a page with live input is shown, only B leaves it.
-	if (ui->menu == MENU_WM && ui->wm_page == WM_TEST)
-		pressed &= OV_B | OV_HOME;
+	// The Test page shows every button, B included: only + and - together
+	// (or HOME) leave it.
+	if (ui->menu == MENU_WM && ui->wm_page == WM_TEST) {
+		pressed = (pressed & OV_HOME) | (pressed & OV_TEST_EXIT ? OV_B : 0);
+	}
 
 	if (pressed & OV_HOME) {
 		if (ui->menu == MENU_WM && ui->wm_page == WM_TEST)
@@ -960,7 +974,7 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 			// rounded boxes, strongest nearest the button. Wide and bright
 			// for the highlight, soft for a button that is On.
 			if (!dis && (focused || (it->flags & F_ON))) {
-				int k, rad = focused ? 7 : 4, a = focused ? 44 : 24;
+				int k, rad = focused ? 7 : 6, a = focused ? 22 : 12;
 
 				for (k = rad; k > 0; --k)
 					ov_panel(c, it->x - k, it->y - k, it->w + 2 * k, it->h + 2 * k, 6 + k, bloom,

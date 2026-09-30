@@ -69,6 +69,7 @@ static u32 idle_wakes;
 static u64 idle_ticks, request_ticks;
 // In overlay.c, when the app links it: whether the remote handles were found.
 int agent_wpad_handles(void) __attribute__((weak));
+int agent_remote_diag(char *buf, int size) __attribute__((weak));
 void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes,
 						const char **buffers) __attribute__((weak));
 volatile bool agent_crash_stay;
@@ -377,6 +378,10 @@ static s32 status_json(char *buf, size_t size) {
 	if (agent_wpad_handles)
 		n += snprintf(buf + n, size - n, ",\"wpad_handles\":%s",
 				agent_wpad_handles() ? "true" : "false");
+	if (agent_remote_diag) {
+		n += snprintf(buf + n, size - n, ",\"remotes\":");
+		n += agent_remote_diag(buf + n, size - n);
+	}
 	// What the HOME overlay cost the last time it was open.
 	if (agent_overlay_cost) {
 		u32 frames, avg, max, bytes;
@@ -434,7 +439,7 @@ static void __attribute__((noreturn)) agent_exit(void) {
 }
 
 static void handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[1536];
+	char json[2048];
 
 	if (!memcmp(hdr, "HBCV", 4)) {
 		static const char version[] = CHANNEL_VERSION_STR " agent";

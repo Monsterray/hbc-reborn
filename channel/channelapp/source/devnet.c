@@ -97,6 +97,8 @@ static s32 crash_json(char *buf, size_t size) {
 // What the HOME overlay (home.c, via sdk/hbc_agent) cost the last time.
 void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes,
 						const char **buffers);
+// Each Wii Remote's command queue, as the overlay sees it.
+int agent_remote_diag(char *buf, int size);
 
 static s32 status_json(char *buf, size_t size) {
 	bool mounted[DEVICE_COUNT] = { false };
@@ -157,6 +159,8 @@ static s32 status_json(char *buf, size_t size) {
 					"\"max_us\":%u,\"bytes\":%u,\"buffers\":\"%s\"}",
 					frames, avg, max, bytes, buffers);
 	}
+	n += snprintf(buf + n, size - n, ",\"remotes\":");
+	n += agent_remote_diag(buf + n, size - n);
 	n += snprintf(buf + n, size - n, "}");
 
 	return n;
@@ -237,7 +241,7 @@ static void set_log_target(u32 ip, u16 port) {
 }
 
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[1400];
+	char json[2048];
 
 	// `hbc.py key` and `screen`: HOME-overlay presses and the TV picture,
 	// answered by the agent that draws HBC's HOME menu (home.c).

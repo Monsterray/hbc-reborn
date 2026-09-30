@@ -155,6 +155,28 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.7.3: the remote's command queue
+
+- **libogc's speaker streaming stops a remote's command queue for good.** wiiuse sends
+  a remote's commands one at a time, each after the last is acknowledged, and speaker
+  data reports are not acknowledged (Dolphin's `HandleSpeakerData` says as much). So
+  the first chunk `WPAD_SendStreamData` queued left every later command waiting: no LED
+  changes, no rumble anywhere (rumble rides on the LED report), no extension handshake
+  (a Classic Controller plugged in then never finished), until the remote reconnected.
+  1.7.2's Find did exactly that on a real remote.
+- **Fix:** the overlay streams speaker data itself, as raw reports every 6.67 ms outside
+  the queue (each with the remote's rumble bit), after the speaker's set-up has been
+  answered and its volume written. A guard run each overlay frame drops a speaker chunk
+  stuck at a queue's head and re-sends any other command unanswered for 0.5 s; DEV >
+  Reset remotes empties every queue. `status` shows each remote's queue (`remotes`:
+  state, LEDs, queued, head report, resent, dropped). On the bench Wii, Find's
+  nine-command speaker set-up drained in 0.7 s and the LEDs and rumble bit then
+  alternated as meant.
+- **Also:** a speaker volume stepper per remote (written to the speaker's configuration
+  block), a 5 s wait before Calibrate measures, + and - together to leave the Test page
+  (which shows every other button), the pointer turned the other way, and a quieter
+  bloom.
+
 ### 1.7.2: Find, rumble, the pointer on 16:9, the bloom
 
 - **Find sent the speaker the wrong thing.** `WPAD_SendStreamData` takes a whole sound,

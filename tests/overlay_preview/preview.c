@@ -82,6 +82,7 @@ static void keys(ov_ui *ui, const char *seq) {
 		case 'a': k = OV_A; break;
 		case 'b': k = OV_B; break;
 		case 'h': k = OV_HOME; break;
+		case 't': k = OV_TEST_EXIT; break;   // + and - together
 		}
 		ov_step(ui, &ext, k, act, NULL);
 		for (i = 0; i < 20; ++i)
@@ -106,8 +107,8 @@ int main(int argc, char **argv) {
 	ext.mem_total_kb[0] = 24576;
 	ext.mem_free_kb[1] = 53002;
 	ext.mem_total_kb[1] = 65536;
-	ext.remote[0] = (ov_remote) { true, 3, 75, "Nunchuk", true, true, false };
-	ext.remote[1] = (ov_remote) { true, 1, 25, "Classic Controller", false, false, false };
+	ext.remote[0] = (ov_remote) { true, 3, 75, "Nunchuk", true, true, false, 5 };
+	ext.remote[1] = (ov_remote) { true, 1, 25, "Classic Controller", false, false, false, 7 };
 	ext.log_pc = ext.hbcpy = ext.rumble_all = ext.has_save = ext.can_leds = true;
 	ext.ir_sens = 3;
 	snprintf(ext.auto_off, sizeof(ext.auto_off), "5 min");
@@ -175,7 +176,7 @@ int main(int argc, char **argv) {
 	capture(&ui, "09-more");
 	keys(&ui, "dla");
 	capture(&ui, "10-test");
-	keys(&ui, "bda");
+	keys(&ui, "tda");
 	capture(&ui, "11-calibrate");
 	keys(&ui, "bb" "d" "a");
 	capture(&ui, "12-settings");

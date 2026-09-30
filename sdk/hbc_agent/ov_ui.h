@@ -21,6 +21,7 @@ typedef struct {
 	bool motionplus;
 	bool rumble;          /* rumble allowed for this remote */
 	bool finding;
+	int volume;           /* speaker, 0 to 10 */
 } ov_remote;
 
 /* An app slot's own menu (hbc_agent_set_slot_menu). */
@@ -70,6 +71,7 @@ typedef struct {
 	const char *log_text; /* Log page: the app's recent output */
 	char test[6][40];     /* Test page lines for the selected remote */
 	int cal_progress;     /* 0 to 100 */
+	int cal_wait_s;       /* seconds before it starts measuring */
 	char cal_result[48];
 	char toast[64];
 } ov_ext;
@@ -77,7 +79,8 @@ typedef struct {
 /* Controller input, as presses this frame. */
 enum {
 	OV_UP = 1, OV_DOWN = 2, OV_LEFT = 4, OV_RIGHT = 8,
-	OV_A = 16, OV_B = 32, OV_HOME = 64, OV_ANY = 128
+	OV_A = 16, OV_B = 32, OV_HOME = 64, OV_ANY = 128,
+	OV_TEST_EXIT = 256    /* + and - together */
 };
 
 /* What the overlay asks overlay.c to do; arg is a remote or a value. */
@@ -93,7 +96,9 @@ enum {
 	OVA_CONNECT, OVA_DISCONNECT_ALL, OVA_SENSOR_ABOVE, OVA_IR_SENS,
 	OVA_AUTO_OFF,         /* arg: -1 or +1 */
 	OVA_RUMBLE_ALL,
-	OVA_SLOT_ITEM         /* arg: slot * 16 + item; after closing if OV_ITEM_CLOSE */
+	OVA_SLOT_ITEM,        /* arg: slot * 16 + item; after closing if OV_ITEM_CLOSE */
+	OVA_VOLUME,           /* arg: remote | 16 for louder */
+	OVA_RESET_REMOTES
 };
 
 typedef void (*ov_act_fn)(int action, int arg, void *user);
