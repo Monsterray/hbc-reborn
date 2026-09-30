@@ -902,20 +902,43 @@ bool ov_changed(ov_ui *ui, const ov_ext *e) {
 
 // HBC's look: dialog_background.png runs from dark blue at the top through
 // black to dark blue; buttons are dark gray, focused ones blue.
+// A button's blue bloom, like HBC's focused buttons: a smooth glow out from
+// its edge. The highlight gets a tight bright one; a button that is On
+// glows wider, so it reads as lit even when not focused. Size in pixels,
+// alpha at the button's edge.
+#define GLOW_FOCUS_SIZE 8
+#define GLOW_FOCUS_ALPHA 130
+#define GLOW_ON_SIZE 16
+#define GLOW_ON_ALPHA 150
+
+static bool is_layer(int kind) {
+	return kind == K_PANEL || kind == K_CARD || kind == K_CLIP || kind == K_NOCLIP;
+}
+
+static void glow(const ov_ui *ui, const ov_item *it, ov_canvas *c, ov_color col) {
+	bool focused = !(it->flags & F_BLANK) && it->id == target(ui);
+	bool on = it->flags & F_ON;
+
+	if (it->kind != K_BUTTON || (it->flags & (F_DIS | F_BLANK)) || !(focused || on))
+		return;
+	ov_glow(c, it->x, it->y, it->w, it->h, 6, on ? GLOW_ON_SIZE : GLOW_FOCUS_SIZE, col,
+			on && focused ? 190 : on ? GLOW_ON_ALPHA : GLOW_FOCUS_ALPHA);
+}
+
 void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 	const ov_color blue_top = ov_rgb(0x1f, 0x46, 0x5c), black = ov_rgb(0, 0, 0);
 	const ov_color blue_bot = ov_rgb(0x12, 0x29, 0x37), edge = ov_rgb(0, 0, 0);
 	const ov_color btn_top = ov_rgb(0x4a, 0x4a, 0x4a), btn_mid = ov_rgb(0x26, 0x26, 0x26);
 	const ov_color btn_bot = ov_rgb(0x1a, 0x1a, 0x1a);
 	const ov_color on_top = ov_rgb(0x5a, 0x94, 0xb4), on_mid = ov_rgb(0x2d, 0x68, 0x82);
-	const ov_color on_bot = ov_rgb(0x1d, 0x4a, 0x60);
+	const ov_color on_bot = ov_rgb(0x1d, 0x4a, 0x60), on_rim = ov_rgb(0x6c, 0xc4, 0xff);
 	const ov_color white = ov_rgb(0xff, 0xff, 0xff), grey = ov_rgb(0xa8, 0xa8, 0xa8);
 	const ov_color labelc = ov_rgb(0xc9, 0xd6, 0xde), dimc = ov_rgb(0x5a, 0x60, 0x66);
 	const ov_color bloom = ov_rgb(0x4f, 0xb8, 0xff), card = ov_rgb(0x1c, 0x3a, 0x4c);
 	const ov_color hi_top = ov_rgb(0x8a, 0x8a, 0x8a), hi_mid = ov_rgb(0x55, 0x55, 0x55);
 	const ov_color hi_bot = ov_rgb(0x40, 0x40, 0x40), on_hi = ov_rgb(0x8c, 0xc8, 0xe6);
 	const ov_color led_on = ov_rgb(0x7f, 0xc4, 0xe0), led_off = ov_rgb(0x38, 0x38, 0x38);
-	int i;
+	int i, glow_until = 0;
 
 	(void) e;
 	ov_noclip(c);
@@ -970,20 +993,19 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, black, black, black, dimc, 110);
 				break;
 			}
-			// A blue bloom, like HBC's focused buttons: stacked translucent
-			// rounded boxes, strongest nearest the button. Wide and bright
-			// for the highlight, soft for a button that is On.
-			if (!dis && (focused || (it->flags & F_ON))) {
-				int k, rad = focused ? 7 : 6, a = focused ? 22 : 12;
-
-				for (k = rad; k > 0; --k)
-					ov_panel(c, it->x - k, it->y - k, it->w + 2 * k, it->h + 2 * k, 6 + k, bloom,
-							 bloom, bloom, bloom, a);
+			// Every glow on this layer (up to the next panel, card or
+			// clip) goes down before its first button, so a wide glow
+			// never tints a neighbouring button, only what lies under it.
+			if (i >= glow_until) {
+				for (glow_until = i; glow_until < ui->n && !is_layer(ui->items[glow_until].kind);
+					 ++glow_until)
+					glow(ui, &ui->items[glow_until], c, bloom);
 			}
-			// A glowing button has no black edge, so the bloom runs into it.
+			// A glowing button has no black edge, so the bloom runs into it;
+			// an On one is rimmed in the glow's own blue.
 			if (it->flags & F_ON)
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, focused ? on_hi : on_top, on_mid, on_bot,
-						 dis ? edge : on_mid, dis ? 110 : 255);
+						 dis ? edge : on_rim, dis ? 110 : 255);
 			else if (focused)
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, hi_top, hi_mid, hi_bot, hi_mid, 255);
 			else

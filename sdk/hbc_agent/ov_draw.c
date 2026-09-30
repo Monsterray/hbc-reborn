@@ -178,6 +178,43 @@ void ov_panel(ov_canvas *c, int x, int y, int w, int h, int radius, ov_color top
 	}
 }
 
+void ov_glow(ov_canvas *c, int x, int y, int w, int h, int radius, int size, ov_color col,
+			 int alpha) {
+	int j, i, x0 = x - size, x1 = x + w + size;
+
+	if (radius * 2 > h)
+		radius = h / 2;
+	if (size <= 0 || alpha <= 0)
+		return;
+	for (j = y - size; j < y + h + size; ++j) {
+		// Vertical distance from the box's straight part.
+		int dy = j < y + radius ? y + radius - j : j > y + h - 1 - radius ? j - (y + h - 1 - radius) : 0;
+		bool band = j >= y + radius && j <= y + h - 1 - radius;
+
+		for (i = x0; i < x1; ++i) {
+			int dx = i < x + radius ? x + radius - i : i > x + w - 1 - radius ? i - (x + w - 1 - radius) : 0;
+			float d, t;
+
+			// Inside the button (drawn over this): skip the whole run.
+			if (band && !dx) {
+				i = x + w - 1;
+				continue;
+			}
+			d = (dx && dy ? sqrtf((float) (dx * dx + dy * dy)) : (float) (dx + dy)) - radius;
+			if (d <= 0) {
+				if (!band && dy <= radius && i >= x + radius && i < x + w - radius)
+					i = x + w - radius - 1;
+				continue;
+			}
+			if (d >= size)
+				continue;
+			// Smoothstep: full at the edge, easing out to nothing.
+			t = 1.f - d / size;
+			put(c, i, j, col, (int) (alpha * t * t * (3.f - 2.f * t)));
+		}
+	}
+}
+
 void ov_disc(ov_canvas *c, int cx, int cy, int r, ov_color col) {
 	int i, j;
 

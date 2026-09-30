@@ -342,6 +342,18 @@ static int queued(wiimote *wm) {
 
 // DEV > Reset remotes: empty every queue and send each remote its resting
 // state again (player LED, no rumble).
+static void reset_leds(int chan) {
+	wiimote *wm = remote(chan);
+	u32 level;
+
+	if (!wm)
+		return;
+	_CPU_ISR_Disable(level);
+	*(int *) &wm->state &= ~WIIMOTE_STATE_RUMBLE_FLAG;
+	wiiuse_set_leds(wm, WIIMOTE_LED_1 << chan, NULL);
+	_CPU_ISR_Restore(level);
+}
+
 static void reset_remotes(void) {
 	int chan;
 
@@ -454,10 +466,15 @@ static void spk_stop(int chan) {
 	spk[chan].on = false;
 }
 
-// Speaker volume per remote, 0 to 10 (5 is libogc's 0x40), written into
-// the speaker's configuration block whenever the speaker is on.
-static int volume[4] = { 5, 5, 5, 5 };
+// Speaker volume per remote, 0 to 10. In 4-bit ADPCM the speaker's volume
+// byte tops out at 0x40 (WiiBrew, Wiimote#Speaker; libogc's default), and a
+// larger value overdrives it, so 10 is 0x40 and the steps below it fall
+// off roughly as the ear hears loudness.
+static const u8 volume_byte[11] = { 0x00, 0x03, 0x05, 0x08, 0x0b, 0x10, 0x16, 0x1e, 0x28, 0x33, 0x40 };
+static int volume[4] = { 10, 10, 10, 10 };
 
+// Writing the configuration block also restarts the speaker's ADPCM
+// decoder, which every sound here is encoded from the start for.
 static void write_volume(int chan) {
 	wiimote *wm = remote(chan);
 	u8 conf[7] = { 0x00, 0x00, 0xd0, 0x07, 0x00, 0x0c, 0x0e };
@@ -465,70 +482,138 @@ static void write_volume(int chan) {
 
 	if (!wm || !(wm->state & WM_STATE_SPEAKER))
 		return;
-	conf[4] = volume[chan] * 0x40 / 5;
+	conf[4] = volume_byte[volume[chan]];
 	_CPU_ISR_Disable(level);
 	wiiuse_write_data(wm, WM_REG_SPEAKER_BLOCK, conf, sizeof(conf), NULL);
 	_CPU_ISR_Restore(level);
 }
 
+// ---- Sounds for the remote's speaker -------------------------------------
+//
+// What the hardware gives: a 21 mm speaker behind a Yamaha ADPCM decoder,
+// 4 bits a sample at 6 kHz, 40 samples a report. 8-bit PCM is the other
+// format, but at the same report rate it only reaches 3 kHz, and its tones
+// alias badly; ADPCM is what games use. So the sounds are made to suit it:
+//  - pure tones between 1 and 2 kHz, where the speaker is loudest and the
+//    6 kHz rate still has 3 or more samples a cycle;
+//  - a peak of about half full scale, so ADPCM's step never overshoots and
+//    the speaker's amplifier never clips (a louder signal only distorts:
+//    the volume byte is the loudness control);
+//  - raised-cosine fades, so no note starts or stops with a click;
+//  - a report of silence first and last, so the decoder starts from rest
+//    and ends there.
+// A report the Bluetooth controller has no room for is dropped silently
+// (lwbt's lp_acl_write), and ADPCM can't recover its step size after a
+// gap until the signal goes quiet, so the sounds are short and the remotes'
+// other traffic (LEDs, rumble) is kept low while one plays.
+
+#define SND_BLOCK 40                         // samples a report
+
+typedef struct {
+	float freq, start, len;                  // Hz, seconds, seconds
+	float amp;                               // 0 to 1
+} snd_note;
+
+static u32 snd_samples(const snd_note *notes, int count) {
+	float end = 0;
+	int i;
+
+	for (i = 0; i < count; ++i)
+		if (notes[i].start + notes[i].len > end)
+			end = notes[i].start + notes[i].len;
+	// A report of silence before and after; whole reports.
+	return ((u32) (end * SPEAKER_RATE) / SND_BLOCK + 3) * SND_BLOCK;
+}
+
+// Returns the ADPCM data, snd_samples() / 2 bytes; free() it.
+static u8 *snd_make(const snd_note *notes, int count) {
+	u32 n = snd_samples(notes, count), i, j;
+	u8 *out = memalign(32, n / 2);
+	WPADEncStatus enc;
+	s16 pcm[SND_BLOCK];
+	int k;
+
+	if (!out)
+		return NULL;
+	memset(&enc, 0, sizeof(enc));
+	for (i = 0; i < n; i += SND_BLOCK) {
+		for (j = 0; j < SND_BLOCK; ++j) {
+			float t = (float) ((int) (i + j) - SND_BLOCK) / SPEAKER_RATE, v = 0;
+
+			for (k = 0; k < count; ++k) {
+				const snd_note *m = &notes[k];
+				float u = t - m->start, fade = 0.012f, env;
+
+				if (u < 0 || u >= m->len)
+					continue;
+				// 12 ms raised-cosine in and out.
+				env = u < fade ? 0.5f - 0.5f * cosf(3.14159265f * u / fade) :
+					  m->len - u < fade ? 0.5f - 0.5f * cosf(3.14159265f * (m->len - u) / fade) : 1.f;
+				v += m->amp * env * sinf(2.f * 3.14159265f * m->freq * u);
+			}
+			if (v > 1.f)
+				v = 1.f;
+			if (v < -1.f)
+				v = -1.f;
+			pcm[j] = (s16) (v * 16000.f);
+		}
+		WPAD_EncodeData(&enc, i ? WPAD_ENC_CONT : 0, pcm, SND_BLOCK, out + i / 2);
+	}
+	return out;
+}
+
+// Find's chime: a two-note ding-dong (E6, C6), three times, each louder.
+static const snd_note chime_notes[] = {
+	{ 1319, 0.00f, 0.22f, 0.45f }, { 1047, 0.25f, 0.40f, 0.45f },
+	{ 1319, 0.95f, 0.22f, 0.70f }, { 1047, 1.20f, 0.40f, 0.70f },
+	{ 1319, 1.90f, 0.22f, 1.00f }, { 1047, 2.15f, 0.40f, 1.00f },
+};
+// The volume chirp: one short A6 blip, at the new volume.
+static const snd_note chirp_notes[] = { { 1760, 0.00f, 0.09f, 1.00f } };
+
+#define COUNT(a) ((int) (sizeof(a) / sizeof((a)[0])))
+
+// Made the first time they are used; spk_tick reads them from its alarm,
+// so they stay for the life of the app.
+static u8 *chime, *chirp;
+static u32 chime_len, chirp_len;
+
+static void snd_init(void) {
+	if (!chime) {
+		chime = snd_make(chime_notes, COUNT(chime_notes));
+		chime_len = snd_samples(chime_notes, COUNT(chime_notes)) / 2;
+	}
+	if (!chirp) {
+		chirp = snd_make(chirp_notes, COUNT(chirp_notes));
+		chirp_len = snd_samples(chirp_notes, COUNT(chirp_notes)) / 2;
+	}
+}
+
 // ---- Find, and rumble feedback, run from the overlay's frame loop ------------
 //
-// A remote takes commands (LEDs, rumble, speaker data) from a small queue
-// that libogc drops commands from when it is full, so these send a command
-// only when the state they want changes, never every frame.
+// A remote takes commands (LEDs, rumble, speaker set-up) one at a time from
+// a queue, each waiting for the remote's answer. Anything sent while the
+// queue is busy arrives late, which is what made the old Find blink out of
+// step. So Find's light show moves on a fixed clock and sends a step only
+// when the remote's queue is empty; a step that can't go is skipped, not
+// sent late. Its rumble rides in the same report as its LEDs: wiiuse puts
+// the remote's rumble bit into every report it sends, so setting the bit
+// and then sending the LEDs changes both at once.
 
 #define FIND_FRAMES 180                  // 3 s at 60 Hz
-#define CHIME_SAMPLES (SPEAKER_RATE * 3)
+#define FIND_STEP 5                      // frames a step of the light chase
 
 static struct {
 	u32 find_end, pulse_end;             // frame numbers; 0 when idle
 	u32 restore_end;                     // re-sending the resting state until
 	u32 find_start;
 	int led, rumble;                     // what was last sent; -1 unknown
+	int step;                            // the chase step last shown
 	bool speaker_was_on;
-	int speaker;                         // 0 off, 1 starting, 2 volume sent, 3 playing
+	int speaker;                         // 0 off, 1 starting, 2 volume sent, 3 playing, 4 on and quiet
+	const u8 *sound;                     // what to play once the speaker is ready
+	u32 sound_len;
 } fx[4];
-
-// One chime for every remote, made once: two notes a quarter-second apart,
-// each faded in and out, the whole getting louder over 3 s; spk_tick sends
-// it 20 bytes (40 samples) at a time.
-static u8 *chime;
-
-static u8 *make_chime(void) {
-	WPADEncStatus enc;
-	s16 pcm[40];
-	u8 *out = memalign(32, CHIME_SAMPLES / 2);
-	int i, j;
-
-	if (!out)
-		return NULL;
-	memset(&enc, 0, sizeof(enc));
-	for (i = 0; i < CHIME_SAMPLES; i += 40) {
-		for (j = 0; j < 40; ++j) {
-			int n = i + j, note = n % (SPEAKER_RATE / 4);
-			float f = (n / (SPEAKER_RATE / 4)) & 1 ? 1320.f : 880.f;
-			float env = note < 60 ? note / 60.f : note > SPEAKER_RATE / 4 - 120 ?
-					(SPEAKER_RATE / 4 - note) / 120.f : 1.f;
-			float amp = (3000.f + 24000.f * n / CHIME_SAMPLES) * env;
-
-			pcm[j] = (s16) (amp * sinf(2.f * 3.14159265f * f * n / SPEAKER_RATE));
-		}
-		WPAD_EncodeData(&enc, i ? WPAD_ENC_CONT : 0, pcm, 40, out + i / 2);
-	}
-	return out;
-}
-
-static void fx_leds(int chan, int leds) {
-	wiimote *wm = remote(chan);
-	u32 level;
-
-	if (!wm || fx[chan].led == leds)
-		return;
-	_CPU_ISR_Disable(level);
-	wiiuse_set_leds(wm, leds, NULL);
-	_CPU_ISR_Restore(level);
-	fx[chan].led = leds;
-}
 
 static void fx_rumble(int chan, int on) {
 	if (fx[chan].rumble == on)
@@ -537,32 +622,71 @@ static void fx_rumble(int chan, int on) {
 	fx[chan].rumble = on;
 }
 
+// LEDs and rumble in one report, and only into an empty queue.
+static bool fx_show(int chan, int leds, int rumble) {
+	wiimote *wm = remote(chan);
+	u32 level;
+
+	if (!wm)
+		return false;
+	_CPU_ISR_Disable(level);
+	if (*head_of(wm)) {
+		_CPU_ISR_Restore(level);
+		return false;
+	}
+	if (rumble)
+		*(int *) &wm->state |= WIIMOTE_STATE_RUMBLE_FLAG;
+	else
+		*(int *) &wm->state &= ~WIIMOTE_STATE_RUMBLE_FLAG;
+	wiiuse_set_leds(wm, leds, NULL);
+	_CPU_ISR_Restore(level);
+	fx[chan].led = leds;
+	fx[chan].rumble = rumble;
+	return true;
+}
+
+// Turns the speaker on if it needs to, then plays the sound once the
+// remote has answered the set-up (fx_tick).
+static void fx_sound(int chan, const u8 *data, u32 len) {
+	if (!data || !remote(chan))
+		return;
+	spk_stop(chan);
+	fx[chan].sound = data;
+	fx[chan].sound_len = len;
+	if (!fx[chan].speaker) {
+		fx[chan].speaker_was_on = WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE;
+		if (!fx[chan].speaker_was_on)
+			WPAD_ControlSpeaker(chan, 1);
+	}
+	fx[chan].speaker = 1;
+}
+
 static void find_start(int chan) {
 	if (fx[chan].find_end)
 		return;
-	if (!chime)
-		chime = make_chime();
+	snd_init();
 	fx[chan].find_start = fx_frame;
 	fx[chan].find_end = fx_frame + FIND_FRAMES;
-	fx[chan].led = fx[chan].rumble = -1;
-	fx[chan].speaker_was_on = WPAD_IsSpeakerEnabled(chan) == WPAD_ERR_NONE;
-	fx[chan].speaker = chime && remote(chan) ? 1 : 0;
+	fx[chan].led = fx[chan].rumble = fx[chan].step = -1;
+	fx[chan].restore_end = 0;
 	ses.finding[chan] = true;
-	if (fx[chan].speaker && !fx[chan].speaker_was_on)
-		WPAD_ControlSpeaker(chan, 1);
+	fx_sound(chan, chime, chime_len);
 }
 
 static void find_stop(int chan) {
-	spk_stop(chan);
-	fx_rumble(chan, 0);
-	fx_leds(chan, WIIMOTE_LED_1 << chan);
-	if (fx[chan].speaker && !fx[chan].speaker_was_on)
-		WPAD_ControlSpeaker(chan, 0);
-	fx[chan].speaker = 0;
 	fx[chan].find_end = 0;
 	ses.finding[chan] = false;
-	// A full command queue drops commands, so say it a few more times.
+	// The player's LED again, rumble off: sent by fx_tick into an empty
+	// queue, and a few more times in case one is lost.
+	fx[chan].led = fx[chan].rumble = -1;
 	fx[chan].restore_end = fx_frame + 30;
+}
+
+// Once on, the speaker stays on until the overlay closes, so the next
+// sound needs no set-up (a volume chirp comes at once).
+static void sound_done(int chan) {
+	if (fx[chan].speaker == 3 && !spk[chan].on)
+		fx[chan].speaker = 4;
 }
 
 // A short buzz when rumble is switched on.
@@ -573,8 +697,12 @@ static void pulse(int chan) {
 		return;
 	fx[chan].rumble = -1;
 	fx_rumble(chan, 1);
-	fx[chan].pulse_end = fx_frame + 12;
+	fx[chan].pulse_end = fx_frame + 8;
 }
+
+// Find's light show: one LED running 1-2-3-4-3-2-..., the remote buzzing
+// as it turns at each end.
+static const u8 chase[6] = { 0x10, 0x20, 0x40, 0x80, 0x40, 0x20 };
 
 static void fx_tick(void) {
 	int chan;
@@ -590,44 +718,45 @@ static void fx_tick(void) {
 			fx[chan].pulse_end = 0;
 		}
 		if (fx[chan].restore_end) {
-			if (fx_frame >= fx[chan].restore_end) {
+			if (fx_frame >= fx[chan].restore_end)
 				fx[chan].restore_end = 0;
-			} else if (fx_frame % 6 == 0) {
-				fx[chan].led = fx[chan].rumble = -1;
-				fx_leds(chan, WIIMOTE_LED_1 << chan);
-				if (!fx[chan].pulse_end)
-					fx_rumble(chan, 0);
-			}
+			else if (fx[chan].led < 0 || fx_frame % 10 == 0)
+				fx_show(chan, WIIMOTE_LED_1 << chan, fx[chan].pulse_end != 0);
 		}
-		if (!fx[chan].find_end)
-			continue;
-		if (WPAD_Probe(chan, &type) != WPAD_ERR_NONE || fx_frame >= fx[chan].find_end) {
-			find_stop(chan);
-			continue;
-		}
-		{
-			u32 t = fx_frame - fx[chan].find_start;
+		if (fx[chan].find_end) {
+			if (WPAD_Probe(chan, &type) != WPAD_ERR_NONE || fx_frame >= fx[chan].find_end) {
+				find_stop(chan);
+			} else {
+				int step = (fx_frame - fx[chan].find_start) / FIND_STEP;
 
-			// All four LEDs and the player's LED in turn, and a rumble
-			// pulse of 150 ms every 600 ms.
-			fx_leds(chan, (t / 12) & 1 ? 0xf0 : WIIMOTE_LED_1 << chan);
-			fx_rumble(chan, t % 36 < 9);
+				if (step != fx[chan].step) {
+					int i = step % 6;
+
+					// Skipped when the queue is busy; the next step
+					// comes on time.
+					fx_show(chan, chase[i], i == 0 || i == 3);
+					fx[chan].step = step;
+				}
+			}
 		}
 		// The speaker's set-up is a run of queued commands: wait for the
 		// remote to answer them all, set the volume, then stream.
 		if (fx[chan].speaker == 1 || fx[chan].speaker == 2) {
 			wiimote *wm = remote(chan);
 
-			if (wm && !*head_of(wm) && (wm->state & WM_STATE_SPEAKER)) {
+			if (!wm || WPAD_Probe(chan, &type) != WPAD_ERR_NONE) {
+				fx[chan].speaker = 0;
+			} else if (!*head_of(wm) && (wm->state & WM_STATE_SPEAKER)) {
 				if (fx[chan].speaker == 1) {
 					write_volume(chan);
 					fx[chan].speaker = 2;
 				} else {
-					spk_play(chan, chime, CHIME_SAMPLES / 2);
+					spk_play(chan, fx[chan].sound, fx[chan].sound_len);
 					fx[chan].speaker = 3;
 				}
 			}
 		}
+		sound_done(chan);
 	}
 }
 
@@ -635,8 +764,17 @@ static void fx_stop_all(void) {
 	int chan;
 
 	for (chan = 0; chan < 4; ++chan) {
-		if (fx[chan].find_end)
-			find_stop(chan);
+		spk_stop(chan);
+		if (fx[chan].speaker) {
+			if (!fx[chan].speaker_was_on)
+				WPAD_ControlSpeaker(chan, 0);
+			fx[chan].speaker = 0;
+		}
+		if (fx[chan].find_end || fx[chan].restore_end) {
+			fx[chan].find_end = fx[chan].restore_end = 0;
+			ses.finding[chan] = false;
+			reset_leds(chan);
+		}
 		if (fx[chan].pulse_end) {
 			fx_rumble(chan, 0);
 			fx[chan].pulse_end = 0;
@@ -875,7 +1013,8 @@ static void poll(ov_run *r) {
 	e->has_restart = cfg->on_restart != NULL;
 	remote(0);
 	e->can_leds = handles != NULL;
-	e->sensor_above = ses.sensor_above < 0 ? !CONF_GetSensorBarPosition() : ses.sensor_above;
+	e->sensor_above = ses.sensor_above < 0 ?
+		CONF_GetSensorBarPosition() == CONF_SENSORBAR_TOP : ses.sensor_above;
 	e->ir_sens = ses.ir_sens ? ses.ir_sens : CONF_GetIRSensitivity();
 	snprintf(e->auto_off, sizeof(e->auto_off), "%s", auto_off_names[ses.auto_off]);
 	e->rumble_all = !ses.rumble_all_off;
@@ -1075,7 +1214,12 @@ static void act(int action, int arg, void *user) {
 			volume[chan] = 0;
 		if (volume[chan] > 10)
 			volume[chan] = 10;
-		write_volume(chan);
+		// Let them hear it: a blip at the new level.
+		snd_init();
+		if (volume[chan])
+			fx_sound(chan, chirp, chirp_len);
+		else
+			write_volume(chan);
 		break;
 	}
 	case OVA_RESET_REMOTES:

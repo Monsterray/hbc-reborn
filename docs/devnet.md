@@ -253,8 +253,10 @@ on for every connected remote, mapped to the framebuffer; each remote gets
 back its previous data format on close (left on if the handles are missing
 and the format is unknown).
 
-Find streams a chime to the remote's speaker (4-bit ADPCM at
-6 kHz, libogc's speaker set-up) with its amplitude ramping up over 3 s.
+Find runs a light chase and rumble on the remote and streams a chime to its
+speaker (4-bit ADPCM at 6 kHz, libogc's speaker set-up). Changing a remote's
+volume in More plays a short chirp at the new level; volume 10 is libogc's
+`0x40`, the ADPCM maximum. See REVIEW.md 1.7.4 for what limits the speaker.
 
 ### Crash reports
 

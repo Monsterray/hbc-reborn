@@ -155,6 +155,47 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.7.4: the remote's speaker, Find's lights, the On glow
+
+- **Sensor bar showed the wrong side.** The display took the Wii's setting as 1 for
+  below; `CONF_SENSORBAR_TOP` is 1 (libogc passes `CONF_GetSensorBarPosition() ^ 1` to
+  wiiuse, whose `WIIUSE_IR_ABOVE` is 0).
+- **Speaker research (WiiBrew Wiimote#Speaker, Dolphin `Speaker.cpp`, libogc
+  `speaker.c`/`wpad.c`/lwbt `hci.c`, the InputBridge and trigger-segfault write-ups):**
+  - Two formats: 4-bit Yamaha ADPCM (`0x00`) at `6000000 / rate` and signed 8-bit PCM
+    (`0x40`) at `12000000 / rate`, 1 to 20 bytes a `0x18` report. libogc's set-up is
+    ADPCM, rate `0x07d0`, 40 samples a report every 6.67 ms (Dolphin plays it at
+    6 kHz). PCM gets 20 samples a report, so at the same report rate it reaches only
+    3 kHz; both write-ups found PCM thin and aliased and chose ADPCM.
+  - **The ADPCM volume byte tops out at `0x40`** (WiiBrew); 8-bit PCM's goes to `0xff`.
+    1.7.3's steps 6 to 10 wrote `0x4c` to `0x80`, overdriving the speaker.
+  - **A report the Bluetooth controller has no buffer for is dropped without an
+    error:** `lp_acl_write` returns `ERR_OK` ("Host buffer full. Dropped packet").
+    An ADPCM decoder that misses a report keeps a wrong step size until the signal goes
+    quiet, which is heard as a burst of noise. Nothing above lwbt can see the drop.
+  - The old chime ramped to 27,000 of 32,767 with 10 ms linear edges; loud input to
+    4-bit ADPCM overshoots its step, and the amplitude is not the loudness control.
+- **What changed:** volume 0 to 10 maps onto `0x00` to `0x40` on a loudness curve (10 is
+  libogc's default); sounds are built from notes between 1 and 2 kHz at half scale with
+  12 ms raised-cosine fades and a report of silence at each end; the configuration
+  block (which restarts the decoder) is written before every sound; the speaker stays
+  on while the overlay is open, so a volume change plays a 90 ms chirp at once; Find's
+  chime is a three-time ding-dong, each louder.
+- **Future work, trigger: the chime still sounds rough on hardware.** Try 8-bit PCM at
+  4 kHz (rate `0x0bb8`) with reports every 5 ms, and compare by ear with the ADPCM
+  chime; a PCM drop is a 5 ms gap, not a noise burst. Needs a person at the remote.
+- **Find's lights drifted.** Each LED change waited its turn in the remote's command
+  queue behind the others, so steps arrived late and in bunches. Find now runs a chase
+  (1-2-3-4-3-2) on a fixed 83 ms clock and sends a step only into an empty queue,
+  skipping it otherwise; its rumble rides in the same report (the rumble bit is set in
+  the remote's state, then the LED report carries it), buzzing at each end.
+- **The On glow was hidden.** Six stacked boxes at alpha 12 reached 25 % at the edge
+  and nothing past 6 pixels. Glows are now drawn per pixel (`ov_glow`, smoothstep
+  falloff from the rounded edge): 8 px for the highlight, 16 px at 150 for On, and 16 px
+  at 190 for both; an On button is rimmed in the glow's blue; every glow on a layer is
+  drawn before that layer's buttons, so a wide glow never tints a neighbour.
+- **Rumble-on buzz** is 8 frames (133 ms), 30 % shorter.
+
 ### 1.7.3: the remote's command queue
 
 - **libogc's speaker streaming stops a remote's command queue for good.** wiiuse sends

@@ -60,6 +60,10 @@ void ov_fill(ov_canvas *c, int x, int y, int w, int h, ov_color col, int alpha);
 void ov_panel(ov_canvas *c, int x, int y, int w, int h, int radius, ov_color top,
 			  ov_color mid, ov_color bot, ov_color border, int alpha);
 void ov_disc(ov_canvas *c, int cx, int cy, int r, ov_color col);
+/* A glow around a rounded box (as ov_panel's): alpha at its edge, fading
+ * smoothly to nothing size pixels out. Nothing is drawn inside the box. */
+void ov_glow(ov_canvas *c, int x, int y, int w, int h, int radius, int size, ov_color col,
+			 int alpha);
 /* A sprite with its hotspot at x, y, turned by angle degrees (clockwise, as
  * the remote twists) and scaled horizontally by sx/256, as HBC draws it. */
 void ov_sprite_at(ov_canvas *c, const ov_sprite *s, int x, int y, float angle, int sx);
