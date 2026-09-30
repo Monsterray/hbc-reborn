@@ -155,6 +155,18 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.2: CI off Node.js 20
+
+- GitHub warned that Node.js 20 is deprecated. `actions/upload-artifact@v4` and
+  `actions/setup-python@v5` ran on it; both are now v7 (Node.js 24).
+  `actions/checkout@v5` and `msys2/setup-msys2@v2` were already on Node.js 24.
+  Nothing we use changed: the artifact is still one zipped upload, and
+  setup-python takes only `python-version`.
+- **1.8.1 on hardware, completed:** after `tests/rtc_shift` moved the clock 37 s
+  ahead, Sync clock logged "Clock set: -36 s (UTC-7:00)"; the RTC counts whole
+  seconds. 1.8.1's CI passed on a re-run: the first attempt failed installing
+  packages, and the same step passed in the same image locally.
+
 ### 1.8.1: DEV > Sync clock, Save and Log that say something, a key-queue fix
 
 - **Sync clock (DEV > Actions):** one SNTP exchange over UDP in a thread, with a
