@@ -155,6 +155,46 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.7: the bench queue no longer takes an agent app for HBC
+
+- **Reported by the WiiStation workstation:** twice on 2026-09-30, a WiiStation
+  lab chain on the bench Wii ended mid-game with no crash. Its games played,
+  then the Wii went back to HBC and the chain's results were never sent.
+  - **Cause:** apps that link `sdk/hbc_agent` answer TCP 4299 like HBC's menu.
+    The queue's idle check (a 16-byte `PING` that anything on 4299 accepts)
+    therefore saw a running agent app as idle HBC, and `status` said "in HBC
+    (free)". A dispatcher then started a job whose `hbc.py run` called
+    `exit_app()`, which asked the other workstation's app to exit.
+  - **Queue:** the probe is now `HBCV`. HBC answers with its version, and an
+    agent app with `<version> agent` (as `hbc.py`'s `is_agent()` reads it); an
+    agent app counts as busy. The stock HBC answers nothing to `HBCV` and
+    rejects it at once, which still means its menu. `status` names the app
+    (`busy: agent_app is running`), read from its `HBCS` reply.
+  - **`hbc.py`:** each job gets `WII_BENCH_JOB_START`. Inside a job,
+    `exit_app()` (`run`, `send`, `exit`, and the test scripts) refuses with "Wii
+    busy: <app> is running" when the agent app's uptime is longer than the job
+    has run, since that app is someone else's. An app the job started, it
+    still exits. By hand, outside the queue, nothing changes.
+  - **Tests:** `test_wiibench.py` runs the idle check and `status` against
+    `test_hbc_tool.py`'s fake Wii, as HBC and as an agent app
+    (`WII_BENCH_PORT` points the queue at it). `test_hbc_tool.py` checks a job
+    leaves an older agent app running and exits one it started.
+  - **On the bench Wii:** job A started `agent_app` for 90 s and ended. Inside
+    it, an `hbc.py send` given a job start later than the app's refused ("Wii
+    busy: agent_app is running, started before this bench job; not exiting
+    it"), and the app kept running. `status` then said "busy: agent_app is
+    running (agent 1.8.6)".
+- **Found testing it:** a dispatcher keeps the `wiibench.py` it started with.
+  The one that ran job B had started at 14:50, before this fix, and started B
+  while the app was still running. B only asked for the version. Noted in
+  `tools/wii-bench/README.md`: the next dispatcher runs new code, and the
+  running one exits after 10 idle minutes.
+- **Rerun with a new dispatcher:** job A started `agent_app` at about 15:30:45
+  for 90 s, and the refusal inside it passed again. B, queued at 15:31:00,
+  stayed pending while `status` said "busy: agent_app is running". It started
+  at 15:32:52, after the app had returned to HBC and HBC had answered for 20 s,
+  and it saw HBC 1.8.6, not the agent.
+
 ### 1.8.6: one bench Wii for several workstations, on any OS
 
 - **Problem:** the bench queue lived in `C:\tools\wii-bench` on one PC, and its

@@ -14,9 +14,17 @@ python tools/wii-bench/wiibench.py cancel <id>   # only a job that has not start
 
 - `add` starts the dispatcher if none is running (`dispatcher.lock` holds its PID). It exits
   after 10 minutes with nothing to do.
-- A job starts only when HBC has answered on TCP 4299 for 20 s in a row: HBC answers only in
-  its menu, so a Wii busy with anything is left alone, including a test someone sent without
-  the queue.
+- A job starts only when HBC's own menu has answered on TCP 4299 for 20 s in a row. Apps
+  that link hbc-reborn's in-app agent (`sdk/hbc_agent`) answer on 4299 too, so the check asks
+  for the version: an agent app replies `<version> agent`, and counts as busy. `status` says
+  `busy: <app> is running` then. So a Wii busy with anything is left alone, including a test
+  someone sent without the queue.
+- A job never exits someone else's app: each job gets `WII_BENCH_JOB_START`, and
+  `tools/hbc.py` (`run`, `send`, `exit`, and the tests' `exit_app()`) refuses with `Wii busy:
+  <app> is running` when the agent app running is older than the job. An app the job started
+  itself it still exits. By hand, outside a job, `hbc.py` exits a running app as before.
+- A dispatcher keeps the code it started with. After changing `wiibench.py`, the next
+  dispatcher runs the new code: the running one exits after 10 idle minutes.
 - Oldest job first. A job past its `--timeout` (default 3600 s) is stopped: its own process
   tree, nothing else.
 - Each job: `queue/done/<id>.json` (command, times, exit code) and `<id>.log` (its output).

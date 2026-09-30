@@ -131,6 +131,20 @@ def hbc_wait(wii, seconds=90):
     raise HBCError(f"HBC did not answer within {seconds} s: {last}")
 
 
+def foreign_app_check(wii):
+    """In a bench-queue job (tools/wii-bench sets WII_BENCH_JOB_START), refuse to exit an
+    agent app that was already running when the job started: it is someone else's test,
+    maybe from another workstation. An app this job started is younger than the job."""
+    start = os.environ.get("WII_BENCH_JOB_START")
+    if not start:
+        return
+    st = status(wii)
+    job_s = time.time() - float(start)
+    if st.get("uptime_ms", 0) / 1000 > job_s + 2:
+        raise HBCError(f"Wii busy: {st.get('app') or 'an app'} is running, started before this "
+                       f"bench job; not exiting it")
+
+
 def exit_app(wii, seconds=90):
     """Ask a running agent app to exit, then wait for HBC. Returns whether an
     app was running."""
@@ -140,6 +154,7 @@ def exit_app(wii, seconds=90):
         return False
     if not running:
         return False
+    foreign_app_check(wii)
     request(wii, b"HBCX")
     hbc_wait(wii, seconds)
     return True

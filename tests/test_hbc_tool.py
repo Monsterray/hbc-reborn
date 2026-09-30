@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import zlib
 
 root = pathlib.Path(__file__).resolve().parents[1]
@@ -41,6 +42,7 @@ class FakeHBC:
         self.requests = []  # (op, path) of every HBCF request
         self.truncate = False
         self.agent = False  # an agent app answers instead of HBC
+        self.agent_uptime_ms = 1000
         self.crash = None
         self.exits = 0
         self.keys = b""
@@ -91,7 +93,8 @@ class FakeHBC:
         elif magic == b"HBCS":
             st = {"version": "1.2.0", "proto": 2, "log": self.log}
             if self.agent:
-                st = {"agent": True, "version": "1.5.0", "proto": 3, "log": self.log}
+                st = {"agent": True, "version": "1.5.0", "proto": 3, "log": self.log,
+                      "app": "otherapp", "uptime_ms": self.agent_uptime_ms}
             elif self.crash is not None:
                 st.update(proto=3, crash=self.crash or None)
             self.reply(conn, 0, json.dumps(st).encode())
@@ -209,6 +212,7 @@ class HBCToolTest(unittest.TestCase):
     def setUp(self):
         self.fake.truncate = False
         self.fake.agent = False
+        self.fake.agent_uptime_ms = 1000
         self.fake.crash = None
         self.fake.exits = 0
         tmp = tempfile.TemporaryDirectory()
@@ -246,6 +250,27 @@ class HBCToolTest(unittest.TestCase):
         while self.fake.uploads[-1][1] != b"app.dol\0\0" and time.monotonic() < deadline:
             time.sleep(0.05)
         self.assertEqual(self.fake.uploads[-1][1], b"app.dol\0\0")
+
+    def test_a_bench_job_leaves_an_older_agent_app_running(self):
+        # Another workstation's app, running since before this job started.
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(100))
+        self.fake.agent = True
+        self.fake.agent_uptime_ms = 600_000
+        with mock.patch.dict(os.environ, WII_BENCH_JOB_START=str(time.time() - 30)):
+            with self.assertRaisesRegex(SystemExit, "Wii busy: otherapp is running"):
+                self.cli("send", str(app))
+        self.assertEqual(self.fake.exits, 0)
+        self.assertTrue(self.fake.agent)
+
+    def test_a_bench_job_exits_an_agent_app_it_started(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(100))
+        self.fake.agent = True
+        self.fake.agent_uptime_ms = 5_000
+        with mock.patch.dict(os.environ, WII_BENCH_JOB_START=str(time.time() - 30)):
+            self.cli("send", str(app))
+        self.assertEqual(self.fake.exits, 1)
 
     def test_exit_needs_an_agent_app(self):
         self.fake.agent = True

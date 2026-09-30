@@ -21,11 +21,14 @@ homeserver): each keeps its own queue and dispatcher, and a dispatcher takes the
 each job. The server's URL is $WII_BENCH_SERVER, else the file HOME/server; with neither the
 dispatcher runs alone, as before.
 
-The dispatcher runs one job at a time, oldest first, and only when HBC has answered on TCP
-4299 for --idle seconds in a row (default 20): HBC answers only in its menu, so a Wii that is
-running anything -- a job, or another agent's test that did not use this queue -- is left
-alone, and a quiet period keeps it from cutting in between another agent's back-to-back
-runs. A job that runs past its timeout (default 3600 s) is stopped (its own process tree).
+The dispatcher runs one job at a time, oldest first, and only when HBC's own menu has
+answered on TCP 4299 for --idle seconds in a row (default 20). Apps that link hbc-reborn's
+in-app agent answer on 4299 too, so the probe asks for the version: an agent app's reply ends
+in " agent", and counts as busy. A Wii that is running anything -- a job, or another
+workstation's test that did not use this queue -- is left alone, and a quiet period keeps
+the dispatcher from cutting in between another agent's back-to-back runs. Each job gets
+WII_BENCH_JOB_START (Unix time), and tools/hbc.py will not exit an agent app started before
+it. A job that runs past its timeout (default 3600 s) is stopped (its own process tree).
 The dispatcher exits when the queue has been empty for 10 minutes; the next add starts it.
 
 State lives in one directory shared by every copy of this script, so every project uses
@@ -40,6 +43,7 @@ import os
 import pathlib
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -61,6 +65,7 @@ Q = HOME / "queue"
 PENDING, RUNNING, DONE = Q / "pending", Q / "running", Q / "done"
 LOCK = HOME / "dispatcher.lock"
 WII = os.environ.get("WII_BENCH_IP", "192.168.8.213")
+PORT = int(os.environ.get("WII_BENCH_PORT", "4299"))  # another port only for tests
 
 
 def pid_alive(pid):
@@ -90,18 +95,72 @@ def dispatcher_pid():
     return pid if pid_alive(pid) else 0
 
 
-def hbc_idle():
-    """True if HBC's loader takes a connection. The probe sends a 16-byte header HBC rejects
-    at once ("invalid upload request"). On the stock HBC a bare connect and close holds its
-    single loader thread for 10 s (its tcp_read retried on EOF until
-    TCP_BLOCK_RECV_TIMEOUT; hbc-reborn 1.4.1 fixed this), and its listen backlog is 3:
-    probing every 5 s that way filled the backlog and HBC stopped answering (2026-09-28)."""
+def wii_state():
+    """What answers on TCP 4299: ("hbc", version) for HBC in its menu, ("agent", version) for
+    an app running hbc-reborn's in-app agent, or ("off", None) for nothing.
+
+    The probe is HBCV, a version request. hbc-reborn's HBC answers with its version, and
+    an app with sdk/hbc_agent linked answers on the same port with "<version> agent"
+    (tools/hbc.py's is_agent), so a bare "something answers" cannot tell an app from HBC's
+    menu (it did until 1.8.7, and a job exited another workstation's running agent app).
+    The stock HBC answers nothing to HBCV and rejects it at once ("invalid upload
+    request"), which still means its menu. A 16-byte request, never a bare connect and
+    close: on the stock HBC that holds its single loader thread for 10 s (its tcp_read
+    retried on EOF until TCP_BLOCK_RECV_TIMEOUT; hbc-reborn 1.4.1 fixed this), and its
+    listen backlog is 3; probing every 5 s that way filled the backlog and HBC stopped
+    answering (2026-09-28)."""
     try:
-        with socket.create_connection((WII, 4299), timeout=2) as s:
-            s.sendall(b"PING" + bytes(12))
-        return True
+        with socket.create_connection((WII, PORT), timeout=2) as s:
+            s.settimeout(2)
+            s.sendall(b"HBCV" + bytes(12))
+            reply = b""
+            while b"\0" not in reply and len(reply) < 256:
+                chunk = s.recv(64)
+                if not chunk:
+                    break
+                reply += chunk
     except OSError:
-        return False
+        return "off", None
+    text = reply.split(b"\0", 1)[0].decode("ascii", "replace")
+    return ("agent" if text.endswith(" agent") else "hbc"), text
+
+
+def hbc_idle():
+    """True only for HBC in its menu: an agent app answering on 4299 is busy."""
+    return wii_state()[0] == "hbc"
+
+
+def agent_app():
+    """The running agent app's name, from its status reply (HBCS), or "an app"."""
+    try:
+        with socket.create_connection((WII, PORT), timeout=2) as s:
+            s.settimeout(2)
+            s.sendall(b"HBCS" + bytes(12))
+            head = b""
+            while len(head) < 8:
+                chunk = s.recv(8 - len(head))
+                if not chunk:
+                    raise OSError("short reply")
+                head += chunk
+            code, length = struct.unpack(">iI", head)
+            body = b""
+            while code == 0 and len(body) < min(length, 65536):
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+        return json.loads(body).get("app") or "an app"
+    except (OSError, ValueError):
+        return "an app"
+
+
+def wii_line():
+    state, text = wii_state()
+    if state == "hbc":
+        return f"in HBC {text} (free)" if text else "in HBC (free)"
+    if state == "agent":
+        return f"busy: {agent_app()} is running (agent {text.removesuffix(' agent')})"
+    return "busy or off"
 
 
 def jobs(d):
@@ -374,7 +433,7 @@ def cmd_setup(a):
             print("        reachable")
         except OSError as e:
             print(f"        unreachable: {e}")
-    print(f"Wii    {WII}: {'in HBC' if hbc_idle() else 'not answering on TCP 4299'}")
+    print(f"Wii    {WII}: {wii_line()}")
     print("Jobs that use the network log need inbound TCP 4300 open on this machine.")
 
 
@@ -401,7 +460,8 @@ def run_job(p):
     r.write_text(json.dumps(job, indent=1))
     log = RUNNING / f"{job['id']}.log"
     t0 = time.monotonic()
-    env = dict(os.environ, WII_BENCH_IP=WII, WII_BENCH_JOB=job["id"])
+    env = dict(os.environ, WII_BENCH_IP=WII, WII_BENCH_JOB=job["id"],
+               WII_BENCH_JOB_START=f"{time.time():.3f}")
     with open(log, "w") as out:
         try:
             proc = subprocess.Popen(job["cmd"], cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
@@ -466,7 +526,7 @@ def cmd_run(a):
 
 def cmd_status(a):
     pid = dispatcher_pid()
-    print(f"Wii {WII}: {'in HBC (free)' if hbc_idle() else 'busy or off'}; dispatcher: {f'pid {pid}' if pid else 'not running'}")
+    print(f"Wii {WII}: {wii_line()}; dispatcher: {f'pid {pid}' if pid else 'not running'}")
     if lease_server():
         try:
             s = lease_call("/status")

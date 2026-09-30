@@ -12,6 +12,47 @@ root = pathlib.Path(__file__).resolve().parents[1]
 BENCH = root / "tools/wii-bench/wiibench.py"
 
 
+class WiiStateTest(unittest.TestCase):
+    """The queue's idle check against a fake Wii: HBC's menu is free, an agent app is not."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(root / "tests"))
+        from test_hbc_tool import FakeHBC
+        cls.fake = FakeHBC()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = dict(os.environ, WII_BENCH_HOME=self.tmp.name, WII_BENCH_NO_DISPATCH="1",
+                        WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT=str(self.fake.port),
+                        WII_BENCH_SERVER="")
+        self.fake.agent = False
+
+    def state(self):
+        code = ("import sys, runpy; m = runpy.run_path(sys.argv[1]); "
+                "print(m['wii_state']()[0], m['hbc_idle']())")
+        out = subprocess.run([sys.executable, "-c", code, str(BENCH)], env=self.env,
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout.split()
+
+    def status(self):
+        return subprocess.run([sys.executable, str(BENCH), "status"], env=self.env,
+                              capture_output=True, text=True, timeout=30).stdout
+
+    def test_hbc_menu_is_free(self):
+        self.assertEqual(self.state(), ["hbc", "True"])
+        self.assertIn("in HBC 1.2.0 (free)", self.status())
+
+    def test_an_agent_app_is_busy(self):
+        # An app linking sdk/hbc_agent answers on 4299 too; it must not look like HBC.
+        self.fake.agent = True
+        self.assertEqual(self.state(), ["agent", "False"])
+        self.assertIn("busy: otherapp is running", self.status())
+        self.assertEqual(self.fake.exits, 0)
+
+
 class WiiBenchTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
