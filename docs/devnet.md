@@ -203,7 +203,7 @@ An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent.h) answers on port
 | `HBCF` | every file op above, on the devices the app mounted |
 | `HBCN` | sets the log target for the apps after this one |
 | `HBCX` | replies, then the app exits to HBC |
-| `HBCK` | header bytes 4-5: a count (at most 64), then that many of `udlrabh12`; queued as controller presses (`h` is HOME, `1` and `2` the remote's buttons, which apps check with `hbc_agent_home_pending()`) |
+| `HBCK` | header bytes 4-5: a count (at most 64), then that many of `udlrabh12w`; queued as controller presses (`h` is HOME, `1` and `2` the remote's buttons, `w` Test's speaker.wav button, which apps check with `hbc_agent_home_pending()`) |
 | `HBCP` | reply header, then u32 width, u32 height, and the YUYV framebuffer the VI is showing |
 | `HAXX` | closes the connection without reading, then exits to HBC: the upload fails once, and the retry reaches HBC |
 
@@ -253,8 +253,9 @@ on for every connected remote, mapped to the framebuffer; each remote gets
 back its previous data format on close (left on if the handles are missing
 and the format is unknown).
 
-The overlay drives the remote's speaker itself, after Nintendo's SDK
-(REVIEW.md 1.7.6):
+The overlay drives the remote's speaker through
+[`sdk/wiispk`](../sdk/wiispk/README.md), which follows Nintendo's SDK
+(REVIEW.md 1.7.6 and 1.8.0):
 - It puts the remote's link in sniff mode (5 ms) and runs the SDK's start-up
   sequence.
 - It encodes each 20-byte report just before sending it, every 6.67 ms:
@@ -265,7 +266,9 @@ The overlay drives the remote's speaker itself, after Nintendo's SDK
 Find plays only a chime. Changing a remote's volume in More plays a chirp at
 the new level; volume 10 is `0x40`, and PCM gets twice the byte. The Test page
 plays one tune in each format: press 1 for ADPCM or 2 for PCM, or point at a
-button and press A.
+button and press A. Its third button plays `sd:/speaker.wav` (or
+`usb:/speaker.wav`): any PCM WAV, loaded in a thread, converted to 6 kHz
+mono, up to 60 s.
 
 In `status`, each remote's `spk` is `[sent, skipped, wrapped, worst gap in us,
 fewest free ACL buffers, most, sniff]`. `wrapped` counts ticks where lwbt's

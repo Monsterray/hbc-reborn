@@ -81,7 +81,8 @@ enum {
 	OV_UP = 1, OV_DOWN = 2, OV_LEFT = 4, OV_RIGHT = 8,
 	OV_A = 16, OV_B = 32, OV_HOME = 64, OV_ANY = 128,
 	OV_TEST_EXIT = 256,   /* + and - together */
-	OV_1 = 512, OV_2 = 1024
+	OV_1 = 512, OV_2 = 1024,
+	OV_WAV = 2048         /* from the PC only: Test's WAV button */
 };
 
 /* What the overlay asks overlay.c to do; arg is a remote or a value. */
@@ -100,7 +101,7 @@ enum {
 	OVA_SLOT_ITEM,        /* arg: slot * 16 + item; after closing if OV_ITEM_CLOSE */
 	OVA_VOLUME,           /* arg: remote | 16 for louder */
 	OVA_RESET_REMOTES,
-	OVA_SOUND_TEST        /* arg: remote | 16 for PCM (else ADPCM) */
+	OVA_SOUND_TEST        /* arg: remote | 16 for PCM, | 32 for speaker.wav (else ADPCM) */
 };
 
 typedef void (*ov_act_fn)(int action, int arg, void *user);

@@ -41,6 +41,8 @@ korean-key
 /channel/title/00000001
 /channel/title/*/cetk
 /channel/title/*/tmd
+/channel/title/title.stamp
+/channel/channelapp/title_id.h
 
 # Host tools
 /channel/wiiload/wiiload

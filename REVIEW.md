@@ -155,6 +155,63 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.0: wiispk, a WAV player, the pointer after a reset, a LULZ build
+
+- **1.7.6 on hardware:** a recording of both Test tunes (`audio2.m4a`) measured:
+  - notes within 1 Hz of pitch in both formats;
+  - on held notes, a worst dip of 0.9 dB (ADPCM) and 3.2 dB (PCM), against
+    30 dB before;
+  - tone against everything else: 22.2 dB for ADPCM, 14.7 dB for PCM.
+
+  The user: "sounds WAY better". ADPCM at 6 kHz is the format to use.
+- **`sdk/wiispk`:** the speaker driver as a library of two files (API, WAV
+  loader, windowed-sinc resampler), zlib licence, and a README. Its code is
+  written afresh:
+  - **Encoder:** a nearest-of-eight search against a model of the speaker's
+    shift-and-add decoder, not a port of anyone's encoder. On a two-tone test it
+    measures 21.2 dB SNR against both decoder models, the same as libogc's.
+  - **Protocol facts** (register values, the set-up order, the 6.67 ms pace, the
+    more-than-3-packets limit) come from WiiBrew, Dolphin, public decompilations
+    and our recordings. They are facts about the hardware, cited as such.
+  - **Host test:** `tests/test_wiispk.py` builds it on the PC against stub
+    libogc headers. A 4.6 kHz tone, which would fold onto 1.4 kHz at 6 kHz,
+    comes out 64 dB below a 1 kHz tone.
+- **Test page:** a third button plays `speaker.wav` from SD or USB, loaded in a
+  thread (16 KB stack) with a toast. `hbc.py key w` presses it.
+- **The pointer died after DEV > Reset remotes or Settings (reported):**
+  - **Reset:** emptying a remote's queue could throw away IR's set-up commands,
+    while the remote's status still said IR was on (wiiuse sets the flag from the
+    status report), so `wiiuse_set_ir` returned early for good. Reset now clears
+    the flag and sets IR up again.
+  - **Settings (Disconnect all, Connect remote):** a remote that reconnected while
+    the overlay was open had its format read before libogc finished setting it
+    up. Its flags said no IR, which was handed back to HBC on close. The format
+    is now read once per visit, after the handshake and with an empty queue.
+  - **Pointer resolution:** the overlay never gave back the app's pointer
+    resolution (`WPAD_SetVRes`); it does now (`wm->ir.vres`).
+- **On glow:** On is now a 2-pixel blue ring with no glow; the bloom is for the
+  highlight alone. Status strip: player LEDs 8 px apart (was 9), batteries 3 px
+  after them (was 6).
+- **Auto-off:** HBC set remotes to power off after 120 s idle
+  (`controls.c`), while the Settings page showed libogc's 5 min. HBC now uses
+  300 s, like libogc and the Wii Menu.
+- **`TITLE=LULZ`:** the Makefiles write the title ID to `title_id.h`
+  (`config.h`, the stub) and retitle the ticket and TMD
+  (`pywii-tools/retitle.py`). The ticket's title key is encrypted with the title
+  ID as IV, so it is decrypted and encrypted again.
+  - **First version bug:** `brute_sha()` re-parses the ticket body, which
+    discarded the new ID; it is now written into the body first.
+  - **Checks:** the LULZ WAD's ticket and TMD carry `4c554c5a`, are fakesigned,
+    their contents match, and the title key is unchanged.
+  - **Dolphin:** it installs, boots, and an app's exit returns to the LULZ
+    title. `dolphin_smoke.py` reads the title from the WAD.
+- **Future work, trigger: the user wants the Wii's clock right.** An SNTP client
+  in HBC:
+  - The Wii's clock is the RTC plus SYSCONF's counter bias, in local time with
+    no time zone.
+  - Keep the Wii's zone by rounding the difference to the nearest 15 minutes,
+    correct only the drift, and write the RTC (EXI), not SYSCONF.
+
 ### 1.7.6: a speaker driver after Nintendo's
 
 - **A recording of 1.7.5's Test sounds (ADPCM, then PCM) settled the rate.**

@@ -208,7 +208,7 @@ static void push_keys(const u8 *k, u32 n) {
 
 	_CPU_ISR_Disable(level);
 	for (i = 0; i < n && key_count < KEYS; ++i)
-		if (strchr("udlrabh12", k[i])) {
+		if (strchr("udlrabh12w", k[i])) {
 			keys[(key_head + key_count) % KEYS] = k[i];
 			key_count++;
 		}

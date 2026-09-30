@@ -21,7 +21,7 @@ CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall $(EXTRA_CFLAGS) \
 	-I$(HBC_SRC) -I.. \
 	-I$(DEVKITPRO)/libogc/include -I$(DEVKITPRO)/portlibs/ppc/include
 
-SRC = agent.c overlay.c ov_ui.c ov_draw.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/zmem.c
+SRC = agent.c overlay.c ov_ui.c ov_draw.c ../wiispk/wiispk.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/zmem.c
 OBJ = $(addprefix $(BUILD)/,$(notdir $(SRC:.c=.o)))
 HDR = ../hbc_agent.h ../hbc_netlog.h $(wildcard $(HBC_SRC)/*.h) ../../channel/channelapp/config.h
 
@@ -33,6 +33,9 @@ $(BUILD)/%.o: %.c $(HDR) agent_int.h ov_ui.h ov_draw.h ov_font.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: $(HBC_SRC)/%.c $(HDR) | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: ../wiispk/%.c ../wiispk/wiispk.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD):

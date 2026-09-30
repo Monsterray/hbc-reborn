@@ -29,7 +29,7 @@ void controls_init (void) {
 		WPAD_SetDataFormat (i, WPAD_FMT_BTNS_ACC_IR);
 		WPAD_SetVRes (i, view_width + 128, view_height + 128);
 	}
-	WPAD_SetIdleTimeout (120);
+	WPAD_SetIdleTimeout (300);	// 5 minutes, as libogc and the Wii Menu
 }
 
 void controls_deinit (void) {

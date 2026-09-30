@@ -25,7 +25,7 @@ void agent_slot_press(int slot);
 /* The slot's menu, if it has one (count 0 otherwise). */
 const hbc_agent_item *agent_slot_menu(int slot, const char **title, int *count);
 
-/* Keys the PC sent (HBCK): one of "udlrabh12", or 0. */
+/* Keys the PC sent (HBCK): one of "udlrabh12w", or 0. */
 int agent_key_pop(void);
 /* The framebuffer size HBCP reports; the overlay sets it from its mode. */
 void agent_set_screen_size(u16 w, u16 h);

@@ -32,7 +32,7 @@ enum {
 	ID_TAB_ACT = 120, ID_TAB_INFO, ID_RESTART_APP, ID_PAUSE, ID_SAVE, ID_LOG,
 	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY, ID_RESET_REMOTES,
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
-	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS, ID_SND_ADPCM, ID_SND_PCM,
+	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS, ID_SND_ADPCM, ID_SND_PCM, ID_SND_WAV,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
 	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL,
 	ID_SLOT_ITEM = 200    // + slot * 16 + item
@@ -346,8 +346,13 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 		// The speaker, the same notes both ways: point and press A, or
 		// press 1 or 2 (A and the D-pad are being tested here).
 		y += 4;
-		button(ui, ID_SND_ADPCM, 0, y, CW, "Sound: ADPCM (1)", 0);
-		button(ui, ID_SND_PCM, CW + 10, y, CW, "Sound: PCM (2)", 0);
+		{
+			int bw = (IW - 2 * GAP) / 3;
+
+			button(ui, ID_SND_ADPCM, 0, y, bw, "ADPCM (1)", 0);
+			button(ui, ID_SND_PCM, bw + GAP, y, bw, "PCM (2)", 0);
+			button(ui, ID_SND_WAV, 2 * (bw + GAP), y, IW - 2 * (bw + GAP), "speaker.wav", 0);
+		}
 		y += BH;
 		add(ui, K_TEXT, 0, 0, y + 4, IW, 16, F_LABEL | F_SMALL, "Press + and - together to go back.");
 		return y + 22;
@@ -775,6 +780,7 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 	case ID_RESET_REMOTES: act(OVA_RESET_REMOTES, 0, user); break;
 	case ID_SND_ADPCM: act(OVA_SOUND_TEST, ui->wm_sel, user); break;
 	case ID_SND_PCM: act(OVA_SOUND_TEST, ui->wm_sel | 16, user); break;
+	case ID_SND_WAV: act(OVA_SOUND_TEST, ui->wm_sel | 32, user); break;
 	case ID_TEST: ui->wm_page = WM_TEST; act(OVA_TEST_START, ui->wm_sel, user); break;
 	case ID_CAL: ui->wm_page = WM_CAL; act(OVA_CAL_START, ui->wm_sel, user); break;
 	case ID_DISC:
@@ -815,10 +821,10 @@ bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *
 	// while the pointer is on one.
 	if (ui->menu == MENU_WM && ui->wm_page == WM_TEST) {
 		bool on_sound = ui->aiming && ui->pointer >= 0 &&
-						(ui->hover == ID_SND_ADPCM || ui->hover == ID_SND_PCM);
+						(ui->hover == ID_SND_ADPCM || ui->hover == ID_SND_PCM || ui->hover == ID_SND_WAV);
 
-		if (pressed & (OV_1 | OV_2))
-			act(OVA_SOUND_TEST, ui->wm_sel | (pressed & OV_2 ? 16 : 0), user);
+		if (pressed & (OV_1 | OV_2 | OV_WAV))
+			act(OVA_SOUND_TEST, ui->wm_sel | (pressed & OV_2 ? 16 : pressed & OV_WAV ? 32 : 0), user);
 		pressed = (pressed & OV_HOME) | (pressed & OV_TEST_EXIT ? OV_B : 0) |
 				  (on_sound ? pressed & OV_A : 0);
 	}
@@ -920,14 +926,14 @@ bool ov_changed(ov_ui *ui, const ov_ext *e) {
 
 // HBC's look: dialog_background.png runs from dark blue at the top through
 // black to dark blue; buttons are dark gray, focused ones blue.
-// A button's blue bloom, like HBC's focused buttons: a smooth glow out from
-// its edge. The highlight gets a tight bright one; a button that is On
-// glows wider, so it reads as lit even when not focused. Size in pixels,
-// alpha at the button's edge.
+// Two looks that must not be confused:
+//  - the highlight (what A presses) glows: a blue bloom out from its edge,
+//    like HBC's focused buttons;
+//  - On (a setting that is active) is a solid blue ring round the button,
+//    with no glow.
 #define GLOW_FOCUS_SIZE 8
 #define GLOW_FOCUS_ALPHA 130
-#define GLOW_ON_SIZE 16
-#define GLOW_ON_ALPHA 150
+#define ON_RING 2
 
 static bool is_layer(int kind) {
 	return kind == K_PANEL || kind == K_CARD || kind == K_CLIP || kind == K_NOCLIP;
@@ -935,12 +941,10 @@ static bool is_layer(int kind) {
 
 static void glow(const ov_ui *ui, const ov_item *it, ov_canvas *c, ov_color col) {
 	bool focused = !(it->flags & F_BLANK) && it->id == target(ui);
-	bool on = it->flags & F_ON;
 
-	if (it->kind != K_BUTTON || (it->flags & (F_DIS | F_BLANK)) || !(focused || on))
+	if (it->kind != K_BUTTON || (it->flags & (F_DIS | F_BLANK)) || !focused)
 		return;
-	ov_glow(c, it->x, it->y, it->w, it->h, 6, on ? GLOW_ON_SIZE : GLOW_FOCUS_SIZE, col,
-			on && focused ? 190 : on ? GLOW_ON_ALPHA : GLOW_FOCUS_ALPHA);
+	ov_glow(c, it->x, it->y, it->w, it->h, 6, GLOW_FOCUS_SIZE, col, GLOW_FOCUS_ALPHA);
 }
 
 void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
@@ -994,11 +998,11 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 
 				ov_disc(c, x + 3, it->y + 6, 3, lit && !dis ? led_on : dis && k == it->arg ?
 						dimc : led_off);
-				x += 9;
+				x += 8;
 			}
 			if (r->connected)
 				for (k = 0; k < 4; ++k)
-					ov_fill(c, x + 6 + k * 6, it->y + 1, 4, 10, k < r->battery ? led_on : led_off, 255);
+					ov_fill(c, x + 3 + k * 6, it->y + 1, 4, 10, k < r->battery ? led_on : led_off, 255);
 			break;
 		}
 		case K_BUTTON: {
@@ -1019,11 +1023,15 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 					 ++glow_until)
 					glow(ui, &ui->items[glow_until], c, bloom);
 			}
-			// A glowing button has no black edge, so the bloom runs into it;
-			// an On one is rimmed in the glow's own blue.
-			if (it->flags & F_ON)
+			// On: the ring, then the button inside it. A highlighted button
+			// has no black edge, so its bloom runs into it.
+			if (it->flags & F_ON) {
+				if (!dis)
+					ov_panel(c, it->x - ON_RING, it->y - ON_RING, it->w + 2 * ON_RING,
+							 it->h + 2 * ON_RING, 6 + ON_RING, on_rim, on_rim, on_rim, on_rim, 255);
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, focused ? on_hi : on_top, on_mid, on_bot,
-						 dis ? edge : on_rim, dis ? 110 : 255);
+						 dis ? edge : on_mid, dis ? 110 : 255);
+			}
 			else if (focused)
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, hi_top, hi_mid, hi_bot, hi_mid, 255);
 			else

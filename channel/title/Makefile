@@ -1,8 +1,10 @@
-CHANNEL_VERSION = 1.7.6
+CHANNEL_VERSION = 1.8.0
 
 TOOLS = ../../pywii/pywii-tools
 PYWII = ../../pywii/Common/pywii/wii.py
 PYTHON ?= python3
+# The title ID: OHBC, or LULZ to install over the original Homebrew Channel.
+TITLE ?= OHBC
 CERTS = $(CURDIR)/dpki/certs
 DPKI_ISSUER_TIK = Root-CA00000002-XS00000006
 DPKI_ISSUER_TMD = Root-CA00000002-CP00000007
@@ -23,15 +25,22 @@ channel_dpki.wad: Makefile $(TOOLS)/wadpack.py $(PYWII) dpki/cetk dpki/tmd 00000
 00000001: ../channelapp/channelapp-channel.dol Makefile
 	@cp $< $@
 
-retail/cetk: cetk.template Makefile $(TOOLS)/tikfix.py $(PYWII)
+# Rewritten only when TITLE changes, so the ticket and TMD follow it.
+title.stamp: FORCE
+	@echo '$(TITLE)' > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@
+	@rm -f $@.tmp
+
+retail/cetk: cetk.template title.stamp Makefile $(TOOLS)/retitle.py $(PYWII)
 	@cp $< $@
-	@"$(PYTHON)" "$(TOOLS)/tikfix.py" $@
+	@"$(PYTHON)" "$(TOOLS)/retitle.py" tik $@ $(TITLE)
 
 dpki/cetk: retail/cetk Makefile $(TOOLS)/dpkisign.py $(PYWII)
 	@"$(PYTHON)" "$(TOOLS)/dpkisign.py" -cetk $< $@ "$(CERTS)" $(DPKI_ISSUER_TIK)
 
-retail/tmd: tmd.template 00000000 00000001 Makefile $(TOOLS)/tmdupdatecr.py $(TOOLS)/tmdvers.py $(PYWII)
+retail/tmd: tmd.template title.stamp 00000000 00000001 Makefile $(TOOLS)/retitle.py $(TOOLS)/tmdupdatecr.py $(TOOLS)/tmdvers.py $(PYWII)
 	@cp $< $@
+	@"$(PYTHON)" "$(TOOLS)/retitle.py" tmd $@ $(TITLE)
 	@"$(PYTHON)" "$(TOOLS)/tmdupdatecr.py" $@ "$(CURDIR)"
 	@"$(PYTHON)" "$(TOOLS)/tmdvers.py" $@ $(CHANNEL_VERSION)
 
@@ -51,9 +60,10 @@ check-dpki: dpki
 	@"$(PYTHON)" "$(TOOLS)/tmdinfo.py" -dpki dpki/tmd dpki/certs
 
 clean:
-	rm -f retail/cetk dpki/cetk retail/tmd retail/tmd 00000000 00000001 channel_retail.wad channel_dpki.wad
+	rm -f title.stamp retail/cetk dpki/cetk retail/tmd retail/tmd 00000000 00000001 channel_retail.wad channel_dpki.wad
 
-.PHONY: all dpki check check-retail check-dpki clean
+.PHONY: all dpki check check-retail check-dpki clean FORCE
+FORCE:
 
 # A failed step must not leave a partial ticket, TMD, or WAD behind.
 .DELETE_ON_ERROR:

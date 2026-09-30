@@ -88,6 +88,7 @@ FILES_CHAN_OBJ = $(DIR_BUILD)/nandloader.o $(FILES_SRC_OBJ)
 
 all:
 	@[ -d $(DIR_BUILD) ] || mkdir $(DIR_BUILD)
+	@$(MAKE) --no-print-directory title_id.h
 	@$(MAKE) --no-print-directory data
 	@$(MAKE) --no-print-directory $(TARGET_APP).elf
 
@@ -124,6 +125,18 @@ $(AGENT)/libhbcagent.a: FORCE
 
 .PHONY: FORCE
 FORCE:
+
+# The title ID (config.h), four characters: rewritten only when TITLE
+# changes, so a change rebuilds what uses it and nothing else.
+TITLE ?= OHBC
+TITLE_HEX := $(shell printf '%s' '$(TITLE)' | od -An -tx1 | tr -dc 0-9a-f)
+title_id.h: FORCE
+	@[ $$(printf '%s' '$(TITLE)' | wc -c) -eq 4 ] || { echo "TITLE must be 4 characters"; exit 1; }
+	@echo '#define MY_TITLEID 0x00010001$(TITLE_HEX)ull' > $@.tmp
+	@cmp -s $@.tmp $@ || { mv $@.tmp $@; echo "title ID 00010001-$(TITLE_HEX) ($(TITLE))"; }
+	@rm -f $@.tmp
+
+$(FILES_SRC_OBJ) $(FILES_STUB_OBJ): title_id.h
 
 $(TARGET_APP).elf: $(TARGET_APP)_nopax.elf
 	@$(WIIPAX) -s devkitppc $< $@
@@ -187,9 +200,10 @@ $(DIR_BUILD)/%.o: $(DIR_SRC)/%.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
--include $(FILES_SRC_OBJ:%.o=%.d)
+-include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 
 clean:
+	rm -f title_id.h
 	rm -rf $(DIR_BUILD) \
 		*.elf *.dol *.bin *.map i18n/merge/* $(POTPL).gen
 	@$(MAKE) -C banner clean

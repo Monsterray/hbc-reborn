@@ -87,6 +87,18 @@ def host_address():
         return udp.getsockname()[0]
 
 
+def wad_title(image):
+    """The title ID in a WAD's TMD, as Dolphin's NAND path parts (e.g.
+    00010001, 4f484243): OHBC by default, LULZ for a build made to replace
+    the original Homebrew Channel."""
+    data = pathlib.Path(image).read_bytes()
+    align = lambda n: (n + 63) & ~63
+    hdr, certs, crl, tik = (int.from_bytes(data[i:i + 4], "big") for i in (0, 8, 12, 16))
+    tmd = align(hdr) + align(certs) + align(crl) + align(tik)
+    tid = data[tmd + 0x18C:tmd + 0x194]
+    return tid[:4].hex(), tid[4:].hex()
+
+
 class Dolphin:
     def __init__(self, image, sd=False, mmu=False):
         self.dolphin = find_dolphin()
@@ -356,7 +368,7 @@ def main():
         wait_version(run, seconds)
         print(f"PASS: HBC {expected} answered on {run.address}:4299")
         if image.suffix.lower() == ".wad":
-            title = run.profile / "Wii/title/00010001/4f484243/content"
+            title = run.profile.joinpath("Wii/title", *wad_title(image), "content")
             apps = sorted(p.name for p in title.glob("*.app")) if title.exists() else []
             assert apps, f"no installed content under {title}"
             print(f"PASS: WAD installed to NAND ({', '.join(apps)})")

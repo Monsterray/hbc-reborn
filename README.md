@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.7.6**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.8.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -210,7 +210,7 @@ and batteries, over five buttons:
 | (app slot) | Whatever the app puts there with `hbc_agent_set_slot(0, ...)`; blank otherwise. |
 | Exit | The Homebrew Channel, System Menu, Restart Wii, Power off. |
 | Shot | Saves the game's frame to `sd:/screenshots/<app>-NNN.bmp`. An app can replace it with `hbc_agent_set_slot(1, ...)`. |
-| WiiMote | A card per remote (Find: a chime that gets louder; More: battery, extension, MotionPlus, rumble on or off, speaker volume with a chirp, Test with an ADPCM and a PCM sound, Calibrate, Disconnect), and Settings: connect a remote, disconnect all, sensor bar, IR sensitivity, auto power-off, rumble for all. |
+| WiiMote | A card per remote (Find: a chime that gets louder; More: battery, extension, MotionPlus, rumble on or off, speaker volume with a chirp, Test with an ADPCM and a PCM tune and a WAV player for `speaker.wav` on SD or USB, Calibrate, Disconnect), and Settings: connect a remote, disconnect all, sensor bar, IR sensitivity, auto power-off, rumble for all. |
 
 An app can give a slot a menu of its own instead of one action
 (`hbc_agent_set_slot_menu`), with buttons and live info rows. HBC's own HOME
@@ -269,6 +269,15 @@ complete example. The agent contains HBC's own code, so it is GPL like the
 rest of HBC: keep it in development builds (for example behind an
 `#ifdef`), or release your app under a compatible license.
 
+### Wii Remote speaker audio in your app
+
+[`sdk/wiispk`](sdk/wiispk) is the speaker driver HBC's HOME menu uses, as a
+library of its own. It is two files that need only libogc, under the zlib
+licence (not GPL), so any app can copy them in. It plays sound on the remote's
+speaker cleanly, where libogc's `WPAD_SendStreamData` stutters and turns to
+noise, and it loads any PCM WAV file. [Its README](sdk/wiispk/README.md) has
+the API and explains what libogc gets wrong.
+
 ## Installing the channel on a Wii
 
 Run the DOL over Wiiload first (above). Install the WAD only after that works,
@@ -281,6 +290,29 @@ Build `channel/title/channel_retail.wad` as described below. Do not install a
 WAD built before 1.1.9: those carry a corrupted Wii Menu icon layout. The 1.3.0
 WAD is installed on the project's dev Wii and passes the developer-network
 suite there, including apps exiting back to it.
+
+### Replacing the original Homebrew Channel
+
+The default WAD installs as its own channel (`OHBC`), next to the original
+Homebrew Channel (`LULZ`). To have only one, build the WAD with the original's
+title ID and install it over the original:
+
+```sh
+make -C channel TITLE=LULZ PYTHON="$(pwd)/.venv/bin/python"
+```
+
+- **What changes:** the channel, its ticket and its TMD carry `00010001-4C554C5A`.
+  The ticket's title key is re-encrypted for the new ID (`pywii-tools/retitle.py`).
+  Apps that exit to the Homebrew Channel by title ID then come back to this
+  one.
+- **Version:** its TMD version (`major << 11 | ...`, 0x0900 for 1.8.0) is higher
+  than the original's, so WAD managers treat it as an update.
+- **Settings:** HBC keeps `settings.xml` in the title's NAND data folder, as
+  the original does, so this build should pick up the original's. That is not
+  yet checked on a Wii; at worst the defaults apply.
+- **The OHBC channel:** once the LULZ build runs, delete the separate OHBC
+  channel from Wii Settings > Data Management > Channels.
+- **Undoing it:** reinstall the original Homebrew Channel with its own installer.
 
 ## Building
 
@@ -343,6 +375,9 @@ any content whose size or SHA-1 does not match the TMD, and a failed build
 leaves no partial WAD. NAND saves and themes need the installed channel's
 title identity, so they do not work from a direct DOL launch.
 
+`TITLE=LULZ` (four characters, default `OHBC`) sets the title ID everywhere
+it is used: see [Replacing the original Homebrew Channel](#replacing-the-original-homebrew-channel).
+
 The displayed version and the WAD title version share one `major.minor.patch`
 value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 
@@ -361,7 +396,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.7.6 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.8.0 WII-IP` | installed channel running |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |

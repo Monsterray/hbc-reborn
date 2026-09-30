@@ -1,8 +1,8 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define CHANNEL_VERSION_DATE 202609300100llu
-#define CHANNEL_VERSION_STR "1.7.6"
+#define CHANNEL_VERSION_DATE 202609300300llu
+#define CHANNEL_VERSION_STR "1.8.0"
 
 //#define DEBUG_APP
 //#define DEBUG_STUB
@@ -49,7 +49,17 @@ void memstats(int reset);
 #define PREFERRED IOS_GetPreferredVersion()
 #define UNCHANGED IOS_GetVersion()
 
+// The channel's title ID. OHBC by default; `make -C channel TITLE=LULZ`
+// builds one that installs over the original Homebrew Channel (LULZ), so a
+// Wii has only one. The Makefile writes it to title_id.h.
+#if defined(__has_include)
+#if __has_include("title_id.h")
+#include "title_id.h"
+#endif
+#endif
+#ifndef MY_TITLEID
 #define MY_TITLEID 0x000100014f484243ull
+#endif
 #define STUB_LOAD_IOS_VERSION UNCHANGED
 #define APPS_IOS_VERSION PREFERRED
 
