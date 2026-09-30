@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.8.2**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.8.3**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -181,6 +181,21 @@ int main(int argc, char **argv) {
 ```
 
 Link with `-I<hbc-reborn>/sdk -L<hbc-reborn>/sdk/hbc_agent -lhbcagent -lfat -lz -logc`.
+
+That is for devkitPro's current libogc (3.x). For an app on libogc2
+(Extrems' fork) or libogc 1.x, build the agent against that libogc and link
+the copy it makes, with the devkitPPC the app uses:
+
+```sh
+make -C sdk/hbc_agent OGC=libogc2        # sdk/hbc_agent/libogc2/libhbcagent.a
+make -C sdk/hbc_agent OGC=libogc-1.8.23  # sdk/hbc_agent/libogc-1.8.23/libhbcagent.a
+```
+
+Everything works the same there, crash reports included (the agent adds its
+own exception entry, `sdk/hbc_agent/ogc_exc.S`, to the older libogc's
+exception table). The one difference: those libogcs' WPAD has no pairing
+call, so the overlay's Connect asks for the Wii's SYNC button.
+
 Then:
 
 ```sh
@@ -396,7 +411,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.8.2 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.8.3 WII-IP` | installed channel running |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |
@@ -429,8 +444,10 @@ python3 tools/wii-bench/wiibench.py wait <id>
 - Every commit bumps both version fields, `CHANNEL_VERSION_STR` in
   `channel/channelapp/config.h` and `CHANNEL_VERSION` in
   `channel/title/Makefile`, to the same release.
-- Keep each file's existing line endings; some PyWii and Wiiload files use
-  CRLF. Check with `git -c core.whitespace=cr-at-eol diff --check`.
+- Text is LF everywhere, on every platform (`.gitattributes`). A few upstream
+  files kept exactly as they came are marked `-text` there and keep CRLF. A
+  checkout made before 1.8.3 on Windows still has CRLF files; run
+  `python tools/fix_line_endings.py` once (it keeps uncommitted changes).
 - Never commit Wii keys. Check staged file names before every commit.
 - [`AGENTS.md`](AGENTS.md) and the
   [project skill](.agents/skills/hbc-build-and-review/SKILL.md) hold the

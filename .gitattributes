@@ -1,10 +1,27 @@
-# Shell scripts keep LF endings on every platform, including Windows checkouts.
-*.sh text eol=lf
+# Line endings: text is LF in the repository and in every checkout, on every
+# platform, whatever core.autocrlf says (Git for Windows sets it to true).
+* text=auto eol=lf
+
+# Upstream files kept byte-for-byte as they came, CRLF (or mixed) endings and
+# all: Git never converts them. Edit them keeping their endings.
+channel/channelapp/source/ggets.[ch] -text
+channel/wiiload/gecko.[ch] -text
+channel/wiiload/main.c -text
+pywii/Alameda/Alameda.py -text
+pywii/Common/Struct.py -text
+wiipax/client/LzFind.[ch] -text
+wiipax/client/LzHash.h -text
+wiipax/client/LzmaDec.[ch] -text
+wiipax/client/LzmaEnc.[ch] -text
+wiipax/client/Types.h -text
+wiipax/stub/LzmaDec.[ch] -text
+wiipax/stub/Types.h -text
 
 # WAD templates, certificates, and assets are binary data.
 *.template binary
 channel/title/footer binary
 channel/title/*/certs binary
+channel/channelapp/banner/title binary
 *.png binary
 *.ppm binary
 *.ttf binary

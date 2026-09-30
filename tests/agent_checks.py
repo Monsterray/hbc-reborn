@@ -269,4 +269,6 @@ def check_crash(crash, crash_mode="crash"):
         assert where[0] <= int(crash["pc"], 16) < where[1], (fn, where, crash["pc"])
         main = symbol_range("main")
         frames = [int(f, 16) for f in crash["frames"]] + [int(crash["lr"], 16)]
-        assert any(main[0] <= f < main[1] for f in frames), (main, crash)
+        # A return address follows its call: a call to a noreturn function can
+        # be main's last instruction, leaving the address just past main.
+        assert any(main[0] <= f - 4 < main[1] for f in frames), (main, crash)

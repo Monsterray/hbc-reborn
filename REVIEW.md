@@ -155,6 +155,89 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.3: crash reports on libogc2 and libogc 1.x, LF line endings
+
+- **The agent on libogc2 and libogc 1.x.** Apps still built on those (WiiStation,
+  Wii64) could not use the agent's crash reports.
+  - **Cause:** tuxedo (libogc 3) calls a C panic function, but the older libogcs'
+    `_exceptionhandlertable[]` holds assembly entry points. Their vector code
+    saves r0-r5 and the special registers into a frame 728 bytes below the
+    interrupted stack pointer and `rfi`s to the entry with r1 not yet moved and
+    r3 = the exception number. WiiStation's copy of the agent put a C function
+    there. On the first real crash, its prologue wrote over the saved frame, it
+    used r3 as a frame pointer, and the bench Wii froze hard (2026-09-30).
+    WiiStation had disabled the hook since then.
+  - **Fix:** `sdk/hbc_agent/ogc_exc.S` does what libogc's own
+    `default_exceptionhandler` does. It claims the frame, saves GQR0-7 and
+    r6-r31, then calls `agent_exc(frame_context *)`. That records the crash and
+    hands the frame to libogc's `c_default_exceptionhandler` (its crash screen and
+    reload). The agent takes only table entries that still hold
+    `default_exceptionhandler`; the FPU, interrupt and decrementer handlers stay,
+    and so does anything a debugger or the app installed.
+  - **Details:** exception numbers are converted to the vector numbers tuxedo
+    uses, so `hbc.py crash` reads the same. The installed libogc2 and libogc
+    1.8.23 have byte-identical vector code and frame layout (disassembled);
+    agent.c checks the frame offsets against `frame_context` at compile time.
+    The code that runs inside the exception makes only integer calls (FP is off
+    there).
+  - **Build:** `make -C sdk/hbc_agent OGC=libogc2` (or `OGC=libogc-1.8.23`). The
+    flavor comes from `__has_include(<tuxedo/ppc/exception.h>)`. The overlay's
+    Connect asks for the SYNC button there (no `WPAD_StartPairing`).
+  - **Checked in Dolphin:** `tests/dolphin_ogc_crash.py` boots
+    `agent_app-libogc2-crash.dol` (`make -C tests/agent_app OGC=libogc2 MODE=crash`,
+    devkitPPC r41-2) with MMU emulation and the GDB stub. It reads the crash
+    block from MEM2 and walks the stack after the crash:
+    - crash (DSI): at `agent_app_crash`, DAR 0x10, `main` in the chain, checksum
+      good; the CPU was then in libogc's `waitForReload` <- `agent_exc_entry` <-
+      `main`.
+    - trap (program): also passes.
+    - The libogc 1.8.23 library builds and links the same entry, but its test app
+      does not build here: there is no libfat for 1.8.23 installed.
+  - **Not yet on hardware.**
+- **Line endings, for good.**
+  - **Before:** Git for Windows sets `core.autocrlf=true`, and `.gitattributes`
+    had no general rule. The working tree was a mix: 217 files CRLF, 33 that
+    tools had rewritten LF, 17 upstream files really CRLF in the repository, and
+    one mixed. Every edit had to preserve each file's endings, and
+    `channel/channelapp/banner/icon.ppm` had CRLF injected on this PC by a
+    checkout from before it was marked binary. Banners built here had a damaged
+    icon; CI's checkout was fine.
+  - **Now:** `* text=auto eol=lf` makes every text file LF in the repository and
+    in every checkout, whatever `core.autocrlf` says. The 17 upstream CRLF files
+    and the mixed `channel/wiiload/main.c` are `-text` (kept byte-for-byte), and
+    `.editorconfig` says LF. `tests/test_line_endings.py` (all three CI
+    platforms) fails on CRLF committed or checked out.
+    `tools/fix_line_endings.py` converts an older checkout and restores only
+    binaries whose sole change is CRLF.
+- **devfile.c:** a listing entry whose full path does not fit the path buffer is
+  now skipped instead of being stat'ed truncated (devkitPPC r41-2's gcc 12 found
+  it building the agent for libogc2).
+- **`tests/agent_checks.py`:** a return address is matched to its function by
+  the call before it. A call to a noreturn function can be `main`'s last
+  instruction, which leaves LR just past `main`.
+- **`dolphin_smoke.py --agent` needs the installed channel.** It failed at "agent
+  exit to HBC": HBC did not answer within 90 s, and about 5 s after the app's
+  exit Dolphin's log showed the CPU running off the end of MEM2 ("Unknown
+  Pointer 0x14000000 PC 0x94000000 LR 0x939f8000").
+  - **No release ever passed this in Dolphin.** With no image argument the
+    script booted the DOL. 1.5.0 (the first release with the agent checks), 1.6.0
+    and 1.8.2 fail identically, built with the same toolchain and run in the same
+    Dolphin executable. The 1.8.2 WAD passes the whole agent suite: exit to HBC in
+    3.5 s, the Wiiload upload, and the crash report. README's test table already
+    runs `--agent` against the WAD.
+  - **Cause:** with cheats off, Dolphin replaces 0x80001800 with its `HBReload`
+    hook and writes `STUBHAXX`. A DOL-booted HBC is not `MY_TITLEID`, so since
+    1.1.7 it keeps that stub. A real stub would not help either, because a DOL
+    boot has no installed title to relaunch. The app's `exit()` enters
+    `HBReload`, which asks the host to stop. Dolphin's `RequestStop` sends the
+    guest an STM power event and resumes the CPU. The app has already exited and
+    never handles the event, so the CPU runs on from the hook into whatever is in
+    memory. Dolphin never stops, and HBC never answers again.
+  - **Fix:** `--agent` now boots `channel/title/channel_retail.wad` by default
+    and refuses a DOL with that explanation. Checked on 1.8.2: a DOL is refused
+    at once, and `--agent` with no image passes the whole suite. The bench Wii is
+    not affected: there the stub relaunches the installed channel.
+
 ### 1.8.2: CI off Node.js 20
 
 - GitHub warned that Node.js 20 is deprecated. `actions/upload-artifact@v4` and

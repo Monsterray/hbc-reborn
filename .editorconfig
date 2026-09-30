@@ -1,8 +1,9 @@
-# https://editorconfig.org. Line endings are left alone on purpose: some
-# PyWii and Wiiload files use CRLF and must keep it (see AGENTS.md).
+# https://editorconfig.org. Text is LF (.gitattributes); the few upstream
+# files kept with CRLF are listed there as -text.
 root = true
 
 [*]
+end_of_line = lf
 insert_final_newline = true
 
 [*.{c,h,S,s,ld,spec}]

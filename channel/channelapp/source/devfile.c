@@ -240,8 +240,9 @@ static void file_list(s32 s, const char *path) {
 			n += snprintf(buf + n, DEVFILE_LIST_MAX - n, "! truncated\n");
 			break;
 		}
-		snprintf(full, sizeof(full), "%s/%s", path, de->d_name);
-		if (stat(full, &st))
+		// A name too long for the path buffer cannot be stat'ed: skip it.
+		if (snprintf(full, sizeof(full), "%s/%s", path, de->d_name) >= (int) sizeof(full) ||
+				stat(full, &st))
 			continue;
 		if (S_ISDIR(st.st_mode))
 			n += snprintf(buf + n, DEVFILE_LIST_MAX - n, "d %s\n", de->d_name);

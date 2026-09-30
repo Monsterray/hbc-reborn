@@ -27,6 +27,7 @@
 
 #include "../hbc_agent.h"
 #include "agent_int.h"
+#include "ogc_flavor.h"
 #include "ov_ui.h"
 #include "../wiispk/wiispk.h"
 
@@ -1240,8 +1241,13 @@ static void act(int action, int arg, void *user) {
 		cal[arg].valid = false;
 		break;
 	case OVA_CONNECT:
+#if AGENT_TUXEDO
 		WPAD_StartPairing();
 		toast("Press 1 and 2 on the remote");
+#else
+		// libogc2's and libogc 1.x's WPAD have no pairing call.
+		toast("Press SYNC on the Wii, then on the remote");
+#endif
 		break;
 	case OVA_DISCONNECT_ALL:
 		set_all(disconnect);

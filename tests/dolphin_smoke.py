@@ -11,7 +11,9 @@ developer protocol through tools/hbc.py: status, mkdir, put, ls, get, rm,
 and a network-log round trip with tests/netlog_app. --agent (which implies
 the SD card) runs tests/agent_app, built with sdk/hbc_agent, through the
 checks in tests/agent_checks.py, including a crash and its report. It turns
-on Dolphin's MMU emulation so the app's store to address 0x10 faults.
+on Dolphin's MMU emulation so the app's store to address 0x10 faults. It
+boots the retail WAD by default and refuses a DOL, since the agent checks
+need each app's exit to return to an installed HBC.
 
 A .wad image is installed into the profile's NAND and booted from there.
 Cheats are enabled (with no codes) so Dolphin does not replace HBC's reload
@@ -355,11 +357,19 @@ def main():
     devnet = "--devnet" in args
     agent = "--agent" in args
     args = [a for a in args if a not in ("--devnet", "--agent")]
-    image = pathlib.Path(args[0] if args else
-                         root / "channel/channelapp/channelapp-channel.dol").resolve()
+    default = ("channel/title/channel_retail.wad" if agent else
+               "channel/channelapp/channelapp-channel.dol")
+    image = pathlib.Path(args[0] if args else root / default).resolve()
     seconds = int(args[1]) if len(args) > 1 else 60
     if not image.is_file():
         raise SystemExit(f"no such image: {image}")
+    if agent and image.suffix.lower() != ".wad":
+        # A DOL boot has no installed title for the reload stub to launch, so
+        # HBC keeps Dolphin's HBReload hook at 0x80001800. The app's exit then
+        # asks Dolphin to stop, the guest ignores the power event, and the CPU
+        # runs on from 0x80001800 into garbage: HBC never comes back.
+        raise SystemExit("--agent needs the retail WAD (make -C channel): an app's exit "
+                         "cannot return to a DOL-booted HBC in Dolphin")
 
     run = Dolphin(image, sd=devnet or agent, mmu=agent)
     expected_faults = []

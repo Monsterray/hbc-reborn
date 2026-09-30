@@ -7,6 +7,8 @@
 //   trap         a trap instruction after 1 s, in agent_app_trap() (program)
 //   exit         return at once
 //
+// A build with -DAGENT_APP_MODE='"crash"' takes that mode when it has no
+// argv, for a direct boot in Dolphin (tests/dolphin_ogc_crash.py).
 // HOME (or `hbc.py key h`) opens the agent's overlay. The left bar slot is
 // "Hello", and DEV > Save writes sd:/hbctest/agent_save.txt. Output goes to
 // the network log (hbc_netlog.h) and the TV.
@@ -83,9 +85,13 @@ static void hello(void *user) {
 	printf("agent_app: hello from the app slot\n");
 }
 
+#ifndef AGENT_APP_MODE
+#define AGENT_APP_MODE ""
+#endif
+
 int main(int argc, char **argv) {
 	hbc_agent_config cfg = { 0 };
-	const char *mode = argc > 1 ? argv[1] : "";
+	const char *mode = argc > 1 ? argv[1] : AGENT_APP_MODE;
 	u32 seconds = 300, frames = 0;
 	bool fat;
 	s32 res;

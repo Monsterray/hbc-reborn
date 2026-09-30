@@ -23,7 +23,14 @@
 #include <ogc/lwp_watchdog.h>
 #include <ogc/machine/processor.h>
 #include <network.h>
+
+#include "ogc_flavor.h"
+#if AGENT_TUXEDO
 #include <tuxedo/ppc/exception.h>
+#else
+#include <stddef.h>
+#include <ogc/context.h>
+#endif
 
 #include "../../channel/channelapp/config.h"
 #include "devfile.h"
@@ -58,7 +65,9 @@ static lwp_t thread = LWP_THREAD_NULL;
 static u8 *stack;
 static u64 start_ticks;
 static volatile bool exit_requested;
+#if AGENT_TUXEDO
 static PPCExcptPanicFn prev_panic;
+#endif
 
 volatile int hbc_agent_log_muted;
 
@@ -565,20 +574,21 @@ static bool ram_word(u32 a) {
 						(a >= 0x90000000 && a < 0x94000000));
 }
 
-static void agent_panic(unsigned exid, PPCContext *ctx) {
+// Runs inside the exception, with floating point off: integer code only.
+static void agent_record(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32 sp) {
 	hbc_crash_block *b = (hbc_crash_block *) HBC_CRASH_ADDR;
 	u32 dar = mfspr(19), dsisr = mfspr(18);
-	u32 sp = ctx->gpr[1], i;
+	u32 i;
 
 	memset(b, 0, sizeof(*b));
 	b->magic = HBC_CRASH_MAGIC;
 	b->version = HBC_CRASH_VERSION;
 	b->exception = exid;
-	b->pc = ctx->pc;
-	b->msr = ctx->msr;
-	b->lr = ctx->lr;
-	b->cr = ctx->cr;
-	b->ctr = ctx->ctr;
+	b->pc = pc;
+	b->msr = msr;
+	b->lr = lr;
+	b->cr = cr;
+	b->ctr = ctr;
 	b->dar = dar;
 	b->dsisr = dsisr;
 	b->sp = sp;
@@ -594,10 +604,65 @@ static void agent_panic(unsigned exid, PPCContext *ctx) {
 	strncpy(b->app, cfg.name, sizeof(b->app) - 1);
 	b->check = hbc_crash_check(b);
 	DCFlushRange(b, sizeof(*b));
+}
 
+#if AGENT_TUXEDO
+static void agent_panic(unsigned exid, PPCContext *ctx) {
+	agent_record(exid, ctx->pc, ctx->msr, ctx->lr, ctx->cr, ctx->ctr, ctx->gpr[1]);
 	if (prev_panic)
 		prev_panic(exid, ctx);
 }
+
+static void install_crash_hook(void) {
+	prev_panic = PPCExcptCurPanicFn;
+	PPCExcptCurPanicFn = agent_panic;
+}
+#else
+// libogc2 and libogc 1.x: _exceptionhandlertable[] holds assembly entry
+// points, not C functions (ogc_exc.S says what they receive). The agent's
+// entry, agent_exc_entry, builds libogc's frame and calls agent_exc(), which
+// records the crash and then shows libogc's own crash screen.
+_Static_assert(offsetof(frame_context, SRR0) == AGENT_EXC_SRR0 - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, GPR[1]) == AGENT_EXC_GPR(1) - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, GQR[0]) == AGENT_EXC_GQR(0) - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, CR) == AGENT_EXC_CR - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, XER) == AGENT_EXC_XER - AGENT_EXC_NUMBER,
+			   "ogc_exc.S's frame offsets must match this libogc's frame_context");
+
+typedef void (*agent_exc_fn)(frame_context *);
+extern agent_exc_fn _exceptionhandlertable[NUM_EXCEPTIONS];
+extern void default_exceptionhandler(frame_context *);
+extern void c_default_exceptionhandler(frame_context *);
+extern void agent_exc_entry(frame_context *);
+void agent_exc(frame_context *ctx);
+
+// libogc's exception index to the vector number tuxedo's PPC_EXCPT_* use
+// (vector / 0x100), which is what the crash block and hbc.py report.
+static const u8 exc_vector[NUM_EXCEPTIONS] = {
+	1, 2, 3, 4, 5, 6, 7, 8, 9, 0x0c, 0x0d, 0x0f, 0x13, 0x14, 0x17
+};
+
+void agent_exc(frame_context *ctx) {
+	u32 n = ctx->EXCPT_Number;
+
+	agent_record(n < NUM_EXCEPTIONS ? exc_vector[n] : n, ctx->SRR0, ctx->SRR1, ctx->LR,
+				 ctx->CR, ctx->CTR, ctx->GPR[1]);
+	c_default_exceptionhandler(ctx);
+}
+
+// Take over only the exceptions that would reach libogc's crash screen; the
+// FPU, interrupt and decrementer handlers, and any a debugger (libdb) or the
+// app put in, stay.
+static void install_crash_hook(void) {
+	u32 level, i;
+
+	_CPU_ISR_Disable(level);
+	for (i = 0; i < NUM_EXCEPTIONS; ++i)
+		if (_exceptionhandlertable[i] == default_exceptionhandler)
+			_exceptionhandlertable[i] = agent_exc_entry;
+	_CPU_ISR_Restore(level);
+}
+#endif
 
 s32 hbc_agent_init(const hbc_agent_config *config) {
 	s32 res;
@@ -623,8 +688,7 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 	if (!cfg.no_crash_handler) {
 		if (cfg.crash_reload_s > 0)
 			__exception_setreload(cfg.crash_reload_s);
-		prev_panic = PPCExcptCurPanicFn;
-		PPCExcptCurPanicFn = agent_panic;
+		install_crash_hook();
 	}
 
 	// Keep the app's output for the Log page, still passing it on.
