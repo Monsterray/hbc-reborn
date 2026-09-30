@@ -75,6 +75,8 @@ void gfx_init (void);
 void gfx_deinit (void);
 
 void gfx_get_efb_size(u16 *x, u16 *y);
+// The video mode HBC set up, for the HOME overlay (home.c).
+GXRModeObj *gfx_video_mode(void);
 void gfx_set_efb_buffer(u32 *buffer);
 
 void gfx_gen_gradient (gfx_entity *entity, u16 w, u16 h,

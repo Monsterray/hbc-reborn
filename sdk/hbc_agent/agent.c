@@ -119,6 +119,9 @@ static struct {
 	char label[16];
 	void (*press)(void *user);
 	void *user;
+	char title[40];
+	const hbc_agent_item *items;
+	int count;
 } slots[2];
 
 void hbc_agent_set_slot(int slot, const char *label, void (*press)(void *user), void *user) {
@@ -129,8 +132,24 @@ void hbc_agent_set_slot(int slot, const char *label, void (*press)(void *user), 
 	slots[slot].user = user;
 }
 
+void hbc_agent_set_slot_menu(int slot, const char *label, const char *title,
+							 const hbc_agent_item *items, int count) {
+	if (slot < 0 || slot > 1)
+		return;
+	hbc_agent_set_slot(slot, label, NULL, NULL);
+	snprintf(slots[slot].title, sizeof(slots[slot].title), "%s", title ? title : "");
+	slots[slot].items = label ? items : NULL;
+	slots[slot].count = label && items ? (count > 12 ? 12 : count) : 0;
+}
+
+const hbc_agent_item *agent_slot_menu(int slot, const char **title, int *count) {
+	*title = slots[slot].title;
+	*count = slots[slot].count;
+	return slots[slot].items;
+}
+
 const char *agent_slot_label(int slot) {
-	if (slot == 1 && !slots[1].press)
+	if (slot == 1 && !slots[1].press && !slots[1].count)
 		return "Shot";
 	return slots[slot].label;
 }
@@ -226,6 +245,28 @@ static void send_screen(s32 s) {
 		if (devfile_send_all(s, hdr, 8) && devfile_send_all(s, dims, 8))
 			devfile_send_all(s, fb, size);
 	}
+}
+
+static u16 get_u16(const u8 *p);
+
+bool hbc_agent_handle(s32 s, const u8 *hdr) {
+	if (!memcmp(hdr, "HBCK", 4)) {
+		u8 k[KEYS];
+		u32 n = get_u16(hdr + 4);
+
+		if (n > KEYS || (n && !tcp_read(s, k, n, NULL, NULL))) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+		} else {
+			push_keys(k, n);
+			devfile_reply(s, 0, NULL, 0);
+		}
+		return true;
+	}
+	if (!memcmp(hdr, "HBCP", 4)) {
+		send_screen(s);
+		return true;
+	}
+	return false;
 }
 
 const hbc_agent_config *agent_cfg(void) {
@@ -385,18 +426,7 @@ static void handle(s32 s, const u8 *hdr, u32 client_ip) {
 	} else if (!memcmp(hdr, "HBCN", 4)) {
 		set_log_target(client_ip, get_u16(hdr + 4));
 		devfile_reply(s, 0, NULL, 0);
-	} else if (!memcmp(hdr, "HBCK", 4)) {
-		u8 k[KEYS];
-		u32 n = get_u16(hdr + 4);
-
-		if (n > KEYS || (n && !tcp_read(s, k, n, NULL, NULL))) {
-			devfile_reply(s, -EINVAL, NULL, 0);
-		} else {
-			push_keys(k, n);
-			devfile_reply(s, 0, NULL, 0);
-		}
-	} else if (!memcmp(hdr, "HBCP", 4)) {
-		send_screen(s);
+	} else if (hbc_agent_handle(s, hdr)) {
 	} else if (!memcmp(hdr, "HBCX", 4)) {
 		devfile_reply(s, 0, NULL, 0);
 		tcp_close(s);
@@ -563,16 +593,22 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 		PPCExcptCurPanicFn = agent_panic;
 	}
 
-	// Start the network now, so hbc_agent_net_wait() and hbc_netlog_init()
-	// see a start-up in progress rather than none.
-	if (net_get_status() < 0 && net_get_status() != -EBUSY)
-		net_init_async(NULL, NULL);
-
 	// Keep the app's output for the Log page, still passing it on.
 	log_prev_out = devoptab_list[STD_OUT];
 	log_prev_err = devoptab_list[STD_ERR];
 	devoptab_list[STD_OUT] = &log_dotab_out;
 	devoptab_list[STD_ERR] = &log_dotab_err;
+
+	// A host with its own server wants only the overlay.
+	if (cfg.no_network) {
+		thread = 0;
+		return 0;
+	}
+
+	// Start the network now, so hbc_agent_net_wait() and hbc_netlog_init()
+	// see a start-up in progress rather than none.
+	if (net_get_status() < 0 && net_get_status() != -EBUSY)
+		net_init_async(NULL, NULL);
 
 	stack = memalign(32, AGENT_STACK);
 	if (!stack)

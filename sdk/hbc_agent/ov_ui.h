@@ -22,6 +22,22 @@ typedef struct {
 	bool finding;
 } ov_remote;
 
+/* An app slot's own menu (hbc_agent_set_slot_menu). */
+#define OV_MENU_ITEMS 12
+enum { OV_ITEM_INFO = 1, OV_ITEM_DISABLED = 2, OV_ITEM_CLOSE = 4 };
+
+typedef struct {
+	char label[32];
+	char value[40];       /* info rows */
+	int flags;            /* OV_ITEM_* */
+} ov_menu_item;
+
+typedef struct {
+	char title[40];
+	int count;            /* 0: a plain button that runs its callback */
+	ov_menu_item item[OV_MENU_ITEMS];
+} ov_menu;
+
 typedef struct {
 	char app[40];         /* "agent_app 1.0" */
 	char clock[8];        /* "14:32" */
@@ -42,6 +58,13 @@ typedef struct {
 	bool can_leds;        /* remote handles found: LEDs, IR and sensor bar work */
 
 	char slot[2][16];     /* app slots beside Exit; "" is blank */
+	ov_menu menu[2];      /* their menus, if the app gave them one */
+
+	/* What applies to this app: rows of DEV's Actions tab, and Exit's
+	   choices (bit 0 The Homebrew Channel, 1 System Menu, 2 Restart Wii,
+	   3 Power off). */
+	bool show_net, show_log_pc, show_crash;
+	unsigned exit_mask;
 
 	const char *log_text; /* Log page: the app's recent output */
 	char test[6][40];     /* Test page lines for the selected remote */
@@ -68,7 +91,8 @@ enum {
 	OVA_TEST_START, OVA_TEST_STOP, OVA_CAL_START,
 	OVA_CONNECT, OVA_DISCONNECT_ALL, OVA_SENSOR_ABOVE, OVA_IR_SENS,
 	OVA_AUTO_OFF,         /* arg: -1 or +1 */
-	OVA_RUMBLE_ALL
+	OVA_RUMBLE_ALL,
+	OVA_SLOT_ITEM         /* arg: slot * 16 + item; after closing if OV_ITEM_CLOSE */
 };
 
 typedef void (*ov_act_fn)(int action, int arg, void *user);
@@ -86,6 +110,7 @@ typedef struct {
 typedef struct {
 	int w, h;
 	int open_t, dev_t, wm_t, exit_t;   /* animation, 0 to 256 */
+	int slot_t[2];
 	int menu;                           /* OV_MENU_* */
 	bool closing, paused;
 	int dev_tab, dev_page, wm_page, wm_sel;

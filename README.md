@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.6.2**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.7.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -54,6 +54,10 @@ fork (1.2.0 or later), either sent as a DOL like this or installed as the WAD.
 
 ## `hbc.py` reference
 
+`python3 tools/hbc.py` on its own prints an overview of every command, and
+`hbc.py help COMMAND` explains one with examples. The table below is the
+same list.
+
 ```
 python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMAND ...
 ```
@@ -73,8 +77,8 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
-| `key KEYS` | Send controller presses to the running agent app: `h` (HOME, opens or closes its overlay), `u` `d` `l` `r` (D-pad), `a`, `b`. For scripted tests and for driving the overlay from the PC. |
-| `screen FILE.png` | Save what the running agent app shows on the TV, overlay included. |
+| `key KEYS` | Send controller presses to HBC's HOME menu or the running agent app: `h` (HOME, opens or closes its overlay), `u` `d` `l` `r` (D-pad), `a`, `b`. For scripted tests and for driving the overlay from the PC. |
+| `screen FILE.png` | Save what the TV shows, from HBC or a running agent app, overlay included. |
 | `crash [--elf FILE] [--clear]` | Print the crash an agent app reported: exception, registers, backtrace, and with `--elf` function names and source lines (needs devkitPPC's `addr2line`). `--clear` forgets it. |
 
 `--json` makes `version`, `status`, `ls`, and `crash` print JSON. Options can follow
@@ -208,6 +212,15 @@ and batteries, over five buttons:
 | Shot | Saves the game's frame to `sd:/screenshots/<app>-NNN.bmp`. An app can replace it with `hbc_agent_set_slot(1, ...)`. |
 | WiiMote | A card per remote (Find: rumble, blinking LEDs and a chime that gets louder; More: battery, extension, MotionPlus, rumble on or off, Test, Calibrate, Disconnect), and Settings: connect a remote, disconnect all, sensor bar, IR sensitivity, auto power-off, rumble for all. |
 
+An app can give a slot a menu of its own instead of one action
+(`hbc_agent_set_slot_menu`), with buttons and live info rows. HBC's own HOME
+menu is this overlay, set up in
+[`channel/channelapp/source/home.c`](channel/channelapp/source/home.c): a
+commented example of every step, from the config to lending the overlay its
+framebuffers and handling Exit through HBC's own shutdown. Its HBC slot
+holds what the old HOME menu had: HBC's and IOS's versions, the Wii's IP,
+About, Launch BootMii, Exit to System Menu, and Shutdown.
+
 The D-pad moves, A chooses, B goes back one level, and HOME closes
 everything. Controller settings last until the app exits; nothing is
 written to the Wii's own settings, except that Connect remote may save the
@@ -323,7 +336,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.6.2 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.7.0 WII-IP` | installed channel running |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |

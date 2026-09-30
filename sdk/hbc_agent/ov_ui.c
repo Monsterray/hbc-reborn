@@ -12,7 +12,7 @@
 
 #include "ov_ui.h"
 
-enum { MENU_NONE, MENU_DEV, MENU_EXIT, MENU_WM };
+enum { MENU_NONE, MENU_DEV, MENU_EXIT, MENU_WM, MENU_SLOT0, MENU_SLOT1 };
 enum { PAGE_MAIN, PAGE_LOG };
 enum { WM_GRID, WM_MORE, WM_TEST, WM_CAL, WM_SETTINGS };
 
@@ -34,7 +34,8 @@ enum {
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
 	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
-	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL
+	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL,
+	ID_SLOT_ITEM = 200    // + slot * 16 + item
 };
 
 #define M 20           // side margin
@@ -225,15 +226,22 @@ static int build_dev(ov_ui *ui, const ov_ext *e) {
 		button(ui, ID_SAVE, 0, y, CW, "Save", e->has_save ? 0 : F_DIS);
 		button(ui, ID_LOG, CW + 10, y, CW, "Log", 0);
 		y += BH + 12;
-		toggle(ui, ID_LOGPC, y, "Log to PC", e->log_pc, 0);
-		y += BH + GAP;
-		choice(ui, ID_CRASH_3S, ID_CRASH_STAY, y, "Crash screen", "3 s", "Stay", !e->crash_stay, 0);
-		y += BH + GAP;
-		add(ui, K_TEXT, 0, 0, y - 2, CW, 18, F_LABEL, "hbc.py connection");
-		add(ui, K_TEXT, 0, 0, y + 15, CW, 16, F_LABEL | F_SMALL, "developer tools, port 4299");
-		button(ui, ID_HBCPY, CW + 10, y, CW, e->hbcpy ? "On" : "Off", e->hbcpy ? F_ON : 0);
-		y += BH + 4;
-		return y;
+		if (e->show_log_pc) {
+			toggle(ui, ID_LOGPC, y, "Log to PC", e->log_pc, 0);
+			y += BH + GAP;
+		}
+		if (e->show_crash) {
+			choice(ui, ID_CRASH_3S, ID_CRASH_STAY, y, "Crash screen", "3 s", "Stay",
+				   !e->crash_stay, 0);
+			y += BH + GAP;
+		}
+		if (e->show_net) {
+			add(ui, K_TEXT, 0, 0, y - 2, CW, 18, F_LABEL, "hbc.py connection");
+			add(ui, K_TEXT, 0, 0, y + 15, CW, 16, F_LABEL | F_SMALL, "developer tools, port 4299");
+			button(ui, ID_HBCPY, CW + 10, y, CW, e->hbcpy ? "On" : "Off", e->hbcpy ? F_ON : 0);
+			y += BH + GAP;
+		}
+		return y - GAP + 4;
 	}
 
 	{
@@ -374,6 +382,43 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 	}
 }
 
+// An app slot's menu: a title, then its items in order. Info rows take a
+// whole row; buttons pair up two to a row.
+static int build_slot(ov_ui *ui, const ov_ext *e, int slot) {
+	const ov_menu *m = &e->menu[slot];
+	int y = 0, col = 0, i;
+
+	title(ui, 0, y, IW, m->title);
+	y += 30;
+	for (i = 0; i < m->count; ++i) {
+		const ov_menu_item *it = &m->item[i];
+
+		if (it->flags & OV_ITEM_INFO) {
+			if (col) {
+				y += BH + GAP;
+				col = 0;
+			}
+			add(ui, K_TEXT, 0, 0, y, 150, 20, F_LABEL, it->label);
+			add(ui, K_TEXT, 0, 150, y, IW - 150, 20, 0, it->value);
+			y += 22;
+			continue;
+		}
+		if (!col && y > 30)
+			y += 6;
+		button(ui, ID_SLOT_ITEM + slot * 16 + i, col * (CW + 10), y, CW, it->label,
+			   it->flags & OV_ITEM_DISABLED ? F_DIS : 0);
+		if (col) {
+			y += BH + GAP;
+			col = 0;
+		} else {
+			col = 1;
+		}
+	}
+	if (col)
+		y += BH + GAP;
+	return y - GAP;
+}
+
 static void layout(ov_ui *ui, const ov_ext *e) {
 	int o = ease(ui->open_t), ex = ease(ui->exit_t);
 	int sw = ui->w - 2 * M;
@@ -400,18 +445,36 @@ static void layout(ov_ui *ui, const ov_ext *e) {
 				   strip_y - 8);
 	}
 
+	// App slot menus slide in from the side of their button.
+	for (i = 0; i < 2; ++i)
+		if (ui->slot_t[i]) {
+			int first = drawer_begin(ui), h = build_slot(ui, e, i);
+			int in = (DW + M + 20) * (256 - ease(ui->slot_t[i])) / 256;
+
+			drawer_end(ui, first, h, i ? ui->w - M - DW + in : M - in, strip_y - 8);
+		}
+
 	add(ui, K_PANEL, 0, M, strip_y, sw, SH + EH * ex / 256, 0, NULL);
 	add(ui, K_CLIP, 0, M, strip_y, sw, SH + EH * ex / 256, 0, NULL);
 
 	// The Exit row, revealed as the strip grows.
 	if (ui->exit_t) {
-		int y = strip_y + PAD, units = 13 + 10 * 3, iw = sw - 2 * PAD - 3 * GAP;
 		static const char *names[] = { "The Homebrew Channel", "System Menu", "Restart Wii", "Power off" };
+		int y = strip_y + PAD, shown = 0, units = 0, iw;
 
+		for (i = 0; i < 4; ++i)
+			if (e->exit_mask & (1 << i)) {
+				shown++;
+				units += i ? 10 : 13;
+			}
+		iw = sw - 2 * PAD - (shown - 1) * GAP;
 		x = M + PAD;
 		for (i = 0; i < 4; ++i) {
-			int w = iw * (i ? 10 : 13) / units;
+			int w;
 
+			if (!(e->exit_mask & (1 << i)))
+				continue;
+			w = iw * (i ? 10 : 13) / units;
 			button(ui, ID_EX_HBC + i, x, y, w, names[i], 0);
 			x += w + GAP;
 		}
@@ -440,7 +503,8 @@ static void layout(ov_ui *ui, const ov_ext *e) {
 			if ((i == 1 || i == 3) && !t[0])
 				flags = F_BLANK | F_DIS;
 			if ((i == 0 && ui->menu == MENU_DEV) || (i == 2 && ui->menu == MENU_EXIT) ||
-					(i == 4 && ui->menu == MENU_WM))
+					(i == 4 && ui->menu == MENU_WM) || (i == 1 && ui->menu == MENU_SLOT0) ||
+					(i == 3 && ui->menu == MENU_SLOT1))
 				flags |= F_SEL;
 			snprintf(buf, sizeof(buf), "%s", t);
 			button(ui, ID_BAR + i, M + PAD + i * (bw + GAP), y, bw, buf, flags);
@@ -461,6 +525,8 @@ static bool in_layer(const ov_ui *ui, int id) {
 	case MENU_DEV: return id >= 120 && id < 140;
 	case MENU_EXIT: return id >= 110 && id < 120;
 	case MENU_WM: return id >= 140 && id < 200;
+	case MENU_SLOT0: return id >= ID_SLOT_ITEM && id < ID_SLOT_ITEM + 16;
+	case MENU_SLOT1: return id >= ID_SLOT_ITEM + 16 && id < ID_SLOT_ITEM + 32;
 	default: return id >= 100 && id < 110;
 	}
 }
@@ -580,12 +646,26 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 			open_menu(ui, MENU_EXIT, id);
 		else if (i == 4)
 			open_menu(ui, MENU_WM, id);
+		else if ((i == 1 || i == 3) && e->menu[i == 3].count)
+			open_menu(ui, i == 1 ? MENU_SLOT0 : MENU_SLOT1, id);
 		else if (i == 3 && !strcmp(e->slot[1], "Shot"))
 			act(OVA_SHOT, 0, user);
 		else {
 			ui->after = OVA_SLOT;
 			ui->after_arg = i == 3;
 			ui->closing = true;
+		}
+		return;
+	}
+	if (id >= ID_SLOT_ITEM && id < ID_SLOT_ITEM + 32) {
+		int slot = (id - ID_SLOT_ITEM) / 16, item = (id - ID_SLOT_ITEM) % 16;
+
+		if (e->menu[slot].item[item].flags & OV_ITEM_CLOSE) {
+			ui->after = OVA_SLOT_ITEM;
+			ui->after_arg = slot * 16 + item;
+			ui->closing = true;
+		} else {
+			act(OVA_SLOT_ITEM, slot * 16 + item, user);
 		}
 		return;
 	}
@@ -680,13 +760,16 @@ bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *
 	ui->dev_t = approach(ui->dev_t, ui->menu == MENU_DEV);
 	ui->wm_t = approach(ui->wm_t, ui->menu == MENU_WM);
 	ui->exit_t = approach(ui->exit_t, ui->menu == MENU_EXIT);
-	settled = !ui->dev_t && !ui->wm_t && !ui->exit_t;
+	ui->slot_t[0] = approach(ui->slot_t[0], ui->menu == MENU_SLOT0);
+	ui->slot_t[1] = approach(ui->slot_t[1], ui->menu == MENU_SLOT1);
+	settled = !ui->dev_t && !ui->wm_t && !ui->exit_t && !ui->slot_t[0] && !ui->slot_t[1];
 	// The strip leaves only once every menu has closed.
 	ui->open_t = approach(ui->open_t, !(ui->closing && settled));
 
 	layout(ui, e);
 	fix_focus(ui, ui->menu == MENU_DEV ? ID_TAB_ACT : ui->menu == MENU_EXIT ? ID_EX_HBC :
-			  ui->menu == MENU_WM ? ID_FIND : ui->bar_focus);
+			  ui->menu == MENU_WM ? ID_FIND : ui->menu == MENU_SLOT0 ? ID_SLOT_ITEM :
+			  ui->menu == MENU_SLOT1 ? ID_SLOT_ITEM + 16 : ui->bar_focus);
 	return !(ui->closing && !ui->open_t);
 }
 

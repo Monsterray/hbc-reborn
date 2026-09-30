@@ -112,6 +112,31 @@ int main(int argc, char **argv) {
 	ext.ir_sens = 3;
 	snprintf(ext.auto_off, sizeof(ext.auto_off), "5 min");
 	snprintf(ext.slot[1], sizeof(ext.slot[1]), "Shot");
+	ext.show_net = ext.show_log_pc = ext.show_crash = true;
+	ext.exit_mask = 15;
+	snprintf(ext.slot[0], sizeof(ext.slot[0]), "HBC");
+	snprintf(ext.menu[0].title, sizeof(ext.menu[0].title), "The Homebrew Channel");
+	{
+		static const char *items[][2] = {
+			{ "Version", "1.7.0" }, { "IOS", "IOS58 v24.31" }, { "Network", "192.168.8.213" },
+			{ "About", NULL }, { "Launch BootMii", NULL }, { "Exit to System Menu", NULL },
+			{ "Shutdown", NULL },
+		};
+		int i;
+
+		for (i = 0; i < 7; ++i) {
+			ov_menu_item *it = &ext.menu[0].item[i];
+
+			snprintf(it->label, sizeof(it->label), "%s", items[i][0]);
+			if (items[i][1]) {
+				snprintf(it->value, sizeof(it->value), "%s", items[i][1]);
+				it->flags = OV_ITEM_INFO;
+			} else {
+				it->flags = OV_ITEM_CLOSE;
+			}
+		}
+		ext.menu[0].count = 7;
+	}
 	ext.log_text = "agent_app: agent 0, fat 1, mode 'stay'\nagent_app: network 0\n"
 				   "agent_app: running, 5 s\nagent_app: running, 10 s\n"
 				   "a very long line that goes on and on to show how the log view wraps its text\n";
@@ -141,7 +166,7 @@ int main(int argc, char **argv) {
 	capture(&ui, "05-dev-info");
 	keys(&ui, "la" "dr" "a");
 	capture(&ui, "06-dev-log");
-	keys(&ui, "bb" "rrr" "a");
+	keys(&ui, "bb" "rrrr" "a");
 	capture(&ui, "07-wiimote");
 	keys(&ui, "a");
 	capture(&ui, "08-wiimote-find");
@@ -156,6 +181,10 @@ int main(int argc, char **argv) {
 	capture(&ui, "12-settings");
 	keys(&ui, "bb" "l" "a");
 	capture(&ui, "13-shot-toast");
+	ext.toast[0] = 0;
+	keys(&ui, "ll" "a");
+	capture(&ui, "14-slot-menu");
+	keys(&ui, "b");
 	ext.toast[0] = 0;
 	keys(&ui, "h");
 	for (i = 0; i < 40 && ov_step(&ui, &ext, 0, act, NULL); ++i)

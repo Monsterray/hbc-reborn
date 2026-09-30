@@ -28,7 +28,7 @@
 #include "bubbles.h"
 #include "dialogs.h"
 #include "browser.h"
-#include "m_main.h"
+#include "home.h"
 #include "loader.h"
 #include "devnet.h"
 #include "zmem.h"
@@ -68,6 +68,7 @@ u64 *conf_title_id = STUB_ADDR_TITLE;
 static bool should_exit;
 static s64 hbc_start;
 static bool shutdown;
+static bool restart;
 #ifdef GDBSTUB
 static bool gdb;
 #endif
@@ -271,7 +272,6 @@ static void refresh_theme(view *v, app_entry *app, u8 *data, u32 data_len) {
 	bubbles_theme_reinit();
 	view_theme_reinit();
 	browser_theme_reinit();
-	m_main_theme_reinit();
 	dialogs_theme_reinit();
 	view_fade(v, TEX_LAYER_CURSOR + 1, 0xff, 0xff, 0xff, 0xff, 31, -8);
 	browser_gen_view(BA_REFRESH, app);
@@ -279,7 +279,7 @@ static void refresh_theme(view *v, app_entry *app, u8 *data, u32 data_len) {
 }
 
 void main_real(void) {
-	view *v_last, *v_current, *v_m_main, *v_browser, *v_detail, *v_about;
+	view *v_last, *v_current, *v_browser, *v_detail, *v_about;
 
 	u8 fhw;
 
@@ -326,7 +326,7 @@ void main_real(void) {
 
 	app_sel = NULL;
 	v_browser = browser_init();
-	v_m_main = m_main_init ();
+	home_init ();
 	view_bubbles = true;
 
 #ifdef ENABLE_UPDATES
@@ -337,6 +337,7 @@ void main_real(void) {
 
 	should_exit = false;
 	shutdown = false;
+	restart = false;
 #ifdef GDBSTUB
 	gdb = false;
 #endif
@@ -428,66 +429,39 @@ void main_real(void) {
 			v_last = v_current;
 		}
 
-		if (bd & PADS_HOME) {
-			if (v_current == v_browser) {
-				m_main_update ();
-				v_current = v_m_main;
-				view_set_focus (v_m_main, 0);
+		// HOME opens the agent's overlay (home.c), which runs its own frame
+		// loop until the user closes it, then says what they picked.
+		if (v_current == v_browser && home_requested (bd)) {
+			switch (home_show ()) {
+			case HOME_ABOUT:
+				v_about = dialog_about (v_browser);
+				v_current = v_about;
+				view_enable_cursor (false);
+				dialog_fade (v_current, true);
+				exit_about = false;
+				break;
 
-				continue;
-			} else {
-				if (v_current == v_m_main)
-					v_current = v_browser;
+			case HOME_BOOTMII:
+				launch_bootmii = true;
+				should_exit = true;
+				break;
 
-				continue;
-			}
-		}
+			case HOME_SYSTEM_MENU:
+				should_exit = true;
+				break;
 
-		if (v_current == v_m_main) {
-			if (bd & PADS_B) {
-				v_current = v_browser;
+			case HOME_RESTART:
+				should_exit = true;
+				restart = true;
+				break;
 
-				continue;
-			}
+			case HOME_SHUTDOWN:
+				should_exit = true;
+				shutdown = true;
+				break;
 
-			if (bd & PADS_UP)
-				view_set_focus_prev (v_current);
-
-			if (bd & PADS_DOWN)
-				view_set_focus_next (v_current);
-
-			if (bd & PADS_A) {
-				switch (v_m_main->focus) {
-				case 0:
-					v_current = v_browser;
-					continue;
-
-				case 1:
-					v_about = dialog_about (v_m_main);
-					v_current = v_about;
-
-					view_enable_cursor (false);
-
-					dialog_fade (v_current, true);
-
-					exit_about = false;
-
-					continue;
-
-				case 2:
-					launch_bootmii = true;
-					should_exit = true;
-					break;
-
-				case 3:
-					should_exit = true;
-					continue;
-
-				case 4:
-					should_exit = true;
-					shutdown = true;
-					break;
-				}
+			case HOME_NONE:
+				break;
 			}
 
 			continue;
@@ -750,7 +724,7 @@ void main_real(void) {
 			if (exit_about) {
 				dialog_fade (v_current, false);
 
-				v_current = v_m_main;
+				v_current = v_browser;
 				view_free (v_about);
 				v_about = NULL;
 
@@ -797,7 +771,6 @@ void main_real(void) {
 	cursors_deinit ();
 
 	browser_deinit ();
-	m_main_deinit ();
 
 	dialogs_deinit ();
 	view_deinit ();
@@ -837,6 +810,11 @@ void main_real(void) {
 	if (shutdown) {
 		gprintf ("shutting down\n");
 		SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+	}
+
+	if (restart) {
+		gprintf ("restarting\n");
+		SYS_ResetSystem(SYS_RESTART, 0, 0);
 	}
 
 	gprintf ("returning to sysmenu\n");

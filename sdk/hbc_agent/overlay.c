@@ -365,6 +365,7 @@ typedef struct {
 	int w, h, toast_frames;
 	int test_chan;
 	int test_fmt;             // data format to restore after the test page
+	int exit_choice;          // an Exit choice the app handles, + 1; 0 for none
 	char sd[24];
 	volatile bool sd_done;
 } ov_run;
@@ -481,6 +482,27 @@ static void poll(ov_run *r) {
 	e->rumble_all = !ses.rumble_all_off;
 	snprintf(e->slot[0], sizeof(e->slot[0]), "%s", agent_slot_label(0));
 	snprintf(e->slot[1], sizeof(e->slot[1]), "%s", agent_slot_label(1));
+	for (chan = 0; chan < 2; ++chan) {
+		const char *title;
+		int count, i;
+		const hbc_agent_item *items = agent_slot_menu(chan, &title, &count);
+		ov_menu *m = &e->menu[chan];
+
+		snprintf(m->title, sizeof(m->title), "%s", title);
+		m->count = count;
+		for (i = 0; i < count; ++i) {
+			snprintf(m->item[i].label, sizeof(m->item[i].label), "%s",
+					 items[i].label ? items[i].label : "");
+			snprintf(m->item[i].value, sizeof(m->item[i].value), "%s",
+					 items[i].value ? items[i].value : "");
+			m->item[i].flags = (items[i].value ? OV_ITEM_INFO : 0) |
+					(items[i].flags & HBC_AGENT_ITEM_CLOSE ? OV_ITEM_CLOSE : 0) |
+					(items[i].flags & HBC_AGENT_ITEM_DISABLED ? OV_ITEM_DISABLED : 0);
+		}
+	}
+	e->show_net = e->show_log_pc = !cfg->no_network;
+	e->show_crash = !cfg->no_crash_handler;
+	e->exit_mask = 15 & ~cfg->hide_exit_choices;
 	e->log_text = agent_log_text();
 
 	if (r->test_chan >= 0) {
@@ -536,6 +558,21 @@ static void disconnect(int chan) {
 	WPAD_Disconnect(chan);
 }
 
+// Exit's choices, HBC_AGENT_EXIT_*.
+static void do_exit(int choice) {
+	const hbc_agent_config *cfg = agent_cfg();
+
+	if (cfg->on_exit)
+		cfg->on_exit(cfg->user);
+	VIDEO_SetBlack(true);
+	VIDEO_Flush();
+	VIDEO_WaitVSync();
+	if (choice == HBC_AGENT_EXIT_HBC)
+		exit(0);
+	SYS_ResetSystem(choice == HBC_AGENT_EXIT_SYSTEM_MENU ? SYS_RETURNTOMENU :
+					choice == HBC_AGENT_EXIT_RESTART ? SYS_RESTART : SYS_POWEROFF, 0, 0);
+}
+
 static void act(int action, int arg, void *user) {
 	const hbc_agent_config *cfg = agent_cfg();
 	char path[64];
@@ -546,16 +583,23 @@ static void act(int action, int arg, void *user) {
 	case OVA_SYSMENU:
 	case OVA_RESTART_WII:
 	case OVA_POWEROFF:
-		if (cfg->on_exit)
-			cfg->on_exit(cfg->user);
-		VIDEO_SetBlack(true);
-		VIDEO_Flush();
-		VIDEO_WaitVSync();
-		if (action == OVA_HBC)
-			exit(0);
-		SYS_ResetSystem(action == OVA_SYSMENU ? SYS_RETURNTOMENU :
-						action == OVA_RESTART_WII ? SYS_RESTART : SYS_POWEROFF, 0, 0);
+		// The app asked to handle Exit itself: close first (the loop feeds
+		// HOME), then call it from hbc_agent_home's caller's thread.
+		if (cfg->on_exit_choice) {
+			run->exit_choice = action - OVA_HBC + 1;
+			break;
+		}
+		do_exit(action - OVA_HBC);
 		break;
+	case OVA_SLOT_ITEM: {
+		const char *title;
+		int count;
+		const hbc_agent_item *items = agent_slot_menu(arg / 16, &title, &count);
+
+		if (arg % 16 < count && items[arg % 16].press)
+			items[arg % 16].press(items[arg % 16].user);
+		break;
+	}
 	case OVA_SHOT:
 		toast(screenshot(run->frozen, run->w, run->h, path, sizeof(path)) ? path :
 			  "Couldn't save the screenshot. Is the SD card in?");
@@ -660,6 +704,19 @@ static unsigned read_input(void) {
 		}
 	}
 
+	// GameCube controllers, if the app set them up.
+	if (agent_cfg()->gc_pads) {
+		PAD_ScanPads();
+		for (chan = 0; chan < 4; ++chan) {
+			u16 b = PAD_ButtonsDown(chan);
+
+			out |= (b & PAD_BUTTON_UP ? OV_UP : 0) | (b & PAD_BUTTON_DOWN ? OV_DOWN : 0) |
+				   (b & PAD_BUTTON_LEFT ? OV_LEFT : 0) | (b & PAD_BUTTON_RIGHT ? OV_RIGHT : 0) |
+				   (b & PAD_BUTTON_A ? OV_A : 0) | (b & PAD_BUTTON_B ? OV_B : 0) |
+				   (b & PAD_BUTTON_START ? OV_HOME : 0) | (b ? OV_ANY : 0);
+		}
+	}
+
 	WPAD_ScanPads();
 	for (chan = 0; chan < 4; ++chan) {
 		u32 b = WPAD_ButtonsDown(chan);
@@ -684,11 +741,17 @@ static unsigned read_input(void) {
 	return out;
 }
 
-s32 hbc_agent_home(const GXRModeObj *rmode) {
+static bool in_mem1(const void *p) {
+	return p && ((u32) p & 0x1fffffff) < 0x01800000;
+}
+
+// fb0 and fb1 are the app's (lent) or NULL (allocate our own).
+static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	static bool inside;
 	static ov_ui ui;
 	void *app_fb = VIDEO_GetCurrentFramebuffer();
-	u8 *fb[2] = { NULL, NULL };
+	u8 *fb[2] = { fb0, fb1 };
+	bool own = !fb0;
 	ov_run r;
 	u32 size;
 	lwp_t sd = LWP_THREAD_NULL;
@@ -705,20 +768,37 @@ s32 hbc_agent_home(const GXRModeObj *rmode) {
 	r.test_chan = -1;
 	size = r.w * r.h * 2;
 	agent_set_screen_size(r.w, r.h);
+	app_fb = agent_uncached(app_fb);
 
-	// The frozen frame, and two framebuffers to draw into without tearing.
+	// The frozen frame (any memory: only the CPU reads it), and framebuffers
+	// to draw into without tearing. The video interface reads only MEM1, so
+	// buffers the heap gives from MEM2 are no use; then draw over the app's
+	// own framebuffer, putting its picture back on the way out.
 	r.frozen = memalign(32, size);
-	fb[0] = memalign(32, size);
-	fb[1] = memalign(32, size);
-	if (!r.frozen || !fb[0]) {
-		free(r.frozen);
-		free(fb[0]);
-		free(fb[1]);
+	if (own) {
+		fb[0] = memalign(32, size);
+		fb[1] = memalign(32, size);
+		for (i = 1; i >= 0; --i)
+			if (fb[i] && !in_mem1(fb[i])) {
+				free(fb[i]);
+				fb[i] = NULL;
+			}
+		if (!fb[0]) {
+			fb[0] = fb[1];
+			fb[1] = NULL;
+		}
+	}
+	if (!r.frozen) {
+		if (own) {
+			free(fb[0]);
+			free(fb[1]);
+		}
 		return -ENOMEM;
 	}
+	if (!fb[0])
+		fb[0] = (u8 *) ((u32) app_fb & ~0x40000000);   // cached, like ours
 	inside = true;
 	run = &r;
-	app_fb = agent_uncached(app_fb);
 	memcpy(r.frozen, app_fb, size);
 	LWP_CreateThread(&sd, sd_thread, &r, NULL, 16 * 1024, 30);
 
@@ -728,6 +808,8 @@ s32 hbc_agent_home(const GXRModeObj *rmode) {
 		unsigned pressed;
 		u8 *back = fb[fb[1] ? cur : 0];
 
+		if (agent_cfg()->on_frame)
+			agent_cfg()->on_frame(agent_cfg()->user);
 		poll(&r);
 		pressed = read_input();
 		cal_sample();
@@ -743,6 +825,9 @@ s32 hbc_agent_home(const GXRModeObj *rmode) {
 					f = 0;
 				}
 			}
+		// An Exit choice the app handles: close everything first.
+		if (r.exit_choice && !ui.closing)
+			pressed = OV_HOME;
 		running = ov_step(&ui, &r.ext, pressed, act, NULL);
 
 		c.fb = back;
@@ -763,6 +848,12 @@ s32 hbc_agent_home(const GXRModeObj *rmode) {
 		cur ^= 1;
 	}
 
+	// Give the app its picture back: if we drew over its framebuffer,
+	// restore what was there first.
+	if (((u32) fb[0] & 0x1fffffff) == ((u32) app_fb & 0x1fffffff)) {
+		memcpy(app_fb, r.frozen, size);
+		DCFlushRange(fb[0], size);
+	}
 	VIDEO_SetNextFramebuffer(app_fb);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
@@ -770,8 +861,12 @@ s32 hbc_agent_home(const GXRModeObj *rmode) {
 		WPAD_SetDataFormat(r.test_chan, r.test_fmt);
 	if (sd != LWP_THREAD_NULL)
 		LWP_JoinThread(sd, NULL);
-	free(fb[1]);
-	free(fb[0]);
+	if (own) {
+		if (in_mem1(fb[1]))
+			free(fb[1]);
+		if (((u32) fb[0] & 0x1fffffff) != ((u32) app_fb & 0x1fffffff))
+			free(fb[0]);
+	}
 	free(r.frozen);
 	run = NULL;
 	inside = false;
@@ -780,5 +875,30 @@ s32 hbc_agent_home(const GXRModeObj *rmode) {
 		agent_cfg()->on_restart(agent_cfg()->user);
 	else if (ui.after == OVA_SLOT)
 		agent_slot_press(ui.after_arg);
+	else if (ui.after == OVA_SLOT_ITEM) {
+		const char *title;
+		int count;
+		const hbc_agent_item *items = agent_slot_menu(ui.after_arg / 16, &title, &count);
+
+		if (ui.after_arg % 16 < count && items[ui.after_arg % 16].press)
+			items[ui.after_arg % 16].press(items[ui.after_arg % 16].user);
+	}
+	if (r.exit_choice) {
+		const hbc_agent_config *cfg = agent_cfg();
+
+		if (!cfg->on_exit_choice(r.exit_choice - 1, cfg->user))
+			do_exit(r.exit_choice - 1);
+	}
 	return 0;
+}
+
+s32 hbc_agent_home(const GXRModeObj *rmode) {
+	return home(rmode, NULL, NULL);
+}
+
+s32 hbc_agent_home_fb(const GXRModeObj *rmode, void *fb0, void *fb1) {
+	if (!fb0 || !in_mem1(fb0) || (fb1 && !in_mem1(fb1)))
+		return -EINVAL;
+	return home(rmode, (void *) ((u32) fb0 & ~0x40000000),
+				fb1 ? (void *) ((u32) fb1 & ~0x40000000) : NULL);
 }

@@ -28,7 +28,6 @@
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../../../sdk/hbc_netlog.h"
-#define HBC_AGENT_LAYOUT_ONLY
 #include "../../../sdk/hbc_agent.h"
 
 static const char *device_names[DEVICE_COUNT] = { "sd", "usb", "carda", "cardb" };
@@ -225,6 +224,11 @@ static void set_log_target(u32 ip, u16 port) {
 
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	char json[1400];
+
+	// `hbc.py key` and `screen`: HOME-overlay presses and the TV picture,
+	// answered by the agent that draws HBC's HOME menu (home.c).
+	if (hbc_agent_handle(s, hdr))
+		return true;
 
 	if (!memcmp(hdr, "HBCS", 4)) {
 		s32 n = status_json(json, sizeof(json));

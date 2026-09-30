@@ -180,8 +180,13 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         hbc.send(wii, str(APP), [crash_mode])
         log.wait_for(f"agent_app: crashing ({crash_mode})", 30)
         hbc.hbc_wait(wii, 60)
+        # The first HBC back takes the report (an installed 1.5.0 or later
+        # does too), before back() may send this tree's DOL.
+        first = hbc.status(wii)
+        crash = first.get("crash") if first.get("proto", 1) >= 3 else None
         back(wii)
-        crash = hbc.status(wii).get("crash") if reports_crash else None
+        if crash is None and reports_crash:
+            crash = hbc.status(wii).get("crash")
         if reports_crash:
             check_crash(crash, crash_mode)
             hbc.request(wii, b"HBCC")

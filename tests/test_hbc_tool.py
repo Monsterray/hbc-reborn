@@ -288,6 +288,22 @@ class HBCToolTest(unittest.TestCase):
         self.assertLess(raw[3], 60)
         self.assertEqual(tuple(raw[7:10]), (255, 255, 255))
 
+    def test_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            hbc.main([])
+        self.assertIn("Common tasks", out.getvalue())
+        self.assertIn("hbc.py help COMMAND", out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            hbc.main(["help", "sync"])
+        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] LOCAL PATH"))
+        for name in ("status", "run", "get", "put", "key", "screen", "crash"):
+            self.assertIn(name, hbc.COMMAND_HELP)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exc:
+            hbc.main(["frob"])
+        self.assertEqual(exc.exception.code, 2)
+
     def test_agent_versions(self):
         self.assertTrue(hbc.is_agent("1.5.0 agent"))
         self.assertFalse(hbc.is_agent("1.5.0"))

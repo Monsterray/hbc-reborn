@@ -30,11 +30,17 @@ DIR_INCLUDES = $(DIR_BUILD) \
 		$(DEVKITPRO)/portlibs/ppc/include \
 		$(DEVKITPRO)/portlibs/ppc/include/freetype2
 
+# The HOME menu is the in-app agent's overlay (source/home.c). Its library
+# also holds copies of HBC's own devfile/devstream/tcp code; HBC's objects
+# come first on the link line, so those members are never pulled in.
+AGENT = ../../sdk/hbc_agent
+
 DIR_LIBS = \
+		$(AGENT) \
 		$(DEVKITPRO)/libogc/lib/wii \
 		$(DEVKITPRO)/portlibs/ppc/lib
 
-LIBS = mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
+LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
 
 MACHDEP = -g -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
 CFLAGS = $(MACHDEP) -Os -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
@@ -109,9 +115,15 @@ $(TARGET_STUB).elf: $(FILES_STUB_OBJ) Makefile
 	@echo $(@F)
 	@$(CC) $(FILES_STUB_OBJ) $(LDFLAGS_STUB) -o $@
 
-$(TARGET_APP)_nopax.elf: $(FILES_SRC_OBJ) newrvl.ld
+$(TARGET_APP)_nopax.elf: $(FILES_SRC_OBJ) newrvl.ld $(AGENT)/libhbcagent.a
 	@echo $(@F)
 	@$(CC) $(FILES_SRC_OBJ) $(LDFLAGS_APP) -o $@
+
+$(AGENT)/libhbcagent.a: FORCE
+	@$(MAKE) --no-print-directory -C $(AGENT) EXTRA_CFLAGS="$(EXTRA_CFLAGS)"
+
+.PHONY: FORCE
+FORCE:
 
 $(TARGET_APP).elf: $(TARGET_APP)_nopax.elf
 	@$(WIIPAX) -s devkitppc $< $@
@@ -154,13 +166,6 @@ $(DIR_BUILD)/%_mo.o: $(DIR_BUILD)/%.mo
 	@echo "extern const u8 $(<F:%.mo=%_mo)[];" > $(@:%.o=%.h)
 	@echo "extern const u8 $(<F:%.mo=%_mo)_end;" >> $(@:%.o=%.h)
 	@echo "extern const u32 $(<F:%.mo=%_mo)_size;" >> $(@:%.o=%.h)
-
-$(DIR_BUILD)/%.o: $(DIR_INT)/%
-	@echo $(@F)
-	@$(BIN2S) -a 32 $< | $(CC) -x assembler-with-cpp -c -o $@ -
-	@echo "extern const u8 $(subst .,_,$(<F))[];" > $(@:%.o=%.h)
-	@echo "extern const u8 $(subst .,_,$(<F))_end;" >> $(@:%.o=%.h)
-	@echo "extern const u32 $(subst .,_,$(<F))_size;" >> $(@:%.o=%.h)
 
 $(DIR_BUILD)/%.mo: $(DIR_BUILD)/%.enc.po
 	@echo $(@F)

@@ -15,6 +15,8 @@
  *
  * hbc_agent_home() (below) adds a HOME overlay in HBC's style: a status
  * strip with DEV, Exit, Shot and WiiMote menus over the game's last frame.
+ * HBC's own HOME menu is built on it: channel/channelapp/source/home.c is a
+ * commented example of every step.
  *
  * In the app:
  *
@@ -122,7 +124,34 @@ typedef struct {
 	   thread once the overlay has closed. */
 	bool (*on_save)(void *user);
 	void (*on_restart)(void *user);
+
+	/* For a host with its own network server, such as HBC: no listener
+	   thread and no network start-up. DEV then leaves out the hbc.py
+	   connection and Log to PC switches; hand HBCK and HBCP requests to
+	   hbc_agent_handle() to keep `hbc.py key` and `screen` working. */
+	bool no_network;
+	/* Also read GameCube controllers in the overlay (START is HOME). Set it
+	   only if the app called PAD_Init(). */
+	bool gc_pads;
+	/* Exit's choices, HBC_AGENT_EXIT_*. hide_exit_choices is a mask of
+	   (1 << choice) to leave out. on_exit_choice, if set, runs in the app's
+	   thread once the overlay has closed; returning true means the app took
+	   care of it (for example through its own shutdown), false lets the
+	   agent do it. */
+	unsigned hide_exit_choices;
+	bool (*on_exit_choice)(int choice, void *user);
+	/* Runs once per overlay frame in the app's thread, for work the app's
+	   own loop would otherwise do each frame (HBC keeps its network
+	   server accepting). Keep it short. */
+	void (*on_frame)(void *user);
 } hbc_agent_config;
+
+enum {
+	HBC_AGENT_EXIT_HBC,         /* exit(0): back through the reload stub */
+	HBC_AGENT_EXIT_SYSTEM_MENU,
+	HBC_AGENT_EXIT_RESTART,     /* restart the Wii */
+	HBC_AGENT_EXIT_POWER_OFF
+};
 
 /* Starts the agent. cfg may be NULL for the defaults. Returns 0, or a
    negative error when the thread cannot start. Call once. */
@@ -144,6 +173,14 @@ s32 hbc_agent_net_wait(u32 ms);
 struct _gx_rmodeobj;
 s32 hbc_agent_home(const struct _gx_rmodeobj *rmode);
 
+/* The same, drawing into framebuffers the app lends it instead of
+ * allocating two: each at least fbWidth * xfbHeight * 2 bytes, 32-byte
+ * aligned, in MEM1 (where the video interface reads from), and not the one
+ * on screen. fb1 may be NULL (one buffer: the menus may tear while they
+ * slide). hbc_agent_home() uses its own allocation, falling back to drawing
+ * over the app's own framebuffer when the heap only has MEM2 left. */
+s32 hbc_agent_home_fb(const struct _gx_rmodeobj *rmode, void *fb0, void *fb1);
+
 /* True once when `hbc.py key h` asked for the overlay: check it next to the
  * HOME button, `if ((down & WPAD_BUTTON_HOME) || hbc_agent_home_pending())`. */
 bool hbc_agent_home_pending(void);
@@ -153,6 +190,32 @@ bool hbc_agent_home_pending(void);
  * press runs in the app's thread after the overlay closes. A NULL label
  * restores the default. */
 void hbc_agent_set_slot(int slot, const char *label, void (*press)(void *user), void *user);
+
+/* A menu for a slot instead of a single action: pressing the button slides
+ * it in from the button's side, like DEV and WiiMote. Items show in order;
+ * info rows (value set) take a whole row, buttons pair up two to a row.
+ * The overlay reads items[] and each value every frame, so keep them alive
+ * and update the strings in place. Up to 12 items. */
+enum {
+	HBC_AGENT_ITEM_CLOSE = 1,     /* close the overlay first, then run press */
+	HBC_AGENT_ITEM_DISABLED = 2   /* greyed out */
+};
+
+typedef struct {
+	const char *label;
+	const char *value;            /* non-NULL: an info row showing this text */
+	void (*press)(void *user);    /* buttons; runs in the app's thread */
+	void *user;
+	unsigned flags;
+} hbc_agent_item;
+
+void hbc_agent_set_slot_menu(int slot, const char *label, const char *title,
+							 const hbc_agent_item *items, int count);
+
+/* For hosts with their own server (no_network): answers HBCK (`hbc.py key`)
+ * and HBCP (`hbc.py screen`) on an accepted connection whose 16-byte header
+ * is hdr, returning false for any other request. The caller closes s. */
+bool hbc_agent_handle(s32 s, const u8 *hdr);
 
 /* Calibration measured by WiiMote > More > Calibrate, for this session. */
 typedef struct {

@@ -217,6 +217,12 @@ agent found and checked wiiuse's per-remote handles (below).
 
 ### HOME overlay
 
+HBC 1.7.0's own HOME menu is the overlay (`channel/channelapp/source/home.c`,
+agent config `no_network`), so HBC also answers `HBCK` and `HBCP`: its
+`devnet.c` hands them to `hbc_agent_handle()`. While the overlay is open,
+HBC's main loop is paused, and the overlay's per-frame hook
+(`loader_signal_threads`) keeps the loader thread accepting connections.
+
 `hbc_agent_home()` (`sdk/hbc_agent/overlay.c`) copies the frame the VI is
 showing, then draws its own frames in two framebuffers: the copy, dimmed,
 with the strip and menus drawn by `ov_ui.c` and `ov_draw.c` in software

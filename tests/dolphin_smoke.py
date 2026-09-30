@@ -143,11 +143,42 @@ def wait_version(run, seconds):
     raise AssertionError(last)
 
 
+def bottom_luma(wii):
+    """Mean luma of the bottom tenth of the TV picture."""
+    width, height, data = hbc.screen(wii)
+    rows = data[width * 2 * (height * 9 // 10):]
+    return sum(rows[0::2]) / (len(rows) // 2)
+
+
+def check_home(wii):
+    """HBC's HOME menu is the agent's overlay, driven with `hbc.py key`. HBC
+    takes HOME only from its app list, so let its start-up finish first."""
+    time.sleep(3)
+    before = bottom_luma(wii)
+    hbc.send_keys(wii, "h")
+    time.sleep(1.5)
+    shown = bottom_luma(wii)
+    assert abs(shown - before) > 4, f"HOME showed no strip (luma {before:.0f} -> {shown:.0f})"
+    # Left of Exit is the HBC slot; its menu holds the old HOME menu.
+    hbc.send_keys(wii, "la")
+    time.sleep(2)
+    menu = hbc.screen(wii)[2]
+    # B closes the menu, HOME the overlay; HBC keeps answering throughout.
+    hbc.send_keys(wii, "bh")
+    time.sleep(2.5)
+    assert hbc.version(wii, 5)
+    after = bottom_luma(wii)
+    assert abs(after - before) < 4, f"the overlay did not close (luma {before:.0f} -> {after:.0f})"
+    assert menu != hbc.screen(wii)[2]
+    print(f"HBC HOME menu (agent overlay): PASS (strip luma {before:.0f} -> {shown:.0f} -> {after:.0f})")
+
+
 def check_devnet(run, log_port=0):
     wii = run.address
     status = hbc.status(wii)
     print("status:", status)
     assert status["version"] == expected, status
+    check_home(wii)
 
     # The SD card mounts shortly after the menu starts.
     deadline = time.monotonic() + 30

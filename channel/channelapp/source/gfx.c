@@ -184,6 +184,10 @@ void gfx_deinit (void) {
 		VIDEO_WaitVSync();
 }
 
+GXRModeObj *gfx_video_mode(void) {
+	return vmode;
+}
+
 void gfx_get_efb_size(u16 *x, u16*y) {
 	*x = vmode->fbWidth;
 	*y = vmode->efbHeight;

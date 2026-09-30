@@ -22,6 +22,8 @@ const char *agent_log_text(void);
 /* App slots beside Exit: 0 left, 1 right ("Shot" unless the app set it). */
 const char *agent_slot_label(int slot);
 void agent_slot_press(int slot);
+/* The slot's menu, if it has one (count 0 otherwise). */
+const hbc_agent_item *agent_slot_menu(int slot, const char **title, int *count);
 
 /* Keys the PC sent (HBCK): one of "udlrabh", or 0. */
 int agent_key_pop(void);

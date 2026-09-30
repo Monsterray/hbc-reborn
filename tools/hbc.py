@@ -1,71 +1,8 @@
 #!/usr/bin/env python3
-"""Talk to a running Homebrew Channel over the network.
+"""Develop for the Wii from a PC, through the Homebrew Channel's network tools.
 
-usage: hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout SECONDS] COMMAND ...
-
-  version                     print the running HBC version ("... agent" when
-                              an app with sdk/hbc_agent answers instead)
-  status                      print HBC's (or the running app's) JSON status
-  wait [SECONDS]              wait until HBC answers (default 90 s)
-  send FILE [ARG ...]         send a DOL, ELF or ZIP (Wiiload)
-  run FILE [ARG ...]          register for logs, send FILE, print its output
-  exit                        ask the running agent app to exit to HBC, and
-                              wait for HBC
-  key KEYS                    send controller presses to the running agent app:
-                              h (HOME: opens or closes its overlay), u d l r
-                              (D-pad), a, b; e.g. `key hrra`
-  screen FILE.png             save what the running agent app shows on the TV
-  crash [--elf FILE] [--clear]
-                              print the crash an agent app reported (with
-                              source lines from FILE via addr2line), or
-                              clear it
-  log                         register for logs and print app output until ^C
-  ls REMOTE                   list a directory, e.g. sd:/apps
-  get REMOTE [LOCAL]          download a file
-  get -r REMOTEDIR [LOCALDIR] download a directory tree
-  put LOCAL REMOTE            upload a file (parent directories are created)
-  put -r LOCALDIR REMOTEDIR   upload a directory tree
-  rm REMOTE                   delete a file or an empty directory
-  rm -r REMOTE                delete a directory tree
-  mkdir REMOTE                create a directory and its parents
-  sync [--delete] LOCALDIR REMOTEDIR
-                              make REMOTEDIR mirror LOCALDIR: upload files whose
-                              size or CRC-32 differ and create missing
-                              directories; --delete also removes remote files
-                              and directories that LOCALDIR lacks
-
-Options:
-  --wii ADDR          Wii IPv4 address
-  --json              JSON output: version {"version": ...}, status compact,
-                      ls [{"name", "type": "f"|"d", "size"}] (0 for directories)
-  --log-port PORT     TCP port for app logs (default 4405)
-  --timeout SECONDS   how long `run` waits for the app to close its log (300)
-  -r, --recursive     get, put, rm: work on a directory tree
-  --delete            sync: remove remote entries not present locally
-  --elf FILE          crash: the app's ELF, for function names and lines
-  --clear             crash: forget the reported crash
-
-Options may also follow the command, except for send and run, where
-everything after FILE goes to the app. `--` ends option parsing.
-
-A target ending in "/" names a directory and gets the source's base name
-appended: `put app.dol sd:/apps/myapp/` writes sd:/apps/myapp/app.dol, and
-`get` into an existing local directory does the same. Without -r a
-directory source is an error. Recursive commands list the whole remote tree
-before acting and stop if the Wii truncated any listing (256 KiB limit);
-plain `ls` prints a warning instead. `rm -r` and `sync --delete` refuse a
-device root (sd:/, usb:/, carda:/, cardb:/) and <device>:/apps itself.
-`run` and `log` clear the Wii's log target when they exit. Transfers of
-256 KiB or more show progress on stderr when it is a terminal.
-
-While an app built with sdk/hbc_agent runs, the file commands, status and
-log registration reach the app instead of HBC. `send` and `run` first ask
-it to exit to HBC and wait for HBC, so a rebuilt app replaces the running
-one. When an agent app that `run` started crashes, `run` waits for HBC and
-prints the crash report (exit status 3).
-
-The Wii address comes from --wii, $HBC_WII, $WII_BENCH_IP, or $WIILOAD
-("tcp:ADDR"). Only hosts on the Wii's own /16 network are answered.
+Run `python3 tools/hbc.py` for an overview and `hbc.py help COMMAND` for the
+details of one command. docs/devnet.md describes the protocol underneath.
 """
 
 import argparse
@@ -119,7 +56,8 @@ def wii_address(arg):
                   os.environ.get("WIILOAD", "").removeprefix("tcp:")):
         if value:
             return value
-    raise SystemExit("set the Wii address with --wii or $HBC_WII")
+    raise SystemExit("hbc.py: which Wii? Set HBC_WII to its address, or pass --wii ADDRESS.\n"
+                     "HBC shows the address on its HOME menu, under HBC > Network.")
 
 
 def connect(wii, timeout=TIMEOUT):
@@ -781,6 +719,181 @@ def run_outcome(wii, seconds=30):
     return None
 
 
+# ---- Help ---------------------------------------------------------------
+
+OVERVIEW = """\
+hbc.py - work on a Wii from your PC through the Homebrew Channel (HBC).
+
+Tell it where your Wii is, once per terminal (the address is on HBC's
+HOME menu, under HBC > Network):
+
+    export HBC_WII=192.168.1.50          (Windows: set HBC_WII=192.168.1.50)
+
+or add --wii 192.168.1.50 to each command.
+
+Common tasks
+    Run an app and watch its output     hbc.py run myapp.dol [ARGS...]
+    Copy an app to the SD card          hbc.py put -r dist/myapp sd:/apps/myapp
+    Update it, changed files only       hbc.py sync dist/myapp sd:/apps/myapp
+    Fetch a file the app wrote          hbc.py get sd:/apps/myapp/save.dat
+    See what the Wii is running         hbc.py status
+
+Commands
+  The Wii
+    status              what is running: version, IOS, memory, SD card, network
+    version             just the version (ends in " agent" for an app, below)
+    wait [SECONDS]      wait until HBC answers, after a reboot (default 90)
+  Running apps
+    run FILE [ARGS...]  send a .dol, .elf or .zip and print what it prints
+    send FILE [ARGS...] send it without waiting for output
+    log                 print what apps started on the Wii print, until Ctrl+C
+  Files (sd:/..., usb:/...)
+    ls PATH             list a folder
+    get PATH [LOCAL]    download (-r for a folder)
+    put LOCAL PATH      upload (-r for a folder; missing folders are made)
+    sync LOCAL PATH     upload only what changed (--delete removes extras)
+    rm PATH             delete a file or empty folder (-r for a whole folder)
+    mkdir PATH          make a folder
+  Apps built with the in-app agent (sdk/hbc_agent.h)
+    exit                ask the running app to go back to HBC
+    key KEYS            press buttons on it: h (HOME), u d l r, a, b
+    screen FILE.png     save a picture of what the TV shows
+    crash [--elf ELF]   show the last crash: where, and why
+
+Options (before or after the command)
+    --wii ADDR          the Wii's address, if $HBC_WII is not set
+    --json              machine-readable output (status, version, ls, crash)
+    --log-port PORT     the PC port apps send output to (default 4405)
+    --timeout SECONDS   how long run waits for the app to finish (default 300)
+
+More: hbc.py help COMMAND    (for example: hbc.py help sync)
+"""
+
+COMMAND_HELP = {
+    "status": """\
+hbc.py status
+
+Prints what the Wii is running as JSON: the HBC (or agent app) version, the
+IOS and its revision, whether AHBPROT is open, free memory, the mounted
+device and the devices seen, the Wii's IP, the log target, the last file
+transfer's timing, and any crash an agent app reported. With --json the
+output is one compact line, for scripts.""",
+    "version": """\
+hbc.py version
+
+Prints the running version, such as "1.7.0". An app built with the in-app
+agent answers "1.7.0 agent" instead, so scripts can tell the two apart.""",
+    "wait": """\
+hbc.py wait [SECONDS]
+
+Waits until HBC answers (default 90 s) and prints its version. Use it after
+rebooting the Wii or after an app returns to HBC.""",
+    "run": """\
+hbc.py run FILE [ARGS...]
+
+Sends FILE (a .dol, .elf or .zip) to the Wii, starts it, and prints what it
+prints until it exits (or --timeout seconds pass). Arguments after FILE go
+to the app as argv; put -- before any that start with "-".
+
+The app's output reaches the PC if it uses sdk/hbc_netlog.h. The PC must
+accept incoming connections on --log-port (4405 by default): allow it once
+in your firewall.
+
+If an agent app is already running, run asks it to exit to HBC first, so
+each run replaces the last. If an agent app crashes, run prints the crash
+report and exits with status 3.
+
+    hbc.py run build/myapp.dol level2
+    hbc.py run build/myapp.dol -- --verbose""",
+    "send": """\
+hbc.py send FILE [ARGS...]
+
+Sends FILE to the Wii and starts it, without waiting for output: Wiiload,
+like the devkitPro wiiload tool. A .zip is installed to the SD card after
+you confirm on the Wii.""",
+    "log": """\
+hbc.py log
+
+Tells HBC to send the output of the apps it starts to this PC, then prints
+it until you press Ctrl+C. Use it when you start apps from the Wii itself.
+HBC remembers the PC for later apps too, until log exits.""",
+    "ls": """\
+hbc.py ls PATH
+
+Lists a folder: "d NAME" for folders, "f SIZE NAME" for files. Paths look
+like sd:/apps or usb:/data (devices: sd, usb, carda, cardb).""",
+    "get": """\
+hbc.py get [-r] PATH [LOCAL]
+
+Downloads a file, or with -r a whole folder. LOCAL defaults to the file's
+name in the current folder; an existing local folder gets the file inside
+it. Every 64 KiB is checked with a CRC-32 and compressed when that helps.
+
+    hbc.py get sd:/apps/myapp/save.dat
+    hbc.py get -r sd:/apps/myapp backup/myapp""",
+    "put": """\
+hbc.py put [-r] LOCAL PATH
+
+Uploads a file, or with -r a whole folder. Missing folders on the Wii are
+made. A PATH ending in "/" means "into this folder": put app.dol
+sd:/apps/myapp/ writes sd:/apps/myapp/app.dol. A broken transfer leaves no
+half-written file. An app put under sd:/apps shows in HBC's list at once.""",
+    "sync": """\
+hbc.py sync [--delete] LOCAL PATH
+
+Makes the folder PATH on the Wii match LOCAL: uploads files whose size or
+CRC-32 differ and makes missing folders. With --delete it also removes what
+LOCAL does not have. It refuses to delete from a device root or from
+<device>:/apps itself.
+
+    hbc.py sync dist/myapp sd:/apps/myapp""",
+    "rm": """\
+hbc.py rm [-r] PATH
+
+Deletes a file or an empty folder, or with -r a whole folder. Device roots
+(sd:/) and <device>:/apps itself are refused.""",
+    "mkdir": """\
+hbc.py mkdir PATH
+
+Makes a folder, and any missing folders above it.""",
+    "exit": """\
+hbc.py exit
+
+Asks the running agent app to exit to HBC, and waits until HBC answers.""",
+    "key": """\
+hbc.py key KEYS
+
+Presses buttons on the running agent app, one after another: h (HOME, which
+opens and closes the agent's overlay), u d l r (the D-pad), a, and b. Use it
+to drive the overlay from a script, or from the PC. HBC's own HOME menu is
+the same overlay, so this works on HBC too.
+
+    hbc.py key h          open the HOME overlay
+    hbc.py key rra        move right twice and press A""",
+    "screen": """\
+hbc.py screen FILE.png
+
+Saves a picture of what the TV shows right now, from an agent app or from
+HBC, as a PNG.""",
+    "crash": """\
+hbc.py crash [--elf ELF] [--clear]
+
+After an agent app crashes, the Wii returns to HBC with a report of what
+happened: the exception, the registers, and the chain of calls. This prints
+it; with --elf the app's .elf adds function names and source lines (it
+needs devkitPPC's powerpc-eabi-addr2line). --clear forgets the report.""",
+}
+
+
+def print_help(topic=None):
+    if topic in COMMAND_HELP:
+        print(COMMAND_HELP[topic])
+    else:
+        if topic:
+            print(f"hbc.py: no command {topic!r}\n")
+        print(OVERVIEW, end="")
+
+
 # Options accepted after the command: flag -> (destination, takes a value)
 GLOBAL_FLAGS = {"--wii": ("wii", True), "--log-port": ("log_port", True),
                 "--timeout": ("timeout", True), "--json": ("json", False)}
@@ -826,9 +939,16 @@ def split_flags(cmd, args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0],
-                                     formatter_class=argparse.RawDescriptionHelpFormatter,
-                                     epilog=__doc__.split("\n\n", 1)[1])
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print_help(argv[1] if len(argv) > 1 and argv[0] == "help" else None)
+        return
+    if len(argv) > 1 and argv[1] in ("-h", "--help"):
+        print_help(argv[0])
+        return
+    parser = argparse.ArgumentParser(prog="hbc.py", add_help=False,
+                                     usage="hbc.py [OPTIONS] COMMAND ... (hbc.py help)")
+    parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(f"hbc.py: {msg} (see: hbc.py help)"))
     parser.add_argument("--wii", help="Wii IPv4 address")
     parser.add_argument("--json", action="store_true",
                         help="JSON output for version, status and ls")
@@ -848,6 +968,9 @@ def main(argv=None):
         raise SystemExit(f"hbc.py: {exc}")
     vars(opts).update(flags)
     recursive = flags.get("recursive", False)
+    if cmd not in COMMAND_HELP:
+        print_help(cmd)
+        raise SystemExit(2)
     wii = wii_address(opts.wii)
 
     def need(n, usage):
@@ -979,7 +1102,8 @@ def main(argv=None):
             need(2, "[--delete] LOCALDIR REMOTEDIR")
             sync(wii, args[0], args[1], delete=flags.get("delete", False))
         else:
-            parser.error(f"unknown command {cmd!r}")
+            print_help(cmd)
+            raise SystemExit(2)
     except (OSError, HBCError) as exc:
         raise SystemExit(f"hbc.py: {exc}")
     except KeyboardInterrupt:

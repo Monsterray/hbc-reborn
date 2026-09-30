@@ -155,6 +155,28 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.7.0: HBC's HOME menu is the agent's overlay
+
+- **HOME:** `home.c` replaces `m_main.c`. The HBC slot's menu carries the old menu's
+  buttons and information; Exit's choices go through HBC's own shutdown path
+  (`on_exit_choice`), and Save is `settings_save`. Checked in Dolphin with
+  `hbc.py key`/`screen` (`check_home` in `tests/dolphin_smoke.py`).
+- **HBC's loader thread accepts only when the main loop signals it** each frame, so a
+  modal loop that stops the main loop also stops `hbc.py`. The overlay's `on_frame` hook
+  calls `loader_signal_threads()`. Anything else that ever runs its own loop inside HBC
+  needs the same.
+- **The video interface scans out MEM1 only** (libogc allocates framebuffers from
+  arena 1). HBC's heap is in MEM2 once its menu is up, so HBC lends the overlay two
+  framebuffers in low MEM1 at `0x80a00000`, which only an app launch writes (after the
+  main loop ends). `hbc_agent_home()` in other apps drops heap framebuffers that land
+  in MEM2 and draws over the app's own framebuffer instead.
+- **A dead Makefile rule built `/home` into `home.o`.** `$(DIR_BUILD)/%.o: $(DIR_INT)/%`
+  used a variable that was never set, so any `source/X.c` whose name matched a root
+  directory (`/home` under MSYS2) was embedded as binary data instead of compiled.
+  Removed; it was unused since the first commit.
+- **Not translated yet:** the overlay's font covers ASCII only, so HBC's HOME menu is in
+  English for now. Trigger: glyphs for the languages in `i18n/`.
+
 ### 1.6.2: small downloads crashed a fresh HBC
 
 - **Symptom (reported from WiiStation's bench jobs):** after a reset, `hbc.py get` of some
