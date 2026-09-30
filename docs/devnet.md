@@ -203,12 +203,38 @@ An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent.h) answers on port
 | `HBCF` | every file op above, on the devices the app mounted |
 | `HBCN` | sets the log target for the apps after this one |
 | `HBCX` | replies, then the app exits to HBC |
+| `HBCK` | header bytes 4-5: a count (at most 64), then that many of `udlrabh`; queued as controller presses (`h` is HOME, which apps check with `hbc_agent_home_pending()`) |
+| `HBCP` | reply header, then u32 width, u32 height, and the YUYV framebuffer the VI is showing |
 | `HAXX` | closes the connection without reading, then exits to HBC: the upload fails once, and the retry reaches HBC |
 
 The agent is HBC's own `devfile.c`, `devstream.c` and `tcp.c` built into a
 library, with two transfer slots instead of four and a 16 KiB worker stack.
 Its thread runs at priority 40 (libogc's main thread runs at 64) and at 48
 during a transfer, and it frees its transfer buffers after each request.
+
+`HBCS` from an app that links the overlay adds `wpad_handles`: whether the
+agent found and checked wiiuse's per-remote handles (below).
+
+### HOME overlay
+
+`hbc_agent_home()` (`sdk/hbc_agent/overlay.c`) copies the frame the VI is
+showing, then draws its own frames in two framebuffers: the copy, dimmed,
+with the strip and menus drawn by `ov_ui.c` and `ov_draw.c` in software
+(YUYV, HBC's Droid fonts pre-rendered by `mkfont.py`). It never touches the
+app's GX state, and hands the VI the app's framebuffer back when it closes.
+Those two files are portable C, so `tests/overlay_preview` renders every
+page on the PC and `tests/test_overlay_ui.py` walks them in CI.
+
+LEDs, IR sensitivity and the sensor bar position need wiiuse's per-remote
+handle, which libogc keeps in a static array. The agent finds it from
+`WPAD_Rumble`'s code, which loads the array with one small-data load before
+indexing it (`lwz rX,d(r13); slwi r3,r3,2; lwzx r3,rX,r3`), and uses it only
+if every handle names its own channel; otherwise those settings are greyed
+out. libogc re-applies the Wii's own sensor bar and IR settings whenever a
+remote connects, so a small thread re-applies the session's, and holds
+rumble off for remotes whose rumble is switched off, while any such setting
+is in force. Find streams a chime to the remote's speaker (4-bit ADPCM at
+6 kHz, libogc's speaker set-up) with its amplitude ramping up over 3 s.
 
 ### Crash reports
 

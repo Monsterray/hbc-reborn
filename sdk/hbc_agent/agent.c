@@ -6,7 +6,9 @@
 // channel/channelapp/source/devfile.c), HBCN and HBCX (exit to HBC). A
 // Wiiload upload (HAXX) cannot run here; the agent answers it by exiting to
 // HBC, so the client's next attempt reaches HBC itself. `hbc.py run` does
-// that sequence for you.
+// that sequence for you. It also keeps the app's recent output for the
+// overlay's Log page (overlay.c, which is linked only by apps that call
+// hbc_agent_home()).
 
 #include <errno.h>
 #include <malloc.h>
@@ -27,6 +29,7 @@
 #include "devfile.h"
 #include "devstream.h"
 #include "tcp.h"
+#include "agent_int.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../hbc_netlog.h"
@@ -57,12 +60,188 @@ static u64 start_ticks;
 static volatile bool exit_requested;
 static PPCExcptPanicFn prev_panic;
 
+volatile int hbc_agent_log_muted;
+// In overlay.c, when the app links it: whether the remote handles were found.
+int agent_wpad_handles(void) __attribute__((weak));
+volatile bool agent_crash_stay;
+volatile bool agent_listen_enabled = true;
+
+// ---- The app's recent output, for the overlay's Log page ----------------
+
+#define LOG_SIZE 8192
+
+static char log_ring[LOG_SIZE], log_line[LOG_SIZE + 1];
+static u32 log_head, log_len;
+static const devoptab_t *log_prev_out, *log_prev_err;
+
+static ssize_t log_write(const devoptab_t *prev, struct _reent *r, void *fd, const char *ptr,
+						 size_t len) {
+	u32 level, i;
+
+	_CPU_ISR_Disable(level);
+	for (i = 0; i < len; ++i) {
+		log_ring[log_head] = ptr[i];
+		log_head = (log_head + 1) % LOG_SIZE;
+	}
+	log_len = log_len + len > LOG_SIZE ? LOG_SIZE : log_len + len;
+	_CPU_ISR_Restore(level);
+	if (prev && prev->write_r)
+		prev->write_r(r, fd, ptr, len);
+	return len;
+}
+
+static ssize_t log_write_out(struct _reent *r, void *fd, const char *ptr, size_t len) {
+	return log_write(log_prev_out, r, fd, ptr, len);
+}
+
+static ssize_t log_write_err(struct _reent *r, void *fd, const char *ptr, size_t len) {
+	return log_write(log_prev_err, r, fd, ptr, len);
+}
+
+static devoptab_t log_dotab_out = { .name = "hbcagent", .write_r = log_write_out };
+static devoptab_t log_dotab_err = { .name = "hbcagent", .write_r = log_write_err };
+
+const char *agent_log_text(void) {
+	u32 level, start, i;
+
+	_CPU_ISR_Disable(level);
+	start = (log_head + LOG_SIZE - log_len) % LOG_SIZE;
+	for (i = 0; i < log_len; ++i)
+		log_line[i] = log_ring[(start + i) % LOG_SIZE];
+	log_line[log_len] = 0;
+	_CPU_ISR_Restore(level);
+	return log_line;
+}
+
+// ---- App slots beside Exit ------------------------------------------------
+
+static struct {
+	char label[16];
+	void (*press)(void *user);
+	void *user;
+} slots[2];
+
+void hbc_agent_set_slot(int slot, const char *label, void (*press)(void *user), void *user) {
+	if (slot < 0 || slot > 1)
+		return;
+	snprintf(slots[slot].label, sizeof(slots[slot].label), "%s", label ? label : "");
+	slots[slot].press = label ? press : NULL;
+	slots[slot].user = user;
+}
+
+const char *agent_slot_label(int slot) {
+	if (slot == 1 && !slots[1].press)
+		return "Shot";
+	return slots[slot].label;
+}
+
+void agent_slot_press(int slot) {
+	if (slots[slot].press)
+		slots[slot].press(slots[slot].user);
+}
+
+// ---- Keys from the PC (HBCK), for driving the overlay without hands ------
+
+#define KEYS 64
+
+static char keys[KEYS];
+static u32 key_head, key_count;
+
+int agent_key_pop(void) {
+	u32 level;
+	int k = 0;
+
+	_CPU_ISR_Disable(level);
+	if (key_count) {
+		k = keys[key_head];
+		key_head = (key_head + 1) % KEYS;
+		key_count--;
+	}
+	_CPU_ISR_Restore(level);
+	return k;
+}
+
+bool hbc_agent_home_pending(void) {
+	u32 level;
+	bool home = false;
+
+	_CPU_ISR_Disable(level);
+	if (key_count && keys[key_head] == 'h') {
+		key_head = (key_head + 1) % KEYS;
+		key_count--;
+		home = true;
+	}
+	_CPU_ISR_Restore(level);
+	return home;
+}
+
+static void push_keys(const u8 *k, u32 n) {
+	u32 level, i;
+
+	_CPU_ISR_Disable(level);
+	for (i = 0; i < n && key_count < KEYS; ++i)
+		if (strchr("udlrabh", k[i])) {
+			keys[(key_head + key_count) % KEYS] = k[i];
+			key_count++;
+		}
+	_CPU_ISR_Restore(level);
+}
+
+// ---- The picture on the TV (HBCP) ----------------------------------------
+
+static u16 screen_w, screen_h;
+
+void agent_set_screen_size(u16 w, u16 h) {
+	screen_w = w;
+	screen_h = h;
+}
+
+// Reply: u32 width, u32 height, then the YUYV framebuffer VI is showing.
+static void send_screen(s32 s) {
+	const u8 *fb = VIDEO_GetCurrentFramebuffer();
+	u32 size;
+	u8 dims[8];
+
+	if (!screen_w) {
+		GXRModeObj *m = VIDEO_GetPreferredMode(NULL);
+
+		screen_w = m->fbWidth;
+		screen_h = m->xfbHeight;
+	}
+	size = screen_w * screen_h * 2;
+
+	if (!fb) {
+		devfile_reply(s, -ENODEV, NULL, 0);
+		return;
+	}
+	fb = agent_uncached((void *) fb);
+	dims[0] = dims[1] = dims[4] = dims[5] = 0;
+	dims[2] = screen_w >> 8;
+	dims[3] = screen_w;
+	dims[6] = screen_h >> 8;
+	dims[7] = screen_h;
+	{
+		u8 hdr[8] = { 0, 0, 0, 0, (8 + size) >> 24, (8 + size) >> 16, (8 + size) >> 8, 8 + size };
+
+		if (devfile_send_all(s, hdr, 8) && devfile_send_all(s, dims, 8))
+			devfile_send_all(s, fb, size);
+	}
+}
+
+const hbc_agent_config *agent_cfg(void) {
+	return &cfg;
+}
+
+u32 agent_uptime_ms(void) {
+	return ticks_to_millisecs(diff_ticks(start_ticks, gettime()));
+}
+
 static u16 get_u16(const u8 *p) {
 	return (p[0] << 8) | p[1];
 }
 
 static u32 uptime_ms(void) {
-	return ticks_to_millisecs(diff_ticks(start_ticks, gettime()));
+	return agent_uptime_ms();
 }
 
 // Copy src into dst (size bytes) with anything JSON would need to quote
@@ -146,6 +325,9 @@ static s32 status_json(char *buf, size_t size) {
 				(u32) ticks_to_millisecs(last->st.net),
 				(u32) ticks_to_millisecs(last->st.disk),
 				(u32) ticks_to_millisecs(last->st.cpu));
+	if (agent_wpad_handles)
+		n += snprintf(buf + n, size - n, ",\"wpad_handles\":%s",
+				agent_wpad_handles() ? "true" : "false");
 	n += snprintf(buf + n, size - n, ",\"tcp_last_failure\":\"%s\"}", tcp_last_failure());
 	return n;
 }
@@ -203,6 +385,18 @@ static void handle(s32 s, const u8 *hdr, u32 client_ip) {
 	} else if (!memcmp(hdr, "HBCN", 4)) {
 		set_log_target(client_ip, get_u16(hdr + 4));
 		devfile_reply(s, 0, NULL, 0);
+	} else if (!memcmp(hdr, "HBCK", 4)) {
+		u8 k[KEYS];
+		u32 n = get_u16(hdr + 4);
+
+		if (n > KEYS || (n && !tcp_read(s, k, n, NULL, NULL))) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+		} else {
+			push_keys(k, n);
+			devfile_reply(s, 0, NULL, 0);
+		}
+	} else if (!memcmp(hdr, "HBCP", 4)) {
+		send_screen(s);
 	} else if (!memcmp(hdr, "HBCX", 4)) {
 		devfile_reply(s, 0, NULL, 0);
 		tcp_close(s);
@@ -242,6 +436,15 @@ static void *agent_thread(void *arg) {
 	(void) arg;
 
 	while (true) {
+		// The overlay's "hbc.py connection" switch.
+		if (!agent_listen_enabled) {
+			if (ls >= 0) {
+				net_close(ls);
+				ls = -1;
+			}
+			usleep(250 * 1000);
+			continue;
+		}
 		if (ls < 0) {
 			if (net_start() < 0) {
 				usleep(AGENT_RETRY_MS * 1000);
@@ -364,6 +567,12 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 	// see a start-up in progress rather than none.
 	if (net_get_status() < 0 && net_get_status() != -EBUSY)
 		net_init_async(NULL, NULL);
+
+	// Keep the app's output for the Log page, still passing it on.
+	log_prev_out = devoptab_list[STD_OUT];
+	log_prev_err = devoptab_list[STD_ERR];
+	devoptab_list[STD_OUT] = &log_dotab_out;
+	devoptab_list[STD_ERR] = &log_dotab_err;
 
 	stack = memalign(32, AGENT_STACK);
 	if (!stack)

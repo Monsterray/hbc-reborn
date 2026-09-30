@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.5.0**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.6.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -73,6 +73,8 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
+| `key KEYS` | Send controller presses to the running agent app: `h` (HOME, opens or closes its overlay), `u` `d` `l` `r` (D-pad), `a`, `b`. For scripted tests and for driving the overlay from the PC. |
+| `screen FILE.png` | Save what the running agent app shows on the TV, overlay included. |
 | `crash [--elf FILE] [--clear]` | Print the crash an agent app reported: exception, registers, backtrace, and with `--elf` function names and source lines (needs devkitPPC's `addr2line`). `--clear` forgets it. |
 
 `--json` makes `version`, `status`, `ls`, and `crash` print JSON. Options can follow
@@ -184,6 +186,36 @@ python3 tools/hbc.py get sd:/apps/myapp/save.dat   # while the app runs
 python3 tools/hbc.py crash --elf myapp.elf         # after a crash: where it happened
 ```
 
+#### The HOME overlay
+
+Call `hbc_agent_home()` when HOME is pressed, and the agent shows its
+overlay over your game's last frame, in the Homebrew Channel's style:
+
+```c
+WPAD_ScanPads();
+if ((WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME) || hbc_agent_home_pending())
+    hbc_agent_home(rmode);            // returns when the user closes it
+```
+
+A status strip shows the app, the clock, and the four remotes' player LEDs
+and batteries, over five buttons:
+
+| Button | What it does |
+| --- | --- |
+| DEV | Actions: Restart app, Pause, Save, Log (the app's recent output), Log to PC, the crash screen's time, and the `hbc.py` connection. Info: time, play time, network, SD space, the app, and MEM1 and MEM2 free, used and total in KB. |
+| (app slot) | Whatever the app puts there with `hbc_agent_set_slot(0, ...)`; blank otherwise. |
+| Exit | The Homebrew Channel, System Menu, Restart Wii, Power off. |
+| Shot | Saves the game's frame to `sd:/screenshots/<app>-NNN.bmp`. An app can replace it with `hbc_agent_set_slot(1, ...)`. |
+| WiiMote | A card per remote (Find: rumble, blinking LEDs and a chime that gets louder; More: battery, extension, MotionPlus, rumble on or off, Test, Calibrate, Disconnect), and Settings: connect a remote, disconnect all, sensor bar, IR sensitivity, auto power-off, rumble for all. |
+
+The D-pad moves, A chooses, B goes back one level, and HOME closes
+everything. Controller settings last until the app exits; nothing is
+written to the Wii's own settings, except that Connect remote may save the
+new remote in the Wii's pairing list as the Sync button would. Link the
+overlay with `-lwiiuse -lbte` (which WPAD apps already use); while open it
+borrows three framebuffers, about 1.8 MB at 640x480. Set `on_save` and
+`on_restart` in `hbc_agent_config` to enable Save and Restart app.
+
 The agent's thread runs below your main thread, so a loop that waits for
 each frame never loses time to it; an app that never blocks starves it and
 the tools time out. It holds no transfer buffers while idle and frees them
@@ -288,9 +320,10 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Boot in Dolphin | `python3 tests/dolphin_smoke.py` | Dolphin |
 | Developer network in Dolphin | `make -C tests/netlog_app` then `python3 tests/dolphin_smoke.py --devnet` | Dolphin |
 | Installed WAD in Dolphin, including app exit back to it | `python3 tests/dolphin_smoke.py --devnet channel/title/channel_retail.wad 120` | Dolphin, WAD |
-| In-app agent in Dolphin: status, files, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
+| Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
+| In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.5.0 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.6.0 WII-IP` | installed channel running |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |

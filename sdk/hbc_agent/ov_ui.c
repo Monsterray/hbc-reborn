@@ -1,0 +1,790 @@
+// The overlay's layout, animation and input; see ov_ui.h.
+//
+// A status strip sits at the bottom: the app and clock, the four remotes'
+// player LEDs and batteries, and five buttons (DEV, an app slot, Exit, an
+// app slot that defaults to Shot, WiiMote). Exit grows the strip upward;
+// DEV and WiiMote slide their menus in from the screen edge above their
+// buttons. B goes back one level; HOME closes everything, each level
+// animating away in turn.
+
+#include <stdio.h>
+#include <string.h>
+
+#include "ov_ui.h"
+
+enum { MENU_NONE, MENU_DEV, MENU_EXIT, MENU_WM };
+enum { PAGE_MAIN, PAGE_LOG };
+enum { WM_GRID, WM_MORE, WM_TEST, WM_CAL, WM_SETTINGS };
+
+enum {
+	K_PANEL, K_BUTTON, K_TEXT, K_REMOTE, K_CARD, K_BAR, K_RULE, K_CLIP, K_NOCLIP
+};
+
+enum {
+	F_FOCUS = 1, F_ON = 2, F_DIS = 4, F_LABEL = 8, F_RIGHT = 16, F_CENTER = 32,
+	F_BLANK = 64, F_SEL = 128, F_SMALL = 256
+};
+
+// Focus ids by layer: bar 100s, exit row 110s, DEV 120s, WiiMote 140s+.
+enum {
+	ID_BAR = 100,
+	ID_EX_HBC = 110, ID_EX_SYS, ID_EX_RESTART, ID_EX_POWER,
+	ID_TAB_ACT = 120, ID_TAB_INFO, ID_RESTART_APP, ID_PAUSE, ID_SAVE, ID_LOG,
+	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY,
+	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
+	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC,
+	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
+	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL
+};
+
+#define M 20           // side margin
+#define MB 22          // bottom margin
+#define PAD 10
+#define BH 30          // button height
+#define GAP 6
+#define STATUS_H 18
+#define SH (PAD + STATUS_H + 6 + BH + PAD)
+#define EH (BH + 10)
+#define DW 400
+#define IW (DW - 2 * PAD)
+#define CW ((IW - 10) / 2)
+#define LOG_LINES 14
+#define LOG_COLS 47
+#define SPEED 26       // animation step per frame, of 256 (about 0.17 s)
+
+static int ease(int t) {
+	return t * t * (3 * 256 - 2 * t) / (256 * 256);
+}
+
+static int approach(int t, bool up) {
+	t += up ? SPEED : -SPEED;
+	return t < 0 ? 0 : t > 256 ? 256 : t;
+}
+
+static ov_item *add(ov_ui *ui, int kind, int id, int x, int y, int w, int h, int flags,
+					const char *text) {
+	ov_item *it;
+
+	if (ui->n >= OV_MAX_ITEMS)
+		return &ui->items[OV_MAX_ITEMS - 1];
+	it = &ui->items[ui->n++];
+	memset(it, 0, sizeof(*it));
+	it->kind = kind;
+	it->id = id;
+	it->x = x;
+	it->y = y;
+	it->w = w;
+	it->h = h;
+	it->flags = flags;
+	it->font = &ov_font_regular;
+	if (text)
+		snprintf(it->text, sizeof(it->text), "%s", text);
+	return it;
+}
+
+static ov_item *button(ov_ui *ui, int id, int x, int y, int w, const char *text, int flags) {
+	return add(ui, K_BUTTON, id, x, y, w, BH, F_FOCUS | flags, text);
+}
+
+static void label(ov_ui *ui, int x, int y, int w, const char *text) {
+	add(ui, K_TEXT, 0, x, y, w, BH, F_LABEL, text);
+}
+
+static void value(ov_ui *ui, int x, int y, int w, const char *text, int flags) {
+	add(ui, K_TEXT, 0, x, y, w, BH, flags, text);
+}
+
+static void title(ov_ui *ui, int x, int y, int w, const char *text) {
+	ov_item *it = add(ui, K_TEXT, 0, x, y, w, 22, 0, text);
+
+	it->font = &ov_font_title;
+}
+
+// "label  [On]": one toggle, highlighted when on.
+static void toggle(ov_ui *ui, int id, int y, const char *text, bool on, int flags) {
+	label(ui, 0, y, CW, text);
+	button(ui, id, CW + 10, y, CW, on ? "On" : "Off", (on ? F_ON : 0) | flags);
+}
+
+// "label  [a][b]": a choice between two, the chosen one highlighted.
+static void choice(ov_ui *ui, int id_a, int id_b, int y, const char *text, const char *a,
+				   const char *b, bool first, int flags) {
+	int bw = (CW - GAP) / 2;
+
+	label(ui, 0, y, CW, text);
+	button(ui, id_a, CW + 10, y, bw, a, (first ? F_ON : 0) | flags);
+	button(ui, id_b, CW + 10 + bw + GAP, y, bw, b, (first ? 0 : F_ON) | flags);
+}
+
+// "label  [-] value [+]"
+static void stepper(ov_ui *ui, int id_minus, int id_plus, int y, const char *text,
+					const char *val, int flags) {
+	label(ui, 0, y, CW, text);
+	button(ui, id_minus, CW + 10, y, 34, "-", flags);
+	value(ui, CW + 10 + 34, y, CW - 68, val, F_CENTER | (flags & F_DIS));
+	button(ui, id_plus, CW + 10 + CW - 34, y, 34, "+", flags);
+}
+
+static void remote_tag(ov_ui *ui, int x, int y, int r, bool dim) {
+	ov_item *it = add(ui, K_REMOTE, 0, x, y, 64, 12, dim ? F_DIS : 0, NULL);
+
+	it->arg = r;
+}
+
+// Starts a drawer: returns the index of its panel item. Children are laid
+// out from y = 0 with x relative to the drawer's inside.
+static int drawer_begin(ov_ui *ui) {
+	return (int) (add(ui, K_PANEL, 0, 0, 0, DW, 0, 0, NULL) - ui->items);
+}
+
+// Places the drawer's panel and children: x of its left edge, bottom edge.
+static void drawer_end(ov_ui *ui, int first, int h, int x, int bottom) {
+	int top = bottom - h - 2 * PAD, i;
+
+	ui->items[first].x = x;
+	ui->items[first].y = top;
+	ui->items[first].h = h + 2 * PAD;
+	for (i = first + 1; i < ui->n; ++i) {
+		ui->items[i].x += x + PAD;
+		ui->items[i].y += top + PAD;
+	}
+}
+
+static void tabs(ov_ui *ui, int y) {
+	button(ui, ID_TAB_ACT, 0, y, CW, "Actions", ui->dev_tab == 0 ? F_SEL : 0);
+	button(ui, ID_TAB_INFO, CW + 10, y, CW, "Info", ui->dev_tab == 1 ? F_SEL : 0);
+}
+
+static int build_dev(ov_ui *ui, const ov_ext *e) {
+	int y = 0;
+
+	if (ui->dev_page == PAGE_LOG) {
+		const char *p = e->log_text ? e->log_text : "";
+		struct { const char *s; int n; } seg[LOG_LINES];
+		int count = 0, i;
+
+		title(ui, 0, y, IW, "App output");
+		y += 28;
+		// Word-wrap the whole text, keeping the newest LOG_LINES pieces.
+		while (*p) {
+			const char *nl = strchr(p, '\n');
+			int len = nl ? (int) (nl - p) : (int) strlen(p);
+
+			do {
+				int n = len, w;
+				char tmp[LOG_COLS + 1];
+
+				// The longest prefix that fits, broken at a space if possible.
+				for (;;) {
+					w = n < LOG_COLS ? n : LOG_COLS;
+					memcpy(tmp, p, w);
+					tmp[w] = 0;
+					if (ov_text_width(&ov_font_regular, tmp) <= IW || w <= 1)
+						break;
+					n = w - 1;
+				}
+				if (w < len) {
+					int sp = w;
+
+					while (sp > w / 2 && p[sp] != ' ')
+						--sp;
+					if (p[sp] == ' ')
+						w = sp + 1;
+				}
+				seg[count % LOG_LINES].s = p;
+				seg[count % LOG_LINES].n = w;
+				count++;
+				p += w;
+				len -= w;
+			} while (len > 0);
+			p = nl ? nl + 1 : p;
+		}
+		for (i = count > LOG_LINES ? count - LOG_LINES : 0; i < count; ++i) {
+			char line[48];
+			int n = seg[i % LOG_LINES].n < 47 ? seg[i % LOG_LINES].n : 47;
+
+			memcpy(line, seg[i % LOG_LINES].s, n);
+			line[n] = 0;
+			add(ui, K_TEXT, 0, 0, y, IW, 16, 0, line);
+			y += 16;
+		}
+		if (!count) {
+			value(ui, 0, y, IW, "No output yet.", F_LABEL);
+			y += BH;
+		}
+		return y;
+	}
+
+	tabs(ui, y);
+	y += BH + 12;
+
+	if (ui->dev_tab == 0) {
+		button(ui, ID_RESTART_APP, 0, y, CW, "Restart app", e->has_restart ? 0 : F_DIS);
+		button(ui, ID_PAUSE, CW + 10, y, CW, "Pause", 0);
+		y += BH + GAP;
+		button(ui, ID_SAVE, 0, y, CW, "Save", e->has_save ? 0 : F_DIS);
+		button(ui, ID_LOG, CW + 10, y, CW, "Log", 0);
+		y += BH + 12;
+		toggle(ui, ID_LOGPC, y, "Log to PC", e->log_pc, 0);
+		y += BH + GAP;
+		choice(ui, ID_CRASH_3S, ID_CRASH_STAY, y, "Crash screen", "3 s", "Stay", !e->crash_stay, 0);
+		y += BH + GAP;
+		add(ui, K_TEXT, 0, 0, y - 2, CW, 18, F_LABEL, "hbc.py connection");
+		add(ui, K_TEXT, 0, 0, y + 15, CW, 16, F_LABEL | F_SMALL, "developer tools, port 4299");
+		button(ui, ID_HBCPY, CW + 10, y, CW, e->hbcpy ? "On" : "Off", e->hbcpy ? F_ON : 0);
+		y += BH + 4;
+		return y;
+	}
+
+	{
+		static const char *keys[] = { "Time", "Playing for", "Network", "SD card", "App" };
+		const char *vals[] = { e->date, e->playing, e->network, e->sd, e->app };
+		char f[16], u[16], t[16];
+		int i, col = (IW - 80) / 3;
+
+		for (i = 0; i < 5; ++i) {
+			add(ui, K_TEXT, 0, 0, y, 110, 20, F_LABEL, keys[i]);
+			add(ui, K_TEXT, 0, 110, y, IW - 110, 20, 0, vals[i]);
+			y += 22;
+		}
+		y += 4;
+		add(ui, K_RULE, 0, 0, y, IW, 1, 0, NULL);
+		y += 8;
+		add(ui, K_TEXT, 0, 0, y, 80, 20, F_LABEL, "KB");
+		add(ui, K_TEXT, 0, 80, y, col, 20, F_LABEL | F_RIGHT, "Free");
+		add(ui, K_TEXT, 0, 80 + col, y, col, 20, F_LABEL | F_RIGHT, "Used");
+		add(ui, K_TEXT, 0, 80 + 2 * col, y, col, 20, F_LABEL | F_RIGHT, "Total");
+		y += 22;
+		for (i = 0; i < 2; ++i) {
+			snprintf(f, sizeof(f), "%u", e->mem_free_kb[i]);
+			snprintf(u, sizeof(u), "%u", e->mem_total_kb[i] - e->mem_free_kb[i]);
+			snprintf(t, sizeof(t), "%u", e->mem_total_kb[i]);
+			add(ui, K_TEXT, 0, 0, y, 80, 20, F_LABEL, i ? "MEM2" : "MEM1");
+			add(ui, K_TEXT, 0, 80, y, col, 20, F_RIGHT, f);
+			add(ui, K_TEXT, 0, 80 + col, y, col, 20, F_RIGHT, u);
+			add(ui, K_TEXT, 0, 80 + 2 * col, y, col, 20, F_RIGHT, t);
+			y += 22;
+		}
+		return y;
+	}
+}
+
+static int build_wm(ov_ui *ui, const ov_ext *e) {
+	const ov_remote *sel = &e->remote[ui->wm_sel];
+	char buf[48];
+	int y = 0, i;
+
+	switch (ui->wm_page) {
+	case WM_GRID:
+		for (i = 0; i < OV_REMOTES; ++i) {
+			const ov_remote *r = &e->remote[i];
+			int cx = (i & 1) * (CW + 10), cy = (i >> 1) * 92, bw = (CW - 16 - GAP) / 2;
+			int dis = r->connected ? 0 : F_DIS;
+
+			add(ui, K_CARD, 0, cx, cy, CW, 86, dis, NULL);
+			remote_tag(ui, cx + 8, cy + 9, i, !r->connected);
+			snprintf(buf, sizeof(buf), "%s%s", r->connected ? (r->ext[0] ? r->ext : "Wii Remote")
+							: "Not connected", r->connected && r->motionplus ? " + M+" : "");
+			add(ui, K_TEXT, 0, cx + 8, cy + 24, CW - 16, 18, F_LABEL | F_SMALL | dis, buf);
+			button(ui, ID_FIND + i, cx + 8, cy + 48, bw, "Find", dis | (r->finding ? F_ON : 0));
+			button(ui, ID_MORE + i, cx + 8 + bw + GAP, cy + 48, bw, "More", dis);
+		}
+		y = 2 * 92;
+		button(ui, ID_SETTINGS, 0, y, IW, "Settings", 0);
+		return y + BH;
+	case WM_MORE:
+		remote_tag(ui, 0, y + 5, ui->wm_sel, false);
+		snprintf(buf, sizeof(buf), "Remote %d", ui->wm_sel + 1);
+		title(ui, 70, y, IW - 70, buf);
+		y += 30;
+		snprintf(buf, sizeof(buf), "%d%%", sel->battery_pct);
+		label(ui, 0, y, CW, "Battery");
+		value(ui, CW + 10, y, CW, buf, 0);
+		y += 24;
+		label(ui, 0, y, CW, "Extension");
+		value(ui, CW + 10, y, CW, sel->ext[0] ? sel->ext : "None", 0);
+		y += 24;
+		label(ui, 0, y, CW, "MotionPlus");
+		value(ui, CW + 10, y, CW, sel->motionplus ? "Yes" : "No", 0);
+		y += 30;
+		toggle(ui, ID_RUMBLE, y, "Rumble", sel->rumble, 0);
+		y += BH + 12;
+		button(ui, ID_TEST, 0, y, CW, "Test", 0);
+		button(ui, ID_CAL, CW + 10, y, CW, "Calibrate", 0);
+		y += BH + GAP;
+		button(ui, ID_DISC, 0, y, IW, "Disconnect this remote", 0);
+		return y + BH;
+	case WM_TEST:
+		remote_tag(ui, 0, y + 5, ui->wm_sel, false);
+		snprintf(buf, sizeof(buf), "Remote %d input test", ui->wm_sel + 1);
+		title(ui, 70, y, IW - 70, buf);
+		y += 30;
+		for (i = 0; i < 6 && e->test[i][0]; ++i) {
+			const char *tab = strchr(e->test[i], '\t');
+			char key[40];
+			int kl = tab ? (int) (tab - e->test[i]) : 0;
+
+			memcpy(key, e->test[i], kl);
+			key[kl] = 0;
+			label(ui, 0, y, 120, key);
+			value(ui, 120, y, IW - 120, tab ? tab + 1 : e->test[i], 0);
+			y += 24;
+		}
+		add(ui, K_TEXT, 0, 0, y + 4, IW, 16, F_LABEL | F_SMALL, "Press B to go back; other buttons are shown.");
+		return y + 22;
+	case WM_CAL:
+		remote_tag(ui, 0, y + 5, ui->wm_sel, false);
+		snprintf(buf, sizeof(buf), "Remote %d calibration", ui->wm_sel + 1);
+		title(ui, 70, y, IW - 70, buf);
+		y += 32;
+		if (sel->motionplus) {
+			add(ui, K_TEXT, 0, 0, y, IW, 18, F_LABEL, "Place the remote face down on a flat");
+			add(ui, K_TEXT, 0, 0, y + 18, IW, 18, F_LABEL, "surface and keep it still.");
+		} else {
+			add(ui, K_TEXT, 0, 0, y, IW, 18, F_LABEL, "Hold the remote still, pointing at the");
+			add(ui, K_TEXT, 0, 0, y + 18, IW, 18, F_LABEL, "screen, and let go of any stick.");
+		}
+		y += 46;
+		{
+			ov_item *bar = add(ui, K_BAR, 0, 0, y, IW, 8, 0, NULL);
+
+			bar->arg = e->cal_progress;
+		}
+		y += 16;
+		value(ui, 0, y, IW, e->cal_progress >= 100 ? e->cal_result : "Measuring...", F_LABEL);
+		return y + 24;
+	default:
+		title(ui, 0, y, IW, "Controller settings");
+		add(ui, K_TEXT, 0, 196, y + 3, IW - 196, 18, F_LABEL | F_SMALL, "until you exit");
+		y += 32;
+		button(ui, ID_CONNECT, 0, y, CW, e->searching ? "Press 1+2..." : "Connect remote",
+			   e->searching ? F_ON : 0);
+		button(ui, ID_DISC_ALL, CW + 10, y, CW, "Disconnect all", 0);
+		y += BH + 12;
+		choice(ui, ID_BAR_BELOW, ID_BAR_ABOVE, y, "Sensor bar", "Below", "Above", !e->sensor_above,
+			   e->can_leds ? 0 : F_DIS);
+		y += BH + GAP;
+		snprintf(buf, sizeof(buf), "%d of 5", e->ir_sens);
+		stepper(ui, ID_IR_MINUS, ID_IR_PLUS, y, "IR sensitivity", buf, e->can_leds ? 0 : F_DIS);
+		y += BH + GAP;
+		stepper(ui, ID_OFF_MINUS, ID_OFF_PLUS, y, "Auto power-off", e->auto_off, 0);
+		y += BH + GAP;
+		toggle(ui, ID_RUMBLE_ALL, y, "Rumble, all", e->rumble_all, 0);
+		return y + BH;
+	}
+}
+
+static void layout(ov_ui *ui, const ov_ext *e) {
+	int o = ease(ui->open_t), ex = ease(ui->exit_t);
+	int sw = ui->w - 2 * M;
+	int hide = (SH + EH + MB + 10) * (256 - o) / 256;
+	int strip_y = ui->h - MB - SH - EH * ex / 256 + hide;
+	int x, i, bw;
+	char buf[16];
+
+	ui->n = 0;
+	if (ui->paused)
+		return;
+
+	// Drawers first, so the strip draws over their sliding edges.
+	if (ui->dev_t) {
+		int first = drawer_begin(ui), h = build_dev(ui, e);
+
+		drawer_end(ui, first, h, M - (DW + M + 20) * (256 - ease(ui->dev_t)) / 256,
+				   strip_y - 8);
+	}
+	if (ui->wm_t) {
+		int first = drawer_begin(ui), h = build_wm(ui, e);
+
+		drawer_end(ui, first, h, ui->w - M - DW + (DW + M + 20) * (256 - ease(ui->wm_t)) / 256,
+				   strip_y - 8);
+	}
+
+	add(ui, K_PANEL, 0, M, strip_y, sw, SH + EH * ex / 256, 0, NULL);
+	add(ui, K_CLIP, 0, M, strip_y, sw, SH + EH * ex / 256, 0, NULL);
+
+	// The Exit row, revealed as the strip grows.
+	if (ui->exit_t) {
+		int y = strip_y + PAD, units = 13 + 10 * 3, iw = sw - 2 * PAD - 3 * GAP;
+		static const char *names[] = { "The Homebrew Channel", "System Menu", "Restart Wii", "Power off" };
+
+		x = M + PAD;
+		for (i = 0; i < 4; ++i) {
+			int w = iw * (i ? 10 : 13) / units;
+
+			button(ui, ID_EX_HBC + i, x, y, w, names[i], 0);
+			x += w + GAP;
+		}
+	}
+
+	// Status line: app, clock, player LEDs and batteries.
+	{
+		int y = strip_y + PAD + EH * ex / 256;
+		ov_item *it = add(ui, K_TEXT, 0, M + PAD, y, sw / 2, STATUS_H, 0, e->app);
+
+		it->font = &ov_font_bold;
+		x = ui->w - M - PAD;
+		for (i = OV_REMOTES - 1; i >= 0; --i) {
+			x -= e->remote[i].connected ? 80 : 50;
+			remote_tag(ui, x, y + 3, i, !e->remote[i].connected);
+		}
+		add(ui, K_TEXT, 0, x - 64, y, 48, STATUS_H, F_RIGHT, e->clock);
+
+		// Buttons: DEV, app slot, Exit, app slot (Shot by default), WiiMote.
+		y += STATUS_H + 6;
+		bw = (sw - 2 * PAD - 4 * GAP) / 5;
+		for (i = 0; i < 5; ++i) {
+			const char *t = i == 0 ? "DEV" : i == 2 ? "Exit" : i == 4 ? "WiiMote" : e->slot[i == 3];
+			int flags = 0;
+
+			if ((i == 1 || i == 3) && !t[0])
+				flags = F_BLANK | F_DIS;
+			if ((i == 0 && ui->menu == MENU_DEV) || (i == 2 && ui->menu == MENU_EXIT) ||
+					(i == 4 && ui->menu == MENU_WM))
+				flags |= F_SEL;
+			snprintf(buf, sizeof(buf), "%s", t);
+			button(ui, ID_BAR + i, M + PAD + i * (bw + GAP), y, bw, buf, flags);
+		}
+	}
+	add(ui, K_NOCLIP, 0, 0, 0, 0, 0, 0, NULL);
+
+	if (e->toast[0]) {
+		int w = ov_text_width(&ov_font_regular, e->toast) + 32;
+		// At the top, clear of the menus.
+		add(ui, K_PANEL, 0, (ui->w - w) / 2, 24, w, 32, 0, NULL);
+		add(ui, K_TEXT, 0, (ui->w - w) / 2, 24, w, 32, F_CENTER, e->toast);
+	}
+}
+
+static bool in_layer(const ov_ui *ui, int id) {
+	switch (ui->menu) {
+	case MENU_DEV: return id >= 120 && id < 140;
+	case MENU_EXIT: return id >= 110 && id < 120;
+	case MENU_WM: return id >= 140 && id < 200;
+	default: return id >= 100 && id < 110;
+	}
+}
+
+static const ov_item *find(const ov_ui *ui, int id) {
+	int i;
+
+	for (i = 0; i < ui->n; ++i)
+		if (ui->items[i].id == id && ui->items[i].kind == K_BUTTON)
+			return &ui->items[i];
+	return NULL;
+}
+
+static bool usable(const ov_item *it) {
+	return it && (it->flags & F_FOCUS) && !(it->flags & F_DIS);
+}
+
+// Keep the focus on a usable item of the active layer.
+static void fix_focus(ov_ui *ui, int preferred) {
+	const ov_item *f = find(ui, ui->focus);
+	int i;
+
+	if (usable(f) && in_layer(ui, ui->focus))
+		return;
+	if (usable(find(ui, preferred)) && in_layer(ui, preferred)) {
+		ui->focus = preferred;
+		return;
+	}
+	for (i = 0; i < ui->n; ++i)
+		if (usable(&ui->items[i]) && in_layer(ui, ui->items[i].id)) {
+			ui->focus = ui->items[i].id;
+			return;
+		}
+}
+
+// Move to the nearest usable item in a direction, weighting sideways
+// distance double so rows and columns feel straight.
+static void move_focus(ov_ui *ui, int dx, int dy) {
+	const ov_item *f = find(ui, ui->focus);
+	int best = -1, best_d = 1 << 30, fx, fy, i;
+
+	if (!f)
+		return;
+	fx = f->x + f->w / 2;
+	fy = f->y + f->h / 2;
+	for (i = 0; i < ui->n; ++i) {
+		const ov_item *it = &ui->items[i];
+		int cx = it->x + it->w / 2, cy = it->y + it->h / 2;
+		int along = dx ? (cx - fx) * dx : (cy - fy) * dy;
+		int side = dx ? cy - fy : cx - fx;
+		int d;
+
+		// Items sharing the row (or column) come first.
+		bool overlap = dx ? it->y < f->y + f->h && f->y < it->y + it->h
+						  : it->x < f->x + f->w && f->x < it->x + it->w;
+
+		if (!usable(it) || it->id == ui->focus || !in_layer(ui, it->id) || along <= 0)
+			continue;
+		d = along + 2 * (side < 0 ? -side : side) + (overlap ? 0 : 100000);
+		if (d < best_d) {
+			best_d = d;
+			best = it->id;
+		}
+	}
+	if (best >= 0)
+		ui->focus = best;
+}
+
+void ov_init(ov_ui *ui, int w, int h) {
+	memset(ui, 0, sizeof(*ui));
+	ui->w = w;
+	ui->h = h;
+	ui->focus = ui->bar_focus = ID_BAR + 2;
+}
+
+static void open_menu(ov_ui *ui, int menu, int bar_id) {
+	ui->menu = menu;
+	ui->bar_focus = bar_id;
+	ui->focus = 0;
+	ui->dev_page = PAGE_MAIN;
+	ui->wm_page = WM_GRID;
+}
+
+static void close_menu(ov_ui *ui) {
+	ui->menu = MENU_NONE;
+	ui->focus = ui->bar_focus;
+}
+
+static void back(ov_ui *ui, ov_act_fn act, void *user) {
+	if (ui->menu == MENU_WM && (ui->wm_page == WM_TEST || ui->wm_page == WM_CAL)) {
+		if (ui->wm_page == WM_TEST)
+			act(OVA_TEST_STOP, ui->wm_sel, user);
+		ui->wm_page = WM_MORE;
+		ui->focus = ID_RUMBLE;
+	} else if (ui->menu == MENU_WM && ui->wm_page != WM_GRID) {
+		ui->focus = ui->wm_page == WM_MORE ? ID_MORE + ui->wm_sel : ID_SETTINGS;
+		ui->wm_page = WM_GRID;
+	} else if (ui->menu == MENU_DEV && ui->dev_page == PAGE_LOG) {
+		ui->dev_page = PAGE_MAIN;
+		ui->focus = ID_LOG;
+	} else if (ui->menu != MENU_NONE) {
+		close_menu(ui);
+	} else {
+		ui->closing = true;
+	}
+}
+
+static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
+	int id = ui->focus;
+
+	if (id >= ID_BAR && id < ID_BAR + 5) {
+		int i = id - ID_BAR;
+
+		if (i == 0)
+			open_menu(ui, MENU_DEV, id);
+		else if (i == 2)
+			open_menu(ui, MENU_EXIT, id);
+		else if (i == 4)
+			open_menu(ui, MENU_WM, id);
+		else if (i == 3 && !strcmp(e->slot[1], "Shot"))
+			act(OVA_SHOT, 0, user);
+		else {
+			ui->after = OVA_SLOT;
+			ui->after_arg = i == 3;
+			ui->closing = true;
+		}
+		return;
+	}
+	if (id >= ID_EX_HBC && id <= ID_EX_POWER) {
+		act(OVA_HBC + (id - ID_EX_HBC), 0, user);
+		return;
+	}
+	if (id >= ID_FIND && id < ID_FIND + OV_REMOTES) {
+		act(OVA_FIND, id - ID_FIND, user);
+		return;
+	}
+	if (id >= ID_MORE && id < ID_MORE + OV_REMOTES) {
+		ui->wm_sel = id - ID_MORE;
+		ui->wm_page = WM_MORE;
+		ui->focus = ID_RUMBLE;
+		return;
+	}
+	switch (id) {
+	case ID_TAB_ACT: ui->dev_tab = 0; break;
+	case ID_TAB_INFO: ui->dev_tab = 1; break;
+	case ID_RESTART_APP: ui->after = OVA_RESTART_APP; ui->closing = true; break;
+	case ID_PAUSE: ui->paused = true; act(OVA_PAUSE, 1, user); break;
+	case ID_SAVE: act(OVA_SAVE, 0, user); break;
+	case ID_LOG: ui->dev_page = PAGE_LOG; ui->focus = 0; break;
+	case ID_LOGPC: act(OVA_LOG_PC, !e->log_pc, user); break;
+	case ID_CRASH_3S: act(OVA_CRASH_STAY, 0, user); break;
+	case ID_CRASH_STAY: act(OVA_CRASH_STAY, 1, user); break;
+	case ID_HBCPY: act(OVA_HBCPY, !e->hbcpy, user); break;
+	case ID_SETTINGS: ui->wm_page = WM_SETTINGS; ui->focus = ID_CONNECT; break;
+	case ID_RUMBLE: act(OVA_RUMBLE, ui->wm_sel, user); break;
+	case ID_TEST: ui->wm_page = WM_TEST; act(OVA_TEST_START, ui->wm_sel, user); break;
+	case ID_CAL: ui->wm_page = WM_CAL; act(OVA_CAL_START, ui->wm_sel, user); break;
+	case ID_DISC:
+		act(OVA_DISCONNECT, ui->wm_sel, user);
+		ui->wm_page = WM_GRID;
+		ui->focus = ID_SETTINGS;
+		break;
+	case ID_CONNECT: act(OVA_CONNECT, 0, user); break;
+	case ID_DISC_ALL: act(OVA_DISCONNECT_ALL, 0, user); break;
+	case ID_BAR_BELOW: act(OVA_SENSOR_ABOVE, 0, user); break;
+	case ID_BAR_ABOVE: act(OVA_SENSOR_ABOVE, 1, user); break;
+	case ID_IR_MINUS: act(OVA_IR_SENS, e->ir_sens > 1 ? e->ir_sens - 1 : 1, user); break;
+	case ID_IR_PLUS: act(OVA_IR_SENS, e->ir_sens < 5 ? e->ir_sens + 1 : 5, user); break;
+	case ID_OFF_MINUS: act(OVA_AUTO_OFF, -1, user); break;
+	case ID_OFF_PLUS: act(OVA_AUTO_OFF, 1, user); break;
+	case ID_RUMBLE_ALL: act(OVA_RUMBLE_ALL, !e->rumble_all, user); break;
+	}
+}
+
+bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *user) {
+	bool settled;
+
+	ui->frame++;
+	if (ui->paused) {
+		if (pressed & OV_HOME) {
+			ui->paused = false;
+			act(OVA_PAUSE, 0, user);
+			ui->closing = true;
+		} else if (pressed) {
+			ui->paused = false;
+			act(OVA_PAUSE, 0, user);
+		}
+		pressed = 0;
+	}
+
+	// While a page with live input is shown, only B leaves it.
+	if (ui->menu == MENU_WM && ui->wm_page == WM_TEST)
+		pressed &= OV_B | OV_HOME;
+
+	if (pressed & OV_HOME) {
+		if (ui->menu == MENU_WM && ui->wm_page == WM_TEST)
+			act(OVA_TEST_STOP, ui->wm_sel, user);
+		ui->menu = MENU_NONE;
+		ui->closing = true;
+	} else if (!ui->closing && ui->open_t == 256) {
+		if (pressed & OV_B)
+			back(ui, act, user);
+		else if (pressed & OV_A)
+			press(ui, e, act, user);
+		else if (pressed & OV_UP)
+			move_focus(ui, 0, -1);
+		else if (pressed & OV_DOWN)
+			move_focus(ui, 0, 1);
+		else if (pressed & OV_LEFT)
+			move_focus(ui, -1, 0);
+		else if (pressed & OV_RIGHT)
+			move_focus(ui, 1, 0);
+	}
+	if (ui->closing)
+		ui->menu = MENU_NONE;
+
+	ui->dev_t = approach(ui->dev_t, ui->menu == MENU_DEV);
+	ui->wm_t = approach(ui->wm_t, ui->menu == MENU_WM);
+	ui->exit_t = approach(ui->exit_t, ui->menu == MENU_EXIT);
+	settled = !ui->dev_t && !ui->wm_t && !ui->exit_t;
+	// The strip leaves only once every menu has closed.
+	ui->open_t = approach(ui->open_t, !(ui->closing && settled));
+
+	layout(ui, e);
+	fix_focus(ui, ui->menu == MENU_DEV ? ID_TAB_ACT : ui->menu == MENU_EXIT ? ID_EX_HBC :
+			  ui->menu == MENU_WM ? ID_FIND : ui->bar_focus);
+	return !(ui->closing && !ui->open_t);
+}
+
+// HBC's look: dialog_background.png runs from dark blue at the top through
+// black to dark blue; buttons are dark gray, focused ones blue.
+void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
+	const ov_color blue_top = ov_rgb(0x1f, 0x46, 0x5c), black = ov_rgb(0, 0, 0);
+	const ov_color blue_bot = ov_rgb(0x12, 0x29, 0x37), edge = ov_rgb(0, 0, 0);
+	const ov_color btn_top = ov_rgb(0x4a, 0x4a, 0x4a), btn_mid = ov_rgb(0x26, 0x26, 0x26);
+	const ov_color btn_bot = ov_rgb(0x1a, 0x1a, 0x1a);
+	const ov_color on_top = ov_rgb(0x5a, 0x94, 0xb4), on_mid = ov_rgb(0x2d, 0x68, 0x82);
+	const ov_color on_bot = ov_rgb(0x1d, 0x4a, 0x60);
+	const ov_color white = ov_rgb(0xff, 0xff, 0xff), grey = ov_rgb(0xa8, 0xa8, 0xa8);
+	const ov_color labelc = ov_rgb(0xc9, 0xd6, 0xde), dimc = ov_rgb(0x5a, 0x60, 0x66);
+	const ov_color focus = ov_rgb(0x9f, 0xdc, 0xf5), card = ov_rgb(0x1c, 0x3a, 0x4c);
+	const ov_color led_on = ov_rgb(0x7f, 0xc4, 0xe0), led_off = ov_rgb(0x38, 0x38, 0x38);
+	int i;
+
+	(void) e;
+	ov_noclip(c);
+	for (i = 0; i < ui->n; ++i) {
+		const ov_item *it = &ui->items[i];
+		bool dis = it->flags & F_DIS;
+
+		switch (it->kind) {
+		case K_CLIP:
+			ov_clip(c, it->x, it->y, it->w, it->h);
+			break;
+		case K_NOCLIP:
+			ov_noclip(c);
+			break;
+		case K_PANEL:
+			ov_panel(c, it->x, it->y, it->w, it->h, 10, blue_top, black, blue_bot, edge, 255);
+			break;
+		case K_CARD:
+			ov_panel(c, it->x, it->y, it->w, it->h, 6, black, black, black, card, dis ? 90 : 160);
+			break;
+		case K_RULE:
+			ov_fill(c, it->x, it->y, it->w, 1, card, 255);
+			break;
+		case K_BAR:
+			ov_panel(c, it->x, it->y, it->w, it->h, 4, card, card, card, card, 255);
+			ov_panel(c, it->x, it->y, it->w * (it->arg > 100 ? 100 : it->arg) / 100, it->h, 4,
+					 led_on, led_on, led_on, led_on, 255);
+			break;
+		case K_REMOTE: {
+			const ov_remote *r = &e->remote[it->arg];
+			int k, x = it->x;
+
+			for (k = 0; k < 4; ++k) {
+				bool lit = k == it->arg ? !r->finding || (ui->frame / 8) & 1 : r->finding && (ui->frame / 8 + k) & 1;
+
+				ov_disc(c, x + 3, it->y + 6, 3, lit && !dis ? led_on : dis && k == it->arg ?
+						dimc : led_off);
+				x += 9;
+			}
+			if (r->connected)
+				for (k = 0; k < 4; ++k)
+					ov_fill(c, x + 6 + k * 6, it->y + 1, 4, 10, k < r->battery ? led_on : led_off, 255);
+			break;
+		}
+		case K_BUTTON: {
+			bool focused = it->id == ui->focus && in_layer(ui, it->id) && !(it->flags & F_BLANK);
+			const ov_font *f = (it->flags & (F_ON | F_SEL)) || focused ? &ov_font_bold : &ov_font_regular;
+			ov_color tc = dis ? dimc : (it->flags & (F_ON | F_SEL)) || focused ? white : grey;
+			int tw = ov_text_width(f, it->text);
+
+			if (it->flags & F_BLANK) {
+				ov_panel(c, it->x, it->y, it->w, it->h, 6, black, black, black, dimc, 110);
+				break;
+			}
+			if (it->flags & F_ON)
+				ov_panel(c, it->x, it->y, it->w, it->h, 6, on_top, on_mid, on_bot, edge, dis ? 110 : 255);
+			else
+				ov_panel(c, it->x, it->y, it->w, it->h, 6, btn_top, btn_mid, btn_bot,
+						 it->flags & F_SEL ? on_mid : edge, dis ? 110 : 255);
+			if (focused) {
+				ov_panel(c, it->x - 2, it->y - 2, it->w + 4, 2, 1, focus, focus, focus, focus, 255);
+				ov_panel(c, it->x - 2, it->y + it->h, it->w + 4, 2, 1, focus, focus, focus, focus, 255);
+				ov_fill(c, it->x - 2, it->y, 2, it->h, focus, 255);
+				ov_fill(c, it->x + it->w, it->y, 2, it->h, focus, 255);
+			}
+			ov_text(c, f, it->x + (it->w - tw) / 2, it->y + (it->h - f->height) / 2, it->text, tc);
+			break;
+		}
+		case K_TEXT: {
+			const ov_font *f = it->font;
+			ov_color tc = dis ? dimc : it->flags & F_LABEL ? labelc : white;
+			int tw = ov_text_width(f, it->text), x = it->x;
+
+			if (it->flags & F_RIGHT)
+				x = it->x + it->w - tw;
+			else if (it->flags & F_CENTER)
+				x = it->x + (it->w - tw) / 2;
+			ov_text(c, f, x, it->y + (it->h - f->height) / 2, it->text, tc);
+			break;
+		}
+		}
+	}
+	ov_noclip(c);
+}

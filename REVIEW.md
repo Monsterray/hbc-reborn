@@ -155,6 +155,25 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.6.0: the HOME overlay
+
+- **Overlay:** `hbc_agent_home()` draws a status strip and slide-in menus over the
+  app's frozen frame in software, into two framebuffers of its own, so it needs no GX
+  state from the app. It passed the full agent suite in Dolphin and on the bench Wii
+  (`tests/wii_agent.py`), driven by `hbc.py key` and checked with `hbc.py screen`.
+- **`VIDEO_GetCurrentFramebuffer()` returns the VI's physical address.** Reading
+  it as a cached or uncached virtual address read unmapped memory (Dolphin: "Invalid
+  read from 0x00135460"). The agent masks it to an uncached address.
+- **wiiuse handles:** libogc 3.1 keeps `__wpads` static; the agent locates it from
+  `WPAD_Rumble`'s instructions and checks each handle's channel before use. A libogc
+  that compiles `WPAD_Rumble` differently turns the LED, IR and sensor-bar settings
+  off rather than breaking them. Trigger to revisit: libogc exporting a handle getter.
+- **`WPAD_Search` disconnects every remote** before searching for guests, so the
+  overlay's Connect remote uses `WPAD_StartPairing` instead.
+- **Not yet verified by hand:** Find's chime, rumble, and the per-remote settings need a
+  remote in someone's hand; Dolphin connects its emulated remote only on input, and the
+  bench Wii's remotes are asleep during automated runs.
+
 ### 1.5.0: the in-app agent
 
 - **Agent:** `sdk/hbc_agent` builds HBC's `devfile.c` (file requests, split out of

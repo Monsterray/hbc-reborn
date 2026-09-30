@@ -99,10 +99,15 @@ static inline void hbc_netlog_send(const char *ptr, size_t len) {
 	}
 }
 
+/* Set by the agent's "Log to PC" switch (hbc_agent.h); absent without it. */
+extern volatile int hbc_agent_log_muted __attribute__((weak));
+
 static inline ssize_t hbc_netlog_write(const devoptab_t *prev, struct _reent *r,
 									   void *fd, const char *ptr, size_t len) {
 	if (prev && prev->write_r)
 		prev->write_r(r, fd, ptr, len);
+	if (&hbc_agent_log_muted && hbc_agent_log_muted)
+		return len;
 	LWP_MutexLock(hbc_netlog_lock);
 	hbc_netlog_send(ptr, len);
 	LWP_MutexUnlock(hbc_netlog_lock);

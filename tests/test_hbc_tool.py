@@ -43,6 +43,7 @@ class FakeHBC:
         self.agent = False  # an agent app answers instead of HBC
         self.crash = None
         self.exits = 0
+        self.keys = b""
         self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -98,6 +99,14 @@ class FakeHBC:
             self.reply(conn, 0)
             self.agent = False  # the app exits to HBC
             self.exits += 1
+        elif magic == b"HBCK":
+            n = struct.unpack(">H", hdr[4:6])[0]
+            self.keys += self.recv(conn, n)
+            self.reply(conn, 0)
+        elif magic == b"HBCP":
+            # 4x2 pixels: a red pair and a white pair on each row.
+            frame = bytes([81, 90, 81, 240, 235, 128, 235, 128]) * 2
+            conn.sendall(struct.pack(">iIII", 0, 8 + len(frame), 4, 2) + frame)
         elif magic == b"HBCC":
             self.crash = {}
             self.reply(conn, 0)
@@ -259,6 +268,25 @@ class HBCToolTest(unittest.TestCase):
         self.fake.agent = True
         with self.assertRaisesRegex(SystemExit, "agent app is running"):
             self.cli("crash")
+
+    def test_key_sends_presses(self):
+        self.fake.keys = b""
+        self.cli("key", "hrra")
+        self.assertEqual(self.fake.keys, b"hrra")
+        with self.assertRaisesRegex(SystemExit, "keys are"):
+            self.cli("key", "x")
+
+    def test_screen_writes_png(self):
+        out = self.tmp / "tv.png"
+        self.assertIn("4x2", self.cli("screen", str(out)))
+        png = out.read_bytes()
+        self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(struct.unpack(">II", png[16:24]), (4, 2))
+        raw = zlib.decompress(png[png.index(b"IDAT") + 4:png.index(b"IEND") - 8])
+        self.assertEqual(raw[0], 0)                 # filter byte, then RGB
+        self.assertGreater(raw[1], 200)             # red
+        self.assertLess(raw[3], 60)
+        self.assertEqual(tuple(raw[7:10]), (255, 255, 255))
 
     def test_agent_versions(self):
         self.assertTrue(hbc.is_agent("1.5.0 agent"))

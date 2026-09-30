@@ -11,6 +11,10 @@
  *   hbc.py run new.dol         asks the app to exit to HBC, then sends new.dol
  *   hbc.py exit                asks the app to exit to HBC
  *   hbc.py crash               after a crash: exception, registers, backtrace
+ *   hbc.py key / screen        drive the HOME overlay, grab the TV picture
+ *
+ * hbc_agent_home() (below) adds a HOME overlay in HBC's style: a status
+ * strip with DEV, Exit, Shot and WiiMote menus over the game's last frame.
  *
  * In the app:
  *
@@ -113,6 +117,11 @@ typedef struct {
 	void *user;
 	/* Leave the crash handler out. */
 	bool no_crash_handler;
+	/* The overlay's DEV > Save and Restart app; each is greyed out when
+	   NULL. on_save returns whether it saved. on_restart runs in the app's
+	   thread once the overlay has closed. */
+	bool (*on_save)(void *user);
+	void (*on_restart)(void *user);
 } hbc_agent_config;
 
 /* Starts the agent. cfg may be NULL for the defaults. Returns 0, or a
@@ -124,6 +133,36 @@ bool hbc_agent_exit_requested(void);
 
 /* Waits up to ms for the network (0 when it is up, else a negative error). */
 s32 hbc_agent_net_wait(u32 ms);
+
+/* The HOME overlay (link with -lwiiuse -lbte, which WPAD apps already use).
+ * Call it when HOME is pressed, between frames; it pauses the app's loop by
+ * running its own until the user closes it with HOME (or B at the top), and
+ * returns 0, or a negative error when there is no memory for it (it borrows
+ * three framebuffers, about 1.8 MB at 640x480, while open). It reads the
+ * Wii Remotes itself, so the app needs WPAD_Init(). rmode may be NULL for
+ * the preferred video mode. Exit's choices leave the app from inside. */
+struct _gx_rmodeobj;
+s32 hbc_agent_home(const struct _gx_rmodeobj *rmode);
+
+/* True once when `hbc.py key h` asked for the overlay: check it next to the
+ * HOME button, `if ((down & WPAD_BUTTON_HOME) || hbc_agent_home_pending())`. */
+bool hbc_agent_home_pending(void);
+
+/* The two bar buttons beside Exit: slot 0 on its left (blank by default),
+ * slot 1 on its right (Shot, a screenshot to sd:/screenshots, by default).
+ * press runs in the app's thread after the overlay closes. A NULL label
+ * restores the default. */
+void hbc_agent_set_slot(int slot, const char *label, void (*press)(void *user), void *user);
+
+/* Calibration measured by WiiMote > More > Calibrate, for this session. */
+typedef struct {
+	bool valid, motionplus;
+	int accel[3];      /* raw accelerometer at rest */
+	int gyro[3];       /* raw MotionPlus rates at rest (its zero offsets) */
+	int stick[2];      /* raw Nunchuk stick centre */
+} hbc_agent_cal;
+
+bool hbc_agent_calibration(int chan, hbc_agent_cal *out);
 
 #ifdef __cplusplus
 }

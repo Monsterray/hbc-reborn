@@ -11,6 +11,10 @@ usage: hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout SECONDS] COMMAN
   run FILE [ARG ...]          register for logs, send FILE, print its output
   exit                        ask the running agent app to exit to HBC, and
                               wait for HBC
+  key KEYS                    send controller presses to the running agent app:
+                              h (HOME: opens or closes its overlay), u d l r
+                              (D-pad), a, b; e.g. `key hrra`
+  screen FILE.png             save what the running agent app shows on the TV
   crash [--elf FILE] [--clear]
                               print the crash an agent app reported (with
                               source lines from FILE via addr2line), or
@@ -238,6 +242,47 @@ def crash_report(crash, elf=None):
     if elf and not tool:
         lines.append("  (install devkitPPC or put powerpc-eabi-addr2line on PATH for source lines)")
     return "\n".join(lines)
+
+
+def yuyv_png(width, height, data):
+    """A PNG (8-bit RGB) of a Wii YUYV framebuffer, with only the standard library."""
+    rows = bytearray()
+    clamp = lambda v: 0 if v < 0 else 255 if v > 255 else v
+    for y in range(height):
+        rows.append(0)
+        line = data[y * width * 2:(y + 1) * width * 2]
+        for x in range(0, width * 2, 4):
+            y0, cb, y1, cr = line[x], line[x + 1], line[x + 2], line[x + 3]
+            d, e = cb - 128, cr - 128
+            for yy in (y0, y1):
+                c = 298 * (yy - 16)
+                rows += bytes((clamp((c + 409 * e + 128) >> 8),
+                               clamp((c - 100 * d - 208 * e + 128) >> 8),
+                               clamp((c + 516 * d + 128) >> 8)))
+
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body +
+                struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(bytes(rows), 6)) + chunk(b"IEND", b""))
+
+
+def screen(wii):
+    """(width, height, YUYV bytes) of what an agent app shows."""
+    body = request(wii, b"HBCP", timeout=30)
+    width, height = struct.unpack(">II", body[:8])
+    if len(body) != 8 + width * height * 2:
+        raise HBCError(f"short picture: {len(body)} bytes for {width}x{height}")
+    return width, height, body[8:]
+
+
+def send_keys(wii, keys):
+    keys = keys.encode("ascii")
+    if len(keys) > 64 or any(k not in b"udlrabh" for k in keys):
+        raise HBCError("keys are up to 64 of u d l r a b h")
+    with connect(wii) as conn:
+        conn.sendall((b"HBCK" + struct.pack(">H", len(keys))).ljust(16, b"\0") + keys)
+        recv_reply(conn)
 
 
 def relaunch_wait(wii, expected, seconds=90):
@@ -827,6 +872,15 @@ def main(argv=None):
             if not exit_app(wii):
                 raise HBCError("no agent app is running (HBC answers itself)")
             print(hbc_wait(wii, 5))
+        elif cmd == "key":
+            need(1, "KEYS")
+            send_keys(wii, "".join(args))
+        elif cmd == "screen":
+            need(1, "FILE.png")
+            width, height, data = screen(wii)
+            with open(args[0], "wb") as f:
+                f.write(yuyv_png(width, height, data))
+            print(f"{args[0]}: {width}x{height}")
         elif cmd == "crash":
             if flags.get("clear"):
                 request(wii, b"HBCC")

@@ -14,7 +14,7 @@ agent_app.dol: agent_app.elf
 	$(ELF2DOL) $< $@
 
 agent_app.elf: main.c ../../sdk/hbc_netlog.h ../../sdk/hbc_agent.h $(AGENT)/libhbcagent.a
-	$(CC) $(CFLAGS) main.c $(LDFLAGS) -lhbcagent -lfat -lz -logc -o $@
+	$(CC) $(CFLAGS) main.c $(LDFLAGS) -lhbcagent -lwiiuse -lbte -lfat -lz -logc -lm -o $@
 
 $(AGENT)/libhbcagent.a: FORCE
 	$(MAKE) -C $(AGENT) EXTRA_CFLAGS="$(EXTRA_CFLAGS)"

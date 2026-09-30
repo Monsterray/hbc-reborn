@@ -154,6 +154,8 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
               f"agent stack {st['agent_stack_used']} of {st['agent_stack_size']}")
         print("agent files and status: PASS")
 
+        check_overlay(wii, log, st)
+
         # 2. `hbc.py exit`: the app sees the request and exits to HBC.
         start = time.monotonic()
         assert hbc.exit_app(wii)
@@ -189,6 +191,64 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
     finally:
         hbc.LogServer.unregister(wii)
         log.close()
+
+
+def strip_luma(wii):
+    """Mean luma of the bottom tenth of the TV picture, where the overlay's
+    strip sits over agent_app's colour bars."""
+    width, height, data = hbc.screen(wii)
+    rows = data[width * 2 * (height * 9 // 10):]
+    return sum(rows[0::2]) / (len(rows) // 2)
+
+
+def overlay_keys(wii, keys, settle=1.0):
+    hbc.send_keys(wii, keys)
+    time.sleep(settle + 0.25 * len(keys))
+
+
+def check_overlay(wii, log, st):
+    """The HOME overlay, driven with `hbc.py key` and seen with `hbc.py screen`."""
+    shots_before = {n for _, _, n in hbc.list_dir(wii, "sd:/screenshots")[0]} \
+        if "d screenshots" in hbc.file_request(wii, "L", "sd:/").decode() else set()
+    app = strip_luma(wii)
+    overlay_keys(wii, "h")
+    log.wait_for("agent_app: overlay\n", 10)
+    shown = strip_luma(wii)
+    assert shown < app - 20, f"the strip did not appear (luma {app:.0f} -> {shown:.0f})"
+
+    # Shot is right of Exit, which has the focus when the overlay opens.
+    overlay_keys(wii, "ra", settle=3)
+    after = {n for _, _, n in hbc.list_dir(wii, "sd:/screenshots")[0]}
+    new = sorted(after - shots_before)
+    assert new, f"Shot saved nothing: {sorted(after)}"
+    size = next(s for _, s, n in hbc.list_dir(wii, "sd:/screenshots")[0] if n == new[-1])
+    width, height, _ = hbc.screen(wii)
+    assert size == 54 + width * height * 3, (new[-1], size)
+
+    # DEV > Save runs the app's hook: left past the app slot to DEV, then
+    # down from the Actions tab (Restart app is greyed out) to Save.
+    overlay_keys(wii, "lll" "a" "d" "a")
+    log.wait_for("agent_app: saved", 10)
+    assert hbc.get_file(wii, "sd:/hbctest/agent_save.txt") == b"saved by agent_app\n"
+
+    # HOME closes everything and gives the app its picture back.
+    overlay_keys(wii, "h", settle=2)
+    log.wait_for("agent_app: overlay closed (0)", 10)
+    closed = strip_luma(wii)
+    assert abs(closed - app) < 8, f"the app's picture did not come back ({app:.0f} -> {closed:.0f})"
+
+    # The app's own slot, left of Exit, closes the overlay and runs in the app.
+    overlay_keys(wii, "h")
+    overlay_keys(wii, "la", settle=2)
+    log.wait_for("agent_app: hello from the app slot", 10)
+
+    for name in new:
+        hbc.file_request(wii, "D", f"sd:/screenshots/{name}")
+    if not shots_before and not (after - set(new)):
+        hbc.file_request(wii, "D", "sd:/screenshots")
+    hbc.remove_tree(wii, "sd:/hbctest", out=lambda *a: None)
+    print(f"agent overlay: PASS (strip luma {app:.0f} -> {shown:.0f} -> {closed:.0f}, "
+          f"shot {new[-1]}, remote handles {'found' if st.get('wpad_handles') else 'not found'})")
 
 
 def check_crash(crash, crash_mode="crash"):
