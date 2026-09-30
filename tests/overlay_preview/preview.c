@@ -2,8 +2,8 @@
 // the Wii runs, with made-up data and a scripted set of presses. Each
 // capture is written as raw YUYV; preview.py turns them into PNG files.
 //
-//   cc -O2 -I sdk/hbc_agent tests/overlay_preview/preview.c \
-//      sdk/hbc_agent/ov_ui.c sdk/hbc_agent/ov_draw.c -o preview
+//   cc -O2 -I sdk/hbc_agent tests/overlay_preview/preview.c
+//      sdk/hbc_agent/ov_ui.c sdk/hbc_agent/ov_draw.c -o preview   (one line)
 //   ./preview OUTDIR        (python3 tests/overlay_preview/preview.py does both)
 
 #include <stdio.h>
