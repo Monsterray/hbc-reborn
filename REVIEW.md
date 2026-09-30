@@ -155,6 +155,31 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.5: the libogc2 crash hook on the bench Wii, the agent's stack on libogc2
+
+- **On hardware:** `tests/agent_app` built on libogc2 (devkitPPC r41-2) passed
+  the whole `tests/agent_checks.py` run on the bench Wii with HBC 1.8.4:
+  - status and files, the overlay, and exit to HBC (8.7 s);
+  - the Wiiload upload landing back in HBC;
+  - a DSI crash: HBC reported it at `agent_app_crash` (main.c:63), DAR 0x10,
+    LR in `main`;
+  - a trap: HBC reported a program exception at `agent_app_trap`.
+
+  The Wii went back to HBC each time; nothing froze.
+- **Agent stack 100% used on libogc2:** the first bench run stopped at the
+  status check, which reported 12288 of 12288 bytes of the agent's stack used
+  91 ms after start.
+  - **Cause:** libogc2 and libogc 1.x write 0xDEADBABE into the lowest word of
+    every thread's stack when the thread starts (`__lwp_thread_loadenv`).
+    `stack_used()` counts from the lowest nonzero byte, so it saw the whole
+    stack as used. libogc 3 writes no such tag.
+  - **Fix:** the scan starts above that word when it holds the tag.
+  - **After:** 2992 bytes idle, then 7616 (Dolphin) and 8312 (Wii) of 12288
+    after the transfer checks, against about 5000 on libogc 3. Fine for now.
+    Raise `AGENT_STACK` if a libogc2 app shows less than 2 KiB left.
+- **Dolphin:** the whole `dolphin_smoke.py --agent` suite (installed WAD) also
+  passes with the libogc2 app in place of the libogc 3 one.
+
 ### 1.8.4: the line-ending test in CI's container
 
 - 1.8.3's CI failed in the devkitPPC job's Tests step. The checkout there

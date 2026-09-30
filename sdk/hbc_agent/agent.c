@@ -316,10 +316,15 @@ static void json_safe(char *dst, const char *src, size_t size) {
 	dst[i] = 0;
 }
 
+// The stack was zeroed before the thread started; the lowest byte still zero
+// marks how deep it has reached. libogc2 and libogc 1.x write 0xDEADBABE into
+// the lowest word when the thread starts, so the scan starts above it.
 static u32 stack_used(void) {
-	u32 i;
+	u32 i = 0;
 
-	for (i = 0; i < AGENT_STACK && !stack[i]; ++i)
+	if (*(u32 *) stack == 0xdeadbabe)
+		i = 4;
+	for (; i < AGENT_STACK && !stack[i]; ++i)
 		;
 	return AGENT_STACK - i;
 }
