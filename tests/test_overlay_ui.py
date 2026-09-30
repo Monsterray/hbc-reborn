@@ -36,6 +36,8 @@ class OverlayUITest(unittest.TestCase):
         self.assertIn("act 16 0", out)                # Test started
         self.assertIn("act 18 0", out)                # Calibrate started
         self.assertIn("act 6 0", out)                 # Shot
+        self.assertIn("hover 104", out)               # the pointer over WiiMote
+        self.assertEqual(menu("16-pointer-press"), 3)  # A with it opened WiiMote
         self.assertIn("closed after HOME: yes", out)
 
 

@@ -94,6 +94,10 @@ static s32 crash_json(char *buf, size_t size) {
 	return n;
 }
 
+// What the HOME overlay (home.c, via sdk/hbc_agent) cost the last time.
+void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes,
+						const char **buffers);
+
 static s32 status_json(char *buf, size_t size) {
 	bool mounted[DEVICE_COUNT] = { false };
 	int active = app_entry_get_status(mounted);
@@ -143,6 +147,16 @@ static s32 status_json(char *buf, size_t size) {
 	n += snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"tcp_last_failure\":\"%s\"",
 			zmem_where(), tcp_last_failure());
 	n += crash_json(buf + n, size - n);
+	{
+		u32 frames, avg, max, bytes;
+		const char *buffers;
+
+		agent_overlay_cost(&frames, &avg, &max, &bytes, &buffers);
+		if (frames)
+			n += snprintf(buf + n, size - n, ",\"overlay\":{\"frames\":%u,\"avg_us\":%u,"
+					"\"max_us\":%u,\"bytes\":%u,\"buffers\":\"%s\"}",
+					frames, avg, max, bytes, buffers);
+	}
 	n += snprintf(buf + n, size - n, "}");
 
 	return n;

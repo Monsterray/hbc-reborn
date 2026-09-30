@@ -33,6 +33,8 @@ void ov_fill(ov_canvas *c, int x, int y, int w, int h, ov_color col, int alpha);
 void ov_panel(ov_canvas *c, int x, int y, int w, int h, int radius, ov_color top,
 			  ov_color mid, ov_color bot, ov_color border, int alpha);
 void ov_disc(ov_canvas *c, int cx, int cy, int r, ov_color col);
+/* An RGBA image (8 bits each, rows top to bottom) with its top-left at x, y. */
+void ov_image(ov_canvas *c, int x, int y, int w, int h, const uint8_t *rgba);
 int ov_text_width(const ov_font *f, const char *s);
 /* Draws s with its line top at y; returns the pen position after it. */
 int ov_text(ov_canvas *c, const ov_font *f, int x, int y, const char *s, ov_color col);

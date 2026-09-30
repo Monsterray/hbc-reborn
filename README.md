@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.7.0**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.7.1**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -221,13 +221,37 @@ framebuffers and handling Exit through HBC's own shutdown. Its HBC slot
 holds what the old HOME menu had: HBC's and IOS's versions, the Wii's IP,
 About, Launch BootMii, Exit to System Menu, and Shutdown.
 
-The D-pad moves, A chooses, B goes back one level, and HOME closes
+Point a Wii Remote at the screen and HBC's hand cursor follows it: the
+button under it lights up and A presses it, and pointing at a bar button
+while a menu is open switches straight to that menu. The overlay turns on
+IR for every connected remote while it is open and gives each back its
+previous mode when it closes. The D-pad moves the highlight when no remote
+points at the screen, A chooses, B goes back one level, and HOME closes
 everything. Controller settings last until the app exits; nothing is
 written to the Wii's own settings, except that Connect remote may save the
 new remote in the Wii's pairing list as the Sync button would. Link the
 overlay with `-lwiiuse -lbte` (which WPAD apps already use); while open it
 borrows three framebuffers, about 1.8 MB at 640x480. Set `on_save` and
 `on_restart` in `hbc_agent_config` to enable Save and Restart app.
+
+#### What the agent costs
+
+Measured on a real Wii with `tests/agent_cost.py` (HBC 1.7.1, 640x480):
+
+| | Cost |
+| --- | --- |
+| Code | 25.6 KB for the agent (network, files, crash reports), 77 KB more for the overlay (of which about 30 KB are its fonts and pointer) |
+| Static data | 17 KB for the agent (half of it the Log page's 8 KB of recent output), 21 KB for the overlay (its threads' stacks and state) |
+| Start-up | `hbc_agent_init()`: 13 KB of heap and 16 KB of MEM1 arena (its thread's 12 KB stack, of which it uses 3 to 4.5 KB) |
+| Idle | 5 wake-ups a second to check for a connection, 140 µs each: 0.07% of the CPU |
+| File transfers | about 28 KB of heap kept after the first (the rest is freed after each); zlib and CRC work of 9 to 130 ms per upload and 50 to 620 ms per download of 2 to 5 MB, on the agent's thread |
+| HOME overlay, while open | 1.8 MB: a copy of the frame and two framebuffers (HBC lends the framebuffers from low MEM1); 7.9 ms average and 14 ms at most to draw a frame that changed, nothing for frames that did not, so it keeps 60 fps |
+| HOME overlay, closed | nothing: no thread, no memory |
+
+`hbc.py status` shows the live figures: `agent_idle_wakes`, `agent_idle_us`,
+`agent_request_ms`, `agent_stack_used`, `heap_arena`, and `overlay` (frames
+drawn, average and worst frame time, memory borrowed) after the overlay
+was open.
 
 The agent's thread runs below your main thread, so a loop that waits for
 each frame never loses time to it; an app that never blocks starves it and
@@ -333,10 +357,11 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Boot in Dolphin | `python3 tests/dolphin_smoke.py` | Dolphin |
 | Developer network in Dolphin | `make -C tests/netlog_app` then `python3 tests/dolphin_smoke.py --devnet` | Dolphin |
 | Installed WAD in Dolphin, including app exit back to it | `python3 tests/dolphin_smoke.py --devnet channel/title/channel_retail.wad 120` | Dolphin, WAD |
+| What the agent costs on a real Wii (memory, CPU, frame time) | `python3 tests/agent_cost.py WII-IP` | Wii in any HBC |
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.7.0 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.7.1 WII-IP` | installed channel running |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |

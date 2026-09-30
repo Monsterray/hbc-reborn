@@ -600,6 +600,45 @@ void ov_init(ov_ui *ui, int w, int h) {
 	ui->w = w;
 	ui->h = h;
 	ui->focus = ui->bar_focus = ID_BAR + 2;
+	ui->pointer = -1;
+}
+
+void ov_point(ov_ui *ui, const int x[OV_REMOTES], const int y[OV_REMOTES], unsigned valid,
+			  int active) {
+	int i;
+
+	for (i = 0; i < OV_REMOTES; ++i) {
+		ui->px[i] = x[i];
+		ui->py[i] = y[i];
+	}
+	ui->pointing = valid;
+	// Keep the remote in use while it points; otherwise take any that does.
+	if (active >= 0 && (valid & (1u << active)))
+		ui->pointer = active;
+	else if (ui->pointer < 0 || !(valid & (1u << ui->pointer))) {
+		ui->pointer = -1;
+		for (i = 0; i < OV_REMOTES; ++i)
+			if (valid & (1u << i)) {
+				ui->pointer = i;
+				break;
+			}
+	}
+}
+
+// The usable item under the pointer: in the menu that is open, or on the
+// bar, whose buttons switch menus.
+static int hit(const ov_ui *ui, int x, int y) {
+	int i;
+
+	for (i = ui->n - 1; i >= 0; --i) {
+		const ov_item *it = &ui->items[i];
+
+		if (it->kind == K_BUTTON && usable(it) &&
+				(in_layer(ui, it->id) || (it->id >= ID_BAR && it->id < ID_BAR + 5)) &&
+				x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h)
+			return it->id;
+	}
+	return 0;
 }
 
 static void open_menu(ov_ui *ui, int menu, int bar_id) {
@@ -634,12 +673,28 @@ static void back(ov_ui *ui, ov_act_fn act, void *user) {
 	}
 }
 
-static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
-	int id = ui->focus;
+// The highlighted item, which A presses: what the pointer is on, if the
+// pointer was used last and is on something; otherwise the D-pad's focus.
+static int target(const ov_ui *ui) {
+	if (ui->aiming && ui->pointer >= 0 && ui->hover)
+		return ui->hover;
+	return in_layer(ui, ui->focus) ? ui->focus : 0;
+}
 
+static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
+	int id = target(ui);
+
+	if (!id)
+		return;
 	if (id >= ID_BAR && id < ID_BAR + 5) {
 		int i = id - ID_BAR;
+		static const int menus[5] = { MENU_DEV, MENU_SLOT0, MENU_EXIT, MENU_SLOT1, MENU_WM };
 
+		// A bar button of the menu that is open closes it.
+		if (ui->menu != MENU_NONE && ui->menu == menus[i]) {
+			close_menu(ui);
+			return;
+		}
 		if (i == 0)
 			open_menu(ui, MENU_DEV, id);
 		else if (i == 2)
@@ -745,13 +800,15 @@ bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *
 			back(ui, act, user);
 		else if (pressed & OV_A)
 			press(ui, e, act, user);
-		else if (pressed & OV_UP)
+		else if (pressed & (OV_UP | OV_DOWN | OV_LEFT | OV_RIGHT))
+			ui->aiming = false;   // the D-pad takes over the highlight
+		if (!(pressed & (OV_A | OV_B)) && (pressed & OV_UP))
 			move_focus(ui, 0, -1);
-		else if (pressed & OV_DOWN)
+		else if (!(pressed & (OV_A | OV_B)) && (pressed & OV_DOWN))
 			move_focus(ui, 0, 1);
-		else if (pressed & OV_LEFT)
+		else if (!(pressed & (OV_A | OV_B)) && (pressed & OV_LEFT))
 			move_focus(ui, -1, 0);
-		else if (pressed & OV_RIGHT)
+		else if (!(pressed & (OV_A | OV_B)) && (pressed & OV_RIGHT))
 			move_focus(ui, 1, 0);
 	}
 	if (ui->closing)
@@ -767,10 +824,64 @@ bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *
 	ui->open_t = approach(ui->open_t, !(ui->closing && settled));
 
 	layout(ui, e);
+	ui->hover = ui->pointer >= 0 ? hit(ui, ui->px[ui->pointer], ui->py[ui->pointer]) : 0;
+	// The pointer takes the highlight back once it moves a few pixels.
+	if (ui->pointer >= 0) {
+		int dx = ui->px[ui->pointer] - ui->aim_x, dy = ui->py[ui->pointer] - ui->aim_y;
+
+		if (dx * dx + dy * dy > 36) {
+			ui->aiming = true;
+			ui->aim_x = ui->px[ui->pointer];
+			ui->aim_y = ui->py[ui->pointer];
+		}
+	} else {
+		ui->aiming = false;
+	}
+	// Pointing moves the D-pad's focus too, so the pad carries on from there.
+	if (ui->aiming && ui->hover && in_layer(ui, ui->hover))
+		ui->focus = ui->hover;
 	fix_focus(ui, ui->menu == MENU_DEV ? ID_TAB_ACT : ui->menu == MENU_EXIT ? ID_EX_HBC :
 			  ui->menu == MENU_WM ? ID_FIND : ui->menu == MENU_SLOT0 ? ID_SLOT_ITEM :
 			  ui->menu == MENU_SLOT1 ? ID_SLOT_ITEM + 16 : ui->bar_focus);
 	return !(ui->closing && !ui->open_t);
+}
+
+// FNV-1a over everything a frame's pixels depend on.
+static uint32_t fnv(uint32_t h, const void *p, size_t n) {
+	const uint8_t *b = p;
+
+	while (n--)
+		h = (h ^ *b++) * 16777619u;
+	return h;
+}
+
+bool ov_changed(ov_ui *ui, const ov_ext *e) {
+	uint32_t h = 2166136261u;
+	int i, blink = 0;
+
+	h = fnv(h, &ui->n, sizeof(ui->n));
+	h = fnv(h, ui->items, ui->n * sizeof(ui->items[0]));
+	h = fnv(h, &ui->focus, sizeof(ui->focus));
+	h = fnv(h, &ui->hover, sizeof(ui->hover));
+	h = fnv(h, &ui->aiming, sizeof(ui->aiming));
+	h = fnv(h, &ui->pointing, sizeof(ui->pointing));
+	h = fnv(h, &ui->pointer, sizeof(ui->pointer));
+	h = fnv(h, ui->px, sizeof(ui->px));
+	h = fnv(h, ui->py, sizeof(ui->py));
+	h = fnv(h, &ui->open_t, sizeof(ui->open_t));
+	h = fnv(h, &ui->menu, sizeof(ui->menu));
+	h = fnv(h, &ui->paused, sizeof(ui->paused));
+	for (i = 0; i < OV_REMOTES; ++i) {
+		h = fnv(h, &e->remote[i], sizeof(e->remote[i]));
+		blink |= e->remote[i].finding;
+	}
+	// Find blinks the LEDs from the frame count.
+	if (blink)
+		h = fnv(h, &ui->frame, sizeof(ui->frame));
+	if (h == ui->drawn)
+		return false;
+	ui->drawn = h;
+	return true;
 }
 
 // HBC's look: dialog_background.png runs from dark blue at the top through
@@ -784,7 +895,9 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 	const ov_color on_bot = ov_rgb(0x1d, 0x4a, 0x60);
 	const ov_color white = ov_rgb(0xff, 0xff, 0xff), grey = ov_rgb(0xa8, 0xa8, 0xa8);
 	const ov_color labelc = ov_rgb(0xc9, 0xd6, 0xde), dimc = ov_rgb(0x5a, 0x60, 0x66);
-	const ov_color focus = ov_rgb(0x9f, 0xdc, 0xf5), card = ov_rgb(0x1c, 0x3a, 0x4c);
+	const ov_color focus = ov_rgb(0xf4, 0xfb, 0xff), card = ov_rgb(0x1c, 0x3a, 0x4c);
+	const ov_color hi_top = ov_rgb(0x8a, 0x8a, 0x8a), hi_mid = ov_rgb(0x55, 0x55, 0x55);
+	const ov_color hi_bot = ov_rgb(0x40, 0x40, 0x40), on_hi = ov_rgb(0x8c, 0xc8, 0xe6);
 	const ov_color led_on = ov_rgb(0x7f, 0xc4, 0xe0), led_off = ov_rgb(0x38, 0x38, 0x38);
 	int i;
 
@@ -832,7 +945,7 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 			break;
 		}
 		case K_BUTTON: {
-			bool focused = it->id == ui->focus && in_layer(ui, it->id) && !(it->flags & F_BLANK);
+			bool focused = !(it->flags & F_BLANK) && it->id == target(ui);
 			const ov_font *f = (it->flags & (F_ON | F_SEL)) || focused ? &ov_font_bold : &ov_font_regular;
 			ov_color tc = dis ? dimc : (it->flags & (F_ON | F_SEL)) || focused ? white : grey;
 			int tw = ov_text_width(f, it->text);
@@ -841,17 +954,19 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, black, black, black, dimc, 110);
 				break;
 			}
+			// The highlight has to survive a TV's blur and interlacing: a
+			// 3-pixel white frame around a brighter body, not a thin line.
+			if (focused)
+				ov_panel(c, it->x - 4, it->y - 4, it->w + 8, it->h + 8, 9, focus, focus, focus,
+						 focus, 255);
 			if (it->flags & F_ON)
-				ov_panel(c, it->x, it->y, it->w, it->h, 6, on_top, on_mid, on_bot, edge, dis ? 110 : 255);
+				ov_panel(c, it->x, it->y, it->w, it->h, 6, focused ? on_hi : on_top, on_mid, on_bot,
+						 edge, dis ? 110 : 255);
+			else if (focused)
+				ov_panel(c, it->x, it->y, it->w, it->h, 6, hi_top, hi_mid, hi_bot, edge, 255);
 			else
 				ov_panel(c, it->x, it->y, it->w, it->h, 6, btn_top, btn_mid, btn_bot,
 						 it->flags & F_SEL ? on_mid : edge, dis ? 110 : 255);
-			if (focused) {
-				ov_panel(c, it->x - 2, it->y - 2, it->w + 4, 2, 1, focus, focus, focus, focus, 255);
-				ov_panel(c, it->x - 2, it->y + it->h, it->w + 4, 2, 1, focus, focus, focus, focus, 255);
-				ov_fill(c, it->x - 2, it->y, 2, it->h, focus, 255);
-				ov_fill(c, it->x + it->w, it->y, 2, it->h, focus, 255);
-			}
 			ov_text(c, f, it->x + (it->w - tw) / 2, it->y + (it->h - f->height) / 2, it->text, tc);
 			break;
 		}
@@ -870,4 +985,18 @@ void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c) {
 		}
 	}
 	ov_noclip(c);
+
+	// A hand per remote pointing at the screen, the one in use on top.
+	if (!ui->paused) {
+		int r;
+
+		for (r = 0; r <= OV_REMOTES; ++r) {
+			int k = r < OV_REMOTES ? r : ui->pointer;
+
+			if (k < 0 || !(ui->pointing & (1u << k)) || (r < OV_REMOTES && k == ui->pointer))
+				continue;
+			ov_image(c, ui->px[k] - OV_CURSOR_HOT_X, ui->py[k] - OV_CURSOR_HOT_Y, OV_CURSOR_W,
+					 OV_CURSOR_H, ov_cursor_rgba);
+		}
+	}
 }

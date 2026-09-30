@@ -213,7 +213,13 @@ Its thread runs at priority 40 (libogc's main thread runs at 64) and at 48
 during a transfer, and it frees its transfer buffers after each request.
 
 `HBCS` from an app that links the overlay adds `wpad_handles`: whether the
-agent found and checked wiiuse's per-remote handles (below).
+agent found and checked wiiuse's per-remote handles (below). Every agent
+reports its own cost: `agent_idle_wakes` and `agent_idle_us` (wake-ups to
+check for a connection and their total time), `agent_request_ms` (time
+spent answering), and `heap_arena` (newlib's heap size). After the overlay
+was open, the agent and HBC report `overlay`: frames drawn, `avg_us` and
+`max_us` per drawn frame, `bytes` borrowed, and `buffers` (`own`, `lent`,
+or `app's` when it drew over the app's framebuffer).
 
 ### HOME overlay
 
@@ -239,7 +245,15 @@ if every handle names its own channel; otherwise those settings are greyed
 out. libogc re-applies the Wii's own sensor bar and IR settings whenever a
 remote connects, so a small thread re-applies the session's, and holds
 rumble off for remotes whose rumble is switched off, while any such setting
-is in force. Find streams a chime to the remote's speaker (4-bit ADPCM at
+is in force. The overlay redraws only frames that differ from the last one drawn (a
+signature of the laid-out items, the pointers and the remotes' state), and
+draws opaque runs as 32-bit stores with no divides; on the bench Wii that
+took a full frame from 19.1 ms to 7.9 ms on average. While it is open, IR is
+on for every connected remote, mapped to the framebuffer; each remote gets
+back its previous data format on close (left on if the handles are missing
+and the format is unknown).
+
+Find streams a chime to the remote's speaker (4-bit ADPCM at
 6 kHz, libogc's speaker set-up) with its amplitude ramping up over 3 s.
 
 ### Crash reports

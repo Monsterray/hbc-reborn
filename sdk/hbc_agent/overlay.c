@@ -90,6 +90,92 @@ static wiimote *remote(int chan) {
 	return (handles[chan]->state & WM_STATE_CONNECTED) ? handles[chan] : NULL;
 }
 
+// ---- The pointer -----------------------------------------------------------
+//
+// The overlay turns on IR for every connected remote while it is open (and
+// for any that connect meanwhile), with the IR mapped to the framebuffer,
+// then gives each remote back the data format the app had it in.
+
+static struct {
+	bool set;           // this remote has the overlay's format
+	int fmt;            // the app's, to restore; -1 if unknown
+} ir[4];
+
+// The data format the app left a remote in, from wiiuse's state flags; -1
+// without the remote handles (then IR stays on after the overlay, which
+// costs an app that did not use it only a little more data per report).
+static int app_format(int chan) {
+	wiimote *wm = remote(chan);
+
+	if (!wm)
+		return -1;
+	return wm->state & WM_STATE_IR ? WPAD_FMT_BTNS_ACC_IR :
+		   wm->state & WM_STATE_ACC ? WPAD_FMT_BTNS_ACC : WPAD_FMT_BTNS;
+}
+
+static void ir_update(int w, int h) {
+	int chan;
+	u32 type;
+
+	for (chan = 0; chan < 4; ++chan) {
+		bool up = WPAD_Probe(chan, &type) == WPAD_ERR_NONE;
+
+		if (up && !ir[chan].set) {
+			ir[chan].fmt = app_format(chan);
+			WPAD_SetDataFormat(chan, WPAD_FMT_BTNS_ACC_IR);
+			WPAD_SetVRes(chan, w, h);
+			ir[chan].set = true;
+		} else if (!up) {
+			ir[chan].set = false;
+		}
+	}
+}
+
+static void ir_restore(void) {
+	int chan;
+
+	for (chan = 0; chan < 4; ++chan)
+		if (ir[chan].set) {
+			if (ir[chan].fmt >= 0)
+				WPAD_SetDataFormat(chan, ir[chan].fmt);
+			ir[chan].set = false;
+		}
+}
+
+// Where each remote points, in framebuffer pixels.
+static unsigned ir_read(int x[4], int y[4]) {
+	unsigned valid = 0;
+	int chan;
+
+	for (chan = 0; chan < 4; ++chan) {
+		WPADData *d = WPAD_Data(chan);
+
+		x[chan] = y[chan] = 0;
+		if (ir[chan].set && d && d->err == WPAD_ERR_NONE && d->ir.valid) {
+			x[chan] = (int) d->ir.x;
+			y[chan] = (int) d->ir.y;
+			valid |= 1u << chan;
+		}
+	}
+	return valid;
+}
+
+// ---- Cost, for the status reply --------------------------------------------
+
+static struct {
+	u32 frames, avg_us, max_us;
+	u32 bytes;          // framebuffer memory it borrowed
+	const char *buffers;
+} cost;
+
+void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes, const char **buffers) {
+	*frames = cost.frames;
+	*avg_us = cost.avg_us;
+	*max_us = cost.max_us;
+	*bytes = cost.bytes;
+	*buffers = cost.buffers;
+}
+
 int agent_wpad_handles(void) {
 	remote(0);
 	return handles != NULL;
@@ -627,26 +713,16 @@ static void act(int action, int arg, void *user) {
 	case OVA_DISCONNECT:
 		WPAD_Disconnect(arg);
 		break;
-	case OVA_TEST_START: {
-		wiimote *wm = remote(arg);
-
+	case OVA_TEST_START:
 		run->test_chan = arg;
-		run->test_fmt = !wm ? WPAD_FMT_BTNS :
-				wm->state & WM_STATE_IR ? WPAD_FMT_BTNS_ACC_IR :
-				wm->state & WM_STATE_ACC ? WPAD_FMT_BTNS_ACC : WPAD_FMT_BTNS;
-		WPAD_SetDataFormat(arg, WPAD_FMT_BTNS_ACC_IR);
-		WPAD_SetVRes(arg, run->w, run->h);
 		break;
-	}
 	case OVA_TEST_STOP:
-		WPAD_SetDataFormat(arg, run->test_fmt);
 		run->test_chan = -1;
 		break;
 	case OVA_CAL_START:
 		memset(&cal_run, 0, sizeof(cal_run));
 		cal_run.chan = arg;
 		cal[arg].valid = false;
-		WPAD_SetDataFormat(arg, WPAD_FMT_BTNS_ACC_IR);
 		break;
 	case OVA_CONNECT:
 		WPAD_StartPairing();
@@ -679,6 +755,8 @@ static void act(int action, int arg, void *user) {
 		break;
 	}
 }
+
+static int last_chan = -1;
 
 static unsigned read_input(void) {
 	static u32 key_wait;
@@ -735,8 +813,10 @@ static unsigned read_input(void) {
 			out |= OV_B;
 		if (b & (WPAD_BUTTON_HOME | WPAD_CLASSIC_BUTTON_HOME))
 			out |= OV_HOME;
-		if (b)
+		if (b) {
 			out |= OV_ANY;
+			last_chan = chan;
+		}
 	}
 	return out;
 }
@@ -803,15 +883,27 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	LWP_CreateThread(&sd, sd_thread, &r, NULL, 16 * 1024, 30);
 
 	ov_init(&ui, r.w, r.h);
+	last_chan = -1;
+	memset(&cost, 0, sizeof(cost));
+	cost.buffers = !own ? "lent" : fb[0] == (u8 *) ((u32) app_fb & ~0x40000000) ? "app's" : "own";
+	cost.bytes = !own ? (fb[1] ? 2 : 1) * size : (fb[1] ? size : 0) +
+			(cost.buffers[0] == 'o' ? size : 0);
+	cost.bytes += size;   // the frozen frame
 	while (running) {
 		ov_canvas c;
-		unsigned pressed;
+		unsigned pressed, pointing;
+		int px[4], py[4];
 		u8 *back = fb[fb[1] ? cur : 0];
+		u64 t0 = gettime();
+		u32 us;
 
 		if (agent_cfg()->on_frame)
 			agent_cfg()->on_frame(agent_cfg()->user);
 		poll(&r);
+		ir_update(r.w, r.h);
 		pressed = read_input();
+		pointing = ir_read(px, py);
+		ov_point(&ui, px, py, pointing, last_chan);
 		cal_sample();
 		// Find without handles: pulse the rumble from here.
 		for (i = 0; i < 4; ++i)
@@ -830,6 +922,12 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 			pressed = OV_HOME;
 		running = ov_step(&ui, &r.ext, pressed, act, NULL);
 
+		// Nothing on screen changed (a menu just sitting there): keep the
+		// picture the VI already shows, and spend no time drawing.
+		if (!ov_changed(&ui, &r.ext)) {
+			VIDEO_WaitVSync();
+			continue;
+		}
 		c.fb = back;
 		c.w = r.w;
 		c.h = r.h;
@@ -842,6 +940,12 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 			ov_draw(&ui, &r.ext, &c);
 		}
 		DCFlushRange(back, size);
+		// The overlay's own work this frame, before it waits for the VI.
+		us = ticks_to_microsecs(diff_ticks(t0, gettime()));
+		cost.avg_us = (cost.avg_us * cost.frames + us) / (cost.frames + 1);
+		if (us > cost.max_us)
+			cost.max_us = us;
+		cost.frames++;
 		VIDEO_SetNextFramebuffer(back);
 		VIDEO_Flush();
 		VIDEO_WaitVSync();
@@ -857,8 +961,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	VIDEO_SetNextFramebuffer(app_fb);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
-	if (r.test_chan >= 0)
-		WPAD_SetDataFormat(r.test_chan, r.test_fmt);
+	ir_restore();
 	if (sd != LWP_THREAD_NULL)
 		LWP_JoinThread(sd, NULL);
 	if (own) {

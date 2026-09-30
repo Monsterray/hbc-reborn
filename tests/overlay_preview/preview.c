@@ -185,6 +185,24 @@ int main(int argc, char **argv) {
 	keys(&ui, "ll" "a");
 	capture(&ui, "14-slot-menu");
 	keys(&ui, "b");
+
+	// The Wii Remote pointer: over WiiMote on the bar, then press A.
+	{
+		int x[OV_REMOTES] = { 553, 200 }, y[OV_REMOTES] = { 434, 150 };
+
+		ov_point(&ui, x, y, 3, 0);
+		keys(&ui, "");
+		capture(&ui, "15-pointer-hover");
+		printf("hover %d\n", ui.hover);
+		ov_point(&ui, x, y, 3, 0);
+		ov_step(&ui, &ext, OV_A, act, NULL);
+		for (i = 0; i < 20; ++i) {
+			ov_point(&ui, x, y, 3, 0);
+			ov_step(&ui, &ext, 0, act, NULL);
+		}
+		capture(&ui, "16-pointer-press");
+		ov_point(&ui, x, y, 0, -1);
+	}
 	ext.toast[0] = 0;
 	keys(&ui, "h");
 	for (i = 0; i < 40 && ov_step(&ui, &ext, 0, act, NULL); ++i)

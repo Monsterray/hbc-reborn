@@ -61,8 +61,16 @@ static volatile bool exit_requested;
 static PPCExcptPanicFn prev_panic;
 
 volatile int hbc_agent_log_muted;
+
+// The agent thread's own cost, for the status reply: its wake-ups while
+// idle and the time they took (checking for a connection), and the time
+// spent answering requests.
+static u32 idle_wakes;
+static u64 idle_ticks, request_ticks;
 // In overlay.c, when the app links it: whether the remote handles were found.
 int agent_wpad_handles(void) __attribute__((weak));
+void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes,
+						const char **buffers) __attribute__((weak));
 volatile bool agent_crash_stay;
 volatile bool agent_listen_enabled = true;
 
@@ -320,13 +328,13 @@ static s32 status_json(char *buf, size_t size) {
 	n = snprintf(buf, size,
 			"{\"agent\":true,\"version\":\"%s\",\"proto\":%d,\"app\":\"%s\","
 			"\"app_version\":\"%s\",\"uptime_ms\":%u,\"ios\":%d,\"ios_revision\":%d,"
-			"\"ahbprot\":%s,\"mem1_free\":%u,\"mem2_free\":%u,\"heap_free\":%u,"
+			"\"ahbprot\":%s,\"mem1_free\":%u,\"mem2_free\":%u,\"heap_free\":%u,\"heap_arena\":%u,"
 			"\"agent_stack_used\":%u,\"agent_stack_size\":%u,"
 			"\"ip\":\"%u.%u.%u.%u\",\"exit_requested\":%s,\"inserted\":[",
 			CHANNEL_VERSION_STR, AGENT_PROTO, name, version, uptime_ms(),
 			IOS_GetVersion(), IOS_GetRevision(),
 			read32(0x0d800064) == 0xffffffff ? "true" : "false",
-			SYS_GetArena1Size(), SYS_GetArena2Size(), heap.fordblks,
+			SYS_GetArena1Size(), SYS_GetArena2Size(), heap.fordblks, heap.arena,
 			stack_used(), AGENT_STACK,
 			ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff,
 			exit_requested ? "true" : "false");
@@ -369,6 +377,20 @@ static s32 status_json(char *buf, size_t size) {
 	if (agent_wpad_handles)
 		n += snprintf(buf + n, size - n, ",\"wpad_handles\":%s",
 				agent_wpad_handles() ? "true" : "false");
+	// What the HOME overlay cost the last time it was open.
+	if (agent_overlay_cost) {
+		u32 frames, avg, max, bytes;
+		const char *buffers;
+
+		agent_overlay_cost(&frames, &avg, &max, &bytes, &buffers);
+		if (frames)
+			n += snprintf(buf + n, size - n, ",\"overlay\":{\"frames\":%u,\"avg_us\":%u,"
+					"\"max_us\":%u,\"bytes\":%u,\"buffers\":\"%s\"}",
+					frames, avg, max, bytes, buffers);
+	}
+	n += snprintf(buf + n, size - n, ",\"agent_idle_wakes\":%u,\"agent_idle_us\":%u,"
+			"\"agent_request_ms\":%u", idle_wakes, (u32) ticks_to_microsecs(idle_ticks),
+			(u32) ticks_to_millisecs(request_ticks));
 	n += snprintf(buf + n, size - n, ",\"tcp_last_failure\":\"%s\"}", tcp_last_failure());
 	return n;
 }
@@ -412,7 +434,7 @@ static void __attribute__((noreturn)) agent_exit(void) {
 }
 
 static void handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[1024];
+	char json[1536];
 
 	if (!memcmp(hdr, "HBCV", 4)) {
 		static const char version[] = CHANNEL_VERSION_STR " agent";
@@ -498,13 +520,17 @@ static void *agent_thread(void *arg) {
 			net_poll(&sd, 1, AGENT_ACCEPT_POLL_MS);
 		}
 
+		u64 woke = gettime();
 		memset(&sa, 0, sizeof(sa));
 		sa.sin_family = AF_INET;
 		sa.sin_len = sizeof(sa);
 		len_sa = sizeof(sa);
 		s = net_accept(ls, (struct sockaddr *) &sa, &len_sa);
-		if (s == -EAGAIN)
+		if (s == -EAGAIN) {
+			idle_wakes++;
+			idle_ticks += diff_ticks(woke, gettime());
 			continue;
+		}
 		if (s < 0) {
 			net_close(ls);
 			ls = -1;
@@ -520,6 +546,7 @@ static void *agent_thread(void *arg) {
 			continue;
 		}
 		handle(s, hdr, sa.sin_addr.s_addr);
+		request_ticks += diff_ticks(woke, gettime());
 	}
 	return NULL;
 }

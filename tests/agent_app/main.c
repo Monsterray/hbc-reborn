@@ -11,6 +11,7 @@
 // "Hello", and DEV > Save writes sd:/hbctest/agent_save.txt. Output goes to
 // the network log (hbc_netlog.h) and the TV.
 
+#include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -98,7 +99,17 @@ int main(int argc, char **argv) {
 	cfg.version = "1";
 	cfg.app_polls_exit = true;
 	cfg.on_save = save;
-	res = hbc_agent_init(&cfg);
+	{
+		// What starting the agent costs: heap, and MEM1/MEM2 arena.
+		struct mallinfo m0 = mallinfo();
+		u32 a1 = SYS_GetArena1Size(), a2 = SYS_GetArena2Size();
+
+		res = hbc_agent_init(&cfg);
+		struct mallinfo m1 = mallinfo();
+		printf("agent_app: init cost heap %d bytes (in use), arena1 %d, arena2 %d\n",
+			   m1.uordblks - m0.uordblks, (int) (a1 - SYS_GetArena1Size()),
+			   (int) (a2 - SYS_GetArena2Size()));
+	}
 	hbc_agent_set_slot(0, "Hello", hello, NULL);
 	printf("agent_app: agent %d, fat %d, mode '%s'\n", res, fat, mode);
 

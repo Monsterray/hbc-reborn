@@ -155,6 +155,25 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.7.1: the pointer, and the overlay's cost
+
+- **Pointer:** the overlay turns on IR for every connected remote while open (restoring
+  each remote's format after), draws HBC's hand cursor for each remote on screen, and
+  presses what the remote in use points at.
+- **Frame time was over budget.** On the bench Wii a drawn frame took 19.1 ms on average
+  (35 ms at most): every blended pixel did three integer divides, and each frame was
+  redrawn whether or not it changed. Now opaque runs are 32-bit stores, blending uses a
+  shift instead of a divide, the dimmed background comes from lookup tables, and
+  unchanged frames are not drawn: 7.9 ms average, 13.9 ms at most, and 65 of 475 frames
+  drawn in the same sequence. The PC preview matches the old output within 3 levels.
+- **The highlight was invisible on a TV.** A 2-pixel light outline blurred away on an
+  interlaced picture, and with the pointer in use a remote aimed at the screen but at no
+  button hid the D-pad's highlight. The highlight is now a 3-pixel white frame around a
+  brighter body, and it follows whichever of the pointer and the D-pad moved last.
+- **Measured cost** (`tests/agent_cost.py`, bench Wii): start-up 13 KB heap and 16 KB
+  arena; idle 0.07% CPU (5 wake-ups/s, 140 us each); overlay 1.8 MB while open,
+  nothing when closed. README has the table.
+
 ### 1.7.0: HBC's HOME menu is the agent's overlay
 
 - **HOME:** `home.c` replaces `m_main.c`. The HBC slot's menu carries the old menu's

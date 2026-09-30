@@ -7,6 +7,7 @@
 #define OV_UI_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "ov_draw.h"
 
@@ -118,15 +119,31 @@ typedef struct {
 	int after;                          /* action to run once closed */
 	int after_arg;
 	unsigned frame;
+	/* The Wii Remotes' pointers (ov_point), and the item under the one in
+	   use; while it points at the screen, A presses that item. */
+	int px[OV_REMOTES], py[OV_REMOTES];
+	unsigned pointing;    /* bit per remote on screen */
+	int pointer;          /* the remote in use, or -1 */
+	int hover;            /* item under it, or 0 */
+	bool aiming;          /* the pointer, not the D-pad, was used last */
+	int aim_x, aim_y;     /* where it was when last checked */
+	uint32_t drawn;       /* signature of the last frame drawn */
 	int n;
 	ov_item items[OV_MAX_ITEMS];
 } ov_ui;
 
 void ov_init(ov_ui *ui, int w, int h);
+/* Before each ov_step: where each remote points (valid: a bit per remote)
+ * and which remote is in use (the last to press a button), or -1. */
+void ov_point(ov_ui *ui, const int x[OV_REMOTES], const int y[OV_REMOTES], unsigned valid,
+			  int active);
 /* One frame: handle presses, advance animations, lay out. Returns false
  * once the overlay has fully closed; ui->after then names an action
  * (OVA_SLOT or OVA_RESTART_APP) to run in the app, or 0. */
 bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *user);
+/* Whether the frame ov_step just laid out looks different from the last
+ * one drawn (which it then records); false means the screen can stay. */
+bool ov_changed(ov_ui *ui, const ov_ext *e);
 /* Draws the laid-out frame over whatever the canvas holds. */
 void ov_draw(const ov_ui *ui, const ov_ext *e, ov_canvas *c);
 
