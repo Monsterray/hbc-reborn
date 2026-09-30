@@ -428,7 +428,10 @@ need inbound TCP on the log port (`--log-port`) allowed on the PC.
 
 When several people or agents share one Wii, queue hardware jobs through
 [`tools/wii-bench`](tools/wii-bench/README.md): one queue and one dispatcher,
-which starts a job only once HBC has been idle for 20 s.
+which starts a job only once HBC has been idle for 20 s. Workstations on Windows,
+Linux and macOS take turns through a lease server in Docker; the bench README has
+the steps for [the server](tools/wii-bench/README.md#setting-up-the-lease-server-from-clone-to-a-running-container)
+and for [each workstation](tools/wii-bench/README.md#setting-up-each-workstation).
 
 ```sh
 python3 tools/wii-bench/wiibench.py add --name "devnet" --cwd . -- python3 tests/wii_devnet.py --log-port 4300

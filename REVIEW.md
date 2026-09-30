@@ -155,6 +155,31 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.6: one bench Wii for several workstations, on any OS
+
+- **Problem:** the bench queue lived in `C:\tools\wii-bench` on one PC, and its
+  dispatcher lock held a local PID, so other workstations couldn't join. They were
+  held off only by the HBC-idle check, with no order between them. Job
+  `20260930-002306` waited from 00:23 to 08:44 while another workstation had the Wii.
+- **Fix:** a lease server, `wiibench.py serve` (stdlib only, TCP 4310, a Dockerfile
+  and `compose.yaml` for the homeserver). Each workstation keeps its own queue and
+  dispatcher, and takes the lease before each job:
+  - first come, first served, so turns alternate between workstations;
+  - renewed every 15 s; a lease or a place in line with no renewal for 60 s is dropped;
+  - after a server restart, a 60 s grace lets a running job reclaim its lease;
+  - an unreachable server blocks the dispatcher instead of being skipped.
+- **Setup on every OS:** `wiibench.py setup --server URL` writes the shim and the
+  server URL into the state directory (`C:\tools\wii-bench` or `~/.wii-bench`). A
+  server file written by Windows PowerShell 5.1 (UTF-16) or with a BOM is read too.
+  Job logs are read as UTF-8, and `serve` ends on SIGTERM (`docker stop`).
+- **Checked:** 11 unit tests (lease order, expiry, reclaim, an HTTP round trip,
+  `setup`, the server file's encodings) on Windows and in WSL Ubuntu. The image was
+  built and run in WSL's Docker, and a Windows dispatcher and a Linux dispatcher
+  sharing it ran WIN1, LINUX1, WIN2, LINUX2 with no overlap. The README's Windows and
+  Linux check commands were run as written.
+- **Not checked:** macOS by hand (CI's macOS job runs the unit tests), `docker compose`
+  (WSL has no Compose plugin), the homeserver, and a real Wii job under the lease.
+
 ### 1.8.5: the libogc2 crash hook on the bench Wii, the agent's stack on libogc2
 
 - **On hardware:** `tests/agent_app` built on libogc2 (devkitPPC r41-2) passed

@@ -13,6 +13,13 @@ a time, so work goes through this queue instead of straight to the Wii:
   python tools/wii-bench/wiibench.py status       the queue, the job running, the Wii now
   python tools/wii-bench/wiibench.py cancel ID    remove a job that has not started
   python tools/wii-bench/wiibench.py run          the dispatcher (add starts it for you)
+  python tools/wii-bench/wiibench.py serve        the lease server shared by every workstation
+  python tools/wii-bench/wiibench.py setup [--server URL]   make this workstation a client
+
+Several workstations share the Wii through a lease server (`serve`, run in Docker on the
+homeserver): each keeps its own queue and dispatcher, and a dispatcher takes the lease before
+each job. The server's URL is $WII_BENCH_SERVER, else the file HOME/server; with neither the
+dispatcher runs alone, as before.
 
 The dispatcher runs one job at a time, oldest first, and only when HBC has answered on TCP
 4299 for --idle seconds in a row (default 20): HBC answers only in its menu, so a Wii that is
@@ -143,6 +150,234 @@ def kill_tree(proc):
             pass
 
 
+# --- the bench lease: one turn at the Wii across workstations --------------------------------
+#
+# Each workstation keeps its own queue and dispatcher (a job runs where it was added: its build,
+# its cwd, its firewall rule for the network log). With a lease server configured, a dispatcher
+# takes the lease before each job and gives it back after, so workstations take turns, first
+# come first served. The server is `wiibench.py serve` (Dockerfile alongside); a client finds it
+# in $WII_BENCH_SERVER, else in the file HOME/server (e.g. http://homeserver:4310).
+
+TTL = 60                                           # a lease or a place in line not renewed dies
+
+
+class Leases:
+    """The server's state. One holder; waiters in arrival order. Every client call refreshes
+    its entry; one not heard from for ttl seconds is dropped, so a dead workstation frees the
+    Wii by itself. After a restart nothing is granted for one ttl: a holder still running its
+    job renews within that time and gets its lease back."""
+
+    def __init__(self, ttl=TTL, clock=time.monotonic):
+        self.ttl, self.clock = ttl, clock
+        self.holder, self.waiters = None, {}
+        self.grace_until = clock() + ttl
+
+    def _expire(self, now):
+        if self.holder and now - self.holder["seen"] > self.ttl:
+            self.holder = None
+        for t in [t for t, w in self.waiters.items() if now - w["seen"] > self.ttl]:
+            del self.waiters[t]
+
+    def acquire(self, d):
+        now = self.clock()
+        self._expire(now)
+        t = d["ticket"]
+        if self.holder and self.holder["ticket"] == t:
+            self.holder["seen"] = now
+            return {"granted": True}
+        w = self.waiters.setdefault(t, dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S")))
+        w["seen"] = now
+        if self.holder is None and now >= self.grace_until and next(iter(self.waiters)) == t:
+            self.holder = self.waiters.pop(t)
+            self.holder["granted"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            return {"granted": True}
+        return {"granted": False, "position": list(self.waiters).index(t) + 1, "holder": self._show(self.holder, now)}
+
+    def renew(self, d):
+        now = self.clock()
+        self._expire(now)
+        if self.holder is None and d["ticket"] not in self.waiters:   # after a restart: reclaim
+            self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed")
+        if self.holder and self.holder["ticket"] == d["ticket"]:
+            self.holder["seen"] = now
+            return {"ok": True}
+        return {"ok": False}
+
+    def release(self, d):
+        if self.holder and self.holder["ticket"] == d["ticket"]:
+            self.holder = None
+        self.waiters.pop(d["ticket"], None)
+        return {"ok": True}
+
+    def _show(self, e, now):
+        return e and {k: v for k, v in dict(e, age=int(now - e["seen"])).items() if k not in ("seen", "ticket")}
+
+    def status(self):
+        now = self.clock()
+        self._expire(now)
+        return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in self.waiters.values()]}
+
+
+def make_server(port, ttl=TTL, host="0.0.0.0"):
+    import http.server
+    import threading
+    leases, mutex = Leases(ttl), threading.Lock()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def reply(self, body, code=200):
+            data = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path != "/status":
+                return self.reply({"error": "not found"}, 404)
+            with mutex:
+                self.reply(leases.status())
+
+        def do_POST(self):
+            op = {"/acquire": leases.acquire, "/renew": leases.renew, "/release": leases.release}.get(self.path)
+            try:
+                d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                d["ticket"]
+            except (ValueError, KeyError, TypeError):
+                return self.reply({"error": "bad request"}, 400)
+            if op is None:
+                return self.reply({"error": "not found"}, 404)
+            with mutex:
+                self.reply(op(d))
+
+        def log_message(self, fmt, *args):
+            if not self.path.startswith(("/status", "/acquire", "/renew")):   # the polls are noise
+                super().log_message(fmt, *args)
+
+    return http.server.ThreadingHTTPServer((host, port), Handler)
+
+
+def cmd_serve(a):
+    srv = make_server(a.port, a.ttl, a.host)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # PID 1 in Docker ignores it otherwise
+    print(f"wii-bench lease server on {a.host or '*'}:{a.port}, ttl {a.ttl} s", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+def read_setting(p):
+    """A one-line setting file, however it was written: Windows PowerShell 5.1's `echo x > f`
+    makes UTF-16 with a BOM, Notepad may add a UTF-8 BOM."""
+    b = p.read_bytes()
+    return (b.decode("utf-16") if b[:2] in (b"\xff\xfe", b"\xfe\xff") else b.decode("utf-8-sig")).strip()
+
+
+def lease_server():
+    url = os.environ.get("WII_BENCH_SERVER")
+    if url is None:
+        try:
+            url = read_setting(HOME / "server")
+        except (OSError, UnicodeDecodeError):
+            url = ""
+    return url.rstrip("/")
+
+
+def lease_call(path, body=None):
+    import urllib.request
+    req = urllib.request.Request(lease_server() + path, method="POST" if body is not None else "GET",
+                                 data=body is not None and json.dumps(body).encode() or None,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+class Turn:
+    """This dispatcher's turn at the Wii: waits in line for the lease, then keeps it renewed
+    until released. Without a lease server it is a no-op (a single workstation)."""
+
+    def __init__(self, name):
+        self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name}
+        self.stop = None
+
+    def __enter__(self):
+        if not lease_server():
+            return self
+        import threading
+        said = None
+        while True:
+            try:
+                r = lease_call("/acquire", self.info)
+            except OSError as e:
+                r = {"granted": False, "error": str(e)}
+            if r["granted"]:
+                break
+            msg = (f"lease server {lease_server()} unreachable: {r['error']}" if "error" in r else
+                   f"waiting for the Wii: place {r['position']} in line"
+                   + (f", held by {r['holder']['host']} for {r['holder']['name']}" if r.get("holder") else ""))
+            if msg != said:
+                print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+                said = msg
+            time.sleep(5)
+        print(time.strftime("%Y-%m-%d %H:%M:%S ") + f"lease taken for {self.info['name']}", flush=True)
+        self.stop = threading.Event()
+
+        def renew():
+            while not self.stop.wait(TTL / 4):
+                try:
+                    if not lease_call("/renew", self.info)["ok"]:
+                        print(time.strftime("%Y-%m-%d %H:%M:%S ") + "lease lost: another workstation may have the Wii", flush=True)
+                except OSError:
+                    pass                           # retried; the server keeps it for TTL
+        threading.Thread(target=renew, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        if self.stop:
+            self.stop.set()
+            try:
+                lease_call("/release", self.info)
+            except OSError:
+                pass                               # it expires after TTL
+
+
+SHIM = """#!/usr/bin/env python3
+# Written by `wiibench.py setup`: the bench queue's source lives in git ({src}).
+# The queue's state stays in this directory, so every project that calls this path shares
+# one queue and one dispatcher on this workstation.
+import os, runpy, sys
+src = os.environ.get("WII_BENCH_SRC", {src!r})
+os.environ.setdefault("WII_BENCH_HOME", os.path.dirname(os.path.abspath(__file__)))
+sys.argv[0] = src
+runpy.run_path(src, run_name="__main__")
+"""
+
+
+def cmd_setup(a):
+    """Make this workstation a bench client: HOME/wiibench.py (a shim to this file, the path
+    other projects call) and, with --server, HOME/server. Safe to run again."""
+    HOME.mkdir(parents=True, exist_ok=True)
+    shim, src = HOME / "wiibench.py", str(pathlib.Path(__file__).resolve())
+    if shim.exists() and "runpy.run_path" not in shim.read_text(encoding="utf-8", errors="replace"):
+        sys.exit(f"{shim} exists and is not a shim; move it away first")
+    if shim.resolve() != pathlib.Path(src):
+        shim.write_text(SHIM.format(src=src), encoding="utf-8", newline="\n")
+        print(f"shim   {shim} -> {src}")
+    if a.server is not None:
+        (HOME / "server").write_text(a.server.strip() + "\n", encoding="utf-8", newline="\n")
+    print(f"state  {HOME}")
+    print(f"server {lease_server() or 'none: this workstation has the Wii to itself'}")
+    if lease_server():
+        try:
+            lease_call("/status")
+            print("        reachable")
+        except OSError as e:
+            print(f"        unreachable: {e}")
+    print(f"Wii    {WII}: {'in HBC' if hbc_idle() else 'not answering on TCP 4299'}")
+    print("Jobs that use the network log need inbound TCP 4300 open on this machine.")
+
+
 def cmd_add(a):
     for d in (PENDING, RUNNING, DONE):
         d.mkdir(parents=True, exist_ok=True)
@@ -214,14 +449,15 @@ def cmd_run(a):
                     return
                 time.sleep(5)
                 continue
-            quiet = 0.0
-            while quiet < a.idle:                  # HBC in its menu, and staying there
-                t = time.monotonic()
-                quiet = quiet + 5 if hbc_idle() else 0.0
-                time.sleep(max(0.0, 5 - (time.monotonic() - t)))
-            q = jobs(PENDING)                      # a cancel may have emptied it meanwhile
-            if q:
-                run_job(q[0])
+            with Turn(load(q[0])["name"]):         # other workstations' jobs go first if first in line
+                quiet = 0.0
+                while quiet < a.idle:              # HBC in its menu, and staying there
+                    t = time.monotonic()
+                    quiet = quiet + 5 if hbc_idle() else 0.0
+                    time.sleep(max(0.0, 5 - (time.monotonic() - t)))
+                q = jobs(PENDING)                  # a cancel may have emptied it meanwhile
+                if q:
+                    run_job(q[0])
             empty_since = time.monotonic()
     finally:
         if dispatcher_pid() == os.getpid():
@@ -231,6 +467,15 @@ def cmd_run(a):
 def cmd_status(a):
     pid = dispatcher_pid()
     print(f"Wii {WII}: {'in HBC (free)' if hbc_idle() else 'busy or off'}; dispatcher: {f'pid {pid}' if pid else 'not running'}")
+    if lease_server():
+        try:
+            s = lease_call("/status")
+            h = s["holder"]
+            print(f"lease {lease_server()}: " + (f"held by {h['host']} for {h['name']} (since {h['granted']})" if h else "free"))
+            for w in s["waiters"]:
+                print(f"  waiting  {w['host']}  {w['name']}  (since {w['since']})")
+        except OSError as e:
+            print(f"lease {lease_server()}: unreachable ({e})")
     for d, label in ((RUNNING, "running"), (PENDING, "pending")):
         for p in jobs(d):
             j = load(p)
@@ -247,7 +492,7 @@ def cmd_wait(a):
             sys.exit(f"no job {a.id}")
         if d == DONE:
             j = load(p)
-            lines = (DONE / f"{a.id}.log").read_text(errors="replace").splitlines()
+            lines = (DONE / f"{a.id}.log").read_text(encoding="utf-8", errors="replace").splitlines()
             print("\n".join(lines[-a.tail:]))
             print(f"job {a.id} {j['name']}: exit {j['exit']} in {j['secs']} s")
             sys.exit(j["exit"] if isinstance(j["exit"], int) else 1)
@@ -273,10 +518,14 @@ def main():
     s = sub.add_parser("status"); s.add_argument("--last", type=int, default=5)
     s = sub.add_parser("wait"); s.add_argument("id"); s.add_argument("--tail", type=int, default=25)
     s = sub.add_parser("cancel"); s.add_argument("id")
+    s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=4310); s.add_argument("--ttl", type=float, default=TTL)
+    s.add_argument("--host", default="0.0.0.0")
+    s = sub.add_parser("setup"); s.add_argument("--server", help="the lease server's URL, e.g. http://homeserver:4310; '' for none")
     a = ap.parse_args()
     if a.op == "add" and a.cmd[:1] == ["--"]:
         a.cmd = a.cmd[1:]
-    {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel}[a.op](a)
+    {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel,
+     "serve": cmd_serve, "setup": cmd_setup}[a.op](a)
 
 
 if __name__ == "__main__":

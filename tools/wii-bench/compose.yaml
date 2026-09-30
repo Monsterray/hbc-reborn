@@ -1,0 +1,7 @@
+services:
+  wii-bench:
+    build: .
+    image: wii-bench-lease
+    restart: unless-stopped
+    ports:
+      - "4310:4310"
