@@ -11,6 +11,7 @@
 // hbc_agent_home()).
 
 #include <errno.h>
+#include <stdarg.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 #include "ogc_flavor.h"
 #if AGENT_TUXEDO
 #include <tuxedo/ppc/exception.h>
+#include <tuxedo/thread.h>
 #else
 #include <stddef.h>
 #include <ogc/context.h>
@@ -43,7 +45,7 @@
 #include "../hbc_agent.h"
 
 #define AGENT_STACK (12 * 1024)
-#define AGENT_PROTO 3
+#define AGENT_PROTO 4
 #define AGENT_DEFAULT_PRIO 40
 // Transfers run a little above the agent's idle priority, still below the
 // app's main thread.
@@ -53,6 +55,10 @@
 
 _Static_assert(HBC_CRASH_ADDR >= HBC_NETLOG_KEEP_ADDR + sizeof(hbc_netlog_block),
 			   "the crash block must not overlap the kept log target");
+_Static_assert(HBC_LASTLOG_ADDR >= HBC_CRASH_ADDR + sizeof(hbc_crash_block),
+			   "the kept log must not overlap the crash block");
+_Static_assert(__builtin_offsetof(hbc_crash_block, kind) == 4 * HBC_CRASH_V1_WORDS,
+			   "a version 1 crash block ended where kind starts");
 
 // libogc: seconds its crash screen shows before returning to the loader.
 extern void __exception_setreload(int t);
@@ -118,6 +124,36 @@ static ssize_t log_write_err(struct _reent *r, void *fd, const char *ptr, size_t
 
 static devoptab_t log_dotab_out = { .name = "hbcagent", .write_r = log_write_out };
 static devoptab_t log_dotab_err = { .name = "hbcagent", .write_r = log_write_err };
+
+// ---- The kept log: the ring's end, in MEM2 for HBC after the reload -------
+
+static volatile bool lastlog_done;
+
+// Runs wherever the app stops, in an exception too (FP off): integer only.
+static void lastlog_write(u32 why) {
+	hbc_lastlog_block *b = (hbc_lastlog_block *) HBC_LASTLOG_ADDR;
+	u32 n = log_len < HBC_LASTLOG_SIZE ? log_len : HBC_LASTLOG_SIZE;
+	u32 start = (log_head + LOG_SIZE - n) % LOG_SIZE, i;
+
+	if (lastlog_done)
+		return;
+	lastlog_done = true;
+	memset(b, 0, sizeof(*b));
+	b->magic = HBC_LASTLOG_MAGIC;
+	b->version = HBC_LASTLOG_VERSION;
+	b->why = why;
+	b->len = n;
+	b->uptime_ms = start_ticks ? agent_uptime_ms() : 0;
+	strncpy(b->app, cfg.name ? cfg.name : "app", sizeof(b->app) - 1);
+	for (i = 0; i < n; ++i)
+		b->text[i] = log_ring[(start + i) % LOG_SIZE];
+	b->check = hbc_lastlog_check(b);
+	DCFlushRange(b, sizeof(*b));
+}
+
+static void lastlog_at_exit(void) {
+	lastlog_write(HBC_LASTLOG_EXIT);
+}
 
 const char *agent_log_text(void) {
 	u32 level, start, i;
@@ -469,6 +505,19 @@ static void handle(s32 s, const u8 *hdr, u32 client_ip) {
 	} else if (!memcmp(hdr, "HBCN", 4)) {
 		set_log_target(client_ip, get_u16(hdr + 4));
 		devfile_reply(s, 0, NULL, 0);
+	} else if (!memcmp(hdr, "HBCL", 4)) {
+		// The log so far: the same header line as HBC's kept log, "live".
+		static char reply[64 + LOG_SIZE];
+		const char *text = agent_log_text();
+		int n = snprintf(reply, 64, "HBCL 1 live %u %s\n", (unsigned) uptime_ms(), cfg.name);
+		size_t len = strlen(text);
+
+		if (len > HBC_LASTLOG_SIZE) {
+			text += len - HBC_LASTLOG_SIZE;
+			len = HBC_LASTLOG_SIZE;
+		}
+		memcpy(reply + n, text, len);
+		devfile_reply(s, 0, reply, n + len);
 	} else if (hbc_agent_handle(s, hdr)) {
 	} else if (!memcmp(hdr, "HBCX", 4)) {
 		devfile_reply(s, 0, NULL, 0);
@@ -580,9 +629,9 @@ static bool ram_word(u32 a) {
 }
 
 // Runs inside the exception, with floating point off: integer code only.
-static void agent_record(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32 sp) {
+static void agent_record_kind(u32 kind, u32 code, const char *reason, u32 exid, u32 pc, u32 msr,
+							  u32 lr, u32 cr, u32 ctr, u32 sp, u32 dar, u32 dsisr) {
 	hbc_crash_block *b = (hbc_crash_block *) HBC_CRASH_ADDR;
-	u32 dar = mfspr(19), dsisr = mfspr(18);
 	u32 i;
 
 	memset(b, 0, sizeof(*b));
@@ -597,7 +646,11 @@ static void agent_record(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32
 	b->dar = dar;
 	b->dsisr = dsisr;
 	b->sp = sp;
-	b->uptime_ms = uptime_ms();
+	b->uptime_ms = start_ticks ? uptime_ms() : 0;
+	b->kind = kind;
+	b->code = code;
+	if (reason)
+		strncpy(b->reason, reason, sizeof(b->reason) - 1);
 	for (i = 0; i < HBC_CRASH_FRAMES && ram_word(sp); ++i) {
 		u32 next = *(u32 *) sp;
 
@@ -606,9 +659,138 @@ static void agent_record(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32
 		b->frames[i] = *(u32 *) (next + 4);
 		sp = next;
 	}
-	strncpy(b->app, cfg.name, sizeof(b->app) - 1);
+	strncpy(b->app, cfg.name ? cfg.name : "app", sizeof(b->app) - 1);
 	b->check = hbc_crash_check(b);
 	DCFlushRange(b, sizeof(*b));
+}
+
+static void agent_record(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32 sp) {
+	agent_record_kind(HBC_CRASH_EXCEPTION, 0, NULL, exid, pc, msr, lr, cr, ctr, sp, mfspr(19),
+					  mfspr(18));
+	lastlog_write(HBC_LASTLOG_EXCEPTION);
+}
+
+// ---- hbc_agent_fatal() ----------------------------------------------------
+
+extern void __reload(void) __attribute__((noreturn));
+
+static void __attribute__((noinline)) fatal_record(u32 code, const char *fmt, va_list ap, u32 pc) {
+	char reason[HBC_CRASH_REASON];
+	u32 sp;
+
+	vsnprintf(reason, sizeof(reason), fmt, ap);
+	printf("%s: fatal (%u): %s\n", cfg.name ? cfg.name : "app", (unsigned) code, reason);
+	__asm__ volatile ("mr %0,1" : "=r" (sp));
+	agent_record_kind(HBC_CRASH_FATAL, code, reason, 0, pc, mfmsr(), pc, 0, 0, sp, 0, 0);
+	lastlog_write(HBC_LASTLOG_FATAL);
+}
+
+void hbc_agent_fatal(u32 code, const char *fmt, ...) {
+	va_list ap;
+
+	va_start(ap, fmt);
+	fatal_record(code, fmt, ap, (u32) __builtin_return_address(0));
+	va_end(ap);
+	exit(0);
+}
+
+void hbc_agent_fatal_now(u32 code, const char *fmt, ...) {
+	va_list ap;
+
+	va_start(ap, fmt);
+	fatal_record(code, fmt, ap, (u32) __builtin_return_address(0));
+	va_end(ap);
+	__reload();
+}
+
+// ---- The hang watchdog ----------------------------------------------------
+
+#define WATCHDOG_STACK (4 * 1024)
+
+volatile bool agent_overlay_open;
+static volatile u64 alive_at;
+static volatile s32 hold_count;
+static lwp_t wd_thread = LWP_THREAD_NULL;
+static void *alive_thread; // the thread that armed it: KThread* or lwp_cntrl*
+
+#if !AGENT_TUXEDO
+#include <ogc/lwp_threads.h>
+#endif
+
+static void *watchdog(void *arg) {
+	u64 limit = secs_to_ticks(cfg.hang_s ? cfg.hang_s : 60);
+	(void) arg;
+
+	while (true) {
+		usleep(1000 * 1000);
+		if (hold_count > 0 || agent_overlay_open) {
+			alive_at = gettime();
+			continue;
+		}
+		if (diff_ticks(alive_at, gettime()) <= limit)
+			continue;
+
+		// Above every app thread, so the one that hung was switched out
+		// and its saved registers say where it is. No exit(): it may hold
+		// a lock exit() needs (the SD card's, for one).
+		{
+			char reason[HBC_CRASH_REASON];
+			u32 level, pc, lr, sp;
+#if AGENT_TUXEDO
+			KThread *t = alive_thread;
+			pc = t->ctx.pc;
+			lr = t->ctx.lr;
+			sp = t->ctx.gpr[1];
+#else
+			lwp_cntrl *t = alive_thread;
+			pc = t->context.LR;
+			lr = t->context.LR;
+			sp = t->context.GPR[1];
+#endif
+			snprintf(reason, sizeof(reason), "no hbc_agent_alive() for %u s",
+					 (unsigned) (cfg.hang_s ? cfg.hang_s : 60));
+			printf("%s: hang: %s\n", cfg.name ? cfg.name : "app", reason);
+			_CPU_ISR_Disable(level);
+			agent_record_kind(HBC_CRASH_HANG, 0, reason, 0, pc, 0, lr, 0, 0, sp, 0, 0);
+			lastlog_write(HBC_LASTLOG_HANG);
+			(void) level;
+			__reload();
+		}
+	}
+	return NULL;
+}
+
+void hbc_agent_alive(void) {
+	static u8 *wd_stack;
+
+	alive_at = gettime();
+	if (wd_thread != LWP_THREAD_NULL || wd_stack)
+		return;
+#if AGENT_TUXEDO
+	alive_thread = KThreadGetSelf();
+#else
+	alive_thread = _thr_executing;
+#endif
+	wd_stack = memalign(32, WATCHDOG_STACK);
+	if (!wd_stack || LWP_CreateThread(&wd_thread, watchdog, NULL, wd_stack, WATCHDOG_STACK,
+									  LWP_PRIO_HIGHEST) < 0)
+		wd_thread = LWP_THREAD_NULL;  // no watchdog; wd_stack stops a retry
+}
+
+void hbc_agent_alive_reset(void) {
+	alive_at = gettime();
+}
+
+void hbc_agent_hold(bool hold) {
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	hold_count += hold ? 1 : -1;
+	if (hold_count < 0)
+		hold_count = 0;
+	if (!hold_count)
+		alive_at = gettime();
+	_CPU_ISR_Restore(level);
 }
 
 #if AGENT_TUXEDO
@@ -689,6 +871,7 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 	if (!cfg.exit_grace_ms)
 		cfg.exit_grace_ms = 5000;
 	start_ticks = gettime();
+	atexit(lastlog_at_exit);
 
 	if (!cfg.no_crash_handler) {
 		if (cfg.crash_reload_s > 0)

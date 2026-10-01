@@ -46,6 +46,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCF` | op (1), flags (1), path length (2), size (4), 0 (4) | path, then the data for a put | see below |
 | `HBCN` | log port (2), zero | none | empty; sets the app log target |
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
+| `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
 
 ### Status
@@ -60,7 +61,8 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 2 when the framed ops below exist, and 3 when `HBCC`, the
+`proto` is 4 when `HBCL` and the crash fields `kind`, `code` and `reason`
+exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
 `crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
 at the last device poll. `last` describes the most recent file transfer:
@@ -282,24 +284,46 @@ buffer count had gone below zero.
 ### Crash reports
 
 The agent installs a libogc panic handler. On a fatal exception it writes a
-120-byte block to MEM2 at `0x91800020`, then lets libogc show its crash
-screen for 3 s and return through the reload stub. HBC takes the block in
+192-byte block to MEM2 at `0x91800020`, then lets libogc show its crash
+screen for 3 s and return through the reload stub. `hbc_agent_fatal()` and
+the hang watchdog (`hbc_agent_alive()`, a thread at the highest priority)
+write the same block for the other ways an app stops. HBC takes the block in
 `main()`, clears it, and reports it in `HBCS` until `HBCC`:
 
 ```json
-"crash":{"app":"agent_app","exception":3,"name":"DSI","pc":"80004cac",
+"crash":{"kind":"exception","code":0,"reason":"",
+         "app":"agent_app","exception":3,"name":"DSI","pc":"80004cac",
          "lr":"800047a8","msr":"00009032","cr":"20002494","ctr":"00000000",
          "dar":"00000010","dsisr":"42000000","sp":"8008b160",
          "uptime_ms":1002,"frames":["80004004"]}
 ```
 
+`kind` is `exception`, `fatal` (the app's `hbc_agent_fatal()`, with its own
+`code`, which HBC and `hbc.py` show but never interpret, and its `reason`)
+or `hang` (no `hbc_agent_alive()` for `hang_s` seconds; `pc`, `lr` and the
+frames are the stuck thread's, as saved when the watchdog preempted it).
 `frames` are return addresses found by walking the stack's back chain; a
 leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
-`sdk/hbc_agent.h`: magic `HBCC`, version 1, the exception number
+`sdk/hbc_agent.h`: magic `HBCC`, version 2, the exception number
 (`PPC_EXCPT_*`), `pc`, `msr`, `lr`, `cr`, `ctr`, `dar`, `dsisr`, `sp`,
-`uptime_ms`, twelve frames, the app name (20 bytes), and a rotate-and-XOR
-check word over the rest. `hbc.py crash --elf app.elf` adds function names
-and lines with `powerpc-eabi-addr2line`.
+`uptime_ms`, twelve frames, the app name (20 bytes), `kind`, `code`, the
+reason (64 bytes), and a rotate-and-XOR check word over the rest. HBC still
+reads version 1 blocks (agents before 1.9.0), as exceptions. `hbc.py crash
+--elf app.elf` adds function names and lines with `powerpc-eabi-addr2line`,
+then the last lines of the kept log.
+
+### Kept log
+
+As an agent app stops (an exception, a fatal, a hang, or `exit()` and a
+return from `main()`), the agent copies the last 4 KiB of its stdout and
+stderr to MEM2 at `0x91800100` (`hbc_lastlog_block`: magic `HBCL`, why it
+was kept, length, uptime, app name, text, check word). It is written only
+then, because the app's own MEM2 may cover that address while it runs. HBC
+takes it in `main()`, clears it, and serves it with `HBCL`; `HBCS` says
+`"lastlog":{"why":"fatal","bytes":812}` or `"lastlog":null`. A running
+agent answers `HBCL` with its output so far, `why` being `live`.
+`hbc.py lastlog` prints it. A death with no way out (a freeze with
+interrupts off, the power switch) leaves no kept log.
 
 ## Workflow
 

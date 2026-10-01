@@ -192,6 +192,27 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
             hbc.request(wii, b"HBCC")
             assert hbc.status(wii)["crash"] is None
             print("agent crash report: PASS")
+
+        # 5. The other ways an app stops, and what it printed last: a fatal,
+        # the hang watchdog, a plain exit. Checked by the HBC the app returns
+        # to, which has to have protocol 4 (an older one ignores these).
+        for mode, line in (("fatal", "agent_app: stopping (fatal)"),
+                           ("hang", "agent_app: hanging"),
+                           ("exit", "mode 'exit'")):
+            hbc.send(wii, str(APP), [mode])
+            log.wait_for(line, 30)
+            hbc.hbc_wait(wii, 90)
+            first = hbc.status(wii)
+            if first.get("proto", 1) < 4:
+                print(f"agent {mode}: skipped (HBC {first.get('version')} has protocol "
+                      f"{first.get('proto')})")
+                back(wii)
+                continue
+            report, kept = first.get("crash"), hbc.lastlog(wii)
+            back(wii)
+            check_stop(mode, report, kept)
+            hbc.request(wii, b"HBCC")
+            print(f"agent {mode} and its kept log: PASS")
         return crash
     finally:
         hbc.LogServer.unregister(wii)
@@ -254,6 +275,34 @@ def check_overlay(wii, log, st):
     hbc.remove_tree(wii, "sd:/hbctest", out=lambda *a: None)
     print(f"agent overlay: PASS (strip luma {app:.0f} -> {shown:.0f} -> {closed:.0f}, "
           f"shot {new[-1]}, remote handles {'found' if st.get('wpad_handles') else 'not found'})")
+
+
+def check_stop(mode, crash, kept):
+    """A fatal, a hang or an exit as HBC reports it, with the kept log."""
+    print(hbc.crash_report(crash, str(ELF)) if crash else f"{mode}: no crash report")
+    assert kept, f"{mode}: no kept log"
+    print(f"  kept log: {kept['why']}, {len(kept['text'])} bytes, ends "
+          f"{kept['text'].rstrip().splitlines()[-1]!r}")
+    if mode == "exit":
+        assert crash is None, crash
+        assert kept["why"] == "exit" and "mode 'exit'" in kept["text"], kept
+        return
+    assert crash and crash["app"] == "agent_app", crash
+    addrs = [int(crash["pc"], 16), int(crash["lr"], 16)] + [int(f, 16) for f in crash["frames"]]
+    if mode == "fatal":
+        assert crash["kind"] == "fatal" and crash["code"] == 0x81, crash
+        assert crash["reason"] == "test fatal, value 42", crash
+        assert kept["why"] == "fatal" and "agent_app: stopping (fatal)" in kept["text"], kept
+        assert "fatal (129): test fatal, value 42" in kept["text"], kept
+        fn = symbol_range("agent_app_fatal")
+    else:
+        assert crash["kind"] == "hang" and crash["reason"].startswith("no hbc_agent_alive()"), crash
+        assert kept["why"] == "hang" and "agent_app: hanging" in kept["text"], kept
+        fn = symbol_range("agent_app_hang")
+    main = symbol_range("main")
+    if fn and main:
+        # Where it stopped, or the call into it from main.
+        assert any(fn[0] <= a < fn[1] or main[0] <= a - 4 < main[1] for a in addrs), (fn, crash)
 
 
 def check_crash(crash, crash_mode="crash"):

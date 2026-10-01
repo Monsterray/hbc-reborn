@@ -25,7 +25,8 @@ import dolphin_smoke  # noqa: E402
 
 CRASH_ADDR = 0x91800020
 CRASH_WORDS = 3 + 5 + 2 + 2 + 12   # magic .. uptime_ms, frames
-CRASH_SIZE = CRASH_WORDS * 4 + 20 + 4
+# Version 2 (sdk/hbc_agent.h): then app[20], kind, code, reason[64], check.
+CRASH_SIZE = CRASH_WORDS * 4 + 20 + 4 + 4 + 64 + 4
 NAMES = {2: "machine check", 3: "DSI", 4: "ISI", 6: "alignment", 7: "program"}
 
 
@@ -94,7 +95,8 @@ def crash_dict(raw):
     return {"magic": w[0], "version": w[1], "exception": w[2], "name": NAMES.get(w[2], "unknown"),
             "pc": hexw(w[3]), "msr": hexw(w[4]), "lr": hexw(w[5]), "cr": hexw(w[6]),
             "ctr": hexw(w[7]), "dar": hexw(w[8]), "dsisr": hexw(w[9]), "sp": hexw(w[10]),
-            "uptime_ms": w[11], "frames": [hexw(f) for f in w[12:24] if f], "app": app}
+            "uptime_ms": w[11], "frames": [hexw(f) for f in w[12:24] if f], "app": app,
+            "kind": ["exception", "fatal", "hang"][min(2, struct.unpack_from(">I", raw, CRASH_WORDS * 4 + 20)[0])]}
 
 
 def check_block(raw):

@@ -155,6 +155,51 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.0: fatal reports, a hang watchdog and a kept log for every agent app
+
+WiiStation had all three in its own code: it wrote the agent's crash block
+itself under private codes (0x81-0x83, a guest PC and a vblank count in
+`dar`/`dsisr`), and ran its own watchdog thread. Each is now general:
+- **Crash block version 2** adds `kind` (exception, fatal, hang), `code` and
+  `reason`. HBC still reads version 1 blocks, as exceptions; HBC before 1.9.0
+  ignores version 2. `hbc.py` prints the app's code as a number and never
+  interprets it; an app puts its own details in the reason.
+- **`hbc_agent_fatal(code, fmt, ...)`** records the caller's backtrace and the
+  reason (also printed, so it ends the kept log), then calls `exit(0)`.
+  `hbc_agent_fatal_now()` goes straight to `__reload()`, for state that
+  cannot be trusted.
+- **`hbc_agent_alive()`** arms a watchdog (`hang_s`, default 60):
+  - It is a thread at the highest priority with a 4 KiB stack, created on
+    the first call. A 1 Hz alarm alone could not say where the app hung: in
+    an interrupt no thread is switched out, so the stuck thread's saved
+    registers would be stale.
+  - On a hang it records the stuck thread's registers (libogc 3: its
+    `KThread` context; libogc2 and 1.x: its `lwp_cntrl`) and calls
+    `__reload()`, not `exit()`, which could need a lock the stuck thread holds.
+  - It pauses while the HOME overlay is open and while `hbc_agent_hold(true)`
+    is in force.
+- **Kept log:** the last 4 KiB of the agent's log ring goes to MEM2 at
+  `0x91800100` on every way out (`atexit` for a normal one). It is copied
+  then, not kept there, since an app's MEM2 may cover that address. HBC
+  serves it with `HBCL` (protocol 4); the agent answers the same request
+  with a running app's output so far. `hbc.py lastlog`; `hbc.py crash` adds
+  the last 12 lines.
+- **Cost:** none while the app runs, apart from one 64-bit store per
+  `hbc_agent_alive()`, and the watchdog's 4 KiB stack and 1 Hz wake-up once
+  armed. HBC keeps a 4 KiB copy of the log.
+- **Checked:** the whole `dolphin_smoke.py --agent` suite (new steps: fatal,
+  hang caught while the app spins, exit, each with its kept log), and
+  `dolphin_ogc_crash.py` on libogc2 with the version 2 block.
+- **Play log names:** on the bench Wii, 1.8.9's log listed other
+  workstations' Wiiload runs by their first argument: a ROM, `boot`, an
+  option. A Wiiload upload now takes the name its agent gave itself (from the
+  kept log), else the file it was sent as (`.dol`/`.elf`), else "Wiiload".
+- Dolphin asks before installing over a different version of a title, which a
+  batch run cannot answer: `tools/msgboard/dolphin_sysmenu.py` removes the
+  installed HBC's contents first.
+- **Not yet on hardware:** fatal and hang need the installed HBC to be 1.9.0
+  (an app's report goes to the installed channel).
+
 ### 1.8.9: the Message Board play log, startup timings, the play record off the critical path
 
 - **Play log** (docs/messageboard.md). HBC now logs its own time and each app

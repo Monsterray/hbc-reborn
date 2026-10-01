@@ -1560,13 +1560,24 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	return 0;
 }
 
+// The hang watchdog pauses while the overlay holds the app's loop.
+static s32 home_watched(const GXRModeObj *rmode, void *fb0, void *fb1) {
+	s32 res;
+
+	agent_overlay_open = true;
+	res = home(rmode, fb0, fb1);
+	agent_overlay_open = false;
+	hbc_agent_alive_reset();
+	return res;
+}
+
 s32 hbc_agent_home(const GXRModeObj *rmode) {
-	return home(rmode, NULL, NULL);
+	return home_watched(rmode, NULL, NULL);
 }
 
 s32 hbc_agent_home_fb(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	if (!fb0 || !in_mem1(fb0) || (fb1 && !in_mem1(fb1)))
 		return -EINVAL;
-	return home(rmode, (void *) ((u32) fb0 & ~0x40000000),
+	return home_watched(rmode, (void *) ((u32) fb0 & ~0x40000000),
 				fb1 ? (void *) ((u32) fb1 & ~0x40000000) : NULL);
 }

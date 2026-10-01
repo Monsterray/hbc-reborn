@@ -175,6 +175,26 @@ def devkit_tool(name):
     return None
 
 
+def lastlog(wii):
+    """The last app's kept output from HBC, or a running agent app's output so
+    far ("live"): {"app", "why", "uptime_ms", "text"}; None when there is none."""
+    try:
+        body = request(wii, b"HBCL")
+    except HBCError as exc:
+        code = exc.code
+        if code == 2:   # newlib's ENOENT: nothing kept
+            return None
+        if code == 88:  # newlib's ENOSYS: an HBC or agent older than protocol 4
+            raise HBCError("this HBC or app agent has no kept log (protocol 4, HBC 1.9.0)") from exc
+        raise
+    head, _, text = body.partition(b"\n")
+    word = head.decode("ascii", "replace").split(" ", 4)
+    if len(word) < 4 or word[0] != "HBCL":
+        raise HBCError(f"unexpected lastlog reply {head[:40]!r}")
+    return {"why": word[2], "uptime_ms": int(word[3]), "app": word[4] if len(word) > 4 else "",
+            "text": text.decode("utf-8", "replace")}
+
+
 def crash_report(crash, elf=None):
     """Format a crash reply's fields, with source lines when elf is given."""
     addrs = [crash["pc"], crash["lr"]] + crash.get("frames", [])
@@ -184,12 +204,23 @@ def crash_report(crash, elf=None):
         out = subprocess.run([tool, "-f", "-C", "-p", "-e", elf] + [f"0x{a}" for a in addrs],
                              capture_output=True, text=True).stdout.splitlines()
         where = dict(zip(addrs, out))
-    lines = [f"{crash['app']} crashed after {crash['uptime_ms'] / 1000:.1f} s: "
-             f"{crash['name']} exception ({crash['exception']})"]
+    after = f"after {crash['uptime_ms'] / 1000:.1f} s"
+    kind = crash.get("kind", "exception")
+    if kind == "fatal":
+        # The code is the app's own: shown, never interpreted.
+        lines = [f"{crash['app']} stopped {after}: {crash.get('reason') or 'fatal'} "
+                 f"(fatal, app code {crash.get('code', 0)} = {crash.get('code', 0):#x})"]
+    elif kind == "hang":
+        lines = [f"{crash['app']} hung {after}: {crash.get('reason') or 'hang'}"]
+    else:
+        lines = [f"{crash['app']} crashed {after}: {crash['name']} exception ({crash['exception']})"]
     for label, key in (("pc", "pc"), ("lr", "lr")):
         lines.append(f"  {label:5} {crash[key]}  {where.get(crash[key], '')}".rstrip())
-    lines.append(f"  dar   {crash['dar']}  dsisr {crash['dsisr']}  sp {crash['sp']}  "
-                 f"msr {crash['msr']}  cr {crash['cr']}  ctr {crash['ctr']}")
+    if kind == "exception":
+        lines.append(f"  dar   {crash['dar']}  dsisr {crash['dsisr']}  sp {crash['sp']}  "
+                     f"msr {crash['msr']}  cr {crash['cr']}  ctr {crash['ctr']}")
+    else:
+        lines.append(f"  sp    {crash['sp']}")
     for i, frame in enumerate(crash.get("frames", [])):
         lines.append(f"  #{i:<3} {frame}  {where.get(frame, '')}".rstrip())
     if elf and not tool:
@@ -774,6 +805,7 @@ Commands
     key KEYS            press buttons on it: h (HOME), u d l r, a, b, 1, 2, w
     screen FILE.png     save a picture of what the TV shows
     crash [--elf ELF]   show the last crash: where, and why
+    lastlog             the last app's final output (or a running app's so far)
 
 Options (before or after the command)
     --wii ADDR          the Wii's address, if $HBC_WII is not set
@@ -897,7 +929,16 @@ hbc.py crash [--elf ELF] [--clear]
 After an agent app crashes, the Wii returns to HBC with a report of what
 happened: the exception, the registers, and the chain of calls. This prints
 it; with --elf the app's .elf adds function names and source lines (it
-needs devkitPPC's powerpc-eabi-addr2line). --clear forgets the report.""",
+needs devkitPPC's powerpc-eabi-addr2line). --clear forgets the report.
+Besides exceptions, an app can stop itself with hbc_agent_fatal() (its own
+code and a reason), and the agent's watchdog reports a hang. The last lines
+of the app's output follow the report.""",
+    "lastlog": """\
+hbc.py lastlog
+
+An agent app's output (stdout and stderr) is kept as it stops, whether by
+exit(), a crash, hbc_agent_fatal() or a hang, and HBC shows the last 4 KiB
+of it here. While an agent app runs, this prints its output so far.""",
 }
 
 
@@ -1032,8 +1073,24 @@ def main(argv=None):
                 print(json.dumps(crash))
             elif crash:
                 print(crash_report(crash, flags.get("elf")))
+                kept = lastlog(wii) if st.get("lastlog") else None
+                if kept and kept["text"].strip():
+                    tail = kept["text"].rstrip("\n").splitlines()[-12:]
+                    print("  last output:")
+                    for line in tail:
+                        print(f"    {line}")
             else:
                 print("no crash reported")
+        elif cmd == "lastlog":
+            kept = lastlog(wii)
+            if opts.json:
+                print(json.dumps(kept))
+            elif not kept:
+                print("no kept log (the last app had no agent, or HBC restarted since)")
+            else:
+                state = "running, so far" if kept["why"] == "live" else f"ended by {kept['why']}"
+                print(f"-- {kept['app']} ({state}, {kept['uptime_ms'] / 1000:.1f} s) --")
+                print(kept["text"], end="" if kept["text"].endswith("\n") else "\n")
         elif cmd in ("run", "log"):
             if cmd == "run":
                 need(1, "FILE [ARG ...]")

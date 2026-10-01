@@ -44,6 +44,7 @@ class FakeHBC:
         self.agent = False  # an agent app answers instead of HBC
         self.agent_uptime_ms = 1000
         self.crash = None
+        self.lastlog = None  # (why, uptime_ms, app, text) for HBCL
         self.exits = 0
         self.keys = b""
         self.lock = threading.Lock()
@@ -96,7 +97,9 @@ class FakeHBC:
                 st = {"agent": True, "version": "1.5.0", "proto": 3, "log": self.log,
                       "app": "otherapp", "uptime_ms": self.agent_uptime_ms}
             elif self.crash is not None:
-                st.update(proto=3, crash=self.crash or None)
+                st.update(proto=4, crash=self.crash or None,
+                          lastlog={"why": self.lastlog[0], "bytes": len(self.lastlog[3])}
+                          if self.lastlog else None)
             self.reply(conn, 0, json.dumps(st).encode())
         elif magic == b"HBCX" and self.agent:
             self.reply(conn, 0)
@@ -113,6 +116,12 @@ class FakeHBC:
         elif magic == b"HBCC":
             self.crash = {}
             self.reply(conn, 0)
+        elif magic == b"HBCL":
+            if self.lastlog:
+                why, up, app, text = self.lastlog
+                self.reply(conn, 0, f"HBCL 1 {why} {up} {app}\n{text}".encode())
+            else:
+                self.reply(conn, -2)  # ENOENT
         elif magic == b"HBCN":
             port = struct.unpack(">H", hdr[4:6])[0]
             self.log_ports.append(port)
@@ -214,6 +223,7 @@ class HBCToolTest(unittest.TestCase):
         self.fake.agent = False
         self.fake.agent_uptime_ms = 1000
         self.fake.crash = None
+        self.fake.lastlog = None
         self.fake.exits = 0
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -293,6 +303,30 @@ class HBCToolTest(unittest.TestCase):
         self.fake.agent = True
         with self.assertRaisesRegex(SystemExit, "agent app is running"):
             self.cli("crash")
+
+    def test_fatal_and_hang_reports(self):
+        base = {"app": "demo", "exception": 0, "name": "unknown", "pc": "80004cac",
+                "lr": "800047a8", "msr": "00009032", "cr": "00000000", "ctr": "00000000",
+                "dar": "00000000", "dsisr": "00000000", "sp": "8008b160", "uptime_ms": 61500,
+                "frames": ["80004004"]}
+        self.fake.crash = dict(base, kind="fatal", code=0x81, reason="guest segfault at PC 80012345")
+        self.fake.lastlog = ("fatal", 61500, "demo", "loading\nlevel 3\ndemo: fatal (129): guest segfault\n")
+        out = self.cli("crash")
+        # The app's own code is shown, never interpreted.
+        self.assertIn("demo stopped after 61.5 s: guest segfault at PC 80012345 "
+                      "(fatal, app code 129 = 0x81)", out)
+        self.assertNotIn("dar", out)
+        self.assertIn("  last output:\n    loading\n    level 3\n    demo: fatal (129)", out)
+        self.fake.crash = dict(base, kind="hang", code=0, reason="no hbc_agent_alive() for 60 s")
+        self.assertIn("demo hung after 61.5 s: no hbc_agent_alive() for 60 s", self.cli("crash"))
+
+    def test_lastlog(self):
+        self.fake.crash = {}
+        self.assertIn("no kept log", self.cli("lastlog"))
+        self.fake.lastlog = ("exit", 4200, "demo", "hello\nbye\n")
+        out = self.cli("lastlog")
+        self.assertIn("-- demo (ended by exit, 4.2 s) --\nhello\nbye\n", out)
+        self.assertEqual(json.loads(self.cli("lastlog", "--json"))["text"], "hello\nbye\n")
 
     def test_key_sends_presses(self):
         self.fake.keys = b""

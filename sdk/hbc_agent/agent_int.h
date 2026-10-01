@@ -9,6 +9,10 @@
 
 const hbc_agent_config *agent_cfg(void);
 u32 agent_uptime_ms(void);
+// Set while the HOME overlay runs: the hang watchdog pauses.
+extern volatile bool agent_overlay_open;
+// Restarts the watchdog's count, if it is armed (after the overlay).
+void hbc_agent_alive_reset(void);
 
 /* The DEV menu's switches. */
 extern volatile int hbc_agent_log_muted;

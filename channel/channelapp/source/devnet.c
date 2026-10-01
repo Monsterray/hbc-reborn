@@ -39,6 +39,9 @@ static u16 log_port;
 static hbc_crash_block crash;
 static bool have_crash;
 static hbc_netlog_block kept;
+// The last app's output, kept by its agent as it stopped (HBCL).
+static hbc_lastlog_block lastlog;
+static bool have_lastlog;
 
 // App folders changed by file requests, for the menu to reload.
 #define CHANGES 8
@@ -73,6 +76,24 @@ static const char *exception_name(u32 exid) {
 	return "unknown";
 }
 
+// Printable ASCII, with no JSON quoting needed: anything else becomes '?'.
+static void json_text(char *out, const char *in, size_t max) {
+	size_t i;
+
+	for (i = 0; i + 1 < max && in[i]; ++i)
+		out[i] = in[i] >= 0x20 && in[i] < 0x7f && in[i] != '"' && in[i] != '\\' ? in[i] : '?';
+	out[i] = 0;
+}
+
+static const char *crash_kind(u32 kind) {
+	return kind == HBC_CRASH_FATAL ? "fatal" : kind == HBC_CRASH_HANG ? "hang" : "exception";
+}
+
+static const char *lastlog_why(u32 why) {
+	static const char *names[] = { "exit", "exception", "fatal", "hang" };
+	return why < 4 ? names[why] : "unknown";
+}
+
 // ,"crash":{...} or ,"crash":null
 static s32 crash_json(char *buf, size_t size) {
 	char app[sizeof(crash.app) + 1];
@@ -88,8 +109,15 @@ static s32 crash_json(char *buf, size_t size) {
 				crash.app[i] != '"' && crash.app[i] != '\\' ? crash.app[i] : '?';
 	app[i] = 0;
 
-	n = snprintf(buf, size,
-			",\"crash\":{\"app\":\"%s\",\"exception\":%u,\"name\":\"%s\","
+	{
+		char reason[HBC_CRASH_REASON + 1];
+
+		json_text(reason, crash.reason, sizeof(reason));
+		n = snprintf(buf, size, ",\"crash\":{\"kind\":\"%s\",\"code\":%u,\"reason\":\"%s\",",
+				crash_kind(crash.kind), (unsigned) crash.code, reason);
+	}
+	n += snprintf(buf + n, size - n,
+			"\"app\":\"%s\",\"exception\":%u,\"name\":\"%s\","
 			"\"pc\":\"%08x\",\"lr\":\"%08x\",\"msr\":\"%08x\",\"cr\":\"%08x\","
 			"\"ctr\":\"%08x\",\"dar\":\"%08x\",\"dsisr\":\"%08x\",\"sp\":\"%08x\","
 			"\"uptime_ms\":%u,\"frames\":[",
@@ -163,6 +191,11 @@ static s32 status_json(char *buf, size_t size) {
 				boot_marks[i].name, boot_marks[i].ms);
 	n += snprintf(buf + n, size - n, "}");
 	n += crash_json(buf + n, size - n);
+	if (have_lastlog)
+		n += snprintf(buf + n, size - n, ",\"lastlog\":{\"why\":\"%s\",\"bytes\":%u}",
+				lastlog_why(lastlog.why), (unsigned) lastlog.len);
+	else
+		n += snprintf(buf + n, size - n, ",\"lastlog\":null");
 	{
 		u32 frames, avg, max, bytes;
 		const char *buffers;
@@ -281,6 +314,25 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		return true;
 	}
 
+	if (!memcmp(hdr, "HBCL", 4)) {
+		// The kept log: a header line, then the text. The agent answers the
+		// same request with a running app's log so far ("live").
+		static char reply[64 + HBC_LASTLOG_SIZE];
+		char app[sizeof(lastlog.app) + 1];
+		int n;
+
+		if (!have_lastlog) {
+			devfile_reply(s, -ENOENT, NULL, 0);
+			return true;
+		}
+		json_text(app, lastlog.app, sizeof(app));
+		n = snprintf(reply, 64, "HBCL 1 %s %u %s\n", lastlog_why(lastlog.why),
+				(unsigned) lastlog.uptime_ms, app);
+		memcpy(reply + n, lastlog.text, lastlog.len);
+		devfile_reply(s, 0, reply, n + lastlog.len);
+		return true;
+	}
+
 	if (!memcmp(hdr, "HBCN", 4)) {
 		u16 port = get_u16(hdr + 4);
 
@@ -304,9 +356,30 @@ void devnet_early_init(void) {
 			cb->check == hbc_crash_check(cb)) {
 		memcpy(&crash, cb, sizeof(crash));
 		have_crash = true;
+	} else if (cb->magic == HBC_CRASH_MAGIC && cb->version == 1 &&
+			((u32 *) cb)[HBC_CRASH_V1_WORDS] == hbc_check_words(cb, HBC_CRASH_V1_WORDS)) {
+		// An app built with an older agent: an exception, with no reason.
+		memset(&crash, 0, sizeof(crash));
+		memcpy(&crash, cb, 4 * HBC_CRASH_V1_WORDS);
+		crash.kind = HBC_CRASH_EXCEPTION;
+		have_crash = true;
 	}
 	memset(cb, 0, sizeof(*cb));
 	DCFlushRange(cb, sizeof(*cb));
+
+	{
+		hbc_lastlog_block *lb = (hbc_lastlog_block *) HBC_LASTLOG_ADDR;
+
+		DCInvalidateRange(lb, sizeof(*lb));
+		if (lb->magic == HBC_LASTLOG_MAGIC && lb->version == HBC_LASTLOG_VERSION &&
+				lb->len <= HBC_LASTLOG_SIZE && lb->check == hbc_lastlog_check(lb)) {
+			memcpy(&lastlog, lb, sizeof(lastlog));
+			have_lastlog = true;
+		}
+		// Once only: an app without the agent must not inherit this one.
+		memset(lb, 0, 64);
+		DCFlushRange(lb, 64);
+	}
 
 	DCInvalidateRange(keep, sizeof(*keep));
 	memcpy(&kept, keep, sizeof(kept));
@@ -323,6 +396,15 @@ void devnet_init(void) {
 		set_log_target(block->ip, block->port);
 	else if (valid_block(&kept))
 		set_log_target(kept.ip, kept.port);
+}
+
+const char *devnet_lastlog_app(void) {
+	static char app[sizeof(lastlog.app) + 1];
+
+	if (!have_lastlog || !lastlog.app[0])
+		return NULL;
+	json_text(app, lastlog.app, sizeof(app));
+	return app;
 }
 
 void devnet_set_init_ms(u32 ms) {

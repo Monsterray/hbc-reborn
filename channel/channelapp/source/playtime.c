@@ -50,8 +50,12 @@ static char wiiid_path[] __attribute__((aligned(32))) =
 typedef struct {
 	u32 magic;
 	u32 pending;  // an app was launched and has not come back yet
+	u32 wiiload;  // sent over Wiiload: its agent may name it better
 	cdblog_session app;
 } state;
+
+static void utf8_to_name(u16 *out, const char *s);
+static void folder_id(char *id, const char *dir);
 
 static lwp_t pt_thread = LWP_THREAD_NULL;
 static u8 pt_stack[PLAYTIME_STACK] ATTRIBUTE_ALIGN(32);
@@ -261,6 +265,11 @@ static void *playtime_func(void *arg) {
 		st.pending = 0;
 		state_put(&st);
 		st.app.end = hbc_boot;
+		// A Wiiload upload with the agent named itself in its kept log.
+		if (st.wiiload && devnet_lastlog_app()) {
+			utf8_to_name(st.app.name, devnet_lastlog_app());
+			folder_id(st.app.id, devnet_lastlog_app());
+		}
 		if (from_menu)
 			hlog("Play log: the last app's end is unknown (the Wii Menu ran since)\n");
 		else if (st.app.end > st.app.start && st.app.end - st.app.start < MAX_SESSION_TICKS)
@@ -347,6 +356,7 @@ void playtime_leave(const char *app_name, const char *app_dir) {
 		st.pending = 1;
 		utf8_to_name(st.app.name, app_name);
 		folder_id(st.app.id, app_dir);
+		st.wiiload = !app_dir || !app_dir[0];
 		st.app.start = gettime();
 		state_put(&st);
 	}

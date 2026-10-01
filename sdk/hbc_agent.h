@@ -50,7 +50,9 @@
  *
  * Crashes: the agent records the exception, registers and a backtrace in a
  * small low-memory block, shows libogc's crash screen for a few seconds, and
- * returns to HBC, which reports it (`hbc.py crash`).
+ * returns to HBC, which reports it (`hbc.py crash`). hbc_agent_fatal() and
+ * the hang watchdog (hbc_agent_alive()) report the other ways an app stops
+ * the same way, and the app's last output is kept for `hbc.py lastlog`.
  *
  * Define HBC_AGENT_LAYOUT_ONLY to get only the crash block layout.
  */
@@ -65,29 +67,80 @@
  * this before its own allocations could reach it. */
 #define HBC_CRASH_ADDR 0x91800020
 #define HBC_CRASH_MAGIC 0x48424343 /* 'HBCC' */
-#define HBC_CRASH_VERSION 1
+#define HBC_CRASH_VERSION 2
 #define HBC_CRASH_FRAMES 12
+#define HBC_CRASH_REASON 64
+
+/* What stopped the app. */
+enum {
+	HBC_CRASH_EXCEPTION = 0, /* a CPU exception; `exception` says which */
+	HBC_CRASH_FATAL = 1,     /* hbc_agent_fatal(): the app's code and reason */
+	HBC_CRASH_HANG = 2       /* no hbc_agent_alive() for hang_s seconds */
+};
 
 typedef struct {
 	u32 magic;
 	u32 version;
-	u32 exception;   /* PPC_EXCPT_*, e.g. 3 for DSI */
+	u32 exception;   /* PPC_EXCPT_*, e.g. 3 for DSI; 0 for a fatal or a hang */
 	u32 pc, msr, lr, cr, ctr;
 	u32 dar, dsisr;  /* data address and cause, for DSI and alignment */
 	u32 sp;
 	u32 uptime_ms;   /* since hbc_agent_init() */
 	u32 frames[HBC_CRASH_FRAMES]; /* return addresses from the stack */
 	char app[20];
+	/* Version 2 on; a version 1 block had its check here. */
+	u32 kind;        /* HBC_CRASH_* */
+	u32 code;        /* the app's own, for a fatal; never interpreted */
+	char reason[HBC_CRASH_REASON]; /* ASCII, NUL-terminated */
 	u32 check;       /* hbc_crash_check() */
 } hbc_crash_block;
 
-static inline u32 hbc_crash_check(const hbc_crash_block *b) {
-	const u32 *w = (const u32 *) b;
+#define HBC_CRASH_V1_WORDS 29 /* words before a version 1 block's check */
+
+static inline u32 hbc_check_words(const void *p, u32 words) {
+	const u32 *w = (const u32 *) p;
 	u32 i, x = 0x5a17c0de;
 
-	for (i = 0; i < (sizeof(*b) - sizeof(b->check)) / 4; ++i)
+	for (i = 0; i < words; ++i)
 		x = ((x << 5) | (x >> 27)) ^ w[i];
 	return x;
+}
+
+static inline u32 hbc_crash_check(const hbc_crash_block *b) {
+	return hbc_check_words(b, (sizeof(*b) - sizeof(b->check)) / 4);
+}
+
+/* The app's last output, kept for HBC across the reload (`hbc.py lastlog`):
+ * the end of what it printed to stdout and stderr, written as it stops (an
+ * exception, hbc_agent_fatal(), a hang, or exit() and returning from main).
+ * Like the crash block it is written only then, since the app's own MEM2
+ * may cover this address while it runs. */
+#define HBC_LASTLOG_ADDR 0x91800100
+#define HBC_LASTLOG_MAGIC 0x4842434c /* 'HBCL' */
+#define HBC_LASTLOG_VERSION 1
+#define HBC_LASTLOG_SIZE 4096
+
+/* Why the log was kept. */
+enum {
+	HBC_LASTLOG_EXIT = 0,      /* exit() or a return from main */
+	HBC_LASTLOG_EXCEPTION = 1,
+	HBC_LASTLOG_FATAL = 2,
+	HBC_LASTLOG_HANG = 3
+};
+
+typedef struct {
+	u32 magic;
+	u32 version;
+	u32 why;         /* HBC_LASTLOG_* */
+	u32 len;         /* bytes of text */
+	u32 uptime_ms;   /* since hbc_agent_init() */
+	char app[20];
+	char text[HBC_LASTLOG_SIZE];
+	u32 check;       /* hbc_lastlog_check() */
+} hbc_lastlog_block;
+
+static inline u32 hbc_lastlog_check(const hbc_lastlog_block *b) {
+	return hbc_check_words(b, (sizeof(*b) - sizeof(b->check)) / 4);
 }
 
 #ifndef HBC_AGENT_LAYOUT_ONLY
@@ -144,6 +197,10 @@ typedef struct {
 	   own loop would otherwise do each frame (HBC keeps its network
 	   server accepting). Keep it short. */
 	void (*on_frame)(void *user);
+	/* The hang watchdog's limit, once the app has called hbc_agent_alive():
+	   seconds without another call before the agent reports a hang and
+	   returns to HBC. Default (0) 60. */
+	u32 hang_s;
 } hbc_agent_config;
 
 enum {
@@ -162,6 +219,32 @@ bool hbc_agent_exit_requested(void);
 
 /* Waits up to ms for the network (0 when it is up, else a negative error). */
 s32 hbc_agent_net_wait(u32 ms);
+
+/* Stop the app on a failure that is not a CPU exception, and report it like
+ * one: HBC shows it with `hbc.py crash`, with the caller's backtrace, the
+ * app's code (any number; HBC never interprets it) and the reason, a
+ * printf-style message cut to 63 characters. The reason is also printed, so
+ * it ends the kept log. hbc_agent_fatal() then calls exit(0), so the app's
+ * own clean-up still runs (atexit, SD caches); hbc_agent_fatal_now() goes
+ * straight back to HBC through the reload stub, for when the app's state
+ * cannot be trusted (a lock may be held). Both work before hbc_agent_init(). */
+void hbc_agent_fatal(u32 code, const char *fmt, ...)
+		__attribute__((noreturn, format(printf, 2, 3)));
+void hbc_agent_fatal_now(u32 code, const char *fmt, ...)
+		__attribute__((noreturn, format(printf, 2, 3)));
+
+/* The hang watchdog. The first call arms it: from then on, a gap of more
+ * than hang_s seconds (default 60) between two calls is a hang, reported
+ * like a crash (HBC_CRASH_HANG, with the backtrace of the thread that called
+ * hbc_agent_alive()) before the agent returns to HBC through the reload stub.
+ * Call it wherever the app makes progress, once a frame is fine: it stores a
+ * time. The watchdog is a thread at the highest priority, so a spinning app
+ * thread cannot hold it off; a hang with interrupts disabled stops it too.
+ * It pauses while the HOME overlay is open, and while hbc_agent_hold(true)
+ * is in force, for a long wait the app expects (a load, a network listing).
+ * Holds nest. */
+void hbc_agent_alive(void);
+void hbc_agent_hold(bool hold);
 
 /* The HOME overlay (link with -lwiiuse -lbte, which WPAD apps already use).
  * Call it when HOME is pressed, between frames; it pauses the app's loop by

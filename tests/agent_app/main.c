@@ -1,10 +1,12 @@
 // Test app for sdk/hbc_agent, driven by tests/wii_agent.py.
-// usage (argv from Wiiload): agent_app.dol [crash | trap | exit | stay SECONDS]
+// usage (argv from Wiiload): agent_app.dol [crash | trap | fatal | hang | exit | stay SECONDS]
 //
 //   (none)       run until the agent asks it to exit (up to 300 s)
 //   stay N       the same, for up to N seconds
 //   crash        a store to address 0x10 after 1 s, in agent_app_crash() (DSI)
 //   trap         a trap instruction after 1 s, in agent_app_trap() (program)
+//   fatal        hbc_agent_fatal(0x81, ...) after 1 s, in agent_app_fatal()
+//   hang         arms the hang watchdog (5 s), then spins in agent_app_hang()
 //   exit         return at once
 //
 // A build with -DAGENT_APP_MODE='"crash"' takes that mode when it has no
@@ -63,6 +65,15 @@ void __attribute__((noinline)) agent_app_crash(volatile u32 *where) {
 	*where = 0xdeadbeef;
 }
 
+void __attribute__((noinline)) agent_app_fatal(void) {
+	hbc_agent_fatal(0x81, "test fatal, value %d", 42);
+}
+
+void __attribute__((noinline)) agent_app_hang(void) {
+	while (true)
+		__asm__ volatile ("");  // spin: the CPU stays busy, nothing blocks
+}
+
 void __attribute__((noinline)) agent_app_trap(void) {
 	__builtin_trap();
 }
@@ -102,6 +113,7 @@ int main(int argc, char **argv) {
 	hbc_netlog_init();
 
 	cfg.name = "agent_app";
+	cfg.hang_s = 5;  // the test's hang; apps leave it at the default 60
 	cfg.version = "1";
 	cfg.app_polls_exit = true;
 	cfg.on_save = save;
@@ -126,6 +138,18 @@ int main(int argc, char **argv) {
 
 	res = hbc_agent_net_wait(10000);
 	printf("agent_app: network %d\n", res);
+
+	if (!strcmp(mode, "fatal")) {
+		sleep(1);
+		printf("agent_app: stopping (fatal)\n");
+		agent_app_fatal();
+	}
+	if (!strcmp(mode, "hang")) {
+		hbc_agent_alive();
+		sleep(1);
+		printf("agent_app: hanging\n");
+		agent_app_hang();
+	}
 
 	if (!strcmp(mode, "crash") || !strcmp(mode, "trap")) {
 		sleep(1);

@@ -270,8 +270,10 @@ static void main_pre(void) {
 	mark("widgets_views");
 }
 
-// A Wiiload upload's name for the play log: its first argument is the file
-// it was sent as (hbc.py and wiiload send it), without folder or extension.
+// A Wiiload upload's name for the play log, until an agent app names itself
+// (playtime.c): the file it was sent as, when its first argument is that
+// (hbc.py and wiiload send it), without folder or extension. Other loaders'
+// first argument can be anything (a ROM, an option): then "Wiiload".
 static void wiiload_name(char *out, size_t size, const loader_result *ld) {
 	const char *arg = ld->args_len ? ld->args : "", *p;
 	char *dot;
@@ -279,10 +281,12 @@ static void wiiload_name(char *out, size_t size, const loader_result *ld) {
 	for (p = arg; *p; ++p)
 		if (*p == '/' || *p == '\\' || *p == ':')
 			arg = p + 1;
-	strlcpy(out, *arg ? arg : "Wiiload", size);
+	strlcpy(out, arg, size);
 	dot = strrchr(out, '.');
 	if (dot && dot != out && (!strcasecmp(dot, ".dol") || !strcasecmp(dot, ".elf")))
 		*dot = 0;
+	else
+		strlcpy(out, "Wiiload", size);
 }
 
 static void load_text(void)

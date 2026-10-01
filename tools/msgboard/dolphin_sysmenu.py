@@ -32,6 +32,13 @@ for s in SETTINGS:
     args += ["-C", s]
 args += ["-e", sys.argv[2]] if mode == "install" else ["-n", "0000000100000002"]
 USER.mkdir(parents=True, exist_ok=True)
+# Dolphin asks before installing over a different version of a title, and in
+# a batch run nobody can answer: drop the installed HBC's contents (its data
+# folder stays) before a WAD install.
+if mode == "install" and sys.argv[2].lower().endswith(".wad"):
+    import shutil
+    for tid in ("4f484243", "4c554c5a"):   # OHBC, LULZ
+        shutil.rmtree(USER / f"Wii/title/00010001/{tid}/content", ignore_errors=True)
 proc = subprocess.Popen(args)
 pad = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).with_name("dsu_pad.py")), "26761", PAD]) if PAD else None
 time.sleep(seconds)
