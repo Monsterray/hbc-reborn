@@ -46,6 +46,14 @@ static char changes[CHANGES][64];
 static u32 change_count;
 
 static u32 init_ms;
+// Startup steps (devnet_boot_mark), for HBCS "startup".
+#define BOOT_MARKS 20
+static struct {
+	const char *name;
+	u32 ms;
+} boot_marks[BOOT_MARKS];
+static u32 boot_count;
+static u64 boot_start;
 
 #define MS(t) ((u32) ticks_to_millisecs (t))
 
@@ -146,8 +154,14 @@ static s32 status_json(char *buf, size_t size) {
 				"\"wire\":%u,\"ms\":%u,\"net_ms\":%u,\"disk_ms\":%u,\"cpu_ms\":%u}",
 				devfile_last.op, devfile_last.bytes, devfile_last.st.wire, MS(devfile_last.total),
 				MS(devfile_last.st.net), MS(devfile_last.st.disk), MS(devfile_last.st.cpu));
-	n += snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"tcp_last_failure\":\"%s\"",
-			zmem_where(), tcp_last_failure());
+	n += snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"zlib_peak\":%u,\"zlib_heap\":%u,"
+			"\"tcp_last_failure\":\"%s\"", zmem_where(), zmem_peak(), zmem_heap_peak(),
+			tcp_last_failure());
+	n += snprintf(buf + n, size - n, ",\"startup\":{");
+	for (i = 0; i < (int) boot_count; ++i)
+		n += snprintf(buf + n, size - n, "%s\"%s\":%u", i ? "," : "",
+				boot_marks[i].name, boot_marks[i].ms);
+	n += snprintf(buf + n, size - n, "}");
 	n += crash_json(buf + n, size - n);
 	{
 		u32 frames, avg, max, bytes;
@@ -282,6 +296,7 @@ void devnet_early_init(void) {
 	hbc_crash_block *cb = (hbc_crash_block *) HBC_CRASH_ADDR;
 	hbc_netlog_block *keep = (hbc_netlog_block *) HBC_NETLOG_KEEP_ADDR;
 
+	boot_start = gettime();
 	// A crash an agent recorded before returning here: keep it for the
 	// status reply, and clear it so it is reported once.
 	DCInvalidateRange(cb, sizeof(*cb));
@@ -312,4 +327,17 @@ void devnet_init(void) {
 
 void devnet_set_init_ms(u32 ms) {
 	init_ms = ms;
+}
+
+void devnet_boot_mark(const char *name) {
+	u32 ms = ticks_to_millisecs(diff_ticks(boot_start, gettime()));
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	if (boot_count < BOOT_MARKS) {
+		boot_marks[boot_count].name = name;
+		boot_marks[boot_count].ms = ms;
+		boot_count++;
+	}
+	_CPU_ISR_Restore(level);
 }

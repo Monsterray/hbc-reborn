@@ -13,5 +13,9 @@ const char *zmem_where(void);
 // after deflateEnd/inflateEnd when it returned true.
 bool zmem_use(z_stream *z);
 void zmem_release(void);
+// The most arena bytes one stream has used, and the largest allocation
+// that did not fit and went to the heap (0 if none).
+u32 zmem_peak(void);
+u32 zmem_heap_peak(void);
 
 #endif

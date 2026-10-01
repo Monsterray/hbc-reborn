@@ -19,6 +19,7 @@
 static u8 *arena;
 static u32 used;
 static bool owned;
+static u32 peak, heap_peak;
 
 static voidpf zmem_alloc(voidpf opaque, uInt items, uInt size) {
 	u32 n = ((u32) items * size + 31) & ~31u;
@@ -26,8 +27,12 @@ static voidpf zmem_alloc(voidpf opaque, uInt items, uInt size) {
 
 	if (used + n <= ZMEM_SIZE) {
 		used += n;
+		if (used > peak)
+			peak = used;
 		return arena + used - n;
 	}
+	if (n > heap_peak)
+		heap_peak = n;
 	return malloc((u32) items * size);
 }
 
@@ -74,4 +79,12 @@ bool zmem_use(z_stream *z) {
 
 void zmem_release(void) {
 	owned = false;
+}
+
+u32 zmem_peak(void) {
+	return peak;
+}
+
+u32 zmem_heap_peak(void) {
+	return heap_peak;
 }

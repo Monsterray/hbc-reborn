@@ -67,6 +67,10 @@ u64 *conf_title_id = STUB_ADDR_TITLE;
 
 static bool should_exit;
 static s64 hbc_start;
+
+static void mark(const char *name) {
+	devnet_boot_mark(name);
+}
 static bool shutdown;
 static bool restart;
 #ifdef GDBSTUB
@@ -207,13 +211,16 @@ static void main_pre(void) {
 	DSP_Init();
 	AUDIO_StopDMA();
 	AUDIO_RegisterDMACallback(NULL);
+	mark("audio");
 
 	gfx_init_video();
 	PAD_Init();
+	mark("video");
 
 	SYS_SetResetCallback(reset_cb);
 	title_init();
 	SYS_SetPowerCallback(power_cb);
+	mark("title");
 
 	gprintf("installing stub (%u)\n", stub_bin_size);
 
@@ -238,21 +245,44 @@ static void main_pre(void) {
 			IOS_GetVersion(), IOS_GetRevisionMajor(), IOS_GetRevisionMinor());
 
 	ISFS_Initialize();
+	mark("isfs");
 
 	WiiDVD_StopMotorAsync();
 
 	gfx_init();
+	mark("gfx");
 	app_entry_init();
+	mark("apps_thread");
 	theme_xml_init();
 	theme_init(NULL, 0);
+	mark("theme");
 	config_language();
 	loader_init();
+	mark("language_loader");
 	controls_init();
 	cursors_init();
+	mark("controls_cursors");
 	font_init();
+	mark("font");
 	widgets_init();
 	view_init();
 	dialogs_init();
+	mark("widgets_views");
+}
+
+// A Wiiload upload's name for the play log: its first argument is the file
+// it was sent as (hbc.py and wiiload send it), without folder or extension.
+static void wiiload_name(char *out, size_t size, const loader_result *ld) {
+	const char *arg = ld->args_len ? ld->args : "", *p;
+	char *dot;
+
+	for (p = arg; *p; ++p)
+		if (*p == '/' || *p == '\\' || *p == ':')
+			arg = p + 1;
+	strlcpy(out, *arg ? arg : "Wiiload", size);
+	dot = strrchr(out, '.');
+	if (dot && dot != out && (!strcasecmp(dot, ".dol") || !strcasecmp(dot, ".elf")))
+		*dot = 0;
 }
 
 static void load_text(void)
@@ -307,10 +337,10 @@ void main_real(void) {
 	bool exit_about;
 
 	char charbuf[PATH_MAX];
+	// What the Message Board's play log calls an app this launches.
+	static char launch_name[64], launch_dir[64];
 
 	load_text();
-
-	playtime_destroy();
 
 	if (settings_load()) {
 		app_entry_set_prefered(settings.device);
@@ -325,8 +355,15 @@ void main_real(void) {
 #endif
 
 	app_sel = NULL;
+	mark("settings");
 	v_browser = browser_init();
+	mark("browser");
 	home_init ();
+	mark("home");
+	// After the last startup IOS call: IOS serves one request at a time, so
+	// the play record's NAND write (about 120 ms) would hold up any IOS call
+	// made meanwhile. The fade-in below makes none.
+	playtime_destroy((u64) hbc_start);
 	hlog("The Homebrew Channel %s, IOS%d v%d\n", CHANNEL_VERSION_STR, IOS_GetVersion(),
 		 IOS_GetRevision());
 	view_bubbles = true;
@@ -578,6 +615,8 @@ void main_real(void) {
 						reloced = true;
 						ahb_access = true;
 						should_exit = true;
+						wiiload_name(launch_name, sizeof(launch_name), &ld_res);
+						strlcpy(launch_dir, ld_res.dirname, sizeof(launch_dir));
 					}
 
 					break;
@@ -697,6 +736,10 @@ void main_real(void) {
 							ahb_access = app_sel->meta->ahb_access;
 							no_ios_reload = app_sel->meta->no_ios_reload;
 						}
+						strlcpy(launch_name, app_sel && app_sel->meta && app_sel->meta->name ?
+								app_sel->meta->name : app_sel ? app_sel->dirname : "Homebrew",
+								sizeof(launch_name));
+						strlcpy(launch_dir, app_sel ? app_sel->dirname : "", sizeof(launch_dir));
 
 						should_exit = true;
 					}
@@ -759,6 +802,10 @@ void main_real(void) {
 		for (i = 0; i < s && i < sizeof(settings.app_sel) - 1; ++i)
 			settings.app_sel[i] = tolower((int) app_sel->dirname[i]);
 	}
+
+	// Before an IOS reload or a launch: the play record is cleared, and HBC's
+	// session (and the app it launches) goes into the Message Board's play log.
+	playtime_leave(reloced ? launch_name : NULL, reloced ? launch_dir : NULL);
 
 	// because the tcp thread is the only one that can block after the exit
 	// command is sent, deinit it first. this gives the other threads a chance

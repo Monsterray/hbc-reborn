@@ -155,6 +155,40 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.9: the Message Board play log, startup timings, the play record off the critical path
+
+- **Play log** (docs/messageboard.md). HBC now logs its own time and each app
+  it launches to the Wii Message Board, one line per title a day.
+  - The format was worked out in a Dolphin profile running the USA Wii Menu
+    4.3U (tools/msgboard/). The profile needed `data/nocopy`, and SYSCONF
+    `IPL.CD`/`IPL.CD2` set to 1: with Dolphin's default 0, the Wii Menu
+    treats setup as unfinished and wipes `cdb.vff` on every boot.
+  - `cdblog.c` matches the Python reference byte for byte (tests/test_cdblog.py).
+    The Wii Menu accepted messages written by both, and merged its own records
+    into them. The one byte that broke acceptance was the type length at 0x10,
+    which is little-endian.
+  - **Dolphin:** the installed HBC logged its session and a Wiiload app's,
+    named after the file it was sent as ("agent_app").
+  - **Bench Wii, read-only:** the permission patch lifted and restored IOS58's
+    check at one site, and the Wii Menu's data folder copied in full. This Wii
+    has no `cdbwiiid.dat`, so the console ID comes from an existing message;
+    a dry run on a copy of its `cdb.vff` gave the right ID and message number.
+  - **Not yet on the bench Wii:** a write by the installed 1.8.9.
+- **Startup timings:** `HBCS` gains `startup` (each step's end, in ms since
+  `main()`) and `zlib_peak`/`zlib_heap`.
+  - **Bench Wii, 989 ms to the menu:** the fade-in ~515 ms, the theme's PNGs
+    201 ms, the play record 118 ms, video 87 ms, ES 57 ms. The app scan
+    (295 ms, 14 apps) runs in its own thread meanwhile.
+  - **zlib area:** deflate peaked at 268,000 of 327,680 bytes; inflate used 7 KB.
+- **Play record:** written on a thread, started after the last startup IOS call.
+  Its 118 ms NAND write had held up the next IOS call (IOS serves one at a
+  time), so started earlier it only moved the cost into `home_init()`. Boot to
+  menu went from 989 to 922-939 ms.
+- **`tests/netblock`:** TCP throughput by IOS call size, through libogc and
+  straight to `/dev/net/ip/top` with HBC's own buffers. Past 16 KiB nothing
+  changed (sending 0.63-0.69 MB/s, receiving 1.0-1.08 MB/s): the limit is
+  IOS's network stack and the radio, not libogc's 16 KiB copy.
+
 ### 1.8.8: the bench queue's dead time between jobs
 
 - **Measured first** (163 finished jobs on the bench PC's queue): jobs ran a median

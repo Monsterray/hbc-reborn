@@ -19,7 +19,16 @@ typedef union {
 	};
 } __attribute__((packed)) playtime_t;
 
-void playtime_destroy(void);
+// At startup, on a thread of its own: spoils the Wii Menu's play record
+// (play_rec.dat, about 120 ms of NAND write), and logs the app HBC launched
+// last, if it came back through HBC's reload stub. `started` is when HBC
+// started (gettime()).
+void playtime_destroy(u64 started);
+// Blocks until that thread is done.
+void playtime_wait(void);
+// Leaving HBC: logs HBC's own session to the Message Board, and when an app
+// is being launched (app_name not NULL), remembers it for the next start.
+// Call before reloading IOS.
+void playtime_leave(const char *app_name, const char *app_dir);
 
 #endif
-

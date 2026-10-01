@@ -21,6 +21,9 @@ void devnet_early_init(void);
 void devnet_init(void);
 // Records how long HBC took to reach its menu, for the status reply.
 void devnet_set_init_ms(u32 ms);
+// Startup steps for HBCS "startup": name and ms since devnet_early_init()
+// (the start of main), in the order they happen. Any thread may call it.
+void devnet_boot_mark(const char *name);
 // Takes the next app folder name a file request changed under
 // "<device>:/apps/", so the menu can reload that entry.
 bool devnet_take_app_change(char *dirname, size_t size);

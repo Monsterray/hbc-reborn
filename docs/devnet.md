@@ -69,8 +69,13 @@ Network and SD overlap in framed transfers, so their sum can exceed `ms`.
 `heap_free` is newlib's free heap (its "used" figure would count the gap
 between MEM1 and MEM2), `tcp_stack_used` is the loader thread's stack
 high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
-`scan_ms` is the last full app scan. `zlib_mem` says where the zlib arena
-landed (see Performance), and `tcp_last_failure` records what IOS returned
+`scan_ms` is the last full app scan. `startup` lists the startup steps as
+`"name":ms`, the time since `main()` at the end of each, in the order they
+finished; `playtime_cleared` (or `playtime_failed`) is the background write that
+clears the Wii Menu's play record. `zlib_mem` says where the zlib arena landed
+(see Performance), `zlib_peak` is the most of it one stream has used, and
+`zlib_heap` the largest zlib allocation that did not fit and went to the heap
+(0 if none). `tcp_last_failure` records what IOS returned
 during the last receive that failed: `r<n>` per `net_read` result,
 `p<events>/<result>` per poll, then the reason. `crash` is `null`, or the
 crash an agent app reported before it returned to this HBC (see
