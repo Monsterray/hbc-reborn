@@ -87,9 +87,13 @@ The text is generated from the list (English shown):
 - HBC's own time, from when it started (or when the Wii Menu launched it, by
   the Wii Menu's fresh play_rec.dat) until it leaves: to an app, to the Wii
   Menu, or at power-off. As "Homebrew Channel", ID `OHBC` (or `LULZ`).
-- Each app it launches, by the name in its `meta.xml` (else its folder; for a
-  Wiiload upload, the file it was sent as), from the launch until HBC starts
-  again through its reload stub. The launch is kept in HBC's data folder
+- Each app it launches, from the launch until HBC starts again through its
+  reload stub. An app from the menu goes by the name in its `meta.xml`, else
+  its folder. A Wiiload upload goes by, in order: the name its agent gave
+  itself (`cfg.name`, from the kept log), the name its sender gave (`HBCA`:
+  `hbc.py send` sends the folder of an `apps/NAME/boot.dol`, the file's
+  name, or `--name`), the file it was sent as when that is a `.dol`/`.elf`,
+  else "Wiiload". An app's arguments (a ROM, an option) are never its name. The launch is kept in HBC's data folder
   (`playlog.bin`). When the Wii Menu runs in between (the app went there, or
   the Wii was switched off), the app's end is unknown and it is not logged.
 - A title already in the day's message gets a longer line: the Wii Menu

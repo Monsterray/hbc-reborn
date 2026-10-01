@@ -619,7 +619,10 @@ void main_real(void) {
 						reloced = true;
 						ahb_access = true;
 						should_exit = true;
-						wiiload_name(launch_name, sizeof(launch_name), &ld_res);
+						// The sender's name for it (HBCA), else the file it
+						// was sent as; its agent may still name it better.
+						if (!devnet_take_upload_name(launch_name, sizeof(launch_name)))
+							wiiload_name(launch_name, sizeof(launch_name), &ld_res);
 						strlcpy(launch_dir, ld_res.dirname, sizeof(launch_dir));
 					}
 

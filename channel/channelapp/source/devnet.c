@@ -39,6 +39,11 @@ static u16 log_port;
 static hbc_crash_block crash;
 static bool have_crash;
 static hbc_netlog_block kept;
+// The next Wiiload upload's name, from its sender (HBCA), and when it came.
+#define UPLOAD_NAME_TTL_S 120
+static char upload_name[64];
+static u64 upload_name_at;
+
 // The last app's output, kept by its agent as it stopped (HBCL).
 static hbc_lastlog_block lastlog;
 static bool have_lastlog;
@@ -314,6 +319,26 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		return true;
 	}
 
+	if (!memcmp(hdr, "HBCA", 4)) {
+		// The name of the Wiiload upload that follows, for the Message
+		// Board's play log: hbc.py sends the app's folder or file name.
+		char name[sizeof(upload_name)];
+		u16 len = get_u16(hdr + 4);
+		u32 level;
+
+		if (!len || len >= sizeof(name) || !tcp_read(s, (u8 *) name, len, NULL, NULL)) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return true;
+		}
+		name[len] = 0;
+		_CPU_ISR_Disable(level);
+		memcpy(upload_name, name, len + 1);
+		upload_name_at = gettime();
+		_CPU_ISR_Restore(level);
+		devfile_reply(s, 0, NULL, 0);
+		return true;
+	}
+
 	if (!memcmp(hdr, "HBCL", 4)) {
 		// The kept log: a header line, then the text. The agent answers the
 		// same request with a running app's log so far ("live").
@@ -396,6 +421,20 @@ void devnet_init(void) {
 		set_log_target(block->ip, block->port);
 	else if (valid_block(&kept))
 		set_log_target(kept.ip, kept.port);
+}
+
+bool devnet_take_upload_name(char *out, size_t size) {
+	bool have;
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	have = upload_name[0] && upload_name_at &&
+			diff_sec(upload_name_at, gettime()) < UPLOAD_NAME_TTL_S;
+	if (have)
+		strlcpy(out, upload_name, size);
+	upload_name[0] = 0;
+	_CPU_ISR_Restore(level);
+	return have;
 }
 
 const char *devnet_lastlog_app(void) {

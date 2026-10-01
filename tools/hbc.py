@@ -651,7 +651,23 @@ def sync(wii, local, remote, delete=False, out=print):
     return uploaded, skipped, deleted, nbytes
 
 
-def send(wii, path, args):
+def upload_name(path):
+    """What the Message Board's play log calls an upload: the app's folder for
+    an apps/<name>/boot.dol (or .elf), else the file's name without .dol/.elf."""
+    base = os.path.basename(path)
+    stem, ext = os.path.splitext(base)
+    if ext.lower() in (".dol", ".elf"):
+        if stem.lower() == "boot":
+            parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+            if parent:
+                return parent
+        return stem
+    return base
+
+
+def send(wii, path, args, name=None):
+    """Wiiload path to HBC. `name` (default upload_name(path)) is what HBC's
+    play log calls it, unless the app's own agent names it."""
     data = read_file(path)
     # The PC has CPU to spare, and the Wii's inflate cost does not depend on the level.
     packed = zlib.compress(data, 9)
@@ -664,6 +680,12 @@ def send(wii, path, args):
         raise HBCError("arguments are longer than 1023 bytes")
     argv += b"\0"
     header = b"HAXX" + bytes((0, 5)) + struct.pack(">HII", len(argv), len(packed), unpacked_len)
+    label = (name or upload_name(path)).encode("utf-8")[:63]
+    if label:
+        try:
+            request(wii, struct.pack(">4sH", b"HBCA", len(label)), label)
+        except HBCError:
+            pass  # an HBC before 1.9.1 (or an agent app): no name, nothing else changes
     with connect(wii) as conn:
         conn.sendall(header + packed + argv)
 
@@ -836,11 +858,15 @@ hbc.py wait [SECONDS]
 Waits until HBC answers (default 90 s) and prints its version. Use it after
 rebooting the Wii or after an app returns to HBC.""",
     "run": """\
-hbc.py run FILE [ARGS...]
+hbc.py run [--name NAME] FILE [ARGS...]
 
 Sends FILE (a .dol, .elf or .zip) to the Wii, starts it, and prints what it
 prints until it exits (or --timeout seconds pass). Arguments after FILE go
 to the app as argv; put -- before any that start with "-".
+
+The Wii Message Board's play log lists the app by the name its agent gives
+itself (sdk/hbc_agent.h), else by --name, else by its folder for an
+apps/NAME/boot.dol, else by the file's name.
 
 The app's output reaches the PC if it uses sdk/hbc_netlog.h. The PC must
 accept incoming connections on --log-port (4405 by default): allow it once
@@ -853,11 +879,11 @@ report and exits with status 3.
     hbc.py run build/myapp.dol level2
     hbc.py run build/myapp.dol -- --verbose""",
     "send": """\
-hbc.py send FILE [ARGS...]
+hbc.py send [--name NAME] FILE [ARGS...]
 
 Sends FILE to the Wii and starts it, without waiting for output: Wiiload,
 like the devkitPro wiiload tool. A .zip is installed to the SD card after
-you confirm on the Wii.""",
+you confirm on the Wii. --name is the play log's name for it (see run).""",
     "log": """\
 hbc.py log
 
@@ -958,7 +984,8 @@ COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--recursive": ("recursive", ("get", "put", "rm")),
                  "--delete": ("delete", ("sync",)),
                  "--clear": ("clear", ("crash",))}
-VALUE_FLAGS = {"--elf": ("elf", ("crash",))}
+VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
+               "--name": ("name", ("send", "run"))}
 
 
 def split_flags(cmd, args):
@@ -1047,7 +1074,7 @@ def main(argv=None):
             need(1, "FILE [ARG ...]")
             if exit_app(wii):
                 print("hbc.py: the running app exited to HBC", file=sys.stderr)
-            send(wii, args[0], args[1:])
+            send(wii, args[0], args[1:], flags.get("name"))
         elif cmd == "exit":
             if not exit_app(wii):
                 raise HBCError("no agent app is running (HBC answers itself)")
@@ -1107,7 +1134,7 @@ def main(argv=None):
                     server.serve()
                     return
                 threading.Thread(target=server.serve, args=(True,), daemon=True).start()
-                send(wii, args[0], args[1:])
+                send(wii, args[0], args[1:], flags.get("name"))
                 deadline = time.monotonic() + opts.timeout
                 while not server.done.wait(0.5):  # short waits keep ^C working
                     if time.monotonic() >= deadline:

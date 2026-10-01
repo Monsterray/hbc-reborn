@@ -46,6 +46,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCF` | op (1), flags (1), path length (2), size (4), 0 (4) | path, then the data for a put | see below |
 | `HBCN` | log port (2), zero | none | empty; sets the app log target |
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
+| `HBCA` | name length (u16 at 4) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5) |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
 
@@ -61,8 +62,8 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 4 when `HBCL` and the crash fields `kind`, `code` and `reason`
-exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
+`proto` is 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
+`kind`, `code` and `reason` exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
 `crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
 at the last device poll. `last` describes the most recent file transfer:

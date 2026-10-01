@@ -39,6 +39,7 @@ class FakeHBC:
         self.log = None
         self.log_ports = []
         self.uploads = []
+        self.upload_names = []  # HBCA: the play log's name for the next upload
         self.requests = []  # (op, path) of every HBCF request
         self.truncate = False
         self.agent = False  # an agent app answers instead of HBC
@@ -126,6 +127,10 @@ class FakeHBC:
             port = struct.unpack(">H", hdr[4:6])[0]
             self.log_ports.append(port)
             self.log = f"{addr}:{port}" if port else None
+            self.reply(conn, 0)
+        elif magic == b"HBCA":
+            n = struct.unpack(">H", hdr[4:6])[0]
+            self.upload_names.append(self.recv(conn, n).decode())
             self.reply(conn, 0)
         elif magic == b"HAXX":
             args_len, size, size_un = struct.unpack(">HII", hdr[6:16])
@@ -327,6 +332,26 @@ class HBCToolTest(unittest.TestCase):
         out = self.cli("lastlog")
         self.assertIn("-- demo (ended by exit, 4.2 s) --\nhello\nbye\n", out)
         self.assertEqual(json.loads(self.cli("lastlog", "--json"))["text"], "hello\nbye\n")
+
+    def test_upload_names_for_the_play_log(self):
+        def wait_upload(n):
+            deadline = time.monotonic() + 5
+            while len(self.fake.uploads) < n and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+        folder = self.tmp / "apps" / "Wii64"
+        folder.mkdir(parents=True)
+        (folder / "boot.dol").write_bytes(bytes(64))
+        (self.tmp / "netblock.elf").write_bytes(bytes(64))
+        start = len(self.fake.uploads)
+        self.cli("send", str(folder / "boot.dol"), "sd:/roms/Mario Kart 64.v64")
+        self.cli("send", str(self.tmp / "netblock.elf"))
+        self.cli("send", "--name", "WiiStation", str(folder / "boot.dol"), "--diag")
+        wait_upload(start + 3)
+        # The folder of a boot.dol, else the file; --name over both. The
+        # app's arguments (a ROM, an option) are never the name.
+        self.assertEqual(self.fake.upload_names[-3:], ["Wii64", "netblock", "WiiStation"])
+        self.assertEqual(self.fake.uploads[-1][1], b"boot.dol\0--diag\0\0")
 
     def test_key_sends_presses(self):
         self.fake.keys = b""

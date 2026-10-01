@@ -155,6 +155,29 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.1: Wiiload uploads named for the play log by their sender
+
+- A Wiiload upload's play log name was its first argument (1.8.9), then the
+  agent's name or a `.dol`/`.elf` file name (1.9.0). An app without the agent
+  sent as `boot.dol` was still "boot", and one whose first argument is a ROM
+  was "Wiiload".
+- **New request `HBCA` (protocol 5):** a sender names the next upload. HBC
+  keeps the name for 2 minutes, for the upload that follows. `hbc.py
+  send`/`run` sends the folder of an `apps/NAME/boot.dol`, else the file's
+  name, or `--name NAME`. An HBC before 1.9.1 refuses `HBCA`, and `hbc.py`
+  carries on without it.
+- **The order:** the app's agent's own name, then the sender's (`HBCA`), then
+  a `.dol`/`.elf` file name, then "Wiiload". An app's arguments are never its
+  name, so the Message Board gets app names, not ROMs and options.
+- **Checked:**
+  - `test_hbc_tool.py`: `boot.dol` in `apps/Wii64` is "Wii64", `netblock.elf`
+    is "netblock", and `--name` wins.
+  - Dolphin (Wii Menu profile): `rtc_shift.dol` sent as `MyTool/boot.dol`
+    with argument `0` logged as "MyTool".
+- **`tools/msgboard`'s flow scripts** refuse to start while another Dolphin on
+  this PC holds TCP 4299. One run had reached WiiStation's Dolphin, running a
+  1.8.6 agent app, instead of its own (it stopped before sending anything).
+
 ### 1.9.0: fatal reports, a hang watchdog and a kept log for every agent app
 
 WiiStation had all three in its own code: it wrote the agent's crash block

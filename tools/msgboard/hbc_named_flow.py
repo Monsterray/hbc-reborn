@@ -1,10 +1,10 @@
-"""Dolphin check of HBC's play log with an app: boot this tree's retail WAD in
-the Wii Menu profile on day DAY, send tests/agent_app over Wiiload, let it run,
-exit it back to HBC, close Dolphin (HBC's power-off logs its own session), and
-print the day's message.
+"""Dolphin check of the play log's name for a Wiiload upload without the
+agent: boot this tree's retail WAD in the Wii Menu profile on day DAY, send
+tests/rtc_shift as MyTool/boot.dol (hbc.py names it "MyTool"; rtc_shift
+exits at once), close Dolphin, and print the day's message.
 
-    python tools/msgboard/hbc_app_flow.py DAY      (YYYY-MM-DD, a day with no message)"""
-import os, pathlib, struct, subprocess, sys, time
+    python tools/msgboard/hbc_named_flow.py DAY      (YYYY-MM-DD, a day with no message)"""
+import os, pathlib, shutil, struct, subprocess, sys, tempfile, time
 
 root = pathlib.Path(__file__).resolve().parents[2]
 here = pathlib.Path(__file__).parent
@@ -25,24 +25,16 @@ with socket.socket() as probe:
         raise SystemExit("TCP 4299 is in use by another Dolphin on this PC; try again when it is free")
 env = dict(os.environ, RTC=f"{day}T17:00", EXTRA="Dolphin.Core.EnableCheats=True")
 runner = subprocess.Popen([sys.executable, str(here / "dolphin_sysmenu.py"), "install",
-                           str(root / "channel/title/channel_retail.wad"), "170"], env=env)
+                           str(root / "channel/title/channel_retail.wad"), "110"], env=env)
 wii = dolphin_smoke.host_address()
 print("HBC:", hbc.hbc_wait(wii, 90), flush=True)
-time.sleep(20)                                   # HBC's own first session
-hbc.send(wii, str(root / "tests/agent_app/agent_app.dol"), ["stay", "120"])
-deadline = time.monotonic() + 60
-while time.monotonic() < deadline:
-    try:
-        if hbc.is_agent(hbc.version(wii, 2)):
-            break
-    except (OSError, hbc.HBCError):
-        pass
-    time.sleep(1)
-print("app:", hbc.version(wii), flush=True)
-time.sleep(40)                                   # the app's session
-hbc.exit_app(wii)
+time.sleep(20)
+tmp = pathlib.Path(tempfile.mkdtemp()) / "MyTool"
+tmp.mkdir()
+shutil.copy(root / "tests/rtc_shift/rtc_shift.dol", tmp / "boot.dol")
+hbc.send(wii, str(tmp / "boot.dol"), ["0"])
+time.sleep(5)
 print("back:", hbc.hbc_wait(wii, 90), flush=True)
-time.sleep(15)                                   # HBC again, until Dolphin closes
 runner.wait()
 
 img = VFF.read_bytes()
@@ -55,13 +47,7 @@ for c in range(2, 40000):
         if (t.tm_year, t.tm_mon, t.tm_mday) == (y, m, d):
             msg = img[off:off + 0x2000]
             i = msg.find("Today".encode("utf-16-be"))
-            print("titles:", struct.unpack_from(">I", msg, 0x74)[0])
             print(msg[i:].decode("utf-16-be", "replace").split("\0\0")[0].replace("\0", " | "))
-            lst = struct.unpack_from(">I", msg, 0x52c)[0] + 0x400
-            for k in range(struct.unpack_from(">I", msg, 0x74)[0]):
-                e = msg[lst + 8 + k * 0x88:lst + 8 + (k + 1) * 0x88]
-                b, l = struct.unpack_from(">QQ", e, 8 + 0x58)
-                print(f"  {e[8 + 0x68:8 + 0x6e]!r}: {(l - b) / 60750000:.0f} s")
             break
 else:
     print("no message for", day)
