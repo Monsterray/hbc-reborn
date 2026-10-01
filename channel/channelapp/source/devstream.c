@@ -26,6 +26,10 @@
 #include "tcp.h"
 #include "zmem.h"
 
+#ifndef MQ_ERROR_SUCCESSFUL
+#define MQ_ERROR_SUCCESSFUL 0 /* libogc2 r1 dropped it; MQ_Init still returns 0 on success */
+#endif
+
 #define FRAME_MAX (64 * 1024)
 #define FRAME_HDR 12
 // HBC keeps four slots; the in-app agent builds with two to stay small.

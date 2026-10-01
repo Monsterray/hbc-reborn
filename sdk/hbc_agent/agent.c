@@ -32,6 +32,30 @@
 #else
 #include <stddef.h>
 #include <ogc/context.h>
+#include <ogc/libversion.h>
+// libogc2 r1 (September 2026, the first to define _LIBOGC2_REVISION_) names
+// frame_context's fields in lower case; the layout is unchanged.
+#ifdef _LIBOGC2_REVISION_
+#define FC_NUMBER nExcept
+#define FC_SRR0   srr0
+#define FC_SRR1   srr1
+#define FC_GPR    gpr
+#define FC_GQR    gqr
+#define FC_CR     cr
+#define FC_LR     lr
+#define FC_CTR    ctr
+#define FC_XER    xer
+#else
+#define FC_NUMBER EXCPT_Number
+#define FC_SRR0   SRR0
+#define FC_SRR1   SRR1
+#define FC_GPR    GPR
+#define FC_GQR    GQR
+#define FC_CR     CR
+#define FC_LR     LR
+#define FC_CTR    CTR
+#define FC_XER    XER
+#endif
 #endif
 
 #include "../../channel/channelapp/config.h"
@@ -743,9 +767,9 @@ static void *watchdog(void *arg) {
 			sp = t->ctx.gpr[1];
 #else
 			lwp_cntrl *t = alive_thread;
-			pc = t->context.LR;
-			lr = t->context.LR;
-			sp = t->context.GPR[1];
+			pc = t->context.FC_LR;
+			lr = t->context.FC_LR;
+			sp = t->context.FC_GPR[1];
 #endif
 			snprintf(reason, sizeof(reason), "no hbc_agent_alive() for %u s",
 					 (unsigned) (cfg.hang_s ? cfg.hang_s : 60));
@@ -809,11 +833,11 @@ static void install_crash_hook(void) {
 // points, not C functions (ogc_exc.S says what they receive). The agent's
 // entry, agent_exc_entry, builds libogc's frame and calls agent_exc(), which
 // records the crash and then shows libogc's own crash screen.
-_Static_assert(offsetof(frame_context, SRR0) == AGENT_EXC_SRR0 - AGENT_EXC_NUMBER &&
-			   offsetof(frame_context, GPR[1]) == AGENT_EXC_GPR(1) - AGENT_EXC_NUMBER &&
-			   offsetof(frame_context, GQR[0]) == AGENT_EXC_GQR(0) - AGENT_EXC_NUMBER &&
-			   offsetof(frame_context, CR) == AGENT_EXC_CR - AGENT_EXC_NUMBER &&
-			   offsetof(frame_context, XER) == AGENT_EXC_XER - AGENT_EXC_NUMBER,
+_Static_assert(offsetof(frame_context, FC_SRR0) == AGENT_EXC_SRR0 - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, FC_GPR[1]) == AGENT_EXC_GPR(1) - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, FC_GQR[0]) == AGENT_EXC_GQR(0) - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, FC_CR) == AGENT_EXC_CR - AGENT_EXC_NUMBER &&
+			   offsetof(frame_context, FC_XER) == AGENT_EXC_XER - AGENT_EXC_NUMBER,
 			   "ogc_exc.S's frame offsets must match this libogc's frame_context");
 
 typedef void (*agent_exc_fn)(frame_context *);
@@ -830,10 +854,10 @@ static const u8 exc_vector[NUM_EXCEPTIONS] = {
 };
 
 void agent_exc(frame_context *ctx) {
-	u32 n = ctx->EXCPT_Number;
+	u32 n = ctx->FC_NUMBER;
 
-	agent_record(n < NUM_EXCEPTIONS ? exc_vector[n] : n, ctx->SRR0, ctx->SRR1, ctx->LR,
-				 ctx->CR, ctx->CTR, ctx->GPR[1]);
+	agent_record(n < NUM_EXCEPTIONS ? exc_vector[n] : n, ctx->FC_SRR0, ctx->FC_SRR1, ctx->FC_LR,
+				 ctx->FC_CR, ctx->FC_CTR, ctx->FC_GPR[1]);
 	c_default_exceptionhandler(ctx);
 }
 
