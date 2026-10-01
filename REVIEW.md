@@ -155,6 +155,15 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.3: the play log test in CI's container
+
+- 1.9.2's CI failed in the devkitPPC job's Tests step: the container's gcc 12
+  rejected `strncpy` into the play log record's 6-byte ID in the host driver
+  (`tests/cdblog_host/main.c`, `-Werror=stringop-truncation`). The ID is
+  NUL-padded, not NUL-terminated, so the driver now copies it with a bounded
+  `memcpy`. Reproduced and checked in `devkitpro/devkitppc:latest`: all 71
+  tests pass. The host jobs (Windows, macOS, Linux) had passed.
+
 ### 1.9.2: bench jobs in a minimized window
 
 - On Windows the bench dispatcher has no console, so each console job

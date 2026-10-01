@@ -55,7 +55,8 @@ int main(int argc, char **argv) {
 	memset(&s, 0, sizeof(s));
 	for (i = 0; argv[2][i] && i < 40; ++i)
 		s.name[i] = (uint8_t) argv[2][i];
-	strncpy(s.id, argv[3], sizeof(s.id));
+	// The ID is NUL-padded, not NUL-terminated: up to all 6 bytes are used.
+	memcpy(s.id, argv[3], strlen(argv[3]) < sizeof(s.id) ? strlen(argv[3]) : sizeof(s.id));
 	s.start = ticks(argv[4]);
 	s.end = ticks(argv[5]);
 	if (argc > 7)
