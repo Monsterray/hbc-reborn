@@ -706,6 +706,15 @@ def cmd_add(a):
     start_dispatcher()
 
 
+def job_window():
+    """Windows: the dispatcher has no console, so each console job (python.exe) gets a
+    window of its own. Show it minimized and without taking the focus."""
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 7                             # SW_SHOWMINNOACTIVE
+    return {"startupinfo": si}
+
+
 def run_job(p):
     job = load(p)
     r = RUNNING / p.name
@@ -721,7 +730,7 @@ def run_job(p):
         try:
             proc = subprocess.Popen(job["cmd"], cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, env=env,
-                                    **({} if WINDOWS else {"start_new_session": True}))
+                                    **(job_window() if WINDOWS else {"start_new_session": True}))
             try:
                 job["exit"] = proc.wait(timeout=job.get("timeout") or TIMEOUT)
             except subprocess.TimeoutExpired:
