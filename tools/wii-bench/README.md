@@ -25,9 +25,38 @@ python tools/wii-bench/wiibench.py cancel <id>   # only a job that has not start
   itself it still exits. By hand, outside a job, `hbc.py` exits a running app as before.
 - A dispatcher keeps the code it started with. After changing `wiibench.py`, the next
   dispatcher runs the new code: the running one exits after 10 idle minutes.
-- Oldest job first. A job past its `--timeout` (default 3600 s) is stopped: its own process
-  tree, nothing else.
-- Each job: `queue/done/<id>.json` (command, times, exit code) and `<id>.log` (its output).
+- Oldest job first. A job past its `--timeout` (default 1800 s) is stopped: its own process
+  tree, nothing else. Pass a longer `--timeout` for a long job; the slowest 1% of the jobs
+  so far took about 2,100 s.
+- Each job: `queue/done/<id>.json` (command, times, exit code, agent) and `<id>.log` (its
+  output).
+- `wait` notices a finished job within 0.5 s. Once a minute it prints why the job hasn't
+  finished yet on stderr, for example `next here; waiting for the lease: place 2 in line,
+  held by HOST for NAME`, `Wii busy: WiiStation is running for 12 min`, or `running`.
+  `--every S` changes the interval.
+
+### The idle wait, and back-to-back jobs
+
+The full 20 s idle wait is there for someone using the Wii outside the queue. When the queue
+itself just used the Wii, it's shorter:
+
+| Before the job | Idle wait |
+| --- | --- |
+| Nothing known about the Wii (the dispatcher's first job, or a long gap) | 20 s |
+| Up to 60 s after a queue job ended: this workstation's, or the lease's last holder released it | 2 s |
+| The same agent's next job (a chain) | one answer from HBC |
+
+Any probe that finds the Wii busy or off goes back to the full 20 s.
+
+A job's agent is `add --agent NAME`, else `$WII_BENCH_AGENT`, else the Claude Code session
+(`$CLAUDE_CODE_SESSION_ID`). A job with no agent never chains. After a job, the dispatcher
+keeps its turn for the same agent:
+
+- With nobody else waiting for the lease, it holds the lease up to 15 s for the agent's next
+  `add`. That covers the usual `add`, `wait`, `add` sequence.
+- With another workstation waiting, it chains only a job that's already queued, and stops
+  chaining after 10 minutes.
+- A different agent's job at the head of this workstation's queue ends the chain at once.
 
 ## One queue per workstation, wherever the script lives
 
@@ -36,8 +65,9 @@ workstation's queue is kept in one state directory so every project on it sees t
 jobs: `$WII_BENCH_HOME`, else `C:\tools\wii-bench` on Windows and `~/.wii-bench` elsewhere.
 
 Set a workstation up once with `wiibench.py setup --server URL`, run from its hbc-reborn
-checkout (see [Setting up each workstation](#setting-up-each-workstation)). `setup` writes `<state dir>/wiibench.py`, a shim that runs this file (the path other projects
-call, so there is only ever one dispatcher per workstation), and `<state dir>/server`, the
+checkout (see [Setting up each workstation](#setting-up-each-workstation)). `setup` writes
+`<state dir>/wiibench.py`, a shim that runs this file (the path other projects call, so
+there is only ever one dispatcher per workstation), and `<state dir>/server`, the
 lease server's URL. It then checks the server and the Wii. It's safe to run again, including
 after the checkout moves. `$WII_BENCH_SERVER` overrides the file; `--server ''` means no
 server, which leaves the Wii to this workstation alone.
@@ -56,7 +86,10 @@ server: `wiibench.py serve`, stdlib Python only, on TCP 4310.
 - Before each job, the dispatcher waits in line for the lease (first come, first served
   across workstations). It renews the lease every 15 s while the job runs and hands it
   back afterwards. A workstation with more jobs queued goes to the back of the line, so
-  turns alternate. Between turns there's a gap of up to 5 s (the poll interval).
+  turns alternate, apart from a same-agent chain (above).
+- Waiting in line is a long poll: the server holds each `/acquire` open for up to 25 s and
+  answers as soon as the lease is granted, so a hand-over takes well under a second. An
+  older server answers at once, and the client then asks again every 5 s.
 - A lease or a place in line that goes 60 s without renewal is dropped, so a crashed or
   switched-off workstation frees the Wii by itself. After a server restart, nothing is
   granted for 60 s, which gives a job that's still running time to reclaim its lease.

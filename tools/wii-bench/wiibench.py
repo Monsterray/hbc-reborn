@@ -4,12 +4,14 @@
 The Wii (default 192.168.8.213) sits in the Homebrew Channel. Only one thing can use it at
 a time, so work goes through this queue instead of straight to the Wii:
 
-  python tools/wii-bench/wiibench.py add [--name N] [--cwd DIR] [--timeout S] -- CMD ARGS...
+  python tools/wii-bench/wiibench.py add [--name N] [--cwd DIR] [--timeout S] [--agent A] -- CMD ARGS...
       queue a command (run in DIR, default the current directory) and start the dispatcher
       if none is running. Prints the job id. The command talks to the Wii itself (wiiload,
       e.g. WiiStation's scripts/wii_lab.py); it gets WII_BENCH_IP in its environment.
+      --agent (else $WII_BENCH_AGENT, else the Claude Code session) names who queued it.
   python tools/wii-bench/wiibench.py wait ID      block until the job is done; print the
-                                                  end of its log; exit with its exit code
+                                                  end of its log; exit with its exit code;
+                                                  once a minute, say why not yet (stderr)
   python tools/wii-bench/wiibench.py status       the queue, the job running, the Wii now
   python tools/wii-bench/wiibench.py cancel ID    remove a job that has not started
   python tools/wii-bench/wiibench.py run          the dispatcher (add starts it for you)
@@ -26,15 +28,21 @@ answered on TCP 4299 for --idle seconds in a row (default 20). Apps that link hb
 in-app agent answer on 4299 too, so the probe asks for the version: an agent app's reply ends
 in " agent", and counts as busy. A Wii that is running anything -- a job, or another
 workstation's test that did not use this queue -- is left alone, and a quiet period keeps
-the dispatcher from cutting in between another agent's back-to-back runs. Each job gets
+the dispatcher from cutting in between another agent's back-to-back runs. Right after a
+queue job (ours, or the lease's last holder's, which released it cleanly) we know why the
+Wii was busy, so QUICK seconds of idle do; any probe that finds it busy brings back the full
+wait. The same agent's next job runs in the same turn after one probe: with nobody else in
+line the lease is held CHAIN_GRACE seconds for its next add, and with someone waiting only a
+job already queued runs, for CHAIN_MAX seconds at most. Each job gets
 WII_BENCH_JOB_START (Unix time), and tools/hbc.py will not exit an agent app started before
-it. A job that runs past its timeout (default 3600 s) is stopped (its own process tree).
+it. A job that runs past its timeout (default 1800 s) is stopped (its own process tree).
 The dispatcher exits when the queue has been empty for 10 minutes; the next add starts it.
 
 State lives in one directory shared by every copy of this script, so every project uses
 the same queue: $WII_BENCH_HOME, else C:/tools/wii-bench on Windows and ~/.wii-bench
 elsewhere. It holds queue/pending, queue/running, queue/done (JSON + .log each),
-dispatcher.lock (the dispatcher's PID) and dispatcher.log. $WII_BENCH_NO_DISPATCH=1 makes
+dispatcher.lock (the dispatcher's PID), dispatcher.log, and dispatcher.state (what it is
+waiting for, which `wait` reports). $WII_BENCH_NO_DISPATCH=1 makes
 add queue a job without starting a dispatcher (for tests).
 """
 import argparse
@@ -66,6 +74,11 @@ PENDING, RUNNING, DONE = Q / "pending", Q / "running", Q / "done"
 LOCK = HOME / "dispatcher.lock"
 WII = os.environ.get("WII_BENCH_IP", "192.168.8.213")
 PORT = int(os.environ.get("WII_BENCH_PORT", "4299"))  # another port only for tests
+TIMEOUT = 1800        # s a job may run by default: the slowest 1% took 2,111 s and set --timeout
+QUICK = 2             # s of HBC idle after a queue job (ours, or the last lease holder's)
+RECENT = 60           # s after a queue job ended that QUICK applies
+CHAIN_GRACE = 15      # s the lease is kept for the same agent's next job, nobody else waiting
+CHAIN_MAX = 600       # s a chain may go on while another workstation waits
 
 
 def pid_alive(pid):
@@ -230,6 +243,7 @@ class Leases:
         self.ttl, self.clock = ttl, clock
         self.holder, self.waiters = None, {}
         self.grace_until = clock() + ttl
+        self.released_at = None                    # the last holder's clean release
 
     def _expire(self, now):
         if self.holder and now - self.holder["seen"] > self.ttl:
@@ -249,7 +263,10 @@ class Leases:
         if self.holder is None and now >= self.grace_until and next(iter(self.waiters)) == t:
             self.holder = self.waiters.pop(t)
             self.holder["granted"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            return {"granted": True}
+            # How long ago a queued job last let go: the Wii came back from a queue job, not
+            # from someone outside the queue, so the client can skip most of its idle wait.
+            ago = None if self.released_at is None else round(now - self.released_at, 1)
+            return {"granted": True, "released_ago": ago}
         return {"granted": False, "position": list(self.waiters).index(t) + 1, "holder": self._show(self.holder, now)}
 
     def renew(self, d):
@@ -259,12 +276,13 @@ class Leases:
             self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed")
         if self.holder and self.holder["ticket"] == d["ticket"]:
             self.holder["seen"] = now
-            return {"ok": True}
-        return {"ok": False}
+            return {"ok": True, "waiting": len(self.waiters)}
+        return {"ok": False, "waiting": len(self.waiters)}
 
     def release(self, d):
         if self.holder and self.holder["ticket"] == d["ticket"]:
             self.holder = None
+            self.released_at = self.clock()
         self.waiters.pop(d["ticket"], None)
         return {"ok": True}
 
@@ -280,7 +298,7 @@ class Leases:
 def make_server(port, ttl=TTL, host="0.0.0.0"):
     import http.server
     import threading
-    leases, mutex = Leases(ttl), threading.Lock()
+    leases, cond = Leases(ttl), threading.Condition()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def reply(self, body, code=200):
@@ -294,20 +312,30 @@ def make_server(port, ttl=TTL, host="0.0.0.0"):
         def do_GET(self):
             if self.path != "/status":
                 return self.reply({"error": "not found"}, 404)
-            with mutex:
-                self.reply(leases.status())
+            with cond:
+                r = leases.status()
+            self.reply(r)
 
         def do_POST(self):
             op = {"/acquire": leases.acquire, "/renew": leases.renew, "/release": leases.release}.get(self.path)
             try:
                 d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 d["ticket"]
+                wait = min(max(float(d.get("wait", 0)), 0.0), 30.0)
             except (ValueError, KeyError, TypeError):
                 return self.reply({"error": "bad request"}, 400)
             if op is None:
                 return self.reply({"error": "not found"}, 404)
-            with mutex:
-                self.reply(op(d))
+            with cond:
+                r = op(d)
+                if op == leases.acquire:           # a long poll: answer once granted, or after wait
+                    end = time.monotonic() + wait
+                    while not r["granted"] and time.monotonic() < end:
+                        cond.wait(min(1.0, end - time.monotonic()))   # 1 s: expiry is by time
+                        r = op(d)
+                else:
+                    cond.notify_all()              # a release may let a waiter in
+            self.reply(r)                          # never write to a socket holding the lock
 
         def log_message(self, fmt, *args):
             if not self.path.startswith(("/status", "/acquire", "/renew")):   # the polls are noise
@@ -343,22 +371,53 @@ def lease_server():
     return url.rstrip("/")
 
 
-def lease_call(path, body=None):
+def lease_call(path, body=None, timeout=10):
     import urllib.request
     req = urllib.request.Request(lease_server() + path, method="POST" if body is not None else "GET",
                                  data=body is not None and json.dumps(body).encode() or None,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
+
+
+LONG_POLL = 25                                     # s the server holds an /acquire open
+
+
+def say(msg):
+    print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+
+
+STATE = HOME / "dispatcher.state"
+
+
+def report(job_id, detail):
+    """What the dispatcher is doing for the job at the head of the queue, for `wait`."""
+    if job_id is None:
+        return
+    try:
+        tmp = HOME / f"dispatcher.state.{os.getpid()}"
+        tmp.write_text(json.dumps({"job": job_id, "detail": detail, "since": time.time()}))
+        os.replace(tmp, STATE)
+    except OSError:
+        pass
 
 
 class Turn:
     """This dispatcher's turn at the Wii: waits in line for the lease, then keeps it renewed
     until released. Without a lease server it is a no-op (a single workstation)."""
 
-    def __init__(self, name):
+    def __init__(self, name, job_id=None):
         self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name}
-        self.stop = None
+        self.job_id, self.stop, self.released_ago = job_id, None, None
+
+    def others_waiting(self):
+        """Workstations in line behind this one (0 without a server, or if it cannot say)."""
+        if not self.stop:
+            return 0
+        try:
+            return lease_call("/renew", self.info).get("waiting", 0)
+        except OSError:
+            return 0
 
     def __enter__(self):
         if not lease_server():
@@ -366,27 +425,31 @@ class Turn:
         import threading
         said = None
         while True:
+            t = time.monotonic()
             try:
-                r = lease_call("/acquire", self.info)
+                r = lease_call("/acquire", dict(self.info, wait=LONG_POLL), timeout=LONG_POLL + 10)
             except OSError as e:
                 r = {"granted": False, "error": str(e)}
             if r["granted"]:
                 break
             msg = (f"lease server {lease_server()} unreachable: {r['error']}" if "error" in r else
-                   f"waiting for the Wii: place {r['position']} in line"
+                   f"waiting for the lease: place {r['position']} in line"
                    + (f", held by {r['holder']['host']} for {r['holder']['name']}" if r.get("holder") else ""))
             if msg != said:
-                print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+                say(msg)
+                report(self.job_id, msg)
                 said = msg
-            time.sleep(5)
-        print(time.strftime("%Y-%m-%d %H:%M:%S ") + f"lease taken for {self.info['name']}", flush=True)
+            if time.monotonic() - t < 1:           # an error, or a server without the long poll
+                time.sleep(5)
+        self.released_ago = r.get("released_ago")
+        say(f"lease taken for {self.info['name']}")
         self.stop = threading.Event()
 
         def renew():
             while not self.stop.wait(TTL / 4):
                 try:
                     if not lease_call("/renew", self.info)["ok"]:
-                        print(time.strftime("%Y-%m-%d %H:%M:%S ") + "lease lost: another workstation may have the Wii", flush=True)
+                        say("lease lost: another workstation may have the Wii")
                 except OSError:
                     pass                           # retried; the server keeps it for TTL
         threading.Thread(target=renew, daemon=True).start()
@@ -437,6 +500,15 @@ def cmd_setup(a):
     print("Jobs that use the network log need inbound TCP 4300 open on this machine.")
 
 
+def job_agent(given=None):
+    """Who queued the job, so the same agent's back-to-back jobs can run as one chain:
+    --agent, else $WII_BENCH_AGENT, else the Claude Code session, else nobody (no chain)."""
+    for v in (given, os.environ.get("WII_BENCH_AGENT"), os.environ.get("CLAUDE_CODE_SESSION_ID")):
+        if v:
+            return v
+    return None
+
+
 def cmd_add(a):
     for d in (PENDING, RUNNING, DONE):
         d.mkdir(parents=True, exist_ok=True)
@@ -444,7 +516,8 @@ def cmd_add(a):
         sys.exit("add: give the command after --")
     job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     job = {"id": job_id, "name": a.name or pathlib.Path(a.cmd[0]).name, "cwd": str(pathlib.Path(a.cwd).resolve()),
-           "cmd": a.cmd, "timeout": a.timeout, "added": time.strftime("%Y-%m-%d %H:%M:%S")}
+           "cmd": a.cmd, "timeout": a.timeout, "added": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "agent": job_agent(a.agent)}
     tmp = PENDING / f"{job_id}.tmp"
     tmp.write_text(json.dumps(job, indent=1))
     tmp.rename(PENDING / f"{job_id}.json")
@@ -456,6 +529,7 @@ def run_job(p):
     job = load(p)
     r = RUNNING / p.name
     p.rename(r)                                    # claims it: a rename is atomic
+    report(job["id"], "running")
     job["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
     r.write_text(json.dumps(job, indent=1))
     log = RUNNING / f"{job['id']}.log"
@@ -468,7 +542,7 @@ def run_job(p):
                                     stdin=subprocess.DEVNULL, env=env,
                                     **({} if WINDOWS else {"start_new_session": True}))
             try:
-                job["exit"] = proc.wait(timeout=job.get("timeout") or 3600)
+                job["exit"] = proc.wait(timeout=job.get("timeout") or TIMEOUT)
             except subprocess.TimeoutExpired:
                 kill_tree(proc)
                 job["exit"] = "timeout"
@@ -481,6 +555,54 @@ def run_job(p):
     log.rename(DONE / log.name)
     r.unlink()
     print(f"{job['finished']} done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s", flush=True)
+
+
+def wait_idle(full, need, job_id=None):
+    """Return once HBC's menu has answered for `need` seconds in a row (0: one answer).
+
+    `need` is short only right after a queue job, whose end we know about; the first probe
+    that finds the Wii busy or off means someone outside the queue may be at it, and the
+    wait goes back to the full `full` seconds at the old 5 s pace."""
+    step = 1.0 if need < full else 5.0
+    ok_since = busy_since = None
+    said = None
+    while True:
+        t = time.monotonic()
+        state, text = wii_state()
+        if state == "hbc":
+            ok_since = t if ok_since is None else ok_since
+            busy_since = None
+            if t - ok_since >= need:
+                return
+            msg = "waiting for HBC to stay idle"
+        else:
+            ok_since, need, step = None, full, 5.0
+            busy_since = t if busy_since is None else busy_since
+            mins = int((t - busy_since) // 60)
+            what = f"busy: {agent_app()} is running" if state == "agent" else "busy or off"
+            msg = f"Wii {what}" + (f" for {mins} min" if mins else "")
+        if msg != said:
+            report(job_id, msg)
+            said = msg
+        time.sleep(max(0.0, step - (time.monotonic() - t)))
+
+
+def next_job(agent, grace):
+    """The next pending job if it is this agent's, waiting up to `grace` s for it to be
+    added (an agent that waits for one job and then adds the next). Another agent's job at
+    the head of the queue ends the chain at once."""
+    end = time.monotonic() + grace
+    while True:
+        q = jobs(PENDING)
+        if q:
+            try:
+                j = load(q[0])
+            except (OSError, ValueError):          # cancelled meanwhile
+                continue
+            return q[0] if j.get("agent") == agent else None
+        if time.monotonic() >= end:
+            return None
+        time.sleep(0.25)
 
 
 def cmd_run(a):
@@ -502,22 +624,44 @@ def cmd_run(a):
         for p in jobs(RUNNING):                    # a dispatcher that died mid-job: requeue it
             p.rename(PENDING / p.name)
         empty_since = time.monotonic()
+        last_end = None                            # monotonic time our last job ended
         while True:
             q = jobs(PENDING)
             if not q:
                 if time.monotonic() - empty_since > 600:
                     return
-                time.sleep(5)
+                time.sleep(1)
                 continue
-            with Turn(load(q[0])["name"]):         # other workstations' jobs go first if first in line
-                quiet = 0.0
-                while quiet < a.idle:              # HBC in its menu, and staying there
-                    t = time.monotonic()
-                    quiet = quiet + 5 if hbc_idle() else 0.0
-                    time.sleep(max(0.0, 5 - (time.monotonic() - t)))
-                q = jobs(PENDING)                  # a cancel may have emptied it meanwhile
-                if q:
-                    run_job(q[0])
+            try:
+                head = load(q[0])
+            except (OSError, ValueError):          # cancelled meanwhile
+                continue
+            with Turn(head["name"], head["id"]) as turn:   # other workstations' jobs go first if first in line
+                ago = turn.released_ago
+                recent = ((last_end is not None and time.monotonic() - last_end < RECENT)
+                          or (ago is not None and ago < RECENT))
+                wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"])
+                p, chain_start = jobs(PENDING)[:1], time.monotonic()
+                p = p[0] if p else None            # a cancel may have emptied it meanwhile
+                while p:
+                    try:
+                        agent = load(p).get("agent")
+                        run_job(p)
+                    except (FileNotFoundError, ValueError):   # cancelled just before it started
+                        break
+                    last_end = time.monotonic()
+                    if not agent:
+                        break
+                    # The same agent's next job runs in this turn without the idle wait. With
+                    # nobody else waiting, hold the lease a moment for its next add; with
+                    # someone waiting, only a job already queued, and only up to CHAIN_MAX.
+                    waiting = turn.others_waiting()
+                    if waiting and time.monotonic() - chain_start > CHAIN_MAX:
+                        break
+                    p = next_job(agent, 0 if waiting else CHAIN_GRACE)
+                    if p:
+                        say(f"chained: {p.stem} from the same agent")
+                        wait_idle(a.idle, 0, p.stem)
             empty_since = time.monotonic()
     finally:
         if dispatcher_pid() == os.getpid():
@@ -545,7 +689,28 @@ def cmd_status(a):
         print(f"  done     {j['id']}  {j['name']}  exit {j['exit']}, {j['secs']} s, {j['finished']}")
 
 
+def progress(job_id, d, started):
+    """One line on why the job is not done yet, for `wait`."""
+    mins = int((time.monotonic() - started) // 60)
+    if d == RUNNING:
+        return f"job {job_id}: running ({mins} min in wait)"
+    ahead = [p.stem for p in jobs(PENDING)]
+    place = ahead.index(job_id) if job_id in ahead else 0
+    why = "queued"
+    try:
+        s = json.loads(STATE.read_text())
+        if s.get("job") == job_id:
+            why = s["detail"]
+        elif place == 0 and s.get("detail") == "running":
+            why = "the job before it is still running"
+    except (OSError, ValueError, KeyError):
+        pass
+    return (f"job {job_id}: pending, {place} ahead on this workstation" if place else
+            f"job {job_id}: next here; {why}") + f" ({mins} min)"
+
+
 def cmd_wait(a):
+    started, told = time.monotonic(), time.monotonic()
     while True:
         d, p = find(a.id)
         if d is None:
@@ -558,7 +723,10 @@ def cmd_wait(a):
             sys.exit(j["exit"] if isinstance(j["exit"], int) else 1)
         if d == PENDING and not dispatcher_pid():
             start_dispatcher()
-        time.sleep(5)
+        if time.monotonic() - told >= a.every:     # once a minute: why it is not done yet
+            print(progress(a.id, d, started), file=sys.stderr, flush=True)
+            told = time.monotonic()
+        time.sleep(0.5)
 
 
 def cmd_cancel(a):
@@ -573,10 +741,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="op", required=True)
     s = sub.add_parser("add"); s.add_argument("--name"); s.add_argument("--cwd", default=".")
-    s.add_argument("--timeout", type=int, default=3600); s.add_argument("cmd", nargs=argparse.REMAINDER)
+    s.add_argument("--timeout", type=int, default=TIMEOUT); s.add_argument("--agent")
+    s.add_argument("cmd", nargs=argparse.REMAINDER)
     s = sub.add_parser("run"); s.add_argument("--idle", type=float, default=20)
     s = sub.add_parser("status"); s.add_argument("--last", type=int, default=5)
     s = sub.add_parser("wait"); s.add_argument("id"); s.add_argument("--tail", type=int, default=25)
+    s.add_argument("--every", type=float, default=60, help="seconds between progress lines (stderr)")
     s = sub.add_parser("cancel"); s.add_argument("id")
     s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=4310); s.add_argument("--ttl", type=float, default=TTL)
     s.add_argument("--host", default="0.0.0.0")

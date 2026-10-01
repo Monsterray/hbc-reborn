@@ -196,6 +196,171 @@ class LeaseTest(unittest.TestCase):
         self.assertIsNone(self.wb.lease_call("/status")["holder"])
         self.assertTrue(self.wb.lease_call("/acquire", {"ticket": "x", "host": "h", "name": "second"})["granted"])
 
+    def test_release_and_waiting_are_reported(self):
+        self.acq("a")
+        self.acq("b")
+        self.assertEqual(self.leases.renew({"ticket": "a"}), {"ok": True, "waiting": 1})
+        self.leases.release({"ticket": "a"})
+        self.now += 3
+        self.assertEqual(self.acq("b"), {"granted": True, "released_ago": 3.0})
+        self.now += 100                            # b dies without a release: no clean hand-over
+        self.assertEqual(self.acq("c"), {"granted": True, "released_ago": 103.0})
+
+    def test_long_poll_answers_on_release(self):
+        import threading
+        import time
+        srv = self.wb.make_server(0, ttl=5, host="127.0.0.1")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        os.environ["WII_BENCH_SERVER"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        self.addCleanup(os.environ.pop, "WII_BENCH_SERVER")
+        a, b = ({"ticket": t, "host": t, "name": "j", "wait": 10} for t in "ab")
+        t0 = time.monotonic()
+        self.assertTrue(self.wb.lease_call("/acquire", a, timeout=20)["granted"])   # after the 5 s grace
+        self.assertGreater(time.monotonic() - t0, 4)
+        threading.Timer(0.5, self.wb.lease_call, ("/release", {"ticket": "a"})).start()
+        t0 = time.monotonic()
+        r = self.wb.lease_call("/acquire", b, timeout=20)
+        took = time.monotonic() - t0
+        self.assertTrue(r["granted"])
+        self.assertLess(took, 2)                   # not the 10 s wait, nor a 5 s poll
+        self.assertGreater(took, 0.4)
+        # Still held by b: a's poll gives up after its own wait.
+        self.assertEqual(self.wb.lease_call("/acquire", dict(a, wait=0.5))["position"], 1)
+
+
+class IdleWaitTest(unittest.TestCase):
+    """wait_idle's three lengths, on a fake clock: no real sleeping."""
+
+    def setUp(self):
+        from unittest import mock
+        self.wb = import_wiibench()
+        self.now, self.probes, self.answers = 0.0, 0, []
+        def sleep(s):
+            self.now += s
+        def state():
+            self.probes += 1
+            return (self.answers.pop(0) if self.answers else "hbc"), "1.8.8"
+        patches = [mock.patch.object(self.wb.time, "monotonic", lambda: self.now),
+                   mock.patch.object(self.wb.time, "sleep", sleep),
+                   mock.patch.object(self.wb, "wii_state", state),
+                   mock.patch.object(self.wb, "agent_app", lambda: "otherapp")]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_full_wait_after_someone_outside_the_queue(self):
+        self.wb.wait_idle(20, 20)
+        self.assertEqual((self.now, self.probes), (20.0, 5))
+
+    def test_quick_after_a_queue_job(self):
+        self.wb.wait_idle(20, 2)
+        self.assertEqual((self.now, self.probes), (2.0, 3))
+
+    def test_one_answer_for_a_chained_job(self):
+        self.wb.wait_idle(20, 0)
+        self.assertEqual((self.now, self.probes), (0.0, 1))
+
+    def test_a_busy_wii_brings_back_the_full_wait(self):
+        self.answers = ["hbc", "agent", "off"]
+        self.wb.wait_idle(20, 2)
+        self.assertGreaterEqual(self.now, 2 + 20)
+        self.assertGreater(self.probes, 5)
+
+
+class DispatcherTest(unittest.TestCase):
+    """A real dispatcher against the fake HBC: the idle wait it uses, and same-agent chains."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(root / "tests"))
+        from test_hbc_tool import FakeHBC
+        cls.fake = FakeHBC()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = pathlib.Path(self.tmp.name)
+        self.env = dict(os.environ, WII_BENCH_HOME=self.tmp.name, WII_BENCH_NO_DISPATCH="1",
+                        WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT=str(self.fake.port),
+                        WII_BENCH_SERVER="", WII_BENCH_AGENT="")
+        self.env.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.fake.agent = False
+
+    def add(self, name, agent="", secs=0.5):
+        code = f"import time; print(time.time()); time.sleep({secs})"
+        r = subprocess.run([sys.executable, str(BENCH), "add", "--name", name, "--agent", agent, "--",
+                            sys.executable, "-c", code], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def dispatch(self, idle):
+        d = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", str(idle)], env=self.env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(d.wait)
+        self.addCleanup(d.kill)
+        return d
+
+    def done(self, job_id, timeout=60):
+        import time
+        end = time.monotonic() + timeout
+        p = self.home / "queue/done" / f"{job_id}.log"
+        while not p.exists():
+            self.assertLess(time.monotonic(), end, f"{job_id} did not finish")
+            time.sleep(0.2)
+        time.sleep(0.2)
+        return float(p.read_text().split()[0]), json.loads((self.home / "queue/done" / f"{job_id}.json").read_text())
+
+    def test_same_agent_chains_and_another_agent_waits_briefly(self):
+        import time
+        a1, a2 = self.add("a1", "A"), self.add("a2", "A")
+        b1 = self.add("b1", "B")
+        t0 = time.time()
+        self.dispatch(idle=6)
+        s1, j1 = self.done(a1)
+        s2, j2 = self.done(a2)
+        s3, j3 = self.done(b1)
+        self.assertEqual(j1["agent"], "A")
+        self.assertGreater(s1 - t0, 5)             # the first job: the full idle wait
+        self.assertLess(s2 - s1, 0.5 + 1.5)        # chained: one probe, no wait
+        self.assertGreater(s3 - s2, 0.5 + 1.5)     # another agent: the short wait after a queue job
+        self.assertLess(s3 - s2, 0.5 + 5)
+
+        time.sleep(3)                              # B's turn holds on for B; A's job ends that at once
+        a3 = self.add("a3", "A")
+        s4, _ = self.done(a3)
+        self.assertLess(s4 - s3, 0.5 + 3 + 5)      # a new turn with the short wait, not 15 s
+
+    def test_a_chain_holds_on_for_the_same_agents_next_add(self):
+        import time
+        a1 = self.add("a1", "A", secs=0.2)
+        self.dispatch(idle=4)
+        s1, _ = self.done(a1)
+        time.sleep(1)                              # the agent's wait returns, then it adds again
+        a2 = self.add("a2", "A", secs=0.2)
+        s2, _ = self.done(a2)
+        self.assertLess(s2 - s1, 0.2 + 1 + 2.5)    # no idle wait at all (an add takes ~0.5 s)
+
+    def test_no_agent_no_chain(self):
+        n1, n2 = self.add("n1"), self.add("n2")
+        self.dispatch(idle=4)
+        s1, j1 = self.done(n1)
+        s2, _ = self.done(n2)
+        self.assertIsNone(j1["agent"])
+        self.assertGreater(s2 - s1, 0.5 + 1.5)     # the short wait, not a chain
+
+    def test_wait_says_why(self):
+        job = self.add("n1")
+        p = subprocess.Popen([sys.executable, str(BENCH), "wait", job, "--every", "0.5"], env=self.env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            _, err = p.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            _, err = p.communicate()
+        self.assertIn(f"job {job}: next here; queued", err)
+
 
 if __name__ == "__main__":
     unittest.main()

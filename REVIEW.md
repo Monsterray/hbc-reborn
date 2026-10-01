@@ -155,6 +155,41 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.8.8: the bench queue's dead time between jobs
+
+- **Measured first** (163 finished jobs on the bench PC's queue): jobs ran a median
+  of 75 s. 39 jobs had waited behind one already queued, with a gap of a median 20 s
+  each (the idle wait), 22 minutes in all. 24 jobs ran for 5 s or less and still paid
+  the 20 s. A waiting workstation asked for the lease every 5 s, and `wait` and the idle
+  dispatcher checked every 5 s too.
+- **Idle wait by what's known:** the full 20 s only when the Wii's last use is unknown.
+  Up to 60 s after a queue job ended (this workstation's, or the lease's last holder
+  released it, which the grant now reports as `released_ago`) it's 2 s. A busy or off
+  probe brings back the full wait.
+- **Same-agent chains:** a job records its agent (`--agent`, `$WII_BENCH_AGENT`, or the
+  Claude Code session). That agent's next job runs in the same turn after one answer
+  from HBC. With nobody else in line, the lease is held 15 s for the agent's next `add`.
+  With someone waiting, only an already queued job chains, for 10 minutes at most.
+- **Long poll:** the server holds `/acquire` open up to 25 s and answers on release.
+  Renew replies say how many are waiting. It no longer writes to a socket while
+  holding its lock. Clients fall back to a 5 s poll against an older server.
+- **Faster local polling:** `wait` checks every 0.5 s, the idle dispatcher every 1 s.
+- **`wait` says why:** once a minute on stderr, from the new `dispatcher.state`: the
+  place in line and the holder, `Wii busy: <app> is running for N min`, or `running`.
+- **Default timeout 1800 s** (was 3600): the slowest 1% took about 2,100 s, and no job
+  has timed out. Long jobs already pass their own `--timeout`.
+- **Checked:** 20 bench unit tests on Windows and in WSL Ubuntu. They include the long
+  poll answering within 2 s of a release, the three idle-wait lengths on a fake clock,
+  and a real dispatcher against the fake HBC: a same-agent pair chained, the next agent
+  waited about 2 s, a held chain let a later `add` from the agent straight in.
+- **On the bench Wii,** through the live queue and the homeserver's lease server
+  (still 1.8.6, so the 5 s fallback, not the long poll), three read-only
+  `hbc.py status` jobs: a1 (the dispatcher's first job) waited the full 20 s. a2, the
+  same agent's, added after a1's `wait` returned, chained and started 1.0 s after a1.
+  b1, another agent's, started 3.3 s after a2. Before this change each gap was 20 s or
+  more. Not yet checked: the long poll on the homeserver (it needs the container
+  rebuilt) and a chain while another workstation waits.
+
 ### 1.8.7: the bench queue no longer takes an agent app for HBC
 
 - **Reported by the WiiStation workstation:** twice on 2026-09-30, a WiiStation
