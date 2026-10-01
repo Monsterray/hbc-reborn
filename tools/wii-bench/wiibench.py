@@ -17,6 +17,9 @@ a time, so work goes through this queue instead of straight to the Wii:
   python tools/wii-bench/wiibench.py run          the dispatcher (add starts it for you)
   python tools/wii-bench/wiibench.py serve        the lease server shared by every workstation
   python tools/wii-bench/wiibench.py setup [--server URL]   make this workstation a client
+  python tools/wii-bench/wiibench.py report [--hours N | --days N | --since DATE] [--local]
+                                                  the queue's history: every workstation's
+                                                  from the server, or this one's
 
 Several workstations share the Wii through a lease server (`serve`, run in Docker on the
 homeserver): each keeps its own queue and dispatcher, and a dispatcher takes the lease before
@@ -31,9 +34,13 @@ workstation's test that did not use this queue -- is left alone, and a quiet per
 the dispatcher from cutting in between another agent's back-to-back runs. Right after a
 queue job (ours, or the lease's last holder's, which released it cleanly) we know why the
 Wii was busy, so QUICK seconds of idle do; any probe that finds it busy brings back the full
-wait. The same agent's next job runs in the same turn after one probe: with nobody else in
-line the lease is held CHAIN_GRACE seconds for its next add, and with someone waiting only a
-job already queued runs, for CHAIN_MAX seconds at most. Each job gets
+wait. The same agent's next job runs in the same turn after one probe, but only while no other
+workstation waits: with someone in line every job ends the turn. With nobody waiting the
+lease is held CHAIN_GRACE seconds for the agent's next add, let go within a second of someone
+joining. After each job the dispatcher, still holding the Wii, checks that HBC came back
+(RETURN_WAIT s) and says so in the job's record, the release and the history. The queue never
+contacts the Wii while a job runs: it probes only between jobs, and `status` reports who has
+the Wii instead of probing it during a run. `report` reads the history. Each job gets
 WII_BENCH_JOB_START (Unix time), and tools/hbc.py will not exit an agent app started before
 it. A job that runs past its timeout (default 1800 s) is stopped (its own process tree).
 The dispatcher exits when the queue has been empty for 10 minutes; the next add starts it.
@@ -78,7 +85,8 @@ TIMEOUT = 1800        # s a job may run by default: the slowest 1% took 2,111 s 
 QUICK = 2             # s of HBC idle after a queue job (ours, or the last lease holder's)
 RECENT = 60           # s after a queue job ended that QUICK applies
 CHAIN_GRACE = 15      # s the lease is kept for the same agent's next job, nobody else waiting
-CHAIN_MAX = 600       # s a chain may go on while another workstation waits
+RETURN_WAIT = float(os.environ.get("WII_BENCH_RETURN_WAIT", "120"))   # s for HBC to come back after a job (shorter only for tests)
+BUSY_STEP = 15        # s between probes of a Wii that is busy: an app outside the queue runs
 
 
 def pid_alive(pid):
@@ -237,18 +245,31 @@ class Leases:
     """The server's state. One holder; waiters in arrival order. Every client call refreshes
     its entry; one not heard from for ttl seconds is dropped, so a dead workstation frees the
     Wii by itself. After a restart nothing is granted for one ttl: a holder still running its
-    job renews within that time and gets its lease back."""
+    job renews within that time and gets its lease back. `log` gets each event (the history).
 
-    def __init__(self, ttl=TTL, clock=time.monotonic):
-        self.ttl, self.clock = ttl, clock
+    A release says what the Wii was doing when the holder let go ("hbc", or what answered
+    instead). Only a release with the Wii back in HBC counts as clean for the next holder's
+    short idle wait; any other is kept as `left` and shown until a clean release."""
+
+    PRIVATE = ("seen", "ticket", "joined", "granted_at")
+
+    def __init__(self, ttl=TTL, clock=time.monotonic, log=None):
+        self.ttl, self.clock, self.log = ttl, clock, log or (lambda ev: None)
         self.holder, self.waiters = None, {}
         self.grace_until = clock() + ttl
         self.released_at = None                    # the last holder's clean release
+        self.left = None                           # the last holder left the Wii out of HBC
+
+    def _event(self, kind, e, **more):
+        self.log(dict({"type": kind, "host": e.get("host"), "name": e.get("name")}, **more))
 
     def _expire(self, now):
         if self.holder and now - self.holder["seen"] > self.ttl:
+            self._event("expired", self.holder, role="holder",
+                        held_s=round(now - self.holder.get("granted_at", now), 1))
             self.holder = None
         for t in [t for t, w in self.waiters.items() if now - w["seen"] > self.ttl]:
+            self._event("expired", self.waiters[t], role="waiter", waited_s=round(now - self.waiters[t]["joined"], 1))
             del self.waiters[t]
 
     def acquire(self, d):
@@ -258,14 +279,21 @@ class Leases:
         if self.holder and self.holder["ticket"] == t:
             self.holder["seen"] = now
             return {"granted": True}
-        w = self.waiters.setdefault(t, dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S")))
+        if t not in self.waiters:
+            d = {k: v for k, v in d.items() if k != "wait"}
+            self.waiters[t] = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), joined=now)
+            self._event("join", d, place=len(self.waiters),
+                        holder=self.holder and self.holder.get("host"))
+        w = self.waiters[t]
         w["seen"] = now
         if self.holder is None and now >= self.grace_until and next(iter(self.waiters)) == t:
             self.holder = self.waiters.pop(t)
-            self.holder["granted"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            # How long ago a queued job last let go: the Wii came back from a queue job, not
-            # from someone outside the queue, so the client can skip most of its idle wait.
+            self.holder.update(granted=time.strftime("%Y-%m-%d %H:%M:%S"), granted_at=now)
+            # How long ago a queued job last let go with the Wii back in HBC: the Wii came
+            # back from a queue job, not from someone outside the queue, so the client can
+            # skip most of its idle wait.
             ago = None if self.released_at is None else round(now - self.released_at, 1)
+            self._event("grant", w, waited_s=round(now - w["joined"], 1), released_ago=ago)
             return {"granted": True, "released_ago": ago}
         return {"granted": False, "position": list(self.waiters).index(t) + 1, "holder": self._show(self.holder, now)}
 
@@ -273,32 +301,153 @@ class Leases:
         now = self.clock()
         self._expire(now)
         if self.holder is None and d["ticket"] not in self.waiters:   # after a restart: reclaim
-            self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed")
+            self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed", granted_at=now)
+            self._event("reclaim", d)
         if self.holder and self.holder["ticket"] == d["ticket"]:
             self.holder["seen"] = now
             return {"ok": True, "waiting": len(self.waiters)}
         return {"ok": False, "waiting": len(self.waiters)}
 
     def release(self, d):
+        now = self.clock()
         if self.holder and self.holder["ticket"] == d["ticket"]:
+            wii = d.get("wii", "hbc")              # a client before 1.9.1 does not say
+            self._event("release", self.holder, held_s=round(now - self.holder.get("granted_at", now), 1), wii=wii)
+            if wii == "hbc":
+                self.released_at, self.left = now, None
+            else:
+                self.released_at = None
+                self.left = {"host": self.holder.get("host"), "name": self.holder.get("name"), "wii": wii,
+                             "since": time.strftime("%Y-%m-%d %H:%M:%S")}
             self.holder = None
-            self.released_at = self.clock()
-        self.waiters.pop(d["ticket"], None)
+        if d["ticket"] in self.waiters:
+            w = self.waiters.pop(d["ticket"])
+            self._event("leave", w, waited_s=round(now - w["joined"], 1))
         return {"ok": True}
 
     def _show(self, e, now):
-        return e and {k: v for k, v in dict(e, age=int(now - e["seen"])).items() if k not in ("seen", "ticket")}
+        return e and {k: v for k, v in dict(e, age=int(now - e["seen"])).items() if k not in self.PRIVATE}
 
     def status(self):
         now = self.clock()
         self._expire(now)
-        return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in self.waiters.values()]}
+        return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in self.waiters.values()],
+                "left": self.left}
 
 
-def make_server(port, ttl=TTL, host="0.0.0.0"):
+# --- the history: every grant, release and job, kept for good -----------------------------
+#
+# One JSON object per line, in history/events-YYYY-MM-DD.jsonl (UTC days). A day's file is
+# gzipped once it is GZIP_DAYS old, and each month's .gz files are packed into
+# history/archive/YYYY-MM.tar once the month is over (the deep archive). Archives are kept
+# for keep_months (0: forever). The lease server keeps every workstation's; each dispatcher
+# also keeps its own jobs in HOME/history.
+
+GZIP_DAYS = 7
+
+
+class History:
+    def __init__(self, root, keep_months=0, clock=time.time):
+        import threading
+        self.root, self.keep, self.clock = pathlib.Path(root), keep_months, clock
+        self.lock, self.maintained = threading.Lock(), None
+
+    @staticmethod
+    def day(t):
+        return time.strftime("%Y-%m-%d", time.gmtime(t))
+
+    def write(self, ev):
+        now = self.clock()
+        line = json.dumps(dict({"t": round(now, 3), "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))}, **ev))
+        with self.lock:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with open(self.root / f"events-{self.day(now)}.jsonl", "a", encoding="utf-8", newline="\n") as f:
+                f.write(line + "\n")
+            if self.maintained != self.day(now):   # once a day: rotate, compress, archive
+                self.maintain()
+
+    def maintain(self):
+        import gzip
+        import shutil
+        import tarfile
+        now = self.clock()
+        self.maintained = self.day(now)
+        old = self.day(now - GZIP_DAYS * 86400)
+        for f in sorted(self.root.glob("events-*.jsonl")):
+            if f.stem[7:] < old:
+                with open(f, "rb") as src, gzip.open(f.with_name(f.name + ".gz"), "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                f.unlink()
+        month = self.day(now)[:7]
+        arch = self.root / "archive"
+        for f in sorted(self.root.glob("events-*.jsonl.gz")):
+            m = f.name[7:14]
+            if m < month:
+                arch.mkdir(exist_ok=True)
+                with tarfile.open(arch / f"{m}.tar", "a") as t:
+                    if f.name not in t.getnames():
+                        t.add(f, arcname=f.name)
+                f.unlink()
+        if self.keep:
+            y, mo = map(int, month.split("-"))
+            mo -= self.keep
+            while mo < 1:
+                y, mo = y - 1, mo + 12
+            for t in arch.glob("*.tar") if arch.exists() else ():
+                if t.stem < f"{y:04d}-{mo:02d}":
+                    t.unlink()
+
+    def read(self, since, until=None):
+        """Events with since <= t < until, oldest first, from the live, gzipped and archived files."""
+        import gzip
+        import io
+        import tarfile
+        until = until or self.clock() + 1
+        first, last = self.day(since), self.day(until)
+
+        def lines(name, data):
+            if name.endswith(".gz"):
+                data = gzip.decompress(data)
+            for l in data.decode("utf-8", "replace").splitlines():
+                try:
+                    ev = json.loads(l)
+                except ValueError:
+                    continue
+                if since <= ev.get("t", 0) < until:
+                    yield ev
+
+        out = []
+        with self.lock:
+            files = {}
+            for t in sorted((self.root / "archive").glob("*.tar")) if (self.root / "archive").exists() else ():
+                if first[:7] <= t.stem <= last[:7]:
+                    with tarfile.open(t) as tar:
+                        for m in tar.getmembers():
+                            if first <= m.name[7:17] <= last:
+                                files[m.name] = tar.extractfile(m).read()
+            for f in self.root.glob("events-*.jsonl*"):
+                if first <= f.name[7:17] <= last:
+                    files[f.name] = f.read_bytes()
+        for name in sorted(files, key=lambda n: n[7:17]):
+            out.extend(lines(name, files[name]))
+        out.sort(key=lambda ev: ev.get("t", 0))
+        return out
+
+
+def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
     import http.server
     import threading
-    leases, cond = Leases(ttl), threading.Condition()
+    import urllib.parse
+    hist = History(history) if history else None
+
+    def log(ev):
+        if hist:
+            try:
+                hist.write(ev)
+            except OSError as e:
+                print(f"history: {e}", flush=True)
+
+    leases, cond = Leases(ttl, log=log), threading.Condition()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def reply(self, body, code=200):
@@ -310,16 +459,37 @@ def make_server(port, ttl=TTL, host="0.0.0.0"):
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path != "/status":
-                return self.reply({"error": "not found"}, 404)
-            with cond:
-                r = leases.status()
-            self.reply(r)
+            url = urllib.parse.urlparse(self.path)
+            if url.path == "/status":
+                with cond:
+                    r = leases.status()
+                return self.reply(r)
+            if url.path == "/history":
+                if not hist:
+                    return self.reply({"error": "this server keeps no history (serve --history DIR)"}, 404)
+                q = urllib.parse.parse_qs(url.query)
+                try:
+                    since = float(q.get("since", [time.time() - 86400])[0])
+                    until = float(q["until"][0]) if "until" in q else None
+                except ValueError:
+                    return self.reply({"error": "bad request"}, 400)
+                return self.reply({"events": hist.read(since, until)})
+            self.reply({"error": "not found"}, 404)
 
         def do_POST(self):
-            op = {"/acquire": leases.acquire, "/renew": leases.renew, "/release": leases.release}.get(self.path)
             try:
                 d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                if not isinstance(d, dict):
+                    raise TypeError
+            except (ValueError, TypeError):
+                return self.reply({"error": "bad request"}, 400)
+            if self.path == "/event":              # a job's record from a dispatcher
+                if not isinstance(d.get("type"), str):
+                    return self.reply({"error": "bad request"}, 400)
+                log(d)
+                return self.reply({"ok": True})
+            op = {"/acquire": leases.acquire, "/renew": leases.renew, "/release": leases.release}.get(self.path)
+            try:
                 d["ticket"]
                 wait = min(max(float(d.get("wait", 0)), 0.0), 30.0)
             except (ValueError, KeyError, TypeError):
@@ -338,16 +508,24 @@ def make_server(port, ttl=TTL, host="0.0.0.0"):
             self.reply(r)                          # never write to a socket holding the lock
 
         def log_message(self, fmt, *args):
-            if not self.path.startswith(("/status", "/acquire", "/renew")):   # the polls are noise
+            if not self.path.startswith(("/status", "/acquire", "/renew", "/event", "/history")):   # the polls are noise
                 super().log_message(fmt, *args)
 
-    return http.server.ThreadingHTTPServer((host, port), Handler)
+    srv = http.server.ThreadingHTTPServer((host, port), Handler)
+    srv.history, srv.leases = hist, leases
+    return srv
 
 
 def cmd_serve(a):
-    srv = make_server(a.port, a.ttl, a.host)
+    if a.history:
+        History(a.history, a.keep_months).maintain()
+    srv = make_server(a.port, a.ttl, a.host, a.history)
+    if srv.history:
+        srv.history.keep = a.keep_months
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # PID 1 in Docker ignores it otherwise
-    print(f"wii-bench lease server on {a.host or '*'}:{a.port}, ttl {a.ttl} s", flush=True)
+    print(f"wii-bench lease server on {a.host or '*'}:{a.port}, ttl {a.ttl} s, history "
+          + (f"in {a.history} (archives kept {f'{a.keep_months} months' if a.keep_months else 'forever'})"
+             if a.history else "off"), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -409,6 +587,7 @@ class Turn:
     def __init__(self, name, job_id=None):
         self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name}
         self.job_id, self.stop, self.released_ago = job_id, None, None
+        self.wii = "hbc"                           # what the Wii was doing at the release
 
     def others_waiting(self):
         """Workstations in line behind this one (0 without a server, or if it cannot say)."""
@@ -459,7 +638,7 @@ class Turn:
         if self.stop:
             self.stop.set()
             try:
-                lease_call("/release", self.info)
+                lease_call("/release", dict(self.info, wii=self.wii))
             except OSError:
                 pass                               # it expires after TTL
 
@@ -490,13 +669,15 @@ def cmd_setup(a):
         (HOME / "server").write_text(a.server.strip() + "\n", encoding="utf-8", newline="\n")
     print(f"state  {HOME}")
     print(f"server {lease_server() or 'none: this workstation has the Wii to itself'}")
+    s = err = None
     if lease_server():
         try:
-            lease_call("/status")
+            s = lease_call("/status")
             print("        reachable")
         except OSError as e:
+            err = e
             print(f"        unreachable: {e}")
-    print(f"Wii    {WII}: {wii_line()}")
+    print(f"Wii    {WII}: {wii_now(s, err)}")
     print("Jobs that use the network log need inbound TCP 4300 open on this machine.")
 
 
@@ -555,43 +736,85 @@ def run_job(p):
     log.rename(DONE / log.name)
     r.unlink()
     print(f"{job['finished']} done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s", flush=True)
+    return job
+
+
+def finish_job(job, turn):
+    """After the HBC check: the job's record gets it, and the job goes into the history,
+    the lease server's (every workstation's) and this workstation's own."""
+    p = DONE / f"{job['id']}.json"
+    tmp = DONE / f"{job['id']}.json.tmp"
+    tmp.write_text(json.dumps(job, indent=1))
+    os.replace(tmp, p)
+    ev = {"type": "job", "host": socket.gethostname(), **{k: job.get(k) for k in (
+        "id", "name", "agent", "added", "started", "finished", "secs", "exit", "timeout",
+        "hbc_back_s", "wii_left", "chained")}}
+    try:
+        History(HOME / "history").write(ev)
+    except OSError as e:
+        say(f"history: {e}")
+    if turn.stop:                                  # holding a lease from a server
+        try:
+            lease_call("/event", ev)
+        except OSError as e:
+            say(f"history: the lease server did not take the job record: {e}")
 
 
 def wait_idle(full, need, job_id=None):
     """Return once HBC's menu has answered for `need` seconds in a row (0: one answer).
 
-    `need` is short only right after a queue job, whose end we know about; the first probe
-    that finds the Wii busy or off means someone outside the queue may be at it, and the
-    wait goes back to the full `full` seconds at the old 5 s pace."""
+    Only ever called while this dispatcher holds the Wii and no job of its own runs, so it
+    never reaches into a queue run. `need` is short only right after a queue job, whose end
+    we know about; the first probe that finds the Wii busy or off means someone outside the
+    queue may be at it, and the wait goes back to the full `full` seconds. A busy Wii is
+    probed only every BUSY_STEP s, and an agent app's name asked for once, so an app run
+    outside the queue is disturbed as little as possible."""
     step = 1.0 if need < full else 5.0
     ok_since = busy_since = None
-    said = None
+    said, busy_what = None, None
     while True:
         t = time.monotonic()
         state, text = wii_state()
         if state == "hbc":
             ok_since = t if ok_since is None else ok_since
-            busy_since = None
+            busy_since, busy_what = None, None
             if t - ok_since >= need:
                 return
             msg = "waiting for HBC to stay idle"
         else:
-            ok_since, need, step = None, full, 5.0
+            ok_since, need, step = None, full, BUSY_STEP
             busy_since = t if busy_since is None else busy_since
             mins = int((t - busy_since) // 60)
-            what = f"busy: {agent_app()} is running" if state == "agent" else "busy or off"
-            msg = f"Wii {what}" + (f" for {mins} min" if mins else "")
+            if busy_what is None or not busy_what.startswith(state):
+                busy_what = f"{state}: busy: {agent_app()} is running" if state == "agent" else f"{state}: busy or off"
+            msg = f"Wii {busy_what.split(': ', 1)[1]}" + (f" for {mins} min" if mins else "")
         if msg != said:
             report(job_id, msg)
             said = msg
         time.sleep(max(0.0, step - (time.monotonic() - t)))
 
 
-def next_job(agent, grace):
+def hbc_back(limit=RETURN_WAIT):
+    """After a job, while this dispatcher still holds the Wii: seconds until HBC's menu
+    answers, or None and what answers instead. Probes only once the job's process is gone,
+    so never during a run."""
+    t0 = time.monotonic()
+    while True:
+        t = time.monotonic()
+        state, text = wii_state()
+        if state == "hbc":
+            return round(t - t0, 1), "hbc"
+        if t - t0 >= limit:
+            return None, f"busy: {agent_app()} is running" if state == "agent" else "busy or off"
+        time.sleep(max(0.0, 1 - (time.monotonic() - t)))
+
+
+def next_job(agent, grace, waiting=lambda: 0):
     """The next pending job if it is this agent's, waiting up to `grace` s for it to be
     added (an agent that waits for one job and then adds the next). Another agent's job at
-    the head of the queue ends the chain at once."""
-    end = time.monotonic() + grace
+    the head of the queue, or another workstation joining the line (`waiting`, asked about
+    once a second), ends the chain at once."""
+    end, asked = time.monotonic() + grace, time.monotonic()
     while True:
         q = jobs(PENDING)
         if q:
@@ -602,6 +825,10 @@ def next_job(agent, grace):
             return q[0] if j.get("agent") == agent else None
         if time.monotonic() >= end:
             return None
+        if time.monotonic() - asked >= 1:
+            if waiting():
+                return None
+            asked = time.monotonic()
         time.sleep(0.25)
 
 
@@ -641,25 +868,35 @@ def cmd_run(a):
                 recent = ((last_end is not None and time.monotonic() - last_end < RECENT)
                           or (ago is not None and ago < RECENT))
                 wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"])
-                p, chain_start = jobs(PENDING)[:1], time.monotonic()
+                p = jobs(PENDING)[:1]
                 p = p[0] if p else None            # a cancel may have emptied it meanwhile
+                chained = False
                 while p:
                     try:
                         agent = load(p).get("agent")
-                        run_job(p)
+                        job = run_job(p)
                     except (FileNotFoundError, ValueError):   # cancelled just before it started
                         break
                     last_end = time.monotonic()
-                    if not agent:
+                    # The Wii is still ours: see that HBC came back, and say so if it did not.
+                    back_s, turn.wii = hbc_back()
+                    job.update(hbc_back_s=back_s, chained=chained)
+                    if back_s is None:
+                        job["wii_left"] = turn.wii
+                        say(f"the Wii did not come back to HBC within {RETURN_WAIT} s: {turn.wii}")
+                    finish_job(job, turn)
+                    if back_s is None or not agent:
                         break
-                    # The same agent's next job runs in this turn without the idle wait. With
-                    # nobody else waiting, hold the lease a moment for its next add; with
-                    # someone waiting, only a job already queued, and only up to CHAIN_MAX.
-                    waiting = turn.others_waiting()
-                    if waiting and time.monotonic() - chain_start > CHAIN_MAX:
+                    # The same agent's next job runs in this turn without the idle wait, but
+                    # only while no other workstation waits: with someone in line, this turn
+                    # ends after every job (a hand-over costs about 2 s since the long poll).
+                    # With nobody waiting, the lease is held CHAIN_GRACE s for the agent's
+                    # next add, and let go within a second of someone joining the line.
+                    if turn.others_waiting():
                         break
-                    p = next_job(agent, 0 if waiting else CHAIN_GRACE)
+                    p = next_job(agent, CHAIN_GRACE, turn.others_waiting)
                     if p:
+                        chained = True
                         say(f"chained: {p.stem} from the same agent")
                         wait_idle(a.idle, 0, p.stem)
             empty_since = time.monotonic()
@@ -668,18 +905,44 @@ def cmd_run(a):
             LOCK.unlink(missing_ok=True)
 
 
+def wii_now(lease=None, lease_error=None):
+    """The Wii's line for status and setup. It is probed only when no run can be going on:
+    nothing running here, and the lease free (or no server). Otherwise it says who has the
+    Wii, and leaves it alone: the queue never reaches into a run."""
+    running = jobs(RUNNING) if RUNNING.exists() else []
+    if running:
+        try:
+            return f"in use by job {load(running[0])['name']} here (not probed)"
+        except (OSError, ValueError):
+            return "in use by a job here (not probed)"
+    if lease_error:
+        return "not probed: the lease server cannot say whether a run is going on"
+    h = (lease or {}).get("holder")
+    if h:
+        return f"in use: {h['host']} has it for {h['name']} (not probed)"
+    return wii_line()
+
+
 def cmd_status(a):
     pid = dispatcher_pid()
-    print(f"Wii {WII}: {wii_line()}; dispatcher: {f'pid {pid}' if pid else 'not running'}")
+    s = err = None
     if lease_server():
         try:
             s = lease_call("/status")
+        except OSError as e:
+            err = e
+    print(f"Wii {WII}: {wii_now(s, err)}; dispatcher: {f'pid {pid}' if pid else 'not running'}")
+    if lease_server():
+        if err:
+            print(f"lease {lease_server()}: unreachable ({err})")
+        else:
             h = s["holder"]
             print(f"lease {lease_server()}: " + (f"held by {h['host']} for {h['name']} (since {h['granted']})" if h else "free"))
             for w in s["waiters"]:
                 print(f"  waiting  {w['host']}  {w['name']}  (since {w['since']})")
-        except OSError as e:
-            print(f"lease {lease_server()}: unreachable ({e})")
+            if s.get("left"):
+                l = s["left"]
+                print(f"  left     {l['host']}'s {l['name']} left the Wii {l['wii']} (since {l['since']})")
     for d, label in ((RUNNING, "running"), (PENDING, "pending")):
         for p in jobs(d):
             j = load(p)
@@ -729,6 +992,78 @@ def cmd_wait(a):
         time.sleep(0.5)
 
 
+def report_since(a):
+    if a.since:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return time.mktime(time.strptime(a.since, fmt))
+            except ValueError:
+                pass
+        sys.exit("--since: YYYY-MM-DD or 'YYYY-MM-DD HH:MM' (local time)")
+    return time.time() - (a.days * 86400 if a.days else a.hours * 3600)
+
+
+def cmd_report(a):
+    """The queue over a window, from the lease server's history (every workstation), or this
+    workstation's own with --local or without a server."""
+    import statistics as st
+    since, now = report_since(a), time.time()
+    if lease_server() and not a.local:
+        try:
+            evs, src = lease_call(f"/history?since={since}", timeout=60)["events"], f"lease server {lease_server()}"
+        except OSError as e:
+            sys.exit(f"the lease server's history: {e} (--local for this workstation's)")
+    else:
+        evs, src = History(HOME / "history").read(since), f"this workstation ({HOME / 'history'})"
+    if a.json:
+        print(json.dumps(evs, indent=1))
+        return
+    loc = lambda t: time.strftime("%m-%d %H:%M", time.localtime(t))
+    span = now - since
+    print(f"bench queue {loc(since)} .. {loc(now)} ({span / 3600:.1f} h), from {src}: {len(evs)} events")
+    jobs_ = [e for e in evs if e["type"] == "job"]
+    grants = [e for e in evs if e["type"] == "grant"]
+    hosts = sorted({e.get("host") or "?" for e in jobs_ + grants})
+    if not evs:
+        return
+    busy = sum(e.get("secs") or 0 for e in jobs_)
+    print(f"Wii in use by queue jobs {busy / 60:.0f} min ({100 * busy / span:.0f}% of the window), "
+          f"{len(jobs_)} jobs, {sum(1 for e in jobs_ if e.get('chained'))} chained, {len(grants)} turns")
+    print(f"\n{'workstation':24} {'jobs':>5} {'failed':>6} {'Wii min':>8} {'turns':>5} {'wait med':>8} {'wait max':>8}")
+    for h in hosts:
+        hj = [e for e in jobs_ if (e.get("host") or "?") == h]
+        hw = [e["waited_s"] for e in grants if (e.get("host") or "?") == h]
+        failed = sum(1 for e in hj if e.get("exit") != 0)
+        med = f"{st.median(hw) / 60:.1f} m" if hw else "-"
+        mx = f"{max(hw) / 60:.1f} m" if hw else "-"
+        print(f"{h[:24]:24} {len(hj):5} {failed:6} {sum(e.get('secs') or 0 for e in hj) / 60:8.0f} {len(hw):5} {med:>8} {mx:>8}")
+    # Hand-overs: a grant to someone already waiting when the previous holder let go.
+    rel, gaps = None, []
+    for e in evs:
+        if e["type"] == "release":
+            rel = e
+        elif e["type"] == "grant" and rel and e.get("waited_s", 0) > e["t"] - rel["t"]:
+            gaps.append(e["t"] - rel["t"])
+            rel = None
+    if gaps:
+        print(f"\nhand-overs to a waiting workstation: {len(gaps)}, median {st.median(gaps):.1f} s, max {max(gaps):.1f} s")
+    long = sorted(grants, key=lambda e: e.get("waited_s", 0), reverse=True)[:5]
+    if long and long[0].get("waited_s", 0) >= 60:
+        print("longest waits for the Wii:")
+        for e in long:
+            if e.get("waited_s", 0) >= 60:
+                print(f"  {e['waited_s'] / 60:5.1f} min  {loc(e['t'])}  {e.get('host')}: {e.get('name')}")
+    trouble = ([f"{loc(e['t'])} {e.get('host')}'s {e.get('name')} left the Wii {e['wii']}"
+                for e in evs if e["type"] == "release" and e.get("wii", "hbc") != "hbc"]
+               + [f"{loc(e['t'])} {e.get('host')}'s {e.get('name')}: {e.get('wii_left')}"
+                  for e in jobs_ if e.get("hbc_back_s") is None and e.get("wii_left") and src.startswith("this")]
+               + [f"{loc(e['t'])} {e.get('host')} {e['role']} expired ({e.get('name')})"
+                  for e in evs if e["type"] == "expired"]
+               + [f"{loc(e['t'])} {e.get('host')}'s {e.get('name')} timed out after {e.get('secs')} s"
+                  for e in jobs_ if e.get("exit") == "timeout"])
+    print("\n" + ("\n".join(["needs a look:"] + [f"  {t}" for t in trouble]) if trouble else "nothing went wrong"))
+
+
 def cmd_cancel(a):
     d, p = find(a.id)
     if d != PENDING:
@@ -750,12 +1085,20 @@ def main():
     s = sub.add_parser("cancel"); s.add_argument("id")
     s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=4310); s.add_argument("--ttl", type=float, default=TTL)
     s.add_argument("--host", default="0.0.0.0")
+    s.add_argument("--history", help="keep the history (events, rotated and archived) in this directory")
+    s.add_argument("--keep-months", type=int, default=0, help="months of archives to keep (0: forever)")
+    s = sub.add_parser("report")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--hours", type=float, default=12); g.add_argument("--days", type=float)
+    g.add_argument("--since", help="YYYY-MM-DD or 'YYYY-MM-DD HH:MM', local time")
+    s.add_argument("--local", action="store_true", help="this workstation's history, not the server's")
+    s.add_argument("--json", action="store_true", help="the events themselves")
     s = sub.add_parser("setup"); s.add_argument("--server", help="the lease server's URL, e.g. http://homeserver:4310; '' for none")
     a = ap.parse_args()
     if a.op == "add" and a.cmd[:1] == ["--"]:
         a.cmd = a.cmd[1:]
     {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel,
-     "serve": cmd_serve, "setup": cmd_setup}[a.op](a)
+     "serve": cmd_serve, "setup": cmd_setup, "report": cmd_report}[a.op](a)
 
 
 if __name__ == "__main__":

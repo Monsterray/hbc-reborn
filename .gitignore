@@ -72,3 +72,6 @@ desktop.ini
 
 # Overlay preview renders (tests/overlay_preview/preview.py)
 /tests/overlay_preview/out/
+
+# --- wii-bench: the lease server's history on the homeserver ------------
+/tools/wii-bench/history/

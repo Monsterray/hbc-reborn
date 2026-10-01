@@ -178,6 +178,70 @@ From the 1.3.6 review, each verified in the code first:
   this PC holds TCP 4299. One run had reached WiiStation's Dolphin, running a
   1.8.6 agent app, instead of its own (it stopped before sending anything).
 
+#### The bench queue in 1.9.1: fair turns, no contact during runs, a history
+
+Tool work only, in 1.9.1 with no version of its own.
+
+- **Problem:** on 2026-10-01 the MacBook waited 20.5 min for the Wii, 10:37:17 to
+  10:57:49. This PC's WiiStation agent chained three already-queued jobs while it
+  waited, because 1.8.8's 10-minute chain cap is checked before a job starts. The
+  last job (an 800 s `hprof` run) started at minute 6.6 and ended at minute 20.
+  - Over 12 h this PC waited behind the Mac 8 times: a median of 6.3 min, 55 min
+    in all. That was the Mac's own job lengths, so turns were fair otherwise.
+  - Nobody could see the whole picture: the server kept no history, and SSH to
+    the homeserver is refused.
+- **No chaining while someone waits:** with another workstation in line, the
+  turn ends after every job. A hand-over costs about 2 s since 1.8.8 (long poll,
+  short idle wait). With nobody waiting, the 15 s hold for the agent's next `add`
+  now lets go within about a second of someone joining. `CHAIN_MAX` is gone. On
+  that morning's timeline the Mac would have waited 4.3 min.
+- **The queue never contacts the Wii during a run.** Probes happen only between
+  jobs, while the dispatcher holds the Wii.
+  - `status` and `setup` used to send `HBCV`, and `HBCS` to an agent app, even
+    during another workstation's run. Now they report the job or lease holder
+    instead (`in use: HOST has it for NAME (not probed)`).
+  - A Wii that's busy between jobs (an app outside the queue) is probed every
+    15 s instead of 5, and its app name is asked for once.
+- **HBC's return checked after each job:** while still holding the Wii, the
+  dispatcher waits up to 120 s for HBC.
+  - It records `hbc_back_s`, or `wii_left` (`busy: <app> is running` / `busy or off`).
+  - The release carries the Wii's state. The server keeps a Wii left out of HBC as
+    `left`, shown in every `status` until a clean release, and the next holder does
+    the full idle wait.
+- **History:** the server logs joins, leaves, grants (time waited), releases
+  (time held, the Wii's state), expiries, and each job's record, which its
+  dispatcher posts to the new `/event`.
+  - Storage: JSON lines in `history/events-YYYY-MM-DD.jsonl`, gzipped after 7 days.
+    Each finished month is packed into `history/archive/YYYY-MM.tar`, kept forever
+    by default (`KEEP_MONTHS`, `--keep-months`).
+  - `GET /history?since=` reads across live, gzipped and archived files.
+    `wiibench.py report [--hours|--days|--since] [--local] [--json]` summarizes it
+    per workstation.
+  - Each dispatcher also keeps its own jobs in `<state dir>/history`.
+  - The compose file mounts `./history`, which git ignores.
+- **Checked:**
+  - 29 bench unit tests on Windows and in WSL Ubuntu, including a real dispatcher
+    against a real lease server and a rival workstation: the rival got the Wii
+    between two same-agent jobs, the hold let go within 3 s of the rival joining,
+    and a Wii left in an agent app was recorded, released as such, and shown in
+    `status`.
+  - `status` made no connection to the fake HBC during a run, or while another
+    workstation held the lease.
+  - History rotation over 43 days into two monthly archives, retention, and
+    reading back across all of them.
+  - The image built and ran in WSL's Docker with `/data` mounted: events landed on
+    the volume, `docker stop` took 0.44 s with exit 0, and the history survived a
+    restart.
+  - **On the bench Wii,** a second dispatcher with its own state folder ran a
+    read-only `hbc.py status` job through the homeserver's lease server, which is
+    still pre-1.9.1. It waited 5.3 min behind this PC's 1.8.8 dispatcher, which
+    chained two queued WiiStation jobs while it waited: the old rule, once more.
+    The lease came 1 s after WiiStation's last job and the job started 2 s later;
+    it recorded `hbc_back_s` 0.0, and its local history and `report --local` read
+    it back.
+  - The old server refused the job record (HTTP 400) and has no `/history`; the
+    dispatcher logged that and carried on. Both work once the container is rebuilt.
+
 ### 1.9.0: fatal reports, a hang watchdog and a kept log for every agent app
 
 WiiStation had all three in its own code: it wrote the agent's crash block

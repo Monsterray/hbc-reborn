@@ -10,6 +10,7 @@ python tools/wii-bench/wiibench.py add --name "HBC devnet" --cwd . -- \
 python tools/wii-bench/wiibench.py wait <id>     # blocks; prints the log tail; exits with the job's code
 python tools/wii-bench/wiibench.py status        # Wii free/busy, dispatcher, running, pending, last done
 python tools/wii-bench/wiibench.py cancel <id>   # only a job that has not started
+python tools/wii-bench/wiibench.py report        # the last 12 h: every workstation's jobs, waits, trouble
 ```
 
 - `add` starts the dispatcher if none is running (`dispatcher.lock` holds its PID). It exits
@@ -28,8 +29,18 @@ python tools/wii-bench/wiibench.py cancel <id>   # only a job that has not start
 - Oldest job first. A job past its `--timeout` (default 1800 s) is stopped: its own process
   tree, nothing else. Pass a longer `--timeout` for a long job; the slowest 1% of the jobs
   so far took about 2,100 s.
-- Each job: `queue/done/<id>.json` (command, times, exit code, agent) and `<id>.log` (its
-  output).
+- Each job: `queue/done/<id>.json` (command, times, exit code, agent, `hbc_back_s`) and
+  `<id>.log` (its output).
+- **The queue never touches the Wii during a run.** It probes HBC only between jobs, while
+  this dispatcher holds the Wii and nothing runs. `status` and `setup` don't probe when a job
+  runs here or another workstation holds the lease; they say who has the Wii instead
+  (`in use: HOST has it for NAME (not probed)`). A busy Wii found between jobs (an app run
+  outside the queue) is probed only every 15 s.
+- **After each job, the dispatcher checks that HBC came back,** still holding the Wii, for up
+  to 120 s. The job's record gets `hbc_back_s`. If HBC doesn't come back, the record gets
+  `wii_left` (`busy: <app> is running`, or `busy or off`), the chain ends, and the release
+  tells the lease server: `status` everywhere shows `left  HOST's NAME left the Wii ...` until
+  a job ends with HBC back, and the next holder does the full idle wait.
 - `wait` notices a finished job within 0.5 s. Once a minute it prints why the job hasn't
   finished yet on stderr, for example `next here; waiting for the lease: place 2 in line,
   held by HOST for NAME`, `Wii busy: WiiStation is running for 12 min`, or `running`.
@@ -49,14 +60,50 @@ itself just used the Wii, it's shorter:
 Any probe that finds the Wii busy or off goes back to the full 20 s.
 
 A job's agent is `add --agent NAME`, else `$WII_BENCH_AGENT`, else the Claude Code session
-(`$CLAUDE_CODE_SESSION_ID`). A job with no agent never chains. After a job, the dispatcher
-keeps its turn for the same agent:
+(`$CLAUDE_CODE_SESSION_ID`). A job with no agent never chains. A chain happens only when
+nobody else wants the Wii:
 
-- With nobody else waiting for the lease, it holds the lease up to 15 s for the agent's next
-  `add`. That covers the usual `add`, `wait`, `add` sequence.
-- With another workstation waiting, it chains only a job that's already queued, and stops
-  chaining after 10 minutes.
+- **Another workstation waiting:** never a chain. The turn ends after every job and the
+  workstations alternate one job at a time. A hand-over costs about 2 s (the long poll,
+  then the short idle wait), so nothing is gained by making anyone wait behind a chain.
+- **Nobody waiting:** the agent's next job runs in the same turn. If it isn't queued yet,
+  the lease is held up to 15 s for the agent's next `add` (the usual `add`, `wait`, `add`),
+  and let go within about a second of another workstation joining the line.
 - A different agent's job at the head of this workstation's queue ends the chain at once.
+
+Fairness is per job: one long job still has the Wii for its whole length. Split long tests
+into separate jobs when other workstations need the Wii.
+
+### The history and `report`
+
+The lease server writes every event as one JSON line: a workstation joining the line or
+leaving it, each grant (with how long it waited), each release (how long it held the Wii,
+and whether HBC was back), expiries, and each job's record (sent by its dispatcher: times,
+exit, agent, `hbc_back_s`, whether it was chained). Each dispatcher also keeps its own jobs in
+`<state dir>/history`.
+
+| Where | What |
+| --- | --- |
+| `history/events-YYYY-MM-DD.jsonl` | today's and the last 7 days' events (UTC days) |
+| `history/events-YYYY-MM-DD.jsonl.gz` | older days of the current month, gzipped |
+| `history/archive/YYYY-MM.tar` | the deep archive: each finished month's gzipped days |
+
+Rotation, compression and archiving happen at the server's start and at its first event each
+day. Archives are kept forever; `KEEP_MONTHS` in `compose.yaml` (`serve --keep-months N`) keeps
+only the last N months. On the homeserver the history is `tools/wii-bench/history/`, outside
+the image, so a rebuild or restart keeps it; back that folder up like any other.
+
+```bash
+python tools/wii-bench/wiibench.py report                     # the last 12 h, every workstation
+python tools/wii-bench/wiibench.py report --days 7
+python tools/wii-bench/wiibench.py report --since 2026-09-01  # local time; reads the archives too
+python tools/wii-bench/wiibench.py report --local             # this workstation's own jobs
+python tools/wii-bench/wiibench.py report --json              # the events themselves
+```
+
+`report` shows the Wii's use by queue jobs, a line per workstation (jobs, failed jobs, Wii
+minutes, turns, median and longest wait for the Wii), how fast hand-overs were, the longest
+waits, and anything that needs a look: a Wii left out of HBC, an expired lease, a timeout.
 
 ## One queue per workstation, wherever the script lives
 
@@ -125,8 +172,9 @@ name or LAN IP.
    cd ~/hbc-reborn/tools/wii-bench
    ```
 
-3. Build and start the container. `compose.yaml` publishes TCP 4310 and restarts the
-   container with Docker, including after a reboot:
+3. Build and start the container. `compose.yaml` publishes TCP 4310, keeps the history in
+   `tools/wii-bench/history/` (see [The history and `report`](#the-history-and-report)), and
+   restarts the container with Docker, including after a reboot:
 
    ```bash
    sudo docker compose up -d --build
@@ -136,7 +184,7 @@ name or LAN IP.
 
    ```bash
    sudo docker build -t wii-bench-lease .
-   sudo docker run -d --name wii-bench --restart unless-stopped -p 4310:4310 wii-bench-lease
+   sudo docker run -d --name wii-bench --restart unless-stopped -p 4310:4310        -v "$PWD/history:/data" wii-bench-lease
    ```
 
 5. Let the workstations reach port 4310, if the server has a firewall:
@@ -147,7 +195,8 @@ name or LAN IP.
    sudo firewall-cmd --permanent --add-port=4310/tcp && sudo firewall-cmd --reload
    ```
 
-6. Check that it's running. The log line is `wii-bench lease server on 0.0.0.0:4310, ttl 60 s`,
+6. Check that it's running. The log line is
+   `wii-bench lease server on 0.0.0.0:4310, ttl 60 s, history in /data (archives kept forever)`,
    and an idle server answers `{"holder": null, "waiters": []}`:
 
    ```bash
@@ -167,10 +216,12 @@ name or LAN IP.
    ```
 
    After a restart, the server grants nothing for 60 s so a running job can reclaim its lease.
+   The history stays in `history/` across rebuilds.
 
-To run it without Docker, on any OS, use `python3 tools/wii-bench/wiibench.py serve` under a
-supervisor (a systemd unit, launchd, or a Windows scheduled task at startup). `--host` and
-`--port` change where it listens.
+To run it without Docker, on any OS, use
+`python3 tools/wii-bench/wiibench.py serve --history DIR` under a supervisor (a systemd unit,
+launchd, or a Windows scheduled task at startup). `--host` and `--port` change where it
+listens, and `--keep-months N` limits the archives.
 
 ## Setting up each workstation
 

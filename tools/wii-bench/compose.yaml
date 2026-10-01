@@ -5,3 +5,7 @@ services:
     restart: unless-stopped
     ports:
       - "4310:4310"
+    volumes:
+      - ./history:/data          # events-*.jsonl, gzipped after 7 days, archive/YYYY-MM.tar
+    environment:
+      KEEP_MONTHS: "0"           # months of monthly archives to keep; 0 keeps them forever
