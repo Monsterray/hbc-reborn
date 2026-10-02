@@ -601,6 +601,175 @@ class LeaseDispatcherTest(unittest.TestCase):
         self.assertEqual(len(seen), 1)
 
 
+def bench_home_with_trouble(home):
+    """A state folder with one of everything the monitor reports."""
+    home = pathlib.Path(home)
+    q = home / "queue"
+    for d in ("pending", "running", "done"):
+        (q / d).mkdir(parents=True, exist_ok=True)
+    now = __import__("time").time()
+    stamp = lambda ago: __import__("time").strftime("%Y-%m-%d %H:%M:%S", __import__("time").localtime(now - ago))
+    def done(jid, name, ago, **more):
+        j = dict(id=jid, name=name, cmd=["x"], cwd=".", timeout=600, added=stamp(ago + 60), started=stamp(ago + 30),
+                 finished=stamp(ago), secs=30, exit=0, agent="A", hbc_back_s=0.0, chained=False)
+        j.update(more)
+        (q / "done" / f"{jid}.json").write_text(json.dumps(j))
+        (q / "done" / f"{jid}.log").write_text(more.pop("log", "all fine\n"))
+    done("j-ok", "fine job", 4000)
+    done("j-fail", "failing job", 3000, exit=1, log="step 1\nboom: the build is broken\n")
+    done("j-time", "slow job", 2000, exit="timeout", secs=600)
+    done("j-left", "leaving job", 1000, hbc_back_s=None, wii_left="busy: otherapp is running")
+    done("j-old", "ancient failure", 3 * 86400, exit=3)          # outside the window
+    (q / "running" / "j-run.json").write_text(json.dumps(dict(id="j-run", name="running job", added=stamp(100),
+                                                               started=stamp(50), timeout=600, agent="B")))
+    for i, n in enumerate(("queued one", "queued two")):
+        p = q / "pending" / f"j-q{i}.json"
+        p.write_text(json.dumps(dict(id=f"j-q{i}", name=n, added=stamp(40 - i), agent="B")))
+    (home / "dispatcher.log").write_text("\n".join([
+        f"{stamp(900)} lease taken for something",
+        f"{stamp(800)} lease lost: another workstation may have the Wii",
+        f"{stamp(700)} done x y: exit 0 in 1 s",
+        "Traceback (most recent call last):",
+        '  File "wiibench.py", line 1, in <module>',
+        "OSError: [Errno 28] No space left on device",
+        f"{stamp(600)} lease server http://h:4310 unreachable: timed out",
+    ]) + "\n")
+    return home
+
+
+class SnapshotTest(unittest.TestCase):
+    """wiibench.py snapshot, what monitor.sh draws: problems found, sorting, and no Wii contact."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(root / "tests"))
+        from test_hbc_tool import FakeHBC
+        cls.fake = FakeHBC()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = bench_home_with_trouble(self.tmp.name)
+        self.env = dict(os.environ, WII_BENCH_HOME=self.tmp.name, WII_BENCH_SERVER="",
+                        WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT=str(self.fake.port))
+
+    def snap(self, *args, env=None):
+        r = subprocess.run([sys.executable, str(BENCH), "snapshot", *args], env=env or self.env,
+                           capture_output=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.decode("utf-8")
+
+    def test_problems_queue_and_no_contact_with_the_wii(self):
+        seen = []
+        orig = self.fake.handle
+        self.fake.handle = lambda c, a: (seen.append(1), orig(c, a))
+        self.addCleanup(setattr, self.fake, "handle", orig)
+        (self.home / "dispatcher.state").write_text(json.dumps({"job": "j-ok", "detail": "running", "since": 1}))
+        s = json.loads(self.snap("--json"))
+        kv, rows = s["kv"], s["rows"]
+        self.assertIsNone(kv["dispatcher_detail"])   # its job is done: not "running" forever
+        kinds = {(e["kind"], e["id"]) for e in rows["errors"]}
+        self.assertIn(("exit 1", "j-fail"), kinds)
+        self.assertIn(("timeout", "j-time"), kinds)
+        self.assertIn(("Wii left", "j-left"), kinds)
+        self.assertNotIn("j-old", {e["id"] for e in rows["errors"]})
+        by_kind = {e["kind"]: e for e in rows["errors"]}
+        self.assertEqual(by_kind["exit 1"]["detail"], "boom: the build is broken")   # the job log's last line
+        self.assertEqual(by_kind["dispatcher crashed"]["detail"], "OSError: [Errno 28] No space left on device")
+        self.assertIn("lease lost", by_kind)
+        self.assertEqual(by_kind["lease server"]["severity"], "warn")
+        self.assertIn("no dispatcher", by_kind)    # two jobs queued, nobody to run them
+        self.assertEqual(kv["errors_err"], 5)
+        self.assertEqual([r["id"] for r in rows["running"]], ["j-run"])
+        self.assertEqual([r["name"] for r in rows["pending"]], ["queued one", "queued two"])
+        self.assertEqual(rows["done"][0]["id"], "j-left")
+        self.assertEqual(rows["done"][0]["hbc"], "left")
+        self.assertEqual(kv["wii_last"], "left busy: otherapp is running by leaving job")
+        self.assertEqual(seen, [])                 # the Wii was never contacted
+
+    def test_tab_separated_sorted_and_filtered(self):
+        out = self.snap("--sort", "done:secs:desc", "--filter", "errors:timeout")
+        done = [l.split("\t") for l in out.splitlines() if l.startswith("@row\tdone\t")]
+        self.assertEqual(done[0][4], "slow job")   # 600 s first (@row, done, finished, id, name, ...)
+        errs = [l.split("\t") for l in out.splitlines() if l.startswith("@row\terrors\t")]
+        self.assertEqual([e[4] for e in errs], ["timeout"])
+        self.assertTrue(all("" not in l.split("\t") for l in out.splitlines()))     # never an empty field
+
+    def test_lease_server_facts(self):
+        import threading
+        wb = import_wiibench()
+        srv = wb.make_server(0, ttl=30, host="127.0.0.1", history=str(self.home / "srv"))
+        srv.leases.grace_until = 0
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        url = f"http://127.0.0.1:{srv.server_address[1]}"
+        os.environ["WII_BENCH_SERVER"] = url
+        self.addCleanup(os.environ.pop, "WII_BENCH_SERVER")
+        wb.lease_call("/acquire", {"ticket": "m", "host": "old-mac", "name": "its job"})
+        wb.lease_call("/release", {"ticket": "m", "wii": "busy or off"})          # no job record: old client
+        wb.lease_call("/acquire", {"ticket": "h", "host": "holder-pc", "name": "running there"})
+        wb.lease_call("/acquire", {"ticket": "w", "host": "waiter-pc", "name": "next one"})
+        s = json.loads(self.snap("--json", env=dict(self.env, WII_BENCH_SERVER=url)))
+        kv, rows = s["kv"], s["rows"]
+        self.assertEqual((kv["holder_host"], kv["holder_name"]), ("holder-pc", "running there"))
+        self.assertTrue(kv["holder_for"].endswith("s"))
+        self.assertEqual([(r["host"], r["name"]) for r in rows["waiting"]], [("waiter-pc", "next one")])
+        self.assertEqual(kv["left_wii"], "busy or off")
+        hosts = {(e["kind"], e["host"]) for e in rows["errors"]}
+        self.assertIn(("Wii left", "old-mac"), hosts)          # from the server's history and its status
+        self.assertIn(("old dispatcher", "old-mac"), hosts)
+        self.assertEqual(kv["history_src"], "lease server")
+
+
+def bash_for_monitor():
+    """A bash that runs monitor.sh here, or None: never Windows' WSL launcher in System32."""
+    import shutil
+    b = shutil.which("bash")
+    if not b or "system32" in b.lower():
+        return None
+    return b
+
+
+class MonitorTest(unittest.TestCase):
+    """monitor.sh --once, every page, on this platform's bash."""
+
+    def test_every_page_once(self):
+        b = bash_for_monitor()
+        if not b:
+            self.skipTest("no bash on PATH")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        bench_home_with_trouble(tmp.name)
+        env = dict(os.environ, WII_BENCH_HOME=tmp.name, WII_BENCH_SERVER="", WII_BENCH_IP="127.0.0.1",
+                   WII_BENCH_PORT="9", WII_BENCH_PYTHON=sys.executable.replace("\\", "/"),
+                   COLUMNS="160", LINES="50", TERM="xterm")
+        ver = subprocess.run([b, "-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"], capture_output=True, text=True).stdout.strip()
+        major, minor = (int(x) for x in ver.split("."))
+        mon = str(root / "tools/wii-bench/monitor.sh").replace("\\", "/")
+        if (major, minor) < (4, 3):                # macOS's own bash: a clear message, not a crash
+            r = subprocess.run([b, mon, "--once"], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("needs bash 4.3", r.stderr)
+            return
+        want = {"queue": ["RUNNING HERE", "running job", "QUEUED HERE", "queued two", "RECENT JOBS HERE", "leaving job",
+                          "no lease server", "5 error(s)"],
+                "errors": ["PROBLEMS", "boom: the build is broken", "No space left on device", "Wii left"],
+                "history": ["WORKSTATIONS", "LONGEST WAITS"],
+                "log": ["DISPATCHER LOG", "lease lost"]}
+        for page, texts in want.items():
+            r = subprocess.run([b, mon, "--once", f"--page={page}"], env=env, capture_output=True, timeout=120)
+            out = r.stdout.decode("utf-8", "replace")
+            self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+            self.assertNotIn("\033[", out)         # plain text when not a terminal
+            self.assertIn(f"[{list(want).index(page) + 1} {page}]", out)
+            for t in texts:
+                self.assertIn(t, out, f"{page}: {t}")
+        r = subprocess.run([b, mon, "--help"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("It never contacts the Wii", r.stdout)
+
+
 class ReportTest(unittest.TestCase):
     def test_report_from_this_workstations_history(self):
         import time

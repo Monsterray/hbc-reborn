@@ -11,6 +11,7 @@ python tools/wii-bench/wiibench.py wait <id>     # blocks; prints the log tail; 
 python tools/wii-bench/wiibench.py status        # Wii free/busy, dispatcher, running, pending, last done
 python tools/wii-bench/wiibench.py cancel <id>   # only a job that has not started
 python tools/wii-bench/wiibench.py report        # the last 12 h: every workstation's jobs, waits, trouble
+bash tools/wii-bench/monitor.sh                  # live: the queue, every workstation, every error
 ```
 
 - `add` starts the dispatcher if none is running (`dispatcher.lock` holds its PID). It exits
@@ -104,6 +105,55 @@ python tools/wii-bench/wiibench.py report --json              # the events thems
 `report` shows the Wii's use by queue jobs, a line per workstation (jobs, failed jobs, Wii
 minutes, turns, median and longest wait for the Wii), how fast hand-overs were, the longest
 waits, and anything that needs a look: a Wii left out of HBC, an expired lease, a timeout.
+
+### The monitor
+
+`monitor.sh` is a live dashboard of the same facts, redrawn in place every 3 s:
+
+| Page | Shows |
+| --- | --- |
+| 1 queue | who has the Wii now, the jobs running and queued here, every workstation waiting for the Wii, and the last jobs here (exit, seconds, how soon HBC came back, chained or not) |
+| 2 errors | every problem in the window, newest first: failed and timed-out jobs with their log's last line, a Wii left out of HBC, an expired lease, a workstation that left the line, the lease server unreachable, a dispatcher that crashed, jobs queued with no dispatcher, a workstation still on a dispatcher before 1.9.1 |
+| 3 history | per workstation: jobs, failures, Wii minutes, turns, median and longest wait; hand-over speed; the longest waits |
+| 4 log | the end of this workstation's `dispatcher.log`, problems in colour |
+
+The two lines under the tabs, on every page, say who has the Wii (or that it was left out of
+HBC), whether the lease server answers, what this dispatcher is doing, and how many errors and
+warnings the window holds.
+
+**It never touches the Wii.** Everything comes from this workstation's queue files and
+`dispatcher.log` and from the lease server, so a dashboard left open all day can't disturb a
+run. The Wii's state shown is what the queue last recorded.
+
+```bash
+bash tools/wii-bench/monitor.sh                      # 1-4 or a click: page; q: quit
+bash tools/wii-bench/monitor.sh 5 --page=errors --hours=72
+bash tools/wii-bench/monitor.sh --once --page=errors # one frame, for a script or a quick look
+bash tools/wii-bench/monitor.sh --filter=errors:Wii64 --sort=done:secs:desc
+bash tools/wii-bench/monitor.sh --help
+```
+
+- Click a column header to sort by it (ascending, descending, off), and click a cell to copy
+  its full value (a job id, a whole error message) to the clipboard. Clicks need a terminal
+  with mouse reporting: Windows Terminal, mintty, iTerm2, most Linux terminals.
+- **Windows:** run it from Git Bash, or from PowerShell with
+  `& 'C:\Program Files\Git\bin\bash.exe' tools/wii-bench/monitor.sh`.
+- **Linux:** any bash 4.3 or newer.
+- **macOS:** the system bash is 3.2, too old: `brew install bash`, then
+  `"$(brew --prefix)/bin/bash" tools/wii-bench/monitor.sh`. The monitor says so if started
+  with the old one.
+- It needs Python 3.8+ (as `wiibench.py` does), and no `jq`: one `wiibench.py snapshot` per
+  refresh collects, sorts and filters everything (`snapshot --json` shows it).
+- Under `timeout`, use `timeout --foreground`: without it the dashboard can't read the
+  terminal and stops at its first frame.
+
+`lib/monitor_lib.sh` is the AI server's `/ai/bin/lib/monitor_lib.sh`, copied unchanged
+(git `686fcbb`, 2026-09-30) so it can be refreshed with a plain copy. Don't edit it here;
+change it on the AI server and copy it again:
+
+```bash
+scp ai-server:/ai/bin/lib/monitor_lib.sh tools/wii-bench/lib/monitor_lib.sh
+```
 
 ## One queue per workstation, wherever the script lives
 
@@ -292,6 +342,7 @@ The state directory is `~/.wii-bench`, and other projects call `~/.wii-bench/wii
 
 ```bash
 xcode-select --install                     # Git and python3; or: brew install git python@3.12
+brew install bash                          # only for monitor.sh: macOS's own bash is 3.2
 git clone https://github.com/Monsterray/hbc-reborn.git ~/projects/hbc-reborn
 cd ~/projects/hbc-reborn
 python3 tools/wii-bench/wiibench.py setup --server http://homeserver:4310

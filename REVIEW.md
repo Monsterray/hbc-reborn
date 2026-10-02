@@ -174,6 +174,52 @@ From the 1.3.6 review, each verified in the code first:
   delete confirmation, with the pointer on its text and with it off
   screen, answered No and kept the app.
 
+#### The bench monitor in 1.9.4
+
+Tool work only, in 1.9.4 with no version of its own.
+
+- **`tools/wii-bench/monitor.sh`:** a live dashboard with four pages.
+  - **queue:** who has the Wii, what's running and queued here, every
+    workstation waiting, and the last jobs here.
+  - **errors:** every problem in the window.
+  - **history:** per workstation, plus the longest waits.
+  - **log:** the end of `dispatcher.log`.
+- **It never touches the Wii.** It reads only this workstation's queue files and
+  `dispatcher.log`, and the lease server's status and history. One
+  `wiibench.py snapshot` per refresh collects, sorts and filters, so no OS needs
+  `jq`.
+- **Problems it finds:**
+  - failed, timed-out and not-started jobs, with their log's last line;
+  - a Wii left out of HBC, both now and in the history;
+  - an expired holder or waiter, `lease lost`, and the lease server unreachable;
+  - a dispatcher traceback, queued jobs with no dispatcher, a Wii busy outside
+    the queue for over 5 minutes;
+  - a workstation taking turns without sending job records, meaning its
+    dispatcher predates 1.9.1.
+- **Drawing:** `lib/monitor_lib.sh` is the AI server's library, copied unchanged
+  (`686fcbb`). It provides the paging, clickable tabs, click-to-sort headers,
+  click-to-copy cells, in-place redraw and `--once`.
+- **Server status now reports durations:** `held_s`, `waited_s`, and `ago_s` for a
+  Wii left out of HBC. The container's clock is UTC, so its own time strings
+  misled readers in other zones.
+- **Found on first use** (2026-10-02, the last 24 h): four Wii64 jobs that failed,
+  three with a syntax error in `.dev/hardware_run.sh` and one with
+  `python: command not found`; and the MacBook taking turns with a pre-1.9.1
+  dispatcher.
+- **Fixed along the way:**
+  - `dispatcher.state` keeps naming the dispatcher's last job, so "running" stayed
+    on screen after the job ended. A state whose job is gone now reads as idle.
+  - "Recent jobs" is ordered by when each job finished, not by file modification
+    time.
+- **Checked:**
+  - Snapshot tests: each kind of problem, sorting and filtering, no empty fields,
+    the lease server's facts, and no connection to a fake HBC.
+  - `monitor.sh --once` on every page, in Git Bash on Windows and in WSL Ubuntu.
+    macOS's bash 3.2 gets a clear message instead.
+  - Live in a Windows console: it refreshed and quit cleanly.
+  - One test harness trap: under GNU `timeout` without `--foreground`, a
+    dashboard can't read the terminal and stops at its first frame.
+
 ### 1.9.3: the play log test in CI's container
 
 - 1.9.2's CI failed in the devkitPPC job's Tests step: the container's gcc 12

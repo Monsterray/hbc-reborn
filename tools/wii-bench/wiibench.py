@@ -318,7 +318,7 @@ class Leases:
             else:
                 self.released_at = None
                 self.left = {"host": self.holder.get("host"), "name": self.holder.get("name"), "wii": wii,
-                             "since": time.strftime("%Y-%m-%d %H:%M:%S")}
+                             "since": time.strftime("%Y-%m-%d %H:%M:%S"), "at": now}
             self.holder = None
         if d["ticket"] in self.waiters:
             w = self.waiters.pop(d["ticket"])
@@ -326,13 +326,23 @@ class Leases:
         return {"ok": True}
 
     def _show(self, e, now):
-        return e and {k: v for k, v in dict(e, age=int(now - e["seen"])).items() if k not in self.PRIVATE}
+        """A holder or waiter as status shows it. Durations, not times: the server's clock
+        (UTC in its container) is not the reader's, so `held_s`/`waited_s` say how long."""
+        if not e:
+            return e
+        more = {"age": int(now - e["seen"])}
+        if "granted_at" in e:
+            more["held_s"] = int(now - e["granted_at"])
+        elif "joined" in e:
+            more["waited_s"] = int(now - e["joined"])
+        return {k: v for k, v in dict(e, **more).items() if k not in self.PRIVATE}
 
     def status(self):
         now = self.clock()
         self._expire(now)
+        left = self.left and {k: v for k, v in dict(self.left, ago_s=int(now - self.left["at"])).items() if k != "at"}
         return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in self.waiters.values()],
-                "left": self.left}
+                "left": left}
 
 
 # --- the history: every grant, release and job, kept for good -----------------------------
@@ -1073,6 +1083,363 @@ def cmd_report(a):
     print("\n" + ("\n".join(["needs a look:"] + [f"  {t}" for t in trouble]) if trouble else "nothing went wrong"))
 
 
+# --- snapshot: everything the monitor shows, without touching the Wii ----------------------
+#
+# monitor.sh draws; this collects. One call per frame prints tab-separated lines:
+#   @kv   KEY VALUE              a single fact (the Wii's owner, the lease server, counts)
+#   @row  SECTION F1 F2 ...      one table row, already sorted and filtered
+# No field is ever empty ("-" instead): bash's read collapses runs of tabs. Nothing here
+# probes the Wii: it reads this workstation's queue files and dispatcher.log, and the lease
+# server's status and history.
+
+def _cell(v):
+    if v is None or v == "":
+        return "-"
+    return str(v).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _age(s):
+    s = max(0, int(s))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s"
+    if s < 86400:
+        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+    return f"{s // 86400}d{(s % 86400) // 3600}h"
+
+
+def _when(t, now):
+    lt, ln = time.localtime(t), time.localtime(now)
+    return time.strftime("%H:%M:%S" if lt[:3] == ln[:3] else "%m-%d %H:%M", lt)
+
+
+def _parse_local(s):
+    try:
+        return time.mktime(time.strptime(s, "%Y-%m-%d %H:%M:%S"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _last_line(p):
+    try:
+        lines = [l.strip() for l in p.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
+        return lines[-1][:160] if lines else None
+    except OSError:
+        return None
+
+
+LOG_PROBLEMS = (("lease lost", "err", "lease lost"), ("unreachable", "warn", "lease server"),
+                ("history:", "warn", "history"), ("did not come back", None, None))
+
+
+def dispatcher_log_problems(since):
+    """Problems this workstation's dispatcher logged since `since`: (t, severity, kind, detail).
+    A traceback is one problem, its last line the detail, at the time of the line before it."""
+    out, ts, tb = [], None, None
+    try:
+        text = (HOME / "dispatcher.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        t = _parse_local(line[:19]) if len(line) >= 19 else None
+        if t is not None:
+            if tb:
+                out.append((tb[0], "err", "dispatcher crashed", tb[1]))
+                tb = None
+            ts, msg = t, line[20:]
+            for pat, sev, kind in LOG_PROBLEMS:
+                if pat in msg:
+                    if sev and t >= since:         # "did not come back" is in the job's record
+                        out.append((t, sev, kind, msg[:160]))
+                    break
+        elif line.startswith("Traceback"):
+            tb = [ts or time.time(), "Traceback"]
+        elif tb and line.strip():
+            tb[1] = line.strip()[:160]
+    if tb:
+        out.append((tb[0], "err", "dispatcher crashed", tb[1]))
+    return [p for p in out if p[0] >= since]
+
+
+def job_problem(j):
+    """(severity, kind, detail) for a finished job that went wrong, else None."""
+    ex = j.get("exit")
+    if j.get("hbc_back_s") is None and j.get("wii_left"):
+        return "err", "Wii left", f"HBC not back after the job: {j['wii_left']}"
+    if ex == "timeout":
+        return "err", "timeout", f"stopped after {j.get('secs')} s (--timeout {j.get('timeout')})"
+    if ex == "not started":
+        return "err", "not started", "the command could not start"
+    if ex not in (0, None):
+        return "err", f"exit {ex}", None
+    return None
+
+
+def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
+    now = time.time()
+    since = now - hours * 3600
+    kv, rows = {}, {}
+
+    def row(sec, **f):
+        rows.setdefault(sec, []).append(f)
+
+    kv.update(now=int(now), clock=time.strftime("%H:%M:%S"), host=socket.gethostname(), home=str(HOME),
+              wii_ip=WII, window_h=f"{hours:g}")
+    pid = dispatcher_pid()
+    kv["dispatcher_pid"] = pid or "-"
+    try:
+        st = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        st = {}
+    kv["dispatcher_job"], kv["dispatcher_detail"] = st.get("job"), st.get("detail")
+    kv["dispatcher_since"] = _age(now - st["since"]) if st.get("since") else None
+
+    # This workstation's queue.
+    running, pending = (jobs(RUNNING) if RUNNING.exists() else []), (jobs(PENDING) if PENDING.exists() else [])
+    for p in running:
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            continue
+        t0 = _parse_local(j.get("started")) or now
+        to = j.get("timeout") or TIMEOUT
+        row("running", id=j["id"], name=j.get("name"), agent=(j.get("agent") or "")[:12], started=_when(t0, now),
+            elapsed=_age(now - t0), elapsed_s=int(now - t0), timeout=_age(to), left=_age(max(0, to - (now - t0))),
+            left_s=int(max(0, to - (now - t0))))
+    for i, p in enumerate(pending, 1):
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            continue
+        t0 = _parse_local(j.get("added")) or now
+        row("pending", place=i, place_s=i, id=j["id"], name=j.get("name"), agent=(j.get("agent") or "")[:12],
+            added=_when(t0, now), age=_age(now - t0), age_s=int(now - t0))
+    kv["running_n"], kv["pending_n"] = len(rows.get("running", [])), len(rows.get("pending", []))
+    # dispatcher.state names the last job it worked for; once that job is done it is history.
+    live = {r["id"] for r in rows.get("running", []) + rows.get("pending", [])}
+    if kv["dispatcher_job"] not in live:
+        kv["dispatcher_job"] = None
+        kv["dispatcher_detail"] = "idle" if pid else None
+        kv["dispatcher_since"] = None
+
+    # Finished jobs: the last few, and every one in the window for problems.
+    problems = []
+    done = []
+    if DONE.exists():
+        for p in DONE.glob("*.json"):
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            done.append((m, p))
+    done.sort()
+    seen_ids, recent = set(), []
+    tail = set(p for _, p in done[-2 * done_rows:])   # candidates: a file's mtime only roughly orders them
+    for m, p in done:
+        if m < since and p not in tail:
+            continue
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            continue
+        tf = _parse_local(j.get("finished")) or m
+        recent.append((tf, j))
+        pr = job_problem(j) if tf >= since else None
+        if pr:
+            sev, kind, detail = pr
+            detail = detail or _last_line(DONE / f"{j['id']}.log") or "no output"
+            problems.append(dict(t=tf, severity=sev, kind=kind, host=socket.gethostname(), job=j.get("name"),
+                                 id=j["id"], detail=detail))
+            seen_ids.add(j["id"])
+    recent.sort(key=lambda r: r[0], reverse=True)     # newest first, by when each job finished
+    for tf, j in recent[:done_rows]:
+        back = j.get("hbc_back_s")
+        row("done", finished=_when(tf, now), finished_s=int(tf), id=j["id"], name=j.get("name"),
+            exit=j.get("exit"), secs=j.get("secs"), secs_s=j.get("secs") or 0,
+            hbc=("left" if back is None and j.get("wii_left") else (f"{back}s" if back is not None else "?")),
+            chained="yes" if j.get("chained") else "no")
+    if recent:
+        try:
+            tf, j = recent[0]
+            back = j.get("hbc_back_s")
+            kv["wii_last"] = (f"back in HBC {back} s after {j.get('name')}" if back is not None else
+                              f"left {j.get('wii_left')} by {j.get('name')}" if j.get("wii_left") else
+                              f"last job {j.get('name')} ended {_age(now - (_parse_local(j.get('finished')) or now))} ago")
+        except (OSError, ValueError):
+            pass
+
+    # The lease server: who has the Wii, who waits, and every workstation's history.
+    url = lease_server()
+    kv["server"] = url or "none"
+    evs = []
+    if url:
+        try:
+            s = lease_call("/status", timeout=5)
+            kv["server_ok"] = "yes"
+            h = s.get("holder")
+            # Durations from the server (1.9.1); an older one gives only its own clock's times.
+            if h:
+                kv.update(holder_host=h.get("host"), holder_name=h.get("name"),
+                          holder_for=_age(h["held_s"]) if "held_s" in h else f"since {h.get('granted')} server time")
+            for i, w in enumerate(s.get("waiters") or [], 1):
+                ws = w.get("waited_s")
+                row("waiting", place=i, place_s=i, host=w.get("host"), name=w.get("name"),
+                    since=_when(now - ws, now) if ws is not None else "-",
+                    waited=_age(ws) if ws is not None else "?", waited_s=ws or 0)
+            left = s.get("left")
+            if left:
+                ago = f"{_age(left['ago_s'])} ago" if "ago_s" in left else f"since {left.get('since')} server time"
+                kv.update(left_host=left.get("host"), left_name=left.get("name"), left_wii=left.get("wii"), left_ago=ago)
+                problems.append(dict(t=now - left.get("ago_s", 0), severity="err", kind="Wii left", host=left.get("host"),
+                                     job=left.get("name"), id="-", detail=f"still: {left.get('wii')} ({ago})"))
+        except OSError as e:
+            kv["server_ok"], kv["server_err"] = "no", str(e)[:120]
+            problems.append(dict(t=now, severity="err", kind="lease server", host=socket.gethostname(), job="-",
+                                 id="-", detail=f"unreachable now: {str(e)[:120]}"))
+        try:
+            evs = lease_call(f"/history?since={since}", timeout=10)["events"]
+            kv["server_history"] = "yes"
+        except OSError as e:
+            kv["server_history"] = "no"
+            if kv.get("server_ok") == "yes":
+                problems.append(dict(t=now, severity="note", kind="no history", host=url, job="-", id="-",
+                                     detail="the lease server keeps no history: rebuild its container (README step 7)"))
+    if not evs:
+        try:
+            evs = History(HOME / "history").read(since)
+            kv["history_src"] = "this workstation"
+        except OSError:
+            evs = []
+    else:
+        kv["history_src"] = "lease server"
+
+    # Problems in the history (every workstation's when the server keeps it).
+    for e in evs:
+        t, typ, host = e.get("t", now), e.get("type"), e.get("host")
+        if typ == "job" and e.get("id") not in seen_ids:
+            pr = job_problem(e)
+            if pr:
+                sev, kind, detail = pr
+                problems.append(dict(t=t, severity=sev, kind=kind, host=host, job=e.get("name"), id=e.get("id"),
+                                     detail=detail or "see the job's log on its workstation"))
+                seen_ids.add(e.get("id"))
+        elif typ == "release" and e.get("wii", "hbc") != "hbc":
+            if not any(p["kind"] == "Wii left" and p["host"] == host and abs(p["t"] - t) < 30 for p in problems):
+                problems.append(dict(t=t, severity="err", kind="Wii left", host=host, job=e.get("name"), id="-",
+                                     detail=f"released with the Wii {e.get('wii')}"))
+        elif typ == "expired":
+            if e.get("role") == "holder":
+                problems.append(dict(t=t, severity="err", kind="lease expired", host=host, job=e.get("name"), id="-",
+                                     detail=f"stopped renewing while holding the Wii ({e.get('held_s')} s in): crashed or offline"))
+            else:
+                problems.append(dict(t=t, severity="warn", kind="left the line", host=host, job=e.get("name"), id="-",
+                                     detail=f"stopped asking after {e.get('waited_s')} s: its dispatcher went away"))
+    for t, sev, kind, detail in dispatcher_log_problems(since):
+        problems.append(dict(t=t, severity=sev, kind=kind, host=socket.gethostname(), job="-", id="-", detail=detail))
+    if pending and not pid:
+        problems.append(dict(t=now, severity="warn", kind="no dispatcher", host=socket.gethostname(), job="-", id="-",
+                             detail=f"{len(pending)} job(s) queued and no dispatcher: the next add or wait starts one"))
+    d = kv.get("dispatcher_detail") or ""
+    if d.startswith("Wii busy") and st.get("since") and now - st["since"] > 300:
+        problems.append(dict(t=now, severity="warn", kind="Wii busy", host=socket.gethostname(), job="-", id="-",
+                             detail=f"{d} (outside the queue?)"))
+    rank = {"err": 0, "warn": 1, "note": 2}
+    problems.sort(key=lambda p: (-p["t"], rank.get(p["severity"], 3)))
+    for p in problems:
+        row("errors", when=_when(p["t"], now), when_s=int(p["t"]), severity=p["severity"], kind=p["kind"],
+            host=p["host"], job=p["job"], id=p["id"], detail=p["detail"])
+    kv["errors_err"] = sum(1 for p in problems if p["severity"] == "err")
+    kv["errors_warn"] = sum(1 for p in problems if p["severity"] == "warn")
+
+    # Per workstation, over the window.
+    import statistics as st_
+    jobs_ = [e for e in evs if e.get("type") == "job"]
+    grants = [e for e in evs if e.get("type") == "grant"]
+    problems_late = []
+    for h in sorted({e.get("host") or "?" for e in jobs_ + grants}):
+        hj = [e for e in jobs_ if (e.get("host") or "?") == h]
+        hw = [e.get("waited_s", 0) for e in grants if (e.get("host") or "?") == h]
+        mins = sum(e.get("secs") or 0 for e in hj) / 60
+        row("hosts", host=h, jobs=len(hj), jobs_s=len(hj), failed=sum(1 for e in hj if job_problem(e)),
+            wii_min=f"{mins:.0f}", wii_min_s=mins, turns=len(hw), turns_s=len(hw),
+            wait_med=_age(st_.median(hw)) if hw else "-", wait_med_s=st_.median(hw) if hw else 0,
+            wait_max=_age(max(hw)) if hw else "-", wait_max_s=max(hw) if hw else 0)
+        if hw and not hj and kv.get("history_src") == "lease server":
+            # Turns but no job records: that workstation's dispatcher predates 1.9.1's /event.
+            problems_late.append(dict(t=max(e["t"] for e in grants if (e.get("host") or "?") == h), severity="note",
+                                      kind="old dispatcher", host=h, job="-", id="-",
+                                      detail=f"{len(hw)} turn(s) and no job records: update its hbc-reborn (git pull)"))
+    busy = sum(e.get("secs") or 0 for e in jobs_)
+    kv["window_jobs"], kv["window_busy"] = len(jobs_), f"{100 * busy / (hours * 3600):.0f}%"
+    for p in problems_late:
+        row("errors", when=_when(p["t"], now), when_s=int(p["t"]), severity=p["severity"], kind=p["kind"],
+            host=p["host"], job=p["job"], id=p["id"], detail=p["detail"])
+    rel, gaps = None, []
+    for e in evs:
+        if e.get("type") == "release":
+            rel = e
+        elif e.get("type") == "grant" and rel and e.get("waited_s", 0) > e["t"] - rel["t"]:
+            gaps.append(e["t"] - rel["t"])
+            rel = None
+    if gaps:
+        kv["handover"] = f"{len(gaps)} hand-overs, median {st_.median(gaps):.1f} s, max {max(gaps):.1f} s"
+    for e in sorted(grants, key=lambda e: e.get("waited_s", 0), reverse=True)[:8]:
+        if e.get("waited_s", 0) >= 60:
+            row("waits", when=_when(e["t"], now), when_s=int(e["t"]), waited=_age(e["waited_s"]),
+                waited_s=e["waited_s"], host=e.get("host"), name=e.get("name"))
+
+    try:
+        tail = (HOME / "dispatcher.log").read_text(encoding="utf-8", errors="replace").splitlines()[-log_lines:]
+    except OSError:
+        tail = []
+    for l in tail:
+        row("log", line=l)
+
+    # Sort and filter, the monitor's --sort/--filter and header clicks: a field with a
+    # numeric twin (elapsed and elapsed_s) sorts by the number.
+    for spec in filters:
+        sec, _, text = spec.partition(":")
+        if sec in rows and text:
+            t = text.lower()
+            rows[sec] = [r for r in rows[sec] if any(t in str(v).lower() for k, v in r.items() if not k.endswith("_s"))]
+    for spec in sorts:
+        sec, _, rest = spec.partition(":")
+        field, _, desc = rest.partition(":")
+        if sec in rows and field:
+            key = field + "_s" if field + "_s" in (rows[sec][0] if rows[sec] else {}) else field
+            def k(r, key=key):
+                v = r.get(key)
+                return (0, v) if isinstance(v, (int, float)) else (1, str(v))
+            rows[sec].sort(key=k, reverse=desc in ("1", "d", "desc"))
+    return kv, rows
+
+
+SNAPSHOT_FIELDS = {
+    "running": ("id", "name", "agent", "started", "elapsed", "timeout", "left"),
+    "pending": ("place", "id", "name", "agent", "added", "age"),
+    "waiting": ("place", "host", "name", "since", "waited"),
+    "done": ("finished", "id", "name", "exit", "secs", "hbc", "chained"),
+    "errors": ("when", "severity", "kind", "host", "job", "id", "detail"),
+    "hosts": ("host", "jobs", "failed", "wii_min", "turns", "wait_med", "wait_max"),
+    "waits": ("when", "waited", "host", "name"),
+    "log": ("line",),
+}
+
+
+def cmd_snapshot(a):
+    kv, rows = snapshot(a.hours, a.sort or (), a.filter or ())
+    if a.json:
+        print(json.dumps({"kv": kv, "rows": rows}, indent=1))
+        return
+    out = [f"@kv\t{k}\t{_cell(v)}" for k, v in kv.items()]
+    for sec, fields in SNAPSHOT_FIELDS.items():
+        for r in rows.get(sec, []):
+            out.append("\t".join(["@row", sec] + [_cell(r.get(f)) for f in fields]))
+    sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))   # a pipe on Windows is cp1252 otherwise
+    sys.stdout.flush()
+
+
 def cmd_cancel(a):
     d, p = find(a.id)
     if d != PENDING:
@@ -1096,6 +1463,10 @@ def main():
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--history", help="keep the history (events, rotated and archived) in this directory")
     s.add_argument("--keep-months", type=int, default=0, help="months of archives to keep (0: forever)")
+    s = sub.add_parser("snapshot", help="what monitor.sh shows, as tab-separated lines (never touches the Wii)")
+    s.add_argument("--hours", type=float, default=24); s.add_argument("--json", action="store_true")
+    s.add_argument("--sort", action="append", help="SECTION:FIELD[:desc]")
+    s.add_argument("--filter", action="append", help="SECTION:TEXT")
     s = sub.add_parser("report")
     g = s.add_mutually_exclusive_group()
     g.add_argument("--hours", type=float, default=12); g.add_argument("--days", type=float)
@@ -1107,7 +1478,8 @@ def main():
     if a.op == "add" and a.cmd[:1] == ["--"]:
         a.cmd = a.cmd[1:]
     {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel,
-     "serve": cmd_serve, "setup": cmd_setup, "report": cmd_report}[a.op](a)
+     "serve": cmd_serve, "setup": cmd_setup, "report": cmd_report,
+     "snapshot": cmd_snapshot}[a.op](a)
 
 
 if __name__ == "__main__":
