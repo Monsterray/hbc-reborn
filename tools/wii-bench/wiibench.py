@@ -61,6 +61,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -460,6 +461,9 @@ def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
     leases, cond = Leases(ttl, log=log), threading.Condition()
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"            # keep-alive: a client reuses its connection
+        timeout = 60                               # s an idle kept connection may stay open
+
         def reply(self, body, code=200):
             data = json.dumps(body).encode()
             self.send_response(code)
@@ -518,10 +522,19 @@ def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
             self.reply(r)                          # never write to a socket holding the lock
 
         def log_message(self, fmt, *args):
-            if not self.path.startswith(("/status", "/acquire", "/renew", "/event", "/history")):   # the polls are noise
+            path = getattr(self, "path", "")       # none yet when a kept connection idles out
+            if path and not path.startswith(("/status", "/acquire", "/renew", "/event", "/history")):   # polls: noise
                 super().log_message(fmt, *args)
 
-    srv = http.server.ThreadingHTTPServer((host, port), Handler)
+    class Server(http.server.ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            # A client that goes away from a kept connection (a monitor quit, a dispatcher
+            # killed) resets it: routine with keep-alive, not worth a traceback each time.
+            if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+                return
+            super().handle_error(request, client_address)
+
+    srv = Server((host, port), Handler)
     srv.history, srv.leases = hist, leases
     return srv
 
@@ -559,13 +572,72 @@ def lease_server():
     return url.rstrip("/")
 
 
+# Each lookup of a .local name took 220-250 ms on Windows, which does not cache mDNS answers
+# (measured 2026-10-02: homeserver.local, every call), and every call made one. So a process
+# resolves the server once (for ADDR_TTL s, again after a failure) and keeps its connection
+# open: the server speaks HTTP/1.1. One connection per thread: the renew thread calls too.
+ADDR_TTL = 300
+_ADDR = {}
+
+
+def _resolve(host, port):
+    hit = _ADDR.get((host, port))
+    if hit and hit[1] > time.monotonic():
+        return hit[0]
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    infos.sort(key=lambda i: i[0] != socket.AF_INET)   # IPv4 first: a link-local IPv6 needs a scope
+    ip = infos[0][4][0]
+    _ADDR[(host, port)] = (ip, time.monotonic() + ADDR_TTL)
+    return ip
+
+
+_LOCAL = threading.local()
+
+
+def _conns():
+    if not hasattr(_LOCAL, "conns"):
+        _LOCAL.conns = {}
+    return _LOCAL.conns
+
+
 def lease_call(path, body=None, timeout=10):
-    import urllib.request
-    req = urllib.request.Request(lease_server() + path, method="POST" if body is not None else "GET",
-                                 data=body is not None and json.dumps(body).encode() or None,
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    import http.client
+    import urllib.error
+    import urllib.parse
+    url = lease_server() + path
+    u = urllib.parse.urlsplit(url)
+    host, port = u.hostname, u.port or 80
+    data = json.dumps(body).encode() if body is not None else None
+    target = url[len(f"{u.scheme}://{u.netloc}"):] or "/"
+    for attempt in (0, 1):
+        conns, key, c = _conns(), None, None
+        try:
+            key = (_resolve(host, port), port)
+            c = conns.get(key)
+            if c is None:
+                c = conns[key] = http.client.HTTPConnection(key[0], port, timeout=timeout)
+            c.timeout = timeout
+            if c.sock:
+                c.sock.settimeout(timeout)
+            c.request("POST" if data is not None else "GET", target, body=data,
+                      headers={"Host": u.netloc, "Content-Type": "application/json"})
+            r = c.getresponse()
+            raw = r.read()
+            if r.will_close:                       # an HTTP/1.0 server (before 1.9.4) closes each time
+                c.close()
+                conns.pop(key, None)
+        except (OSError, http.client.HTTPException) as e:
+            # A kept connection the server has since closed fails at once: try a fresh one, once.
+            if c is not None:
+                c.close()
+            conns.pop(key, None)
+            if attempt:
+                _ADDR.pop((host, port), None)     # and look the name up again next time
+                raise e if isinstance(e, OSError) else OSError(f"{type(e).__name__}: {e}")
+            continue
+        if r.status >= 400:
+            raise urllib.error.HTTPError(url, r.status, f"{r.reason}: {raw[:200]!r}", r.headers, None)
+        return json.loads(raw)
 
 
 LONG_POLL = 25                                     # s the server holds an /acquire open
@@ -1133,15 +1205,90 @@ LOG_PROBLEMS = (("lease lost", "err", "lease lost"), ("unreachable", "warn", "le
                 ("history:", "warn", "history"), ("did not come back", None, None))
 
 
-def dispatcher_log_problems(since):
+class SnapCache:
+    """What `snapshot --serve` keeps from one refresh to the next, so a refresh costs only
+    what changed: each finished job's record (by file mtime), the history fetched so far (only
+    newer events are asked for), and dispatcher.log (by size and mtime)."""
+
+    def __init__(self):
+        self.jobs, self.hist, self.local, self.log = {}, None, None, None
+
+
+def _log_lines(cache=None):
+    p = HOME / "dispatcher.log"
+    try:
+        st = p.stat()
+    except OSError:
+        return []
+    key = (st.st_size, st.st_mtime_ns)
+    if cache is not None and cache.log and cache.log[0] == key:
+        return cache.log[1]
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    if cache is not None:
+        cache.log = (key, lines)
+    return lines
+
+
+def _job_record(p, m, cache=None):
+    """A finished job's record, and its log's last line when it failed: from the cache while
+    the file is unchanged."""
+    hit = cache.jobs.get(p) if cache is not None else None
+    if hit and hit[0] == m:
+        return hit[1], hit[2]
+    j = load(p)
+    last = _last_line(DONE / f"{j['id']}.log") if job_problem(j) else None
+    if cache is not None:
+        cache.jobs[p] = (m, j, last)
+    return j, last
+
+
+def _server_history(since, cache=None):
+    """The lease server's events since `since`; with a cache, only those newer than the last
+    one already held are fetched."""
+    url = lease_server()
+    h = cache.hist if cache is not None else None
+    try:
+        if h is None or h["url"] != url or h["since"] > since:
+            evs = lease_call(f"/history?since={since}", timeout=10)["events"]
+            h = {"url": url, "since": since, "evs": evs}
+        else:
+            last = h["evs"][-1]["t"] if h["evs"] else since
+            new = lease_call(f"/history?since={last}", timeout=10)["events"]
+            known = {json.dumps(e, sort_keys=True) for e in h["evs"] if e.get("t") == last}
+            h["evs"] += [e for e in new if not (e.get("t") == last and json.dumps(e, sort_keys=True) in known)]
+            h["evs"] = [e for e in h["evs"] if e.get("t", 0) >= since]
+            h["since"] = since
+    except OSError:
+        if cache is not None:
+            cache.hist = None
+        raise
+    if cache is not None:
+        cache.hist = h
+    return list(h["evs"])
+
+
+def _local_history(since, cache=None):
+    root = HOME / "history"
+    try:
+        key = tuple(sorted((str(f), f.stat().st_mtime_ns) for f in root.rglob("*") if f.is_file()))
+    except OSError:
+        key = ()
+    if cache is not None and cache.local and cache.local[0] == key and cache.local[1] <= since:
+        return [e for e in cache.local[2] if e.get("t", 0) >= since]
+    evs = History(root).read(since)
+    if cache is not None:
+        cache.local = (key, since, evs)
+    return evs
+
+
+def dispatcher_log_problems(since, lines=None):
     """Problems this workstation's dispatcher logged since `since`: (t, severity, kind, detail).
     A traceback is one problem, its last line the detail, at the time of the line before it."""
     out, ts, tb = [], None, None
-    try:
-        text = (HOME / "dispatcher.log").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return out
-    for line in text.splitlines():
+    for line in (_log_lines() if lines is None else lines):
         t = _parse_local(line[:19]) if len(line) >= 19 else None
         if t is not None:
             if tb:
@@ -1176,7 +1323,7 @@ def job_problem(j):
     return None
 
 
-def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
+def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=None):
     now = time.time()
     since = now - hours * 3600
     kv, rows = {}, {}
@@ -1240,7 +1387,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
         if m < since and p not in tail:
             continue
         try:
-            j = load(p)
+            j, last = _job_record(p, m, cache)
         except (OSError, ValueError):
             continue
         tf = _parse_local(j.get("finished")) or m
@@ -1248,7 +1395,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
         pr = job_problem(j) if tf >= since else None
         if pr:
             sev, kind, detail = pr
-            detail = detail or _last_line(DONE / f"{j['id']}.log") or "no output"
+            detail = detail or last or "no output"
             problems.append(dict(t=tf, severity=sev, kind=kind, host=socket.gethostname(), job=j.get("name"),
                                  id=j["id"], detail=detail))
             seen_ids.add(j["id"])
@@ -1298,7 +1445,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
             problems.append(dict(t=now, severity="err", kind="lease server", host=socket.gethostname(), job="-",
                                  id="-", detail=f"unreachable now: {str(e)[:120]}"))
         try:
-            evs = lease_call(f"/history?since={since}", timeout=10)["events"]
+            evs = _server_history(since, cache)
             kv["server_history"] = "yes"
         except OSError as e:
             kv["server_history"] = "no"
@@ -1307,7 +1454,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
                                      detail="the lease server keeps no history: rebuild its container (README step 7)"))
     if not evs:
         try:
-            evs = History(HOME / "history").read(since)
+            evs = _local_history(since, cache)
             kv["history_src"] = "this workstation"
         except OSError:
             evs = []
@@ -1335,7 +1482,8 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
             else:
                 problems.append(dict(t=t, severity="warn", kind="left the line", host=host, job=e.get("name"), id="-",
                                      detail=f"stopped asking after {e.get('waited_s')} s: its dispatcher went away"))
-    for t, sev, kind, detail in dispatcher_log_problems(since):
+    log = _log_lines(cache)
+    for t, sev, kind, detail in dispatcher_log_problems(since, log):
         problems.append(dict(t=t, severity=sev, kind=kind, host=socket.gethostname(), job="-", id="-", detail=detail))
     if pending and not pid:
         problems.append(dict(t=now, severity="warn", kind="no dispatcher", host=socket.gethostname(), job="-", id="-",
@@ -1389,11 +1537,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200):
             row("waits", when=_when(e["t"], now), when_s=int(e["t"]), waited=_age(e["waited_s"]),
                 waited_s=e["waited_s"], host=e.get("host"), name=e.get("name"))
 
-    try:
-        tail = (HOME / "dispatcher.log").read_text(encoding="utf-8", errors="replace").splitlines()[-log_lines:]
-    except OSError:
-        tail = []
-    for l in tail:
+    for l in log[-log_lines:]:
         row("log", line=l)
 
     # Sort and filter, the monitor's --sort/--filter and header clicks: a field with a
@@ -1427,15 +1571,43 @@ SNAPSHOT_FIELDS = {
 }
 
 
-def cmd_snapshot(a):
-    kv, rows = snapshot(a.hours, a.sort or (), a.filter or ())
-    if a.json:
-        print(json.dumps({"kv": kv, "rows": rows}, indent=1))
-        return
+def snapshot_lines(kv, rows):
     out = [f"@kv\t{k}\t{_cell(v)}" for k, v in kv.items()]
     for sec, fields in SNAPSHOT_FIELDS.items():
         for r in rows.get(sec, []):
             out.append("\t".join(["@row", sec] + [_cell(r.get(f)) for f in fields]))
+    return out
+
+
+def serve_snapshots(default_hours):
+    """monitor.sh's coprocess: one request per line on stdin, HOURS<TAB>SORTS<TAB>FILTERS
+    (sorts and filters joined by \\x1f), answered with a snapshot and a line "@end". Staying up
+    saves a Python start per refresh and keeps the SnapCache; it ends when stdin closes."""
+    cache = SnapCache()
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return
+        parts = line.rstrip("\r\n").split("\t") + ["", ""]
+        try:
+            hours = float(parts[0]) if parts[0] else default_hours
+            kv, rows = snapshot(hours, [x for x in parts[1].split("\x1f") if x],
+                                [x for x in parts[2].split("\x1f") if x], cache=cache)
+            out = snapshot_lines(kv, rows)
+        except Exception as e:                     # say so on screen; the next request tries again
+            out = [f"@kv\terror\t{_cell(f'{type(e).__name__}: {e}')}"]
+        sys.stdout.buffer.write(("\n".join(out + ["@end"]) + "\n").encode("utf-8"))
+        sys.stdout.flush()
+
+
+def cmd_snapshot(a):
+    if a.serve:
+        return serve_snapshots(a.hours)
+    kv, rows = snapshot(a.hours, a.sort or (), a.filter or ())
+    if a.json:
+        print(json.dumps({"kv": kv, "rows": rows}, indent=1))
+        return
+    out = snapshot_lines(kv, rows)
     sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))   # a pipe on Windows is cp1252 otherwise
     sys.stdout.flush()
 
@@ -1465,6 +1637,7 @@ def main():
     s.add_argument("--keep-months", type=int, default=0, help="months of archives to keep (0: forever)")
     s = sub.add_parser("snapshot", help="what monitor.sh shows, as tab-separated lines (never touches the Wii)")
     s.add_argument("--hours", type=float, default=24); s.add_argument("--json", action="store_true")
+    s.add_argument("--serve", action="store_true", help="answer requests on stdin (monitor.sh's coprocess)")
     s.add_argument("--sort", action="append", help="SECTION:FIELD[:desc]")
     s.add_argument("--filter", action="append", help="SECTION:TEXT")
     s = sub.add_parser("report")

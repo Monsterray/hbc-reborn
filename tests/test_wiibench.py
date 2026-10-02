@@ -722,6 +722,84 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(kv["history_src"], "lease server")
 
 
+class SpeedTest(unittest.TestCase):
+    """The monitor's fast paths: one lookup and one kept connection per process, and a
+    served snapshot that fetches only new history."""
+
+    def setUp(self):
+        import threading
+        self.wb = import_wiibench()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.srv = self.wb.make_server(0, ttl=30, host="127.0.0.1", history=self.tmp.name + "/srv")
+        self.srv.leases.grace_until = 0
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        # "localhost", not the IP, so there is a name to look up
+        self.url = f"http://localhost:{self.srv.server_address[1]}"
+        os.environ["WII_BENCH_SERVER"] = self.url
+        self.addCleanup(os.environ.pop, "WII_BENCH_SERVER")
+
+    def test_one_lookup_and_one_connection(self):
+        from unittest import mock
+        import socket as so
+        import ipaddress
+        real, calls = so.getaddrinfo, []
+        def counting(*a, **k):
+            try:
+                ipaddress.ip_address(a[0])         # connecting to the IP itself: no lookup
+            except ValueError:
+                calls.append(a[0])
+            return real(*a, **k)
+        self.wb._ADDR.clear()
+        self.wb._conns().clear()
+        with mock.patch.object(self.wb.socket, "getaddrinfo", counting):
+            for _ in range(5):
+                self.wb.lease_call("/status")
+            self.wb.lease_call("/acquire", {"ticket": "x", "host": "h", "name": "n"})
+        self.assertEqual(calls, ["localhost"])
+        conns = self.wb._conns()
+        self.assertEqual(len(conns), 1)            # kept open: the server speaks HTTP/1.1
+        self.assertIsNotNone(next(iter(conns.values())).sock)
+
+    def test_a_dropped_kept_connection_is_retried(self):
+        self.wb.lease_call("/status")
+        next(iter(self.wb._conns().values())).sock.close()      # as an idle timeout would
+        self.assertIn("holder", self.wb.lease_call("/status"))
+
+    def test_served_snapshots_fetch_only_new_history(self):
+        home = bench_home_with_trouble(self.tmp.name + "/home")
+        env = dict(os.environ, WII_BENCH_HOME=str(home), WII_BENCH_SERVER=self.url,
+                   WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9")
+        p = subprocess.Popen([sys.executable, str(BENCH), "snapshot", "--serve"], env=env,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.stdin.close)
+
+        def ask(req="24\t\t"):
+            p.stdin.write((req + "\n").encode())
+            p.stdin.flush()
+            out = []
+            while True:
+                l = p.stdout.readline().decode("utf-8").rstrip("\r\n")
+                self.assertTrue(l or out, "the snapshot process ended")
+                if l == "@end":
+                    return out
+                out.append(l)
+
+        hosts = lambda out: [l.split("\t")[2] for l in out if l.startswith("@row\thosts\t")]
+        self.assertEqual(hosts(ask()), [])
+        self.wb.lease_call("/event", {"type": "job", "host": "pc-a", "name": "a", "secs": 5, "exit": 0})
+        self.assertEqual(hosts(ask()), ["pc-a"])
+        self.wb.lease_call("/event", {"type": "job", "host": "pc-b", "name": "b", "secs": 5, "exit": 1})
+        out = ask("24\tdone:secs:1\terrors:exit 1")
+        self.assertEqual(hosts(out), ["pc-a", "pc-b"])          # each event once, not twice
+        errs = [l.split("\t") for l in out if l.startswith("@row\terrors\t")]
+        self.assertIn(("exit 1", "pc-b"), {(e[4], e[5]) for e in errs})   # @row errors when sev KIND HOST
+        self.assertTrue(all("exit 1" in "\t".join(e) for e in errs))   # the filter applied
+
+
 def bash_for_monitor():
     """A bash that runs monitor.sh here, or None: never Windows' WSL launcher in System32."""
     import shutil

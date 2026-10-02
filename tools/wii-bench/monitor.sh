@@ -115,17 +115,70 @@ monitor_pages_init "$PAGE" queue errors history log
 ERRFILE="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/wiibench-monitor.$$")"
 declare -A KV ROWS NROWS
 
-# ---------------------------------------------------------------- data
+# NO FORKS PER FRAME. On Git Bash a fork costs 14-23 ms (measured 2026-10-02), and the first
+# version forked about 165 times a frame: `tput cup` and `tput el` for every line in the
+# library's monitor_draw_frame, and a "$(...)" for every looked-up value, trimmed cell, heading
+# and row. A frame took about 4 s to appear. Everything below sets variables instead (printf -v,
+# fork-free twins of the library's text helpers), the frame goes out in one write, and the data
+# comes from one long-running snapshot process. lib/monitor_lib.sh stays a verbatim copy: the
+# two library functions that fork per line or per cell are redefined here, after it is sourced.
+
+# ---------------------------------------------------------------- data: the snapshot coprocess
+
+# One `wiibench.py snapshot --serve` answers every refresh: no Python start per frame, the
+# lease server's name looked up once, and only what changed read again (see SnapCache).
+SNAP_PID=""
+snap_start() {
+    [ -n "${SNAP_PID:-}" ] && kill "$SNAP_PID" 2>/dev/null       # one that hung
+    coproc SNAP { exec "$PY" "$BENCH" snapshot --serve --hours "$HOURS" 2>"$ERRFILE"; }
+}
 
 # collect -- one snapshot: KV[key]=value, ROWS[section:i]=tab-separated fields, NROWS[section].
 # Sorting and filtering happen in the snapshot (SORT_FIELD/SORT_DESC/FILTER_VAL passed along).
 collect() {
-    local args=(snapshot --hours "$HOURS") sec line rest n
+    local sorts="" filters="" sec line rest n tries
     for sec in "${!SORT_FIELD[@]}"; do
-        [ -n "${SORT_FIELD[$sec]}" ] && args+=(--sort "$sec:${SORT_FIELD[$sec]}:${SORT_DESC[$sec]:-0}")
+        [ -n "${SORT_FIELD[$sec]}" ] && sorts+="$sec:${SORT_FIELD[$sec]}:${SORT_DESC[$sec]:-0}"$'\x1f'
     done
     for sec in "${!FILTER_VAL[@]}"; do
-        [ -n "${FILTER_VAL[$sec]}" ] && args+=(--filter "$sec:${FILTER_VAL[$sec]}")
+        [ -n "${FILTER_VAL[$sec]}" ] && filters+="$sec:${FILTER_VAL[$sec]}"$'\x1f'
+    done
+    KV=(); ROWS=(); NROWS=()
+    for tries in 1 2; do                           # a coprocess that died is started again, once
+        if [ "$tries" = 2 ] || [ -z "${SNAP_PID:-}" ] || [ -z "${SNAP[1]:-}" ] || ! kill -0 "$SNAP_PID" 2>/dev/null; then
+            snap_start
+        fi
+        printf '%s\t%s\t%s\n' "$HOURS" "$sorts" "$filters" >&"${SNAP[1]}" 2>/dev/null || continue
+        # A timeout on the first line only: `read -t` waits in select() before every read, and
+        # on a Git Bash pipe that is polled, about 1.6 ms a line (400 ms a snapshot, measured
+        # 2026-10-02; 75 ms without). Once the answer has started, a plain read cannot hang:
+        # a snapshot that dies closes the pipe.
+        IFS= read -r -t 60 line <&"${SNAP[0]}" || continue
+        while :; do
+            line="${line%$'\r'}"
+            case "$line" in
+                "@end") return 0 ;;
+                "@kv"$'\t'*)
+                    rest="${line#@kv$'\t'}"; KV["${rest%%$'\t'*}"]="${rest#*$'\t'}" ;;
+                "@row"$'\t'*)
+                    rest="${line#@row$'\t'}"; sec="${rest%%$'\t'*}"; n="${NROWS[$sec]:-0}"
+                    ROWS["$sec:$n"]="${rest#*$'\t'}"; NROWS[$sec]=$(( n + 1 )) ;;
+            esac
+            IFS= read -r line <&"${SNAP[0]}" || break
+        done
+        KV=(); ROWS=(); NROWS=()                   # no @end: it died or hung; start a new one
+    done
+    return 1
+}
+
+# collect_once -- the same, from a one-shot `snapshot` (for --once: no coprocess to manage)
+collect_once() {
+    local sorts=() sec line rest n
+    for sec in "${!SORT_FIELD[@]}"; do
+        [ -n "${SORT_FIELD[$sec]}" ] && sorts+=(--sort "$sec:${SORT_FIELD[$sec]}:${SORT_DESC[$sec]:-0}")
+    done
+    for sec in "${!FILTER_VAL[@]}"; do
+        [ -n "${FILTER_VAL[$sec]}" ] && sorts+=(--filter "$sec:${FILTER_VAL[$sec]}")
     done
     KV=(); ROWS=(); NROWS=()
     while IFS= read -r line; do
@@ -137,89 +190,168 @@ collect() {
                 rest="${line#@row$'\t'}"; sec="${rest%%$'\t'*}"; n="${NROWS[$sec]:-0}"
                 ROWS["$sec:$n"]="${rest#*$'\t'}"; NROWS[$sec]=$(( n + 1 )) ;;
         esac
-    done < <("$PY" "$BENCH" "${args[@]}" 2>"$ERRFILE")
+    done < <("$PY" "$BENCH" snapshot --hours "$HOURS" "${sorts[@]+"${sorts[@]}"}" 2>"$ERRFILE")
 }
 
-kv() { local v="${KV[$1]:-}"; [ "$v" = "-" ] && v=""; printf '%s' "${v:-${2:-}}"; }
+# k <key> [default] -- sets V to KV[key] ("-", the snapshot's empty, reads as empty)
+k() { V="${KV[$1]:-}"; [ "$V" = "-" ] && V=""; [ -z "$V" ] && V="${2:-}"; :; }
 
-# fit <text> <width> -- trims to width with a trailing ~ (only where a column must fit the screen)
+# fit <text> <width> -- sets V to text trimmed to width with a trailing ~
 fit() {
-    local s="$1" w="$2"
+    local w="$2"
     (( w < 2 )) && w=2
-    if (( ${#s} > w )); then printf '%s~' "${s:0:$(( w - 1 ))}"; else printf '%s' "$s"; fi
+    if (( ${#1} > w )); then V="${1:0:$(( w - 1 ))}~"; else V="$1"; fi
 }
 
-# ---------------------------------------------------------------- tables
+# ---------------------------------------------------------------- fork-free drawing
+
+# The library's monitor_draw_frame runs `tput cup` and `tput el` per line. The same in-place
+# redraw, with the escape codes tput prints for an xterm-like terminal (every terminal the
+# library supports), built into one string and written once: cursor to row N, the line, clear
+# to the end of it; then clear everything below the last line. No line ends in a newline, so a
+# frame exactly as tall as the screen does not scroll it.
+monitor_draw_frame() {
+    local -n _lines=$1
+    local out="" i=0 line max="${ROWS_MAX:-0}"
+    for line in "${_lines[@]}"; do
+        (( max > 0 && i >= max )) && break
+        out+=$'\e['"$(( i + 1 ))"$';1H'"${line}"$'\e[K'
+        (( i++ ))
+    done
+    out+=$'\e['"$(( i + 1 ))"$';1H\e[J'
+    printf '%s' "$out"
+}
+
+# The library's monitor_header_colspans, assigning instead of printing (same layout rule:
+# a %s field is max(declared width, label length) wide), so a row's cells cost no fork.
+colspans() {
+    local fmt="$1" sort_field="$2" sort_desc="$3"; shift 3
+    local -a fields=() labels=()
+    local colspec field label rest="$fmt" idx=0 col=1 pre num width
+    for colspec in "$@"; do
+        field="${colspec%%:*}"; label="${colspec#*:}"
+        if [ -n "$sort_field" ] && [ "$field" = "$sort_field" ]; then
+            if [ "$sort_desc" -eq 1 ]; then label="${label} v"; else label="${label} ^"; fi
+        fi
+        fields+=("$field"); labels+=("$label")
+    done
+    V=""
+    while [[ "$rest" =~ ^([^%]*)%-?([0-9]*)s(.*)$ ]]; do
+        pre="${BASH_REMATCH[1]}"; num="${BASH_REMATCH[2]}"; rest="${BASH_REMATCH[3]}"
+        col=$(( col + ${#pre} ))
+        width="${num:-0}"
+        [ "${#labels[$idx]}" -gt "$width" ] && width=${#labels[$idx]}
+        V+="${fields[$idx]}:${col}:$(( col + width - 1 )) "
+        col=$(( col + width ))
+        (( idx++ ))
+    done
+}
+
+# The library's monitor_register_row_cells, with colspans above instead of its "$(...)".
+monitor_register_row_cells() {
+    local row="$1" fmt="$2" colspec; shift 2
+    for colspec in "$@"; do MONITOR_CELL_VALUES["${row}:${colspec%%:*}"]="${colspec#*:}"; done
+    colspans "$fmt" "" 0 "$@"
+    MONITOR_CELL_COLS["$row"]="$V"
+}
+
+# Fork-free twins of the library's monitor_section_heading and monitor_placeholder: they
+# append the line to `lines` themselves.
+heading() {
+    local color="$1" title="$2" subtitle="${3:-}" sec="${4:-}"
+    local out="${c_bold}${color}${title}${c_reset}"
+    [ -n "$subtitle" ] && out+="  ${c_gray}(${subtitle})${c_reset}"
+    [ -n "$sec" ] && [ -n "${FILTER_VAL[$sec]:-}" ] && out+="  filter: ${FILTER_VAL[$sec]}"
+    lines+=("$out")
+}
+placeholder() { lines+=("  ${c_gray}$1${c_reset}"); }
 
 # table_header SECTION FMT field:LABEL ...   (same format string as the rows: columns line up)
 table_header() {
     local sec="$1" fmt="$2"; shift 2
-    local sf="${SORT_FIELD[$sec]:-}" sd="${SORT_DESC[$sec]:-0}"
+    local sf="${SORT_FIELD[$sec]:-}" sd="${SORT_DESC[$sec]:-0}" spec field label h
+    local -a labels=()
     MONITOR_HEADER_ROW[$sec]=$(( ${#lines[@]} + 1 ))
-    MONITOR_HEADER_COLS[$sec]=$(monitor_header_colspans "$fmt" "$sf" "$sd" "$@")
-    lines+=("$(monitor_render_header "$fmt" "$sf" "$sd" "$@")")
+    colspans "$fmt" "$sf" "$sd" "$@"
+    MONITOR_HEADER_COLS[$sec]="$V"
+    for spec in "$@"; do                           # monitor_render_header's sort arrows
+        field="${spec%%:*}"; label="${spec#*:}"
+        if [ -n "$sf" ] && [ "$field" = "$sf" ]; then
+            if [ "$sd" -eq 1 ]; then label+=" v"; else label+=" ^"; fi
+        fi
+        labels+=("$label")
+    done
+    printf -v h "$fmt" "${labels[@]}"
+    lines+=("${c_bold}${h}${c_reset}")
 }
 
 # table_row FMT COLOR field:shown ...  -- one row, cells clickable. Sets ROW_AT (its screen
 # row) so a caller can make a cell copy the full value instead of the trimmed one shown.
 table_row() {
-    local fmt="$1" color="$2"; shift 2
-    local vals=() spec
+    local fmt="$1" color="$2" spec out; shift 2
+    local -a vals=()
     for spec in "$@"; do vals+=("${spec#*:}"); done
     ROW_AT=$(( ${#lines[@]} + 1 ))
     monitor_register_row_cells "$ROW_AT" "$fmt" "$@"
-    lines+=("${color}$(printf "$fmt" "${vals[@]}")${c_reset}")
+    printf -v out "$fmt" "${vals[@]}"
+    lines+=("${color}${out}${c_reset}")
 }
 
 # row_fields SECTION I -- splits ROWS[SECTION:I] into the array F
 row_fields() { IFS=$'\t' read -r -a F <<< "${ROWS[$1:$2]}"; }
 
-sev_color() { case "$1" in err) printf '%s' "$c_red" ;; warn) printf '%s' "$c_yellow" ;; *) printf '%s' "$c_gray" ;; esac; }
+# name_width FIXED -- sets W: what is left of the screen for a name column, at least 16
+name_width() { W=$(( COLS - $1 )); (( W < 16 )) && W=16; :; }
 
 # ---------------------------------------------------------------- the header
 
 MONITOR_HEADER_TITLE="=== WII BENCH ==="
 
 monitor_prepare_header() {
-    MONITOR_HEADER_TS="$(date '+%H:%M:%S')"
+    printf -v MONITOR_HEADER_TS '%(%H:%M:%S)T' -1
     monitor_render_tabs $(( ${#MONITOR_HEADER_TITLE} + 2 + ${#MONITOR_HEADER_TS} + 2 ))
 }
 
 header_line() {
-    printf "${c_bold}${c_cyan}${MONITOR_HEADER_TITLE}${c_reset}  %s  %s ${c_gray}n/p cycle · q quit · %ss${c_reset}%s" \
+    printf -v V "${c_bold}${c_cyan}${MONITOR_HEADER_TITLE}${c_reset}  %s  %s ${c_gray}n/p cycle · q quit · %ss${c_reset}%s" \
         "$MONITOR_HEADER_TS" "$MONITOR_TABS_RENDERED" "$REFRESH" "${1:-}"
+    lines+=("$V")
 }
 
 # status_lines -- the two lines under the tab bar on every page: who has the Wii, and how
 # the lease server, this dispatcher and the window's problems stand.
 status_lines() {
-    local host w e n
-    host="$(kv host)"
-    if [ -n "$(kv left_host)" ]; then
-        w="${c_bold}${c_red}Wii LEFT OUT OF HBC${c_reset}${c_red} by $(kv left_host)'s $(kv left_name): $(kv left_wii) ($(kv left_ago))${c_reset}"
-    elif [ -n "$(kv holder_host)" ]; then
-        if [ "$(kv holder_host)" = "$host" ]; then w="${c_cyan}Wii: this workstation has it${c_reset}"
-        else w="${c_yellow}Wii: $(kv holder_host) has it${c_reset}"; fi
-        w+=" for $(fit "$(kv holder_name)" 60) $(monitor_gray_paren "$(kv holder_for)")"
-    elif [ "$(kv server)" = "none" ] && [ "$(kv running_n 0)" != "0" ]; then
+    local w host holder e n
+    k host; host="$V"; k holder_host; holder="$V"
+    k left_host
+    if [ -n "$V" ]; then
+        w="${c_bold}${c_red}Wii LEFT OUT OF HBC${c_reset}${c_red} by $V's "
+        k left_name; w+="$V: "; k left_wii; w+="$V ("; k left_ago; w+="$V)${c_reset}"
+    elif [ -n "$holder" ]; then
+        if [ "$holder" = "$host" ]; then w="${c_cyan}Wii: this workstation has it${c_reset}"
+        else w="${c_yellow}Wii: $holder has it${c_reset}"; fi
+        k holder_name; fit "$V" 60; w+=" for $V"
+        k holder_for; w+=" ${c_gray}($V)${c_reset}"
+    elif [ "${KV[server]:-}" = "none" ] && [ "${KV[running_n]:-0}" != "0" ]; then
         w="${c_cyan}Wii: in use by a job here${c_reset}"
     else
         w="${c_green}Wii: free${c_reset}"
     fi
-    [ -n "$(kv wii_last)" ] && w+="  ${c_gray}last: $(fit "$(kv wii_last)" 70)${c_reset}"
+    k wii_last; [ -n "$V" ] && { fit "$V" 70; w+="  ${c_gray}last: $V${c_reset}"; }
     lines+=("$w")
-    case "$(kv server_ok)" in
+    case "${KV[server_ok]:-}" in
         yes) w="${c_green}lease server ok${c_reset}" ;;
         no)  w="${c_red}lease server unreachable${c_reset}" ;;
         *)   w="${c_gray}no lease server${c_reset}" ;;
     esac
-    if [ "$(kv dispatcher_pid)" != "" ]; then
-        w+="  ·  dispatcher $(kv dispatcher_pid)"
-        [ -n "$(kv dispatcher_detail)" ] && w+=": $(fit "$(kv dispatcher_detail)" 60)"
+    k dispatcher_pid
+    if [ -n "$V" ]; then
+        w+="  ·  dispatcher $V"
+        k dispatcher_detail; [ -n "$V" ] && { fit "$V" 60; w+=": $V"; }
     else
         w+="  ·  ${c_gray}no dispatcher${c_reset}"
     fi
-    e="$(kv errors_err 0)"; n="$(kv errors_warn 0)"
+    e="${KV[errors_err]:-0}"; n="${KV[errors_warn]:-0}"
     if (( e > 0 )); then w+="  ·  ${c_bold}${c_red}${e} error(s)${c_reset}"
     elif (( n > 0 )); then w+="  ·  ${c_yellow}${n} warning(s)${c_reset}"
     else w+="  ·  ${c_green}no problems${c_reset}"; fi
@@ -231,80 +363,74 @@ status_lines() {
 # ---------------------------------------------------------------- page: queue
 
 render_queue() {
-    local i fmt w name_w cols="$COLS" room
+    local i fmt room color nm
     # RUNNING HERE
-    lines+=("$(monitor_section_heading "$c_cyan" "RUNNING HERE" "this workstation's dispatcher" running)")
+    heading "$c_cyan" "RUNNING HERE" "this workstation's dispatcher" running
     if (( ${NROWS[running]:-0} == 0 )); then
-        lines+=("$(monitor_placeholder "nothing running here")")
+        placeholder "nothing running here"
     else
-        name_w=$(( cols - 2 - 22 - 1 - 12 - 1 - 11 - 1 - 8 - 1 - 7 - 1 - 7 - 2 ))
-        (( name_w < 16 )) && name_w=16
-        printf -v fmt "  %%-22s %%-%ds %%-12s %%-11s %%8s %%7s %%7s" "$name_w"
+        name_width $(( 2 + 22 + 1 + 12 + 1 + 11 + 1 + 8 + 1 + 7 + 1 + 7 + 2 ))
+        printf -v fmt "  %%-22s %%-%ds %%-12s %%-11s %%8s %%7s %%7s" "$W"
         table_header running "$fmt" id:ID name:NAME agent:AGENT started:STARTED elapsed:ELAPSED timeout:TIMEOUT left:LEFT
         for (( i = 0; i < ${NROWS[running]}; i++ )); do
-            row_fields running "$i"
-            table_row "$fmt" "" id:"${F[0]}" name:"$(fit "${F[1]}" "$name_w")" agent:"${F[2]}" started:"${F[3]}" \
+            row_fields running "$i"; fit "${F[1]}" "$W"; nm="$V"
+            table_row "$fmt" "" id:"${F[0]}" name:"$nm" agent:"${F[2]}" started:"${F[3]}" \
                 elapsed:"${F[4]}" timeout:"${F[5]}" left:"${F[6]}"
             MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[1]}"
         done
     fi
     lines+=("")
     # WAITING FOR THE WII (every workstation)
-    lines+=("$(monitor_section_heading "$c_cyan" "WAITING FOR THE WII" "every workstation, in order" waiting)")
-    if [ "$(kv server)" = "none" ]; then
-        lines+=("$(monitor_placeholder "no lease server: this workstation has the Wii to itself")")
+    heading "$c_cyan" "WAITING FOR THE WII" "every workstation, in order" waiting
+    if [ "${KV[server]:-}" = "none" ]; then
+        placeholder "no lease server: this workstation has the Wii to itself"
     elif (( ${NROWS[waiting]:-0} == 0 )); then
-        lines+=("$(monitor_placeholder "nobody waiting")")
+        placeholder "nobody waiting"
     else
-        name_w=$(( cols - 2 - 3 - 1 - 24 - 1 - 11 - 1 - 8 - 2 ))
-        (( name_w < 16 )) && name_w=16
-        printf -v fmt "  %%3s %%-24s %%-%ds %%-11s %%8s" "$name_w"
+        name_width $(( 2 + 3 + 1 + 24 + 1 + 11 + 1 + 8 + 2 ))
+        printf -v fmt "  %%3s %%-24s %%-%ds %%-11s %%8s" "$W"
         table_header waiting "$fmt" place:'#' host:WORKSTATION name:JOB since:SINCE waited:WAITED
         for (( i = 0; i < ${NROWS[waiting]}; i++ )); do
-            row_fields waiting "$i"
-            table_row "$fmt" "" place:"${F[0]}" host:"$(fit "${F[1]}" 24)" name:"$(fit "${F[2]}" "$name_w")" \
-                since:"${F[3]}" waited:"${F[4]}"
+            row_fields waiting "$i"; fit "${F[1]}" 24; local host="$V"; fit "${F[2]}" "$W"; nm="$V"
+            table_row "$fmt" "" place:"${F[0]}" host:"$host" name:"$nm" since:"${F[3]}" waited:"${F[4]}"
             MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[2]}"
         done
     fi
     lines+=("")
     # QUEUED HERE
-    lines+=("$(monitor_section_heading "$c_cyan" "QUEUED HERE" "$(kv pending_n 0) job(s), oldest first" pending)")
+    heading "$c_cyan" "QUEUED HERE" "${KV[pending_n]:-0} job(s), oldest first" pending
     if (( ${NROWS[pending]:-0} == 0 )); then
-        lines+=("$(monitor_placeholder "nothing queued here")")
+        placeholder "nothing queued here"
     else
-        name_w=$(( cols - 2 - 3 - 1 - 22 - 1 - 12 - 1 - 11 - 1 - 8 - 2 ))
-        (( name_w < 16 )) && name_w=16
-        printf -v fmt "  %%3s %%-22s %%-%ds %%-12s %%-11s %%8s" "$name_w"
+        name_width $(( 2 + 3 + 1 + 22 + 1 + 12 + 1 + 11 + 1 + 8 + 2 ))
+        printf -v fmt "  %%3s %%-22s %%-%ds %%-12s %%-11s %%8s" "$W"
         table_header pending "$fmt" place:'#' id:ID name:NAME agent:AGENT added:ADDED age:WAITING
         room=$(( ROWS_MAX - ${#lines[@]} - 8 ))
         for (( i = 0; i < ${NROWS[pending]}; i++ )); do
             if (( i >= room && i < ${NROWS[pending]} - 1 )); then
-                lines+=("$(monitor_placeholder "... and $(( ${NROWS[pending]} - i )) more")"); break
+                placeholder "... and $(( ${NROWS[pending]} - i )) more"; break
             fi
-            row_fields pending "$i"
-            table_row "$fmt" "" place:"${F[0]}" id:"${F[1]}" name:"$(fit "${F[2]}" "$name_w")" agent:"${F[3]}" \
-                added:"${F[4]}" age:"${F[5]}"
+            row_fields pending "$i"; fit "${F[2]}" "$W"; nm="$V"
+            table_row "$fmt" "" place:"${F[0]}" id:"${F[1]}" name:"$nm" agent:"${F[3]}" added:"${F[4]}" age:"${F[5]}"
             MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[2]}"
         done
     fi
     lines+=("")
     # RECENT JOBS HERE -- as many as fit
-    lines+=("$(monitor_section_heading "$c_cyan" "RECENT JOBS HERE" "newest first; HBC: how soon HBC came back" done)")
+    heading "$c_cyan" "RECENT JOBS HERE" "newest first; HBC: how soon HBC came back" done
     if (( ${NROWS[done]:-0} == 0 )); then
-        lines+=("$(monitor_placeholder "no finished jobs yet")")
+        placeholder "no finished jobs yet"
         return
     fi
-    name_w=$(( cols - 2 - 11 - 1 - 22 - 1 - 9 - 1 - 6 - 1 - 6 - 1 - 7 - 2 ))
-    (( name_w < 16 )) && name_w=16
-    printf -v fmt "  %%-11s %%-22s %%-%ds %%9s %%6s %%6s %%-7s" "$name_w"
+    name_width $(( 2 + 11 + 1 + 22 + 1 + 9 + 1 + 6 + 1 + 6 + 1 + 7 + 2 ))
+    printf -v fmt "  %%-11s %%-22s %%-%ds %%9s %%6s %%6s %%-7s" "$W"
     table_header done "$fmt" finished:FINISHED id:ID name:NAME exit:EXIT secs:SECS hbc:HBC chained:CHAINED
     room=$(( ROWS_MAX - ${#lines[@]} ))
     for (( i = 0; i < ${NROWS[done]} && i < room; i++ )); do
-        row_fields done "$i"
-        local color=""
+        row_fields done "$i"; fit "${F[2]}" "$W"; nm="$V"
+        color=""
         if [ "${F[3]}" != "0" ] || [ "${F[5]}" = "left" ]; then color="$c_red"; fi
-        table_row "$fmt" "$color" finished:"${F[0]}" id:"${F[1]}" name:"$(fit "${F[2]}" "$name_w")" exit:"${F[3]}" \
+        table_row "$fmt" "$color" finished:"${F[0]}" id:"${F[1]}" name:"$nm" exit:"${F[3]}" \
             secs:"${F[4]}" hbc:"${F[5]}" chained:"${F[6]}"
         MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[2]}"
     done
@@ -313,11 +439,11 @@ render_queue() {
 # ---------------------------------------------------------------- page: errors
 
 render_errors() {
-    local i fmt job_w det_w src room color
-    src="$(kv history_src "this workstation")"
-    lines+=("$(monitor_section_heading "$c_red" "PROBLEMS" "last ${HOURS} h, newest first; jobs from $src; click a cell to copy it" errors)")
+    local i fmt job_w det_w room color kind host job det
+    k history_src "this workstation"
+    heading "$c_red" "PROBLEMS" "last ${HOURS} h, newest first; jobs from $V; click a cell to copy it" errors
     if (( ${NROWS[errors]:-0} == 0 )); then
-        lines+=("$(monitor_placeholder "nothing went wrong in the last ${HOURS} h")")
+        placeholder "nothing went wrong in the last ${HOURS} h"
         return
     fi
     job_w=28
@@ -328,12 +454,12 @@ render_errors() {
     room=$(( ROWS_MAX - ${#lines[@]} ))
     for (( i = 0; i < ${NROWS[errors]}; i++ )); do
         if (( i >= room - 1 && i < ${NROWS[errors]} - 1 )); then
-            lines+=("$(monitor_placeholder "... and $(( ${NROWS[errors]} - i )) more: --hours= or --filter=errors:TEXT")"); break
+            placeholder "... and $(( ${NROWS[errors]} - i )) more: --hours= or --filter=errors:TEXT"; break
         fi
         row_fields errors "$i"
-        color="$(sev_color "${F[1]}")"
-        table_row "$fmt" "$color" when:"${F[0]}" severity:"${F[1]}" kind:"$(fit "${F[2]}" 18)" host:"$(fit "${F[3]}" 18)" \
-            job:"$(fit "${F[4]}" "$job_w")" detail:"$(fit "${F[6]}" "$det_w")"
+        case "${F[1]}" in err) color="$c_red" ;; warn) color="$c_yellow" ;; *) color="$c_gray" ;; esac
+        fit "${F[2]}" 18; kind="$V"; fit "${F[3]}" 18; host="$V"; fit "${F[4]}" "$job_w"; job="$V"; fit "${F[6]}" "$det_w"; det="$V"
+        table_row "$fmt" "$color" when:"${F[0]}" severity:"${F[1]}" kind:"$kind" host:"$host" job:"$job" detail:"$det"
         MONITOR_CELL_VALUES["$ROW_AT:job"]="${F[4]} ${F[5]}"
         MONITOR_CELL_VALUES["$ROW_AT:detail"]="${F[6]}"
     done
@@ -342,36 +468,36 @@ render_errors() {
 # ---------------------------------------------------------------- page: history
 
 render_history() {
-    local i fmt name_w
-    lines+=("$(monitor_section_heading "$c_cyan" "WORKSTATIONS" "last ${HOURS} h, from $(kv history_src "this workstation")" hosts)")
+    local i fmt color host nm
+    k history_src "this workstation"
+    heading "$c_cyan" "WORKSTATIONS" "last ${HOURS} h, from $V" hosts
     if (( ${NROWS[hosts]:-0} == 0 )); then
-        lines+=("$(monitor_placeholder "no history in the last ${HOURS} h")")
+        placeholder "no history in the last ${HOURS} h"
     else
         fmt="  %-26s %5s %6s %8s %6s %9s %9s"
         table_header hosts "$fmt" host:WORKSTATION jobs:JOBS failed:FAILED wii_min:WII_MIN turns:TURNS \
             wait_med:WAIT_MED wait_max:WAIT_MAX
         for (( i = 0; i < ${NROWS[hosts]}; i++ )); do
-            row_fields hosts "$i"
-            local color=""; [ "${F[2]}" != "0" ] && color="$c_yellow"
-            table_row "$fmt" "$color" host:"$(fit "${F[0]}" 26)" jobs:"${F[1]}" failed:"${F[2]}" wii_min:"${F[3]}" \
+            row_fields hosts "$i"; fit "${F[0]}" 26; host="$V"
+            color=""; [ "${F[2]}" != "0" ] && color="$c_yellow"
+            table_row "$fmt" "$color" host:"$host" jobs:"${F[1]}" failed:"${F[2]}" wii_min:"${F[3]}" \
                 turns:"${F[4]}" wait_med:"${F[5]}" wait_max:"${F[6]}"
         done
     fi
-    lines+=("  ${c_gray}Wii in use by queue jobs: $(kv window_busy 0%) of the window, $(kv window_jobs 0) job(s)${c_reset}")
-    [ -n "$(kv handover)" ] && lines+=("  ${c_gray}$(kv handover)${c_reset}")
+    lines+=("  ${c_gray}Wii in use by queue jobs: ${KV[window_busy]:-0%} of the window, ${KV[window_jobs]:-0} job(s)${c_reset}")
+    k handover; [ -n "$V" ] && lines+=("  ${c_gray}$V${c_reset}")
     lines+=("")
-    lines+=("$(monitor_section_heading "$c_cyan" "LONGEST WAITS FOR THE WII" "a minute or more" waits)")
+    heading "$c_cyan" "LONGEST WAITS FOR THE WII" "a minute or more" waits
     if (( ${NROWS[waits]:-0} == 0 )); then
-        lines+=("$(monitor_placeholder "nobody waited a minute or more")")
+        placeholder "nobody waited a minute or more"
         return
     fi
-    name_w=$(( COLS - 2 - 11 - 1 - 8 - 1 - 24 - 2 ))
-    (( name_w < 16 )) && name_w=16
-    printf -v fmt "  %%-11s %%8s %%-24s %%-%ds" "$name_w"
+    name_width $(( 2 + 11 + 1 + 8 + 1 + 24 + 2 ))
+    printf -v fmt "  %%-11s %%8s %%-24s %%-%ds" "$W"
     table_header waits "$fmt" when:WHEN waited:WAITED host:WORKSTATION name:JOB
     for (( i = 0; i < ${NROWS[waits]}; i++ )); do
-        row_fields waits "$i"
-        table_row "$fmt" "" when:"${F[0]}" waited:"${F[1]}" host:"$(fit "${F[2]}" 24)" name:"$(fit "${F[3]}" "$name_w")"
+        row_fields waits "$i"; fit "${F[2]}" 24; host="$V"; fit "${F[3]}" "$W"; nm="$V"
+        table_row "$fmt" "" when:"${F[0]}" waited:"${F[1]}" host:"$host" name:"$nm"
         MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[3]}"
     done
 }
@@ -379,37 +505,43 @@ render_history() {
 # ---------------------------------------------------------------- page: log
 
 render_log() {
-    local n="${NROWS[log]:-0}" room first i l
-    lines+=("$(monitor_section_heading "$c_cyan" "DISPATCHER LOG" "$(kv home)/dispatcher.log, newest last")")
+    local n="${NROWS[log]:-0}" room first i
+    heading "$c_cyan" "DISPATCHER LOG" "${KV[home]:-}/dispatcher.log, newest last"
     if (( n == 0 )); then
-        lines+=("$(monitor_placeholder "no dispatcher.log yet")")
+        placeholder "no dispatcher.log yet"
         return
     fi
     room=$(( ROWS_MAX - ${#lines[@]} ))
     first=$(( n > room ? n - room : 0 ))
     for (( i = first; i < n; i++ )); do
-        l="$(fit "${ROWS[log:$i]}" $(( COLS - 2 )))"
-        case "$l" in
-            *"lease lost"*|*Traceback*|*"did not come back"*|*Error*) lines+=("  ${c_red}${l}${c_reset}") ;;
-            *unreachable*|*"history:"*)                              lines+=("  ${c_yellow}${l}${c_reset}") ;;
-            *"lease taken"*|*chained*)                               lines+=("  ${c_cyan}${l}${c_reset}") ;;
-            *)                                                       lines+=("  ${l}") ;;
+        fit "${ROWS[log:$i]}" $(( COLS - 2 ))
+        case "$V" in
+            *"lease lost"*|*Traceback*|*"did not come back"*|*Error*) lines+=("  ${c_red}${V}${c_reset}") ;;
+            *unreachable*|*"history:"*)                              lines+=("  ${c_yellow}${V}${c_reset}") ;;
+            *"lease taken"*|*chained*)                               lines+=("  ${c_cyan}${V}${c_reset}") ;;
+            *)                                                       lines+=("  ${V}") ;;
         esac
     done
 }
 
 # ---------------------------------------------------------------- frame and loop
 
+# The terminal's size: asked once (two forks), then again only when it changes (SIGWINCH).
+term_size() {
+    COLS=$(tput cols 2>/dev/null || echo 120); ROWS_MAX=$(tput lines 2>/dev/null || echo 40)
+    [[ "$COLS" =~ ^[0-9]+$ ]] || COLS=120; [[ "$ROWS_MAX" =~ ^[0-9]+$ ]] || ROWS_MAX=40
+}
+
 build_frame() {
     lines=()
     MONITOR_HEADER_ROW=(); MONITOR_HEADER_COLS=()      # only this frame's sections are clickable
     MONITOR_CELL_COLS=(); MONITOR_CELL_VALUES=()
-    COLS=$(tput cols 2>/dev/null || echo 120); ROWS_MAX=$(tput lines 2>/dev/null || echo 40)
-    [ "$ONCE" -eq 1 ] && ROWS_MAX=200
     monitor_prepare_header
-    lines+=("$(header_line)")
+    header_line
     if [ -z "${KV[now]:-}" ]; then
-        lines+=("" "  ${c_red}the snapshot failed:${c_reset} $(tail -n 1 "$ERRFILE" 2>/dev/null)")
+        local why="${KV[error]:-}"
+        [ -z "$why" ] && [ -s "$ERRFILE" ] && why="$(tail -n 1 "$ERRFILE" 2>/dev/null)"
+        lines+=("" "  ${c_red}the snapshot failed:${c_reset} ${why:-no answer}")
         lines+=("  ${c_gray}$PY $BENCH snapshot${c_reset}")
         return
     fi
@@ -423,10 +555,14 @@ build_frame() {
     esac
 }
 
-cleanup() { rm -f "$ERRFILE"; }
+cleanup() {
+    [ -n "${SNAP_PID:-}" ] && kill "$SNAP_PID" 2>/dev/null
+    rm -f "$ERRFILE"
+}
 
 if [ "$ONCE" -eq 1 ]; then
-    collect
+    COLS="${COLUMNS:-$(tput cols 2>/dev/null || echo 120)}"; ROWS_MAX=200
+    collect_once
     build_frame
     if [ -t 1 ]; then printf '%s\n' "${lines[@]}"
     else printf '%s\n' "${lines[@]}" | sed $'s/\033\\[[0-9;]*m//g'; fi
@@ -436,12 +572,27 @@ fi
 
 restore_cursor() { monitor_restore_cursor; cleanup; echo; exit 0; }
 trap restore_cursor INT TERM
+trap term_size WINCH
+term_size
 monitor_setup_screen
 
+# $WII_BENCH_MONITOR_TIMES=FILE appends each frame's milliseconds: collect, build, draw.
+TIMES="${WII_BENCH_MONITOR_TIMES:-}"
+ms() { local t="${EPOCHREALTIME/[.,]/}"; V=$(( ${t:-0} / 1000 )); }
+[ -n "$TIMES" ] && [ -z "${EPOCHREALTIME:-}" ] && TIMES=""      # bash 5 has it, 4.3 does not
+
+ms; T0="$V"
 collect
+ms; T_COLLECT=$(( V - T0 ))
 while true; do
+    ms; T0="$V"
     build_frame
+    ms; T1="$V"
     monitor_draw_frame lines
+    if [ -n "$TIMES" ]; then
+        ms; printf '%s %s %s\n' "$T_COLLECT" $(( T1 - T0 )) $(( V - T1 )) >> "$TIMES"
+    fi
+    T_COLLECT=0
     if monitor_read_input "$REFRESH"; then
         if [ -n "$MONITOR_INPUT_COL" ]; then
             # Page bar first, then a column header (re-sorts, so collect again), then a cell.
@@ -460,6 +611,8 @@ while true; do
             esac
         fi
     else
+        ms; T0="$V"
         collect
+        ms; T_COLLECT=$(( V - T0 ))
     fi
 done

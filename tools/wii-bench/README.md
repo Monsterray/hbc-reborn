@@ -142,8 +142,14 @@ bash tools/wii-bench/monitor.sh --help
 - **macOS:** the system bash is 3.2, too old: `brew install bash`, then
   `"$(brew --prefix)/bin/bash" tools/wii-bench/monitor.sh`. The monitor says so if started
   with the old one.
-- It needs Python 3.8+ (as `wiibench.py` does), and no `jq`: one `wiibench.py snapshot` per
-  refresh collects, sorts and filters everything (`snapshot --json` shows it).
+- It needs Python 3.8+ (as `wiibench.py` does), and no `jq`. One long-running
+  `wiibench.py snapshot --serve` collects, sorts and filters every refresh: it looks up the
+  lease server once and keeps its connection, fetches only new history, and re-reads only job
+  files that changed. `snapshot --json` shows what it collects.
+- A refresh takes about 110 ms on Git Bash (86 ms of it the snapshot) and about 10 ms on
+  Linux. Drawing forks nothing: on Git Bash a fork costs 14-23 ms, and the first version's
+  `tput` per line and `$(...)` per cell made a frame take about 4 s.
+  `WII_BENCH_MONITOR_TIMES=FILE` appends each frame's collect, build and draw milliseconds.
 - Under `timeout`, use `timeout --foreground`: without it the dashboard can't read the
   terminal and stops at its first frame.
 

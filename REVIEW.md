@@ -219,6 +219,19 @@ Tool work only, in 1.9.4 with no version of its own.
   - Live in a Windows console: it refreshed and quit cleanly.
   - One test harness trap: under GNU `timeout` without `--foreground`, a
     dashboard can't read the terminal and stops at its first frame.
+- **Too slow at first: about 4 s a frame on Git Bash.** Measured, then fixed:
+  | Where | Before | After |
+  | --- | --- | --- |
+  | Drawing: the library's `tput cup` and `tput el` for every line, 23 ms a fork | about 2.1 s | 8 ms: one write of escape codes (`monitor_draw_frame` redefined in `monitor.sh`; the library stays verbatim) |
+  | Building: a `$(...)` for every value, trimmed cell, heading and row, 14 ms a fork | about 1.1 s | 15 ms: `printf -v` and fork-free twins of the library's helpers |
+  | Snapshot: two lookups of `homeserver.local` (220-250 ms each: Windows does not cache mDNS) and a new connection per call | about 0.7 s | 86 ms: one `snapshot --serve` coprocess, one lookup, a kept connection, only new history and changed job files |
+  | Reading the snapshot: `read -t` on every line (select() on a Git Bash pipe is polled, about 1.6 ms a line) | about 0.4 s | the timeout on the first line only |
+  On Linux a frame takes about 10 ms.
+- **For every client, the dispatchers too:** `lease_call` looks the server up once per
+  process (again after a failure) and keeps one connection per thread. A call took about
+  250 ms from this PC and now takes 15 ms. The server speaks HTTP/1.1 and closes a kept
+  connection after 60 s idle. A client that goes away is no longer a traceback in its log.
+  An HTTP/1.0 server, before this, still works: the client sees it close and reconnects.
 
 ### 1.9.3: the play log test in CI's container
 
