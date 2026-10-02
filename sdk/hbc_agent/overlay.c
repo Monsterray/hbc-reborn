@@ -1393,6 +1393,17 @@ static bool in_mem1(const void *p) {
 	return p && ((u32) p & 0x1fffffff) < 0x01800000;
 }
 
+// A framebuffer an app lends may also be in MEM2: the Wii's video interface scans
+// it there (Wii64 has always shown its game from MEM2 framebuffers).
+static bool in_vi_ram(const void *p) {
+	u32 a = (u32) p & 0x1fffffff;
+	return p && (a < 0x01800000 || (a >= 0x10000000 && a < 0x14000000));
+}
+
+static bool same_ram(const void *a, const void *b) {
+	return ((u32) a & 0x1fffffff) == ((u32) b & 0x1fffffff);
+}
+
 // fb0 and fb1 are the app's (lent) or NULL (allocate our own).
 static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	static bool inside;
@@ -1422,7 +1433,11 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	// to draw into without tearing. The video interface reads only MEM1, so
 	// buffers the heap gives from MEM2 are no use; then draw over the app's
 	// own framebuffer, putting its picture back on the way out.
-	r.frozen = memalign(32, size);
+	// Lent buffers that leave the app's frame on screen alone: read that frame in
+	// place instead of copying it, so an app with no 600 KB to spare (Wii64) can
+	// still open the overlay.
+	bool frozen_in_place = !own && !same_ram(fb[0], app_fb) && (!fb[1] || !same_ram(fb[1], app_fb));
+	r.frozen = frozen_in_place ? app_fb : memalign(32, size);
 	if (own) {
 		fb[0] = memalign(32, size);
 		fb[1] = memalign(32, size);
@@ -1447,7 +1462,8 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		fb[0] = (u8 *) ((u32) app_fb & ~0x40000000);   // cached, like ours
 	inside = true;
 	run = &r;
-	memcpy(r.frozen, app_fb, size);
+	if (!frozen_in_place)
+		memcpy(r.frozen, app_fb, size);
 	LWP_CreateThread(&sd, sd_thread, &r, NULL, 16 * 1024, 30);
 
 	// Like the Wii's HOME Menu, pausing stops every remote's rumble; an app
@@ -1462,7 +1478,8 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	cost.buffers = !own ? "lent" : fb[0] == (u8 *) ((u32) app_fb & ~0x40000000) ? "app's" : "own";
 	cost.bytes = !own ? (fb[1] ? 2 : 1) * size : (fb[1] ? size : 0) +
 			(cost.buffers[0] == 'o' ? size : 0);
-	cost.bytes += size;   // the frozen frame
+	if (!frozen_in_place)
+		cost.bytes += size;   // the frozen frame
 	while (running) {
 		ov_canvas c;
 		unsigned pressed, pointing;
@@ -1535,7 +1552,8 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		if (((u32) fb[0] & 0x1fffffff) != ((u32) app_fb & 0x1fffffff))
 			free(fb[0]);
 	}
-	free(r.frozen);
+	if (!frozen_in_place)
+		free(r.frozen);
 	run = NULL;
 	inside = false;
 
@@ -1576,7 +1594,7 @@ s32 hbc_agent_home(const GXRModeObj *rmode) {
 }
 
 s32 hbc_agent_home_fb(const GXRModeObj *rmode, void *fb0, void *fb1) {
-	if (!fb0 || !in_mem1(fb0) || (fb1 && !in_mem1(fb1)))
+	if (!fb0 || !in_vi_ram(fb0) || (fb1 && !in_vi_ram(fb1)))
 		return -EINVAL;
 	return home_watched(rmode, (void *) ((u32) fb0 & ~0x40000000),
 				fb1 ? (void *) ((u32) fb1 & ~0x40000000) : NULL);
