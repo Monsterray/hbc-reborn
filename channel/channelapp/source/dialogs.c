@@ -418,7 +418,7 @@ s8 show_message (const view *sub_view, dialog_message_type type,
 					dialog_message_buttons buttons, const char *text, u8 focus) {
 	view *v;
 	u8 fhw;
-	u32 bd;
+	u32 bd, bu;
 	s8 res;
 	s16 mm;
 
@@ -429,7 +429,7 @@ s8 show_message (const view *sub_view, dialog_message_type type,
 	fhw = font_get_y_spacing(FONT_MEMO);
 
 	while (true) {
-		view_plot (v, DIALOG_MASK_COLOR, &bd, NULL, NULL);
+		view_plot (v, DIALOG_MASK_COLOR, &bd, NULL, &bu);
 
 		if (bd & PADS_LEFT)
 			view_set_focus_prev (v);
@@ -450,6 +450,12 @@ s8 show_message (const view *sub_view, dialog_message_type type,
 			mm += -v->drag_y / 32;
 
 		widget_scroll_memo_deco (&v->widgets[3], mm);
+
+		// B backs out: the last button (OK, Cancel or No).
+		if (view_back (v, bu)) {
+			view_set_focus (v, v->widget_count - 1);
+			break;
+		}
 
 		if ((bd & PADS_A) && (v->focus != -1))
 			break;

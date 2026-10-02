@@ -18,6 +18,7 @@ typedef struct _view {
 	s8 cursor;
 
 	bool drag;
+	bool drag_moved;
 	s8 drag_widget;
 	u32 drag_btn;
 	s32 drag_start_x, drag_start_y, drag_x, drag_y;
@@ -35,6 +36,7 @@ view * view_new (u8 widget_count, const view *sub_view, s16 x, s16 y, s16 z,
 void view_free (view *v);
 
 void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up);
+bool view_back (const view *v, u32 up);
 void view_fade (view *v, s16 z, u32 c1, u32 c2, u32 c3, u32 c4, u8 steps,
 				s8 modifier);
 

@@ -155,6 +155,25 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.4: B backs out of every menu
+
+- The message dialogs (OK, OK/Cancel, Yes/No: delete, install, update)
+  ignored B. B now picks the last button, which every caller reads as
+  "no": OK, Cancel or No.
+- B is also the button that drags a dialog's text, and the app dialog only
+  closed on B when the pointer was not on the text: pointing at the middle
+  of the dialog and pressing B did nothing. B now backs out when it is let
+  go without the pointer moving more than 16 px (`view_back`); a press that
+  moved was a scroll. The options dialog and About already closed on B; the
+  HOME overlay goes back one level on B (its button Test page, which tests
+  B, leaves with + and - together).
+- Checked in the Wii Menu Dolphin profile, offline (Wii64's Dolphin held
+  TCP 4299), with a scripted remote (`dsu_pad.py` gained `down`/`up` for a
+  held drag) and Dolphin's frame dump: B with the pointer on the text
+  closed the app dialog; a B drag scrolled it and left it open; B on the
+  delete confirmation, with the pointer on its text and with it off
+  screen, answered No and kept the app.
+
 ### 1.9.3: the play log test in CI's container
 
 - 1.9.2's CI failed in the devkitPPC job's Tests step: the container's gcc 12

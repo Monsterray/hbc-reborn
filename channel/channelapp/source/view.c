@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <malloc.h>
 #include <string.h>
 
@@ -179,6 +180,9 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 		if (bu & v->drag_btn)
 			v->drag = false;
 
+		if (bd & v->drag_btn)
+			v->drag_moved = false;
+
 		if ((w != -1) && (bd & v->drag_btn)) {
 			v->drag = true;
 
@@ -191,6 +195,8 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 		if (v->drag && (bh & v->drag_btn)) {
 			v->drag_x = x - v->drag_start_x;
 			v->drag_y = y - v->drag_start_y;
+			if (abs (v->drag_x) > 16 || abs (v->drag_y) > 16)
+				v->drag_moved = true;
 
 			ct = v->widgets[v->drag_widget].cur;
 		}
@@ -282,6 +288,12 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 
 	if (rumble_timeout < 1)
 		controls_rumble(0);
+}
+
+// B backs out of a dialog when it is let go without dragging: B also drags
+// the text it is held on, so a press that moved the pointer was a scroll.
+bool view_back (const view *v, u32 up) {
+	return (up & PADS_B) && !v->drag_moved;
 }
 
 void view_fade (view *v, s16 z, u32 c1, u32 c2, u32 c3, u32 c4, u8 steps,

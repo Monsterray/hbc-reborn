@@ -3,7 +3,8 @@ profile's emulated Wii Remote can be driven without touching the desktop.
 
     python dsu_pad.py PORT "STEP; STEP; ..."
 
-A step is `wait S`, `press BUTTON [S]` (hold, default 0.25 s), or
+A step is `wait S`, `press BUTTON [S]` (hold, default 0.25 s),
+`down BUTTON` and `up BUTTON` (held across the steps between, as for a drag), or
 `stick X Y` (right stick, -1..1, held until the next stick step). Buttons are
 DSU names: Cross, Circle, Square, Triangle, L1, R1, PS, Options, Share, and
 PadN/PadS/PadE/PadW. Exits after the last step (and a second of idle)."""
@@ -103,6 +104,9 @@ for step in STEPS:
         with lock:
             state["buttons"].discard(word[1])
         time.sleep(0.15)
+    elif word[0] in ("down", "up"):        # hold a button across later steps, let it go
+        with lock:
+            (state["buttons"].add if word[0] == "down" else state["buttons"].discard)(word[1])
     elif word[0] == "stick":
         with lock:
             state["rx"], state["ry"] = float(word[1]), float(word[2])

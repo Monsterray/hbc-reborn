@@ -317,7 +317,7 @@ void main_real(void) {
 
 	u8 fhw;
 
-	u32 bd, bh;
+	u32 bd, bh, bu;
 	s8 clicked;
 	s16 mm;
 
@@ -464,7 +464,7 @@ void main_real(void) {
 		if ((frame % 30) == 0)
 			app_entry_scan();
 
-		view_plot (v_current, DIALOG_MASK_COLOR, &bd, &bh, NULL);
+		view_plot (v_current, DIALOG_MASK_COLOR, &bd, &bh, &bu);
 
 		frame++;
 		if (v_last != v_current) {
@@ -672,9 +672,10 @@ void main_real(void) {
 
 			mm += controls_sticky() / 8;
 
-			if (v_current->drag && (v_current->drag_widget == 6)) {
+			if (v_current->drag && (v_current->drag_widget == 6))
 				mm += -v_current->drag_y / 32;
-			} else if (bd & PADS_B) {
+
+			if (view_back (v_current, bu)) {
 				dialog_fade (v_current, false);
 
 				v_current = v_browser;
