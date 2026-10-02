@@ -258,10 +258,12 @@ s32 hbc_agent_home(const struct _gx_rmodeobj *rmode);
 
 /* The same, drawing into framebuffers the app lends it instead of
  * allocating two: each at least fbWidth * xfbHeight * 2 bytes, 32-byte
- * aligned, in MEM1 (where the video interface reads from), and not the one
- * on screen. fb1 may be NULL (one buffer: the menus may tear while they
- * slide). hbc_agent_home() uses its own allocation, falling back to drawing
- * over the app's own framebuffer when the heap only has MEM2 left. */
+ * aligned, in MEM1 or MEM2 (the Wii's video interface scans either), and not
+ * the one on screen. fb1 may be NULL (one buffer: the menus may tear while
+ * they slide). The overlay then reads the app's frame in place instead of
+ * copying it, so it needs no memory of its own. hbc_agent_home() uses its
+ * own allocation (about 1.8 MB), falling back to drawing over the app's own
+ * framebuffer when the heap only has MEM2 left. */
 s32 hbc_agent_home_fb(const struct _gx_rmodeobj *rmode, void *fb0, void *fb1);
 
 /* True once when `hbc.py key h` asked for the overlay: check it next to the
