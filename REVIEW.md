@@ -232,6 +232,36 @@ Tool work only, in 1.9.4 with no version of its own.
   250 ms from this PC and now takes 15 ms. The server speaks HTTP/1.1 and closes a kept
   connection after 60 s idle. A client that goes away is no longer a traceback in its log.
   An HTTP/1.0 server, before this, still works: the client sees it close and reconnects.
+- **Checked end to end, and fixed:**
+  - **The HBC check always read 0.0 s.** 51 of the first 52 checks said so. `hbc_back()`
+    took the time before the probe that got the answer, so a first answer was 0.0 however
+    long it took. It now measures to the answer and records the version that answered
+    (`hbc_version`). The column reads `ok`, `Ns`, `LEFT` or `-`, and the status line says
+    "HBC answered as JOB ended (2m ago)" instead of "back in HBC 0.0 s".
+  - **The dispatcher crashed after a job** (13:22:45, found through the monitor's errors
+    page). Windows refused to replace the job's record (`PermissionError [WinError 5]`)
+    because another process had it open: a `wait` polling for it, or the monitor's snapshot.
+    The job lost its HBC check and its history record, and the next `add` started a new
+    dispatcher. Every rename, replace and unlink of a queue file now retries for up to 2 s
+    on that error (`fs_retry`; a missing file still fails at once). A record that still
+    can't be replaced is logged instead of killing the dispatcher. Reproduced with a reader
+    holding the file open for 0.3 s.
+  - A failed job's detail is the last line of its log that reads like an error.
+    WiiStation's `exit 1` read "results: perf.log, ..."; it now reads "results incomplete:
+    TimeoutError after 10 files".
+  - A lease server that takes connections but doesn't answer stalled each refresh for
+    15 s. Now it gets 2 s, isn't asked for history after a failure, and is left alone
+    for 15 s.
+  - Line wrap is off while the dashboard is up, so a line wider than the terminal is cut
+    at the edge and doesn't push the rest down. The first status line fits its "last:"
+    part to the width that's left.
+  - Hand-overs are shown in milliseconds; "0.0 s" hid them. `--hours` and the refresh are
+    validated, and only the last 512 KB of `dispatcher.log` is read.
+  - **New test** (Linux and macOS): `monitor.sh` live in a pseudo-terminal. It checks
+    pages by key and by a click on a tab, click-to-sort ascending and descending, a click
+    on a job id copying it over OSC 52, a resize to 100 columns, a killed snapshot process
+    replaced on the next refresh, and q putting the terminal back with no snapshot process
+    left behind.
 
 ### 1.9.3: the play log test in CI's container
 

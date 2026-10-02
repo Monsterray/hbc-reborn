@@ -112,7 +112,7 @@ waits, and anything that needs a look: a Wii left out of HBC, an expired lease, 
 
 | Page | Shows |
 | --- | --- |
-| 1 queue | who has the Wii now, the jobs running and queued here, every workstation waiting for the Wii, and the last jobs here (exit, seconds, how soon HBC came back, chained or not) |
+| 1 queue | who has the Wii now, the jobs running and queued here, every workstation waiting for the Wii, and the last jobs here (exit, seconds, HBC after the job, chained or not) |
 | 2 errors | every problem in the window, newest first: failed and timed-out jobs with their log's last line, a Wii left out of HBC, an expired lease, a workstation that left the line, the lease server unreachable, a dispatcher that crashed, jobs queued with no dispatcher, a workstation still on a dispatcher before 1.9.1 |
 | 3 history | per workstation: jobs, failures, Wii minutes, turns, median and longest wait; hand-over speed; the longest waits |
 | 4 log | the end of this workstation's `dispatcher.log`, problems in colour |
@@ -120,6 +120,13 @@ waits, and anything that needs a look: a Wii left out of HBC, an expired lease, 
 The two lines under the tabs, on every page, say who has the Wii (or that it was left out of
 HBC), whether the lease server answers, what this dispatcher is doing, and how many errors and
 warnings the window holds.
+
+The HBC column is the dispatcher's check after each job: `ok` when HBC answered as the job
+ended (most jobs wait for HBC themselves before they end), `12s` when it came back that much
+later, `LEFT` (red) when it did not come back within 120 s, and `-` for a job from before the
+check. A failed job's detail is the last line of its log that reads like an error, else its
+last line. A lease server that does not answer is given 2 s, then left alone for 15 s, so a
+homeserver that is off does not stall the dashboard.
 
 **It never touches the Wii.** Everything comes from this workstation's queue files and
 `dispatcher.log` and from the lease server, so a dashboard left open all day can't disturb a

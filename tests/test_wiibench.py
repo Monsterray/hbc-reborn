@@ -541,7 +541,8 @@ class LeaseDispatcherTest(unittest.TestCase):
         self.assertGreater(got["t"], s1 + 2)       # the rival went after a1 ...
         self.assertLess(got["t"], s2)              # ... and before a2
         self.assertFalse(j2["chained"])
-        self.assertEqual(j2["hbc_back_s"], 0.0)
+        self.assertLess(j2["hbc_back_s"], self.wb.HBC_AT_ONCE)   # measured: HBC was there as it ended
+        self.assertEqual(j2["hbc_version"], "1.2.0")             # the fake HBC's
         hosts = [e["host"] for e in self.history() if e["type"] == "grant"]
         self.assertEqual(hosts[-2:], ["rival-pc", hosts[0]])
 
@@ -683,8 +684,9 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in rows["running"]], ["j-run"])
         self.assertEqual([r["name"] for r in rows["pending"]], ["queued one", "queued two"])
         self.assertEqual(rows["done"][0]["id"], "j-left")
-        self.assertEqual(rows["done"][0]["hbc"], "left")
-        self.assertEqual(kv["wii_last"], "left busy: otherapp is running by leaving job")
+        self.assertEqual(rows["done"][0]["hbc"], "LEFT")
+        self.assertEqual({r["id"]: r["hbc"] for r in rows["done"]}["j-ok"], "ok")
+        self.assertRegex(kv["wii_last"], r"^leaving job left it busy: otherapp is running \(\d+m\d\ds ago\)$")
         self.assertEqual(seen, [])                 # the Wii was never contacted
 
     def test_tab_separated_sorted_and_filtered(self):
@@ -846,6 +848,246 @@ class MonitorTest(unittest.TestCase):
         r = subprocess.run([b, mon, "--help"], capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0)
         self.assertIn("It never contacts the Wii", r.stdout)
+
+
+class ChecksTest(unittest.TestCase):
+    """The HBC check after a job, a failed job's error line, and a lease server that is down."""
+
+    def setUp(self):
+        self.wb = import_wiibench()
+
+    def test_hbc_back_measures_to_the_answer(self):
+        from unittest import mock
+        now = [0.0]
+        answers = [("off", None), ("off", None), ("hbc", "1.9.4")]
+        def state():
+            now[0] += 0.4                          # each probe takes 0.4 s
+            return answers.pop(0)
+        with mock.patch.object(self.wb.time, "monotonic", lambda: now[0]), \
+             mock.patch.object(self.wb.time, "sleep", lambda s: now.__setitem__(0, now[0] + s)), \
+             mock.patch.object(self.wb, "wii_state", state):
+            self.assertEqual(self.wb.hbc_back(), (2.4, "hbc", "1.9.4"))     # not 2.0, the probe's start
+            now[0], answers[:] = 0.0, [("hbc", "")]
+            self.assertEqual(self.wb.hbc_back(), (0.4, "hbc", "stock HBC"))
+        self.assertEqual(self.wb.hbc_word({"hbc_back_s": 0.4}), "ok")
+        self.assertEqual(self.wb.hbc_word({"hbc_back_s": 12.3}), "12s")
+        self.assertEqual(self.wb.hbc_word({"hbc_back_s": None, "wii_left": "busy or off"}), "LEFT")
+        self.assertEqual(self.wb.hbc_word({}), "-")
+
+    def test_a_queue_file_another_process_has_open(self):
+        # Windows cannot replace or remove a file another process has open: on 2026-10-02 that
+        # killed the dispatcher right after a job (a `wait` or the monitor reading its record).
+        import threading
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = pathlib.Path(tmp.name)
+        p, new = d / "a.json", d / "a.json.tmp"
+        p.write_text("old")
+        new.write_text("new")
+        f = open(p)
+        threading.Timer(0.3, f.close).start()
+        self.wb.fs_retry(os.replace, new, p)
+        self.assertEqual(p.read_text(), "new")
+        with self.assertRaises(FileNotFoundError):   # a cancelled job is no reason to wait
+            self.wb.fs_retry((d / "gone.json").rename, d / "x.json")
+
+    def test_a_failed_jobs_error_line(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        p = pathlib.Path(tmp.name) / "x.log"
+        p.write_text("sending x.dol\nresults incomplete: TimeoutError after 10 files\nresults: perf.log, lab.log\n")
+        self.assertEqual(self.wb._last_line(p), "results incomplete: TimeoutError after 10 files")
+        p.write_text("step one\nstep two\n")
+        self.assertEqual(self.wb._last_line(p), "step two")   # nothing reads like an error: the last line
+
+    def test_a_server_that_does_not_answer_is_not_asked_every_refresh(self):
+        import socket as so
+        import time
+        quiet = so.socket()
+        quiet.bind(("127.0.0.1", 0))
+        quiet.listen(16)                           # takes connections, never answers
+        self.addCleanup(quiet.close)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = dict(os.environ, WII_BENCH_HOME=tmp.name, WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9",
+                   WII_BENCH_SERVER=f"http://127.0.0.1:{quiet.getsockname()[1]}")
+        p = subprocess.Popen([sys.executable, str(BENCH), "snapshot", "--serve"], env=env,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.stdin.close)
+        def ask():
+            t = time.monotonic()
+            p.stdin.write(b"24\t\t\n"); p.stdin.flush()
+            out = []
+            while (l := p.stdout.readline().decode().rstrip()) != "@end":
+                out.append(l)
+            return time.monotonic() - t, out
+        first, out = ask()
+        self.assertLess(first, 2 * self.wb.SERVER_TIMEOUT + 2)    # two tries at /status, no /history
+        self.assertIn("@kv\tserver_ok\tno", out)
+        second, out = ask()
+        self.assertLess(second, 1)                 # not asked again for SERVER_RETRY s
+        self.assertIn("@kv\tserver_ok\tno", out)
+        self.assertTrue(any(l.startswith("@row\terrors\t") and "lease server" in l for l in out))
+
+
+class MonitorTtyTest(unittest.TestCase):
+    """monitor.sh live in a pseudo-terminal: keys, clicks on a tab, a column header and a cell,
+    a resize, a snapshot process that dies, and q. The screen is read back from the escape
+    codes the monitor draws with (row N, line, clear to end of line)."""
+
+    def setUp(self):
+        import re
+        try:
+            import fcntl, pty, termios        # noqa: F401  (POSIX only)
+        except ImportError:
+            self.skipTest("no pseudo-terminals here")
+        b = bash_for_monitor()
+        if not b:
+            self.skipTest("no bash on PATH")
+        ver = subprocess.run([b, "-c", "echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"], capture_output=True, text=True).stdout
+        if tuple(int(x) for x in ver.strip().split(".")) < (4, 3):
+            self.skipTest("bash older than 4.3")
+        self.bash, self.re = b, re
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        bench_home_with_trouble(self.tmp.name)
+        self.buf, self.rows = b"", {}
+
+    def start(self, cols=150, lines=45):
+        import fcntl, pty, struct as st, termios, threading
+        self.master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, st.pack("HHHH", lines, cols, 0, 0))
+        env = dict(os.environ, WII_BENCH_HOME=self.tmp.name, WII_BENCH_SERVER="", WII_BENCH_IP="127.0.0.1",
+                   WII_BENCH_PORT="9", WII_BENCH_PYTHON=sys.executable, TERM="xterm")
+        env.pop("COLUMNS", None); env.pop("LINES", None)
+        self.proc = subprocess.Popen([self.bash, str(root / "tools/wii-bench/monitor.sh"), "1"], env=env,
+                                     stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        os.close(slave)
+        self.addCleanup(lambda: self.proc.poll() is None and self.proc.kill())
+        self.lock = threading.Lock()
+        def pump():
+            while True:
+                try:
+                    d = os.read(self.master, 65536)
+                except OSError:
+                    return
+                if not d:
+                    return
+                with self.lock:
+                    self.buf += d
+        threading.Thread(target=pump, daemon=True).start()
+
+    def resize(self, cols, lines):
+        import fcntl, signal as sg, struct as st, termios
+        fcntl.ioctl(self.master, termios.TIOCSWINSZ, st.pack("HHHH", lines, cols, 0, 0))
+        os.killpg(self.proc.pid, sg.SIGWINCH)
+
+    def screen(self):
+        with self.lock:
+            text = self.buf.decode("utf-8", "replace")
+        # A row's text runs to its clear-to-end, never past the next cursor move: after a frame's
+        # last row comes "row N+1, clear below", then the next frame's row 1.
+        for m in self.re.finditer(r"\x1b\[(\d+);1H((?:(?!\x1b\[\d+;1H).)*?)\x1b\[K", text, self.re.S):
+            self.rows[int(m.group(1))] = self.re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", m.group(2))
+        return self.rows
+
+    def wait(self, pred, what, secs=20):
+        import time
+        end = time.monotonic() + secs
+        while time.monotonic() < end:
+            sc = self.screen()
+            if pred(sc):
+                return sc
+            time.sleep(0.1)
+        self.fail(f"never saw {what}; screen:\n" + "\n".join(f"{r:2} {t}" for r, t in sorted(self.screen().items())))
+
+    def has(self, text):
+        return lambda sc: any(text in t for t in sc.values())
+
+    def find(self, text):
+        for r, t in sorted(self.screen().items()):
+            if text in t:
+                return r, t.index(text) + 1
+        self.fail(f"{text!r} not on screen")
+
+    def key(self, k):
+        os.write(self.master, k.encode())
+
+    def click(self, row, col):
+        os.write(self.master, f"\x1b[<0;{col};{row}M".encode())
+
+    def test_keys_clicks_resize_restart_and_quit(self):
+        import base64, signal as sg, time
+        self.start()
+        self.wait(self.has("[1 queue]"), "the queue page")
+        self.wait(self.has("leaving job"), "the recent jobs")
+        self.key("2"); self.wait(self.has("[2 errors]"), "page 2 by key")
+        self.wait(self.has("boom: the build is broken"), "a failed job's error line")
+        self.key("n"); self.wait(self.has("[3 history]"), "n: the next page")
+        self.key("p"); self.wait(self.has("[2 errors]"), "p: the previous page")
+        r, c = self.find("4 log")
+        self.click(r, c + 1); self.wait(self.has("[4 log]"), "a click on the log tab")
+        self.wait(self.has("lease lost"), "the dispatcher log")
+        self.key("1"); self.wait(self.has("[1 queue]"), "back to page 1")
+        # A click on SECS sorts the recent jobs by it: ascending, then descending.
+        r, c = self.find("SECS")
+        self.click(r, c); self.wait(self.has("SECS ^"), "an ascending sort")
+        r, c = self.find("SECS ^")
+        self.click(r, c); self.wait(self.has("SECS v"), "a descending sort")
+        hr, _ = self.find("SECS v")
+        self.wait(lambda sc: "slow job" in sc.get(hr + 1, ""), "the 600 s job first")
+        # A click on a job id copies it, through OSC 52.
+        r, c = self.find("j-fail")
+        with self.lock:
+            self.buf = self.buf[-1000:]
+        self.click(r, c + 1)
+        want = base64.b64encode(b"j-fail")
+        self.wait(lambda sc: want in self.buf, "the id copied (OSC 52)", 5)
+        # Narrower: rows fit the new width, and nothing wraps.
+        self.resize(100, 40)
+        def narrow(sc):
+            hdr = [r2 for r2, t in sc.items() if "FINISHED" in t]
+            return hdr and all(0 < len(sc.get(r2, "x" * 200).rstrip()) <= 100 for r2 in range(hdr[0], hdr[0] + 4))
+        self.wait(narrow, "the recent jobs table at 100 columns")
+        # The snapshot process dies: the next refresh starts another. Only this monitor's own:
+        # a monitor someone has open on this machine keeps its snapshot.
+        out = self.snapshots()
+        self.assertTrue(out, "no snapshot process")
+        for pid in out:
+            os.kill(pid, sg.SIGKILL)
+        t0 = self.screen()[1]
+        self.wait(lambda sc: sc.get(1) != t0 and "leaving job" in "".join(sc.values()), "a refresh after the restart")
+        self.wait(self.has("RECENT JOBS HERE"), "the page again")
+        again = self.snapshots()
+        self.assertTrue(again and not set(again) & set(out), "no new snapshot process")
+        # q quits, puts the terminal back, and leaves no snapshot process behind.
+        self.key("q")
+        self.assertEqual(self.proc.wait(timeout=10), 0)
+        time.sleep(0.5)
+        with self.lock:
+            tail = self.buf[-200:]
+        self.assertIn(b"\x1b[?7h", tail)           # line wrap back on
+        self.assertIn(b"\x1b[?1000l", tail)        # mouse reporting off
+        for pid in again:                          # gone, not just re-parented
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def snapshots(self):
+        """The `snapshot --serve` processes descended from this test's monitor."""
+        ps = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,args="], capture_output=True, text=True).stdout
+        procs = {}
+        for l in ps.splitlines():
+            f = l.split(None, 2)
+            if len(f) == 3:
+                procs[int(f[0])] = (int(f[1]), f[2])
+        def mine(pid):
+            for _ in range(5):
+                pid = procs.get(pid, (0, ""))[0]
+                if pid == self.proc.pid:
+                    return True
+            return False
+        return [p for p, (_, args) in procs.items() if "snapshot --serve" in args and mine(p)]
 
 
 class ReportTest(unittest.TestCase):

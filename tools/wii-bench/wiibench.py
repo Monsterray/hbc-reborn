@@ -185,6 +185,22 @@ def wii_line():
     return "busy or off"
 
 
+def fs_retry(fn, *args):
+    """A rename, replace or unlink of a queue file, retried for up to 2 s on Windows' sharing
+    error: there a file another process has open (a `wait` polling for its job, the monitor's
+    snapshot) cannot be replaced or removed until it is closed again, a few ms later. On
+    2026-10-02 that killed the dispatcher right after a job (PermissionError [WinError 5] on
+    the done record), losing the job's HBC check and its history. A missing file is still an
+    error at once: that is a cancel."""
+    for i in range(40):
+        try:
+            return fn(*args)
+        except PermissionError:
+            if i == 39:
+                raise
+            time.sleep(0.05)
+
+
 def jobs(d):
     """Oldest first. By the time the job file was written, then the name: the IDs sort by the
     second only, and two jobs added in one second ran in the order of their random tails."""
@@ -783,7 +799,7 @@ def cmd_add(a):
            "agent": job_agent(a.agent)}
     tmp = PENDING / f"{job_id}.tmp"
     tmp.write_text(json.dumps(job, indent=1))
-    tmp.rename(PENDING / f"{job_id}.json")
+    fs_retry(tmp.rename, PENDING / f"{job_id}.json")
     print(job_id)
     start_dispatcher()
 
@@ -800,7 +816,7 @@ def job_window():
 def run_job(p):
     job = load(p)
     r = RUNNING / p.name
-    p.rename(r)                                    # claims it: a rename is atomic
+    fs_retry(p.rename, r)                          # claims it: a rename is atomic
     report(job["id"], "running")
     job["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
     r.write_text(json.dumps(job, indent=1))
@@ -824,8 +840,8 @@ def run_job(p):
     job["secs"] = int(time.monotonic() - t0)
     job["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
     (DONE / f"{job['id']}.json").write_text(json.dumps(job, indent=1))
-    log.rename(DONE / log.name)
-    r.unlink()
+    fs_retry(log.rename, DONE / log.name)
+    fs_retry(r.unlink)
     print(f"{job['finished']} done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s", flush=True)
     return job
 
@@ -836,10 +852,14 @@ def finish_job(job, turn):
     p = DONE / f"{job['id']}.json"
     tmp = DONE / f"{job['id']}.json.tmp"
     tmp.write_text(json.dumps(job, indent=1))
-    os.replace(tmp, p)
+    try:
+        fs_retry(os.replace, tmp, p)
+    except OSError as e:                           # the record without the check, not a crash
+        say(f"could not update {p.name}: {e}")
+        tmp.unlink(missing_ok=True)
     ev = {"type": "job", "host": socket.gethostname(), **{k: job.get(k) for k in (
         "id", "name", "agent", "added", "started", "finished", "secs", "exit", "timeout",
-        "hbc_back_s", "wii_left", "chained")}}
+        "hbc_back_s", "hbc_version", "wii_left", "chained")}}
     try:
         History(HOME / "history").write(ev)
     except OSError as e:
@@ -886,17 +906,21 @@ def wait_idle(full, need, job_id=None):
 
 
 def hbc_back(limit=RETURN_WAIT):
-    """After a job, while this dispatcher still holds the Wii: seconds until HBC's menu
-    answers, or None and what answers instead. Probes only once the job's process is gone,
-    so never during a run."""
+    """After a job, while this dispatcher still holds the Wii: (seconds until HBC's menu
+    answered, "hbc", its version), or (None, what answers instead, None). Probes only once the
+    job's process is gone, so never during a run.
+
+    The seconds are measured to the answer, not to the probe that got it: until 1.9.4 a first
+    answer always read 0.0, however long it took, and 51 of the first 52 checks said "0.0 s"
+    (most jobs wait for HBC themselves before they end, so HBC is usually there at once)."""
     t0 = time.monotonic()
     while True:
         t = time.monotonic()
         state, text = wii_state()
         if state == "hbc":
-            return round(t - t0, 1), "hbc"
-        if t - t0 >= limit:
-            return None, f"busy: {agent_app()} is running" if state == "agent" else "busy or off"
+            return round(time.monotonic() - t0, 2), "hbc", text or "stock HBC"
+        if time.monotonic() - t0 >= limit:
+            return None, (f"busy: {agent_app()} is running" if state == "agent" else "busy or off"), None
         time.sleep(max(0.0, 1 - (time.monotonic() - t)))
 
 
@@ -940,7 +964,7 @@ def cmd_run(a):
                 LOCK.unlink(missing_ok=True)
     try:
         for p in jobs(RUNNING):                    # a dispatcher that died mid-job: requeue it
-            p.rename(PENDING / p.name)
+            fs_retry(p.rename, PENDING / p.name)
         empty_since = time.monotonic()
         last_end = None                            # monotonic time our last job ended
         while True:
@@ -970,8 +994,8 @@ def cmd_run(a):
                         break
                     last_end = time.monotonic()
                     # The Wii is still ours: see that HBC came back, and say so if it did not.
-                    back_s, turn.wii = hbc_back()
-                    job.update(hbc_back_s=back_s, chained=chained)
+                    back_s, turn.wii, hbc_version = hbc_back()
+                    job.update(hbc_back_s=back_s, hbc_version=hbc_version, chained=chained)
                     if back_s is None:
                         job["wii_left"] = turn.wii
                         say(f"the Wii did not come back to HBC within {RETURN_WAIT} s: {turn.wii}")
@@ -1193,16 +1217,41 @@ def _parse_local(s):
         return None
 
 
+HBC_AT_ONCE = 1.5     # s: HBC answering this soon after a job was there as it ended
+
+
+def hbc_word(j):
+    """A finished job's HBC column: ok (there as it ended), Ns (came back that much later),
+    LEFT (never, within RETURN_WAIT), or - (a record from before the check, 1.9.1)."""
+    back = j.get("hbc_back_s")
+    if back is None:
+        return "LEFT" if j.get("wii_left") else "-"
+    return "ok" if back <= HBC_AT_ONCE else f"{back:.0f}s"
+
+
+ERROR_WORDS = ("error", "fail", "exception", "traceback", "timed out", "timeout", "not found",
+               "refused", "denied", "no such", "cannot", "can't", "could not", "unable", "fatal")
+
+
 def _last_line(p):
+    """What a failed job's log says went wrong: its last line that reads like an error, else
+    its last line. (WiiStation's log ends with the result files it got, which says nothing.)"""
     try:
         lines = [l.strip() for l in p.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
-        return lines[-1][:160] if lines else None
     except OSError:
         return None
+    for l in reversed(lines[-40:]):
+        if any(w in l.lower() for w in ERROR_WORDS):
+            return l[:160]
+    return lines[-1][:160] if lines else None
 
 
 LOG_PROBLEMS = (("lease lost", "err", "lease lost"), ("unreachable", "warn", "lease server"),
                 ("history:", "warn", "history"), ("did not come back", None, None))
+
+
+SERVER_TIMEOUT = 2    # s the monitor waits for the lease server (on the LAN it answers in ms)
+SERVER_RETRY = 15     # s before a server that did not answer is asked again
 
 
 class SnapCache:
@@ -1212,6 +1261,10 @@ class SnapCache:
 
     def __init__(self):
         self.jobs, self.hist, self.local, self.log = {}, None, None, None
+        self.down_until, self.down_error = 0.0, None   # the lease server failed: ask again later
+
+
+LOG_TAIL = 512 * 1024
 
 
 def _log_lines(cache=None):
@@ -1224,7 +1277,13 @@ def _log_lines(cache=None):
     if cache is not None and cache.log and cache.log[0] == key:
         return cache.log[1]
     try:
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        with open(p, "rb") as f:                   # the log only grows: its last LOG_TAIL bytes
+            if st.st_size > LOG_TAIL:
+                f.seek(-LOG_TAIL, 2)
+            data = f.read()
+        lines = data.decode("utf-8", "replace").splitlines()
+        if st.st_size > LOG_TAIL:
+            lines = lines[1:]                      # the first is cut somewhere in the middle
     except OSError:
         return []
     if cache is not None:
@@ -1252,11 +1311,11 @@ def _server_history(since, cache=None):
     h = cache.hist if cache is not None else None
     try:
         if h is None or h["url"] != url or h["since"] > since:
-            evs = lease_call(f"/history?since={since}", timeout=10)["events"]
+            evs = lease_call(f"/history?since={since}", timeout=SERVER_TIMEOUT * 3)["events"]
             h = {"url": url, "since": since, "evs": evs}
         else:
             last = h["evs"][-1]["t"] if h["evs"] else since
-            new = lease_call(f"/history?since={last}", timeout=10)["events"]
+            new = lease_call(f"/history?since={last}", timeout=SERVER_TIMEOUT)["events"]
             known = {json.dumps(e, sort_keys=True) for e in h["evs"] if e.get("t") == last}
             h["evs"] += [e for e in new if not (e.get("t") == last and json.dumps(e, sort_keys=True) in known)]
             h["evs"] = [e for e in h["evs"] if e.get("t", 0) >= since]
@@ -1404,15 +1463,17 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         back = j.get("hbc_back_s")
         row("done", finished=_when(tf, now), finished_s=int(tf), id=j["id"], name=j.get("name"),
             exit=j.get("exit"), secs=j.get("secs"), secs_s=j.get("secs") or 0,
-            hbc=("left" if back is None and j.get("wii_left") else (f"{back}s" if back is not None else "?")),
+            hbc=hbc_word(j),
             chained="yes" if j.get("chained") else "no")
     if recent:
         try:
             tf, j = recent[0]
             back = j.get("hbc_back_s")
-            kv["wii_last"] = (f"back in HBC {back} s after {j.get('name')}" if back is not None else
-                              f"left {j.get('wii_left')} by {j.get('name')}" if j.get("wii_left") else
-                              f"last job {j.get('name')} ended {_age(now - (_parse_local(j.get('finished')) or now))} ago")
+            ago = _age(now - tf)
+            kv["wii_last"] = (f"{j.get('name')} left it {j.get('wii_left')} ({ago} ago)" if back is None and j.get("wii_left") else
+                              f"HBC answered as {j.get('name')} ended ({ago} ago)" if back is not None and back <= HBC_AT_ONCE else
+                              f"HBC came back {back:.0f} s after {j.get('name')} ({ago} ago)" if back is not None else
+                              f"{j.get('name')} ended {ago} ago, before the queue checked HBC")
         except (OSError, ValueError):
             pass
 
@@ -1420,15 +1481,21 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     url = lease_server()
     kv["server"] = url or "none"
     evs = []
-    if url:
+    down = cache is not None and cache.down_until > time.monotonic()
+    if url and down:
+        kv["server_ok"], kv["server_err"] = "no", cache.down_error
+        kv["server_retry"] = f"{cache.down_until - time.monotonic():.0f}"
+        problems.append(dict(t=now, severity="err", kind="lease server", host=socket.gethostname(), job="-",
+                             id="-", detail=f"unreachable now: {cache.down_error}"))
+    if url and not down:
         try:
-            s = lease_call("/status", timeout=5)
+            s = lease_call("/status", timeout=SERVER_TIMEOUT)
             kv["server_ok"] = "yes"
             h = s.get("holder")
             # Durations from the server (1.9.1); an older one gives only its own clock's times.
             if h:
                 kv.update(holder_host=h.get("host"), holder_name=h.get("name"),
-                          holder_for=_age(h["held_s"]) if "held_s" in h else f"since {h.get('granted')} server time")
+                          holder_for=_age(h["held_s"]) if "held_s" in h else f"since {str(h.get('granted'))[-8:]} server time")
             for i, w in enumerate(s.get("waiters") or [], 1):
                 ws = w.get("waited_s")
                 row("waiting", place=i, place_s=i, host=w.get("host"), name=w.get("name"),
@@ -1436,20 +1503,22 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                     waited=_age(ws) if ws is not None else "?", waited_s=ws or 0)
             left = s.get("left")
             if left:
-                ago = f"{_age(left['ago_s'])} ago" if "ago_s" in left else f"since {left.get('since')} server time"
+                ago = f"{_age(left['ago_s'])} ago" if "ago_s" in left else f"since {str(left.get('since'))[-8:]} server time"
                 kv.update(left_host=left.get("host"), left_name=left.get("name"), left_wii=left.get("wii"), left_ago=ago)
                 problems.append(dict(t=now - left.get("ago_s", 0), severity="err", kind="Wii left", host=left.get("host"),
                                      job=left.get("name"), id="-", detail=f"still: {left.get('wii')} ({ago})"))
         except OSError as e:
             kv["server_ok"], kv["server_err"] = "no", str(e)[:120]
+            if cache is not None:
+                cache.down_until, cache.down_error = time.monotonic() + SERVER_RETRY, str(e)[:120]
             problems.append(dict(t=now, severity="err", kind="lease server", host=socket.gethostname(), job="-",
                                  id="-", detail=f"unreachable now: {str(e)[:120]}"))
-        try:
-            evs = _server_history(since, cache)
-            kv["server_history"] = "yes"
-        except OSError as e:
-            kv["server_history"] = "no"
-            if kv.get("server_ok") == "yes":
+        if kv.get("server_ok") == "yes":           # no point asking a server that did not answer
+            try:
+                evs = _server_history(since, cache)
+                kv["server_history"] = "yes"
+            except OSError as e:
+                kv["server_history"] = "no"
                 problems.append(dict(t=now, severity="note", kind="no history", host=url, job="-", id="-",
                                      detail="the lease server keeps no history: rebuild its container (README step 7)"))
     if not evs:
@@ -1531,7 +1600,8 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             gaps.append(e["t"] - rel["t"])
             rel = None
     if gaps:
-        kv["handover"] = f"{len(gaps)} hand-overs, median {st_.median(gaps):.1f} s, max {max(gaps):.1f} s"
+        kv["handover"] = (f"{len(gaps)} hand-over(s) to a waiting workstation, median "
+                          f"{1000 * st_.median(gaps):.0f} ms, longest {1000 * max(gaps):.0f} ms")
     for e in sorted(grants, key=lambda e: e.get("waited_s", 0), reverse=True)[:8]:
         if e.get("waited_s", 0) >= 60:
             row("waits", when=_when(e["t"], now), when_s=int(e["t"]), waited=_age(e["waited_s"]),
@@ -1616,7 +1686,7 @@ def cmd_cancel(a):
     d, p = find(a.id)
     if d != PENDING:
         sys.exit(f"{a.id}: {'not found' if d is None else 'already ' + d.name}")
-    p.unlink()
+    fs_retry(p.unlink)
     print(f"cancelled {a.id}")
 
 

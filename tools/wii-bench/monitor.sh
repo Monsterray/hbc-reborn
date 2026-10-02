@@ -110,6 +110,8 @@ for a in "$@"; do
 done
 declare -A SORT_FIELD SORT_DESC FILTER_VAL
 MONITOR_DEFAULT_REFRESH=3 monitor_parse_args "" "${REST[@]+"${REST[@]}"}"
+[[ "$HOURS" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$HOURS" != "0" ] || { echo "monitor.sh: --hours takes a number of hours, not '$HOURS'" >&2; exit 2; }
+[[ "$REFRESH" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "monitor.sh: the refresh is a number of seconds, not '$REFRESH'" >&2; exit 2; }
 monitor_pages_init "$PAGE" queue errors history log
 
 ERRFILE="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/wiibench-monitor.$$")"
@@ -321,23 +323,27 @@ header_line() {
 # status_lines -- the two lines under the tab bar on every page: who has the Wii, and how
 # the lease server, this dispatcher and the window's problems stand.
 status_lines() {
-    local w host holder e n
+    local w plain host holder e n room
     k host; host="$V"; k holder_host; holder="$V"
     k left_host
     if [ -n "$V" ]; then
-        w="${c_bold}${c_red}Wii LEFT OUT OF HBC${c_reset}${c_red} by $V's "
-        k left_name; w+="$V: "; k left_wii; w+="$V ("; k left_ago; w+="$V)${c_reset}"
+        plain="Wii LEFT OUT OF HBC by $V's "
+        k left_name; plain+="$V: "; k left_wii; plain+="$V ("; k left_ago; plain+="$V)"
+        w="${c_bold}${c_red}${plain}${c_reset}"
     elif [ -n "$holder" ]; then
-        if [ "$holder" = "$host" ]; then w="${c_cyan}Wii: this workstation has it${c_reset}"
-        else w="${c_yellow}Wii: $holder has it${c_reset}"; fi
-        k holder_name; fit "$V" 60; w+=" for $V"
-        k holder_for; w+=" ${c_gray}($V)${c_reset}"
+        if [ "$holder" = "$host" ]; then plain="Wii: this workstation has it"; w="${c_cyan}${plain}${c_reset}"
+        else plain="Wii: $holder has it"; w="${c_yellow}${plain}${c_reset}"; fi
+        local for_; k holder_for; for_="$V"
+        k holder_name; fit "$V" $(( COLS - ${#plain} - ${#for_} - 9 > 50 ? 50 : COLS - ${#plain} - ${#for_} - 9 ))
+        plain+=" for $V ($for_)"; w+=" for $V ${c_gray}($for_)${c_reset}"
     elif [ "${KV[server]:-}" = "none" ] && [ "${KV[running_n]:-0}" != "0" ]; then
-        w="${c_cyan}Wii: in use by a job here${c_reset}"
+        plain="Wii: in use by a job here"; w="${c_cyan}${plain}${c_reset}"
     else
-        w="${c_green}Wii: free${c_reset}"
+        plain="Wii: free"; w="${c_green}${plain}${c_reset}"
     fi
-    k wii_last; [ -n "$V" ] && { fit "$V" 70; w+="  ${c_gray}last: $V${c_reset}"; }
+    # "last:" gets what is left of the line, and goes when too little is
+    room=$(( COLS - ${#plain} - 9 ))
+    k wii_last; (( room >= 20 )) && [ -n "$V" ] && { fit "$V" "$room"; w+="  ${c_gray}last: $V${c_reset}"; }
     lines+=("$w")
     case "${KV[server_ok]:-}" in
         yes) w="${c_green}lease server ok${c_reset}" ;;
@@ -417,7 +423,7 @@ render_queue() {
     fi
     lines+=("")
     # RECENT JOBS HERE -- as many as fit
-    heading "$c_cyan" "RECENT JOBS HERE" "newest first; HBC: how soon HBC came back" done
+    heading "$c_cyan" "RECENT JOBS HERE" "newest first; HBC: ok at the end, Ns later, or LEFT" done
     if (( ${NROWS[done]:-0} == 0 )); then
         placeholder "no finished jobs yet"
         return
@@ -429,7 +435,7 @@ render_queue() {
     for (( i = 0; i < ${NROWS[done]} && i < room; i++ )); do
         row_fields done "$i"; fit "${F[2]}" "$W"; nm="$V"
         color=""
-        if [ "${F[3]}" != "0" ] || [ "${F[5]}" = "left" ]; then color="$c_red"; fi
+        if [ "${F[3]}" != "0" ] || [ "${F[5]}" = "LEFT" ]; then color="$c_red"; fi
         table_row "$fmt" "$color" finished:"${F[0]}" id:"${F[1]}" name:"$nm" exit:"${F[3]}" \
             secs:"${F[4]}" hbc:"${F[5]}" chained:"${F[6]}"
         MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[2]}"
@@ -570,11 +576,14 @@ if [ "$ONCE" -eq 1 ]; then
     exit 0
 fi
 
-restore_cursor() { monitor_restore_cursor; cleanup; echo; exit 0; }
+restore_cursor() { printf '\e[?7h'; monitor_restore_cursor; cleanup; echo; exit 0; }
 trap restore_cursor INT TERM
 trap term_size WINCH
 term_size
 monitor_setup_screen
+# No line wrap while the dashboard is up (DECAWM off, back on in restore_cursor): a line wider
+# than the terminal is cut at its edge instead of pushing every line below it down one.
+printf '\e[?7l'
 
 # $WII_BENCH_MONITOR_TIMES=FILE appends each frame's milliseconds: collect, build, draw.
 TIMES="${WII_BENCH_MONITOR_TIMES:-}"
