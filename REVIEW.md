@@ -161,6 +161,41 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.0: a Custom app order, and no page cycling while files arrive
+
+- The pages cycling during network traffic: every file request under
+  `<device>:/apps/<name>/` queued that app for a reload, and each reload
+  was `browser_gen_view(BA_REFRESH, app)`: the full slide transition (about
+  half a second) to the changed app's page. `put -r` or `sync` of an app (or
+  a queue job installing one, like Nintendont's on the bench) slid once per
+  file, back and forth when the user was on another page. Now only the app
+  folder and the five files the list reads count, they are taken once file
+  requests have been quiet for 1 s, and the list is rebuilt in place
+  (`BA_RELOAD`: no slide, the selected app kept, else the page kept).
+  HBCS `app_list` counts slides and reloads; `tests/wii_app_list.py`
+  checks a 12-file burst gives one reload and no slide.
+- An app's dialog opens on Load, not Back, so A, A runs an app from the
+  D-pad. The pointer still clears the highlight as before (kept on
+  purpose: a person pointing picks the button).
+- HBC stopped answering hbc.py while an app's dialog or About was open
+  (only the list and, since 1.9.9, Options signalled the loader threads);
+  every view does now.
+- `tests/dolphin_meta.py` runs every `meta.xml` option through the menu in
+  Dolphin with a scripted Wii Remote, launching agent_app in its new
+  `meta` mode (prints argv, IOS, AHBPROT). Two findings on the way:
+  `tools/msgboard/dsu_pad.py`'s server thread died on Windows' UDP
+  "connection reset" (an ICMP port unreachable reported on the next
+  receive), so pad input stopped after Dolphin's client restarted; it now
+  carries on, and takes steps on stdin so a test keeps one server. And the
+  msgboard profile cannot return from an app to HBC, so the test uses
+  dolphin_smoke's throwaway profile with a pad mapping written into it.
+- Custom sort: `<sort_id>` in `meta.xml` (a whole number), lowest first,
+  apps without one after by name. `settings.xml` stores it as sort order 2;
+  an older HBC reading 2 falls back to Name. Options shows three tiny sort
+  buttons. `hbc.py order` reads and writes the ids.
+- Checked in Dolphin (`tests/dolphin_meta.py`) and on the bench Wii
+  (`tests/wii_app_list.py`).
+
 ### 1.9.8: two USB drives, GPT disks, cached reads of the frame
 
 - libogc's USB storage driver serves one drive: its command buffer,

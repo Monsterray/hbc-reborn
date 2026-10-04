@@ -58,6 +58,7 @@ static app_filter current_filter = APP_FILTER_ALL;
 static app_sort current_sort = APP_SORT_NAME;
 static bool cmp_descending = false;
 static bool cmp_release_date = false;
+static bool cmp_sort_id = false;
 
 static int cmp_app_entry (const void *p1, const void *p2) {
 	const app_entry *a1;
@@ -94,6 +95,16 @@ static int cmp_app_entry (const void *p1, const void *p2) {
 			return 1;
 
 		return -1;
+	}
+
+	if (cmp_sort_id && (a1->meta->has_sort_id || a2->meta->has_sort_id)) {
+		if (!a2->meta->has_sort_id)
+			return -1;
+		if (!a1->meta->has_sort_id)
+			return 1;
+		if (a1->meta->sort_id != a2->meta->sort_id)
+			return a1->meta->sort_id < a2->meta->sort_id ? -1 : 1;
+		// The same id: by name, as below.
 	}
 
 	if (!a1->meta->name && !a2->meta->name)
@@ -154,13 +165,23 @@ void app_entry_set_sort(app_sort sort) {
 	case APP_SORT_DATE:
 		cmp_descending = true;
 		cmp_release_date = true;
+		cmp_sort_id = false;
 		current_filter = APP_FILTER_DATEONLY;
 		current_sort = APP_SORT_DATE;
+		break;
+
+	case APP_SORT_CUSTOM:
+		cmp_descending = false;
+		cmp_release_date = false;
+		cmp_sort_id = true;
+		current_filter = APP_FILTER_ALL;
+		current_sort = APP_SORT_CUSTOM;
 		break;
 
 	default:
 		cmp_descending = false;
 		cmp_release_date = false;
+		cmp_sort_id = false;
 		current_filter = APP_FILTER_ALL;
 		current_sort = APP_SORT_NAME;
 		break;

@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.9.9**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.10.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -77,6 +77,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `sync [--delete] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only files whose size or CRC-32 differ; `--delete` also removes remote extras. |
 | `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
 | `mkdir REMOTE` | Create a directory and its parents. |
+| `order [--clear] APPS [FOLDER ...]` | HBC's Custom app order (see [Your own app order](#your-own-app-order)): with only `APPS` (e.g. `sd:/apps`), print the apps in that order with their `<sort_id>`; with folders, give them 10, 20, 30... in the order named, editing or making each `meta.xml`; `--clear` removes every `<sort_id>`. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
 | `key KEYS` | Send controller presses to HBC's HOME menu or the running agent app: `h` (HOME, opens or closes its overlay), `u` `d` `l` `r` (D-pad), `a`, `b`. For scripted tests and for driving the overlay from the PC. |
 | `screen FILE.png` | Save what the TV shows, from HBC or a running agent app, overlay included. |
@@ -92,7 +93,8 @@ The Wii address comes from `--wii`, then `$HBC_WII`, `$WII_BENCH_IP`, or
 Remote paths are `<device>:/<path>` with device `sd`, `usb`, `usb2` (a
 second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslashes are refused. An app you
 `put` or `sync` under `sd:/apps/` appears in the menu right away, and one you
-remove disappears.
+remove disappears. The menu reloads once the writes stop (a second of
+quiet), on the page it shows, so a whole folder's upload is one quiet reload.
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame
@@ -152,6 +154,33 @@ To install an app permanently, `sync` or `put -r` its folder (with
 `hbc_netlog_init()` gives up within about 5 s when the PC is unreachable, and
 `run` and `log` clear HBC's log target when they exit, so a stale target
 never stalls later apps.
+
+### Your own app order
+
+Options > Sort applications by: **Custom** lists apps by the `<sort_id>`
+number in their `meta.xml`, lowest first. Apps without one follow, by name,
+and apps with the same number go by name. Any whole number works, negative
+too:
+
+```xml
+<app version="1">
+  <name>WiiXplorer</name>
+  <sort_id>10</sort_id>
+  ...
+</app>
+```
+
+Edit the files on the card, or let `hbc.py order` do it from the PC:
+
+```sh
+python3 tools/hbc.py order sd:/apps                                # the order now
+python3 tools/hbc.py order sd:/apps wiixplorer usbloader_gx nintendont
+```
+
+The second gives those three 10, 20 and 30 and leaves the rest as they are;
+steps of 10 leave room to put an app between two others by hand. An app's
+update that brings its own `meta.xml` drops its number, so run `order`
+again afterwards.
 
 ### Keeping the tools inside your app
 
@@ -443,7 +472,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent's safety tools on a real Wii (assert, abort, deadlock, failed malloc, frame pacing, stub guard, Reset, stack overflow) | `make -C tests/agent_app`, then `python3 tests/wii_agent_safety.py --wii WII-IP` | Wii in any HBC |
 | DEV > Info and `hbc.py hw` on a real Wii | `python3 tests/wii_info.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.9.9 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.10.0 WII-IP` | installed channel running |
+| Every `meta.xml` option through the menu, driven by a scripted Wii Remote: arguments, `ahb_access`, `no_ios_reload`, author/coder, version, descriptions, icon, the Name, Date and Custom sorts, Load as the dialog's default | `python3 tests/dolphin_meta.py [OUTDIR]` | Dolphin (no other test Dolphin running) |
+| App list while files arrive (one in-place reload, no page slides) and `hbc.py order` (file requests only) | `python3 tests/wii_app_list.py WII-IP` | Wii in any HBC |
 | Both USB drives through HBC: list, write and read back 1 MiB on each (file requests only) | `python3 tests/wii_usb2.py WII-IP` | Wii in any HBC, two USB drives |
 | HOME overlay frame time in HBC, first opening and later (HOME presses only) | `python3 tests/wii_overlay_speed.py WII-IP`; right after an app returns: `python3 tests/wii_overlay_return.py WII-IP` | Wii in any HBC |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |

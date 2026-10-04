@@ -103,6 +103,10 @@ msgstr "Naam"
 msgid "Date"
 msgstr "Datum"
 
+#: source/dialogs.c:79
+msgid "Custom"
+msgstr "Eigen"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr "Nederlandse vertaling door bLAStY en ChronoX"

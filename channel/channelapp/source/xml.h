@@ -20,6 +20,9 @@ typedef struct {
 	u16 argslen;
 	bool ahb_access;
 	bool no_ios_reload;
+	// <sort_id>: where the Custom sort puts the app, lowest first.
+	bool has_sort_id;
+	int sort_id;
 } meta_info;
 
 typedef struct {

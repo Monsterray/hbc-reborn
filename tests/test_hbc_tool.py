@@ -588,6 +588,25 @@ class HBCToolTest(unittest.TestCase):
         self.assertEqual(self.fake.requests[start:], [])
         self.assertFalse(hbc.protected("sd:/apps/myapp"))
 
+    def test_order_sets_and_shows_sort_ids(self):
+        meta = b'<?xml version="1.0"?>\n<app version="1">\n\t<name>Beta</name>\n</app>\n'
+        hbc.put_file(WII, "sd:/ordertest/beta/meta.xml", meta)
+        hbc.put_file(WII, "sd:/ordertest/beta/boot.dol", b"b")
+        hbc.put_file(WII, "sd:/ordertest/alpha/boot.dol", b"a")
+        hbc.put_file(WII, "sd:/ordertest/gamma/boot.dol", b"g")
+        self.cli("order", "sd:/ordertest", "gamma", "beta")
+        self.assertEqual(self.fake.files["sd:/ordertest/beta/meta.xml"],
+                         meta.replace(b"</app>", b"\t<sort_id>20</sort_id>\n</app>"))
+        self.assertEqual(hbc.meta_sort_id(self.fake.files["sd:/ordertest/gamma/meta.xml"]), 10)
+        self.assertNotIn("sd:/ordertest/alpha/meta.xml", self.fake.files)
+        rows = json.loads(self.cli("--json", "order", "sd:/ordertest"))
+        self.assertEqual([(r["sort_id"], r["folder"]) for r in rows],
+                         [(10, "gamma"), (20, "beta"), (None, "alpha")])
+        self.cli("order", "--clear", "sd:/ordertest")
+        self.assertEqual(self.fake.files["sd:/ordertest/beta/meta.xml"], meta)
+        with self.assertRaises(SystemExit):
+            self.cli("order", "sd:/ordertest", "nosuch")
+
     def test_sync_uploads_only_changes(self):
         src = self.tmp / "src"
         self.make_tree(src, {"boot.dol": b"one", "data/a.bin": b"a" * 50, "data/b.bin": b"b"})

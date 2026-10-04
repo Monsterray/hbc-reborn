@@ -13,6 +13,7 @@
 #include "i18n.h"
 
 #include "browser.h"
+#include "devnet.h"
 
 #define AE_OFFSET 4
 #define TRANS_STEPS 20
@@ -122,6 +123,13 @@ void browser_gen_view(browser_action action, const app_entry *app) {
 		browser_set_top_offset(app);
 		break;
 
+	case BA_RELOAD:
+		if (app)
+			browser_set_top_offset(app);
+		else if (top_offset >= entry_count)
+			browser_set_top_offset(NULL);
+		break;
+
 	case BA_NEXT:
 		if (entry_count <= top_offset + (columns_new * ROWS))
 			return;
@@ -209,7 +217,20 @@ void browser_gen_view(browser_action action, const app_entry *app) {
 				y += theme_gfx[THEME_APP_ENTRY]->h;
 		}
 
-	for (i = 0; i < TRANS_STEPS; ++i) {
+	if (action == BA_RELOAD) {
+		// The new page where the slide would end, the old one gone at once.
+		x2 -= view_width;
+		for (j = 0; j < MAX_COLUMNS * ROWS; ++j)
+			v_browser->widgets[o2 + j].coords.x = x2 +
+					((j % columns_new) * theme_gfx[THEME_GRID_APP_ENTRY]->w);
+		v_browser->widgets[0].coords.x = xal;
+		v_browser->widgets[1].coords.x = xar;
+		widget_set_flag (&v_browser->widgets[0], WF_VISIBLE, less);
+		widget_set_flag (&v_browser->widgets[1], WF_VISIBLE, more);
+		view_set_focus (v_browser, focus);
+	}
+
+	for (i = 0; action != BA_RELOAD && i < TRANS_STEPS; ++i) {
 		vala += stepa;
 		s = roundf (156.0 * (cosf (vala) - 1));
 
@@ -253,6 +274,8 @@ void browser_gen_view(browser_action action, const app_entry *app) {
 
 	if (action == BA_REMOVE)
 		top_offset = 0;
+	else
+		devnet_note_app_list(action == BA_RELOAD);
 }
 
 void browser_set_focus(u32 bd) {

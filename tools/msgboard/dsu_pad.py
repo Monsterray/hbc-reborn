@@ -7,11 +7,15 @@ A step is `wait S`, `press BUTTON [S]` (hold, default 0.25 s),
 `down BUTTON` and `up BUTTON` (held across the steps between, as for a drag), or
 `stick X Y` (right stick, -1..1, held until the next stick step). Buttons are
 DSU names: Cross, Circle, Square, Triangle, L1, R1, PS, Options, Share, and
-PadN/PadS/PadE/PadW. Exits after the last step (and a second of idle)."""
+PadN/PadS/PadE/PadW. Exits after the last step (and a second of idle).
+
+With "-" for the steps, they come from stdin, one or more per line, and each
+line is answered with "ok" once done: a test drives the pad as it goes, from
+one server Dolphin stays connected to."""
 import socket, struct, sys, threading, time, zlib
 
 PORT = int(sys.argv[1])
-STEPS = [s.strip() for s in sys.argv[2].split(";") if s.strip()]
+STEPS = None if sys.argv[2] == "-" else [s.strip() for s in sys.argv[2].split(";") if s.strip()]
 UID = 0x48424352  # 'HBCR'
 
 state = {"buttons": set(), "rx": 0.0, "ry": 0.0}
@@ -80,6 +84,10 @@ def serve():
                         clients[addr] = time.monotonic()
         except socket.timeout:
             pass
+        except ConnectionResetError:
+            # Windows reports an earlier send's "port unreachable" (Dolphin
+            # restarted its client) on the next receive; carry on.
+            pass
         now = time.monotonic()
         if now >= next_send:
             next_send = now + 0.008
@@ -92,7 +100,7 @@ def serve():
 
 t = threading.Thread(target=serve, daemon=True)
 t.start()
-for step in STEPS:
+def run(step):
     word = step.split()
     if word[0] == "wait":
         time.sleep(float(word[1]))
@@ -111,5 +119,16 @@ for step in STEPS:
         with lock:
             state["rx"], state["ry"] = float(word[1]), float(word[2])
     print(time.strftime("%H:%M:%S"), step, "clients", len(clients), flush=True)
+
+
+if STEPS is None:
+    for line in sys.stdin:
+        for step in (s.strip() for s in line.split(";")):
+            if step:
+                run(step)
+        print("ok", flush=True)
+else:
+    for step in STEPS:
+        run(step)
 time.sleep(1)
 done.set()

@@ -1,6 +1,7 @@
 #include <malloc.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <ogcsys.h>
@@ -300,6 +301,17 @@ meta_info *meta_parse(char *fn) {
 			t.tm_year -= 1900;
 
 			res->release_date = mktime (&t);
+		}
+	}
+
+	s = _get_elem_cdata(node, "sort_id");
+	if (s) {
+		char *end;
+		long id = strtol(s, &end, 10);
+
+		if (end != s) {
+			res->has_sort_id = true;
+			res->sort_id = id;
 		}
 	}
 

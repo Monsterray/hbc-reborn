@@ -92,6 +92,16 @@ LUN", ...). `unmountable` maps a device that was there but held no volume HBC
 mounts to what its first sector holds, for example `"usb":"GPT: 1 EFI 2
 NTFS"`.
 
+`app_list` is the app list as the menu last drew it: `sort` (`name`,
+`date` or `custom`), `order` (folder names, as many as fit in 640 bytes),
+`slides` (times it slid to a page: start, page turns, a new sort) and
+`reloads` (times it was rebuilt in place after file requests changed apps).
+File requests that touch an app folder, or `boot.dol`, `boot.elf`,
+`meta.xml`, `icon.png` or `theme.zip` at its top, reload that app once
+file requests under the apps folder have been quiet for a second, on the
+page shown; files deeper in the folder (an app's data) reload nothing but
+still hold a pending reload back, so a folder's upload reloads once.
+
 `upload` is `null`, or what became of the last Wiiload (or USB Gecko)
 upload: `seq` counts uploads from 1, `result` is `launched`, `installed` (a
 ZIP app; `text` is its folder), `theme`, `declined` (a ZIP nobody agreed to)

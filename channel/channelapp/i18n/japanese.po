@@ -107,6 +107,10 @@ msgstr "名前"
 msgid "Date"
 msgstr "日付"
 
+#: source/dialogs.c:79
+msgid "Custom"
+msgstr "カスタム"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr "日本語、JEEB氏による翻訳"

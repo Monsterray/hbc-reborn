@@ -444,11 +444,27 @@ void main_real(void) {
 				break;
 			}
 
-			// Reload apps that developer file requests added or changed.
-			char changed[64];
+			// Reload apps that developer file requests added or changed, once
+			// the requests have gone quiet, on the page shown: the selected app
+			// stays selected (else the last app changed is). Each change used
+			// to slide to the changed app's page, so an upload of many files
+			// looked like the pages cycling.
+			char changed[64], sel[64] = "";
+			app_entry *added = NULL;
+			bool reload = false;
+
 			while (devnet_take_app_change(changed, sizeof(changed))) {
-				app_sel = app_entry_add(changed);
-				browser_gen_view(BA_REFRESH, app_sel);
+				if (!reload) {
+					app_sel = browser_sel();
+					if (app_sel)
+						snprintf(sel, sizeof(sel), "%s", app_sel->dirname);
+				}
+				added = app_entry_add(changed);
+				reload = true;
+			}
+			if (reload) {
+				app_sel = sel[0] ? app_entry_find(sel) : NULL;
+				browser_gen_view(BA_RELOAD, app_sel ? app_sel : added);
 			}
 		}
 
@@ -465,6 +481,10 @@ void main_real(void) {
 			app_entry_scan();
 
 		view_plot (v_current, DIALOG_MASK_COLOR, &bd, &bh, &bu);
+		// hbc.py keeps getting answers while an app's details or About
+		// show (the app list signals below, once it knows nothing loads).
+		if (v_current != v_browser)
+			loader_signal_threads ();
 
 		frame++;
 		if (v_last != v_current) {

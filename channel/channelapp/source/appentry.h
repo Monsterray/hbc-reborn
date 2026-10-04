@@ -37,7 +37,9 @@ typedef enum {
 
 typedef enum {
 	APP_SORT_NAME = 0,
-	APP_SORT_DATE
+	APP_SORT_DATE,
+	// meta.xml's <sort_id>, lowest first; apps without one after, by name.
+	APP_SORT_CUSTOM
 } app_sort;
 
 extern const char *app_path;

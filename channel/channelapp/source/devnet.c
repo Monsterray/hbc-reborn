@@ -61,6 +61,13 @@ static bool have_lastlog;
 #define CHANGES 8
 static char changes[CHANGES][64];
 static u32 change_count;
+static u64 change_last;
+#define CHANGE_QUIET_MS 1000
+
+// HBCS "app_list": the list as shown, which the menu notes as it draws it
+// (devnet_note_app_list), so this thread never reads the entries themselves.
+static char app_list[640];
+static u32 app_list_slides, app_list_reloads;
 
 static u32 init_ms;
 // Startup steps (devnet_boot_mark), for HBCS "startup".
@@ -152,6 +159,7 @@ int agent_overlay_cost_json(char *buf, int size);
 int agent_remote_diag(char *buf, int size);
 
 static s32 status_json(char *buf, size_t size) {
+	u32 level;
 	bool mounted[DEVICE_COUNT] = { false };
 	int active = app_entry_get_status(mounted);
 	// newlib's heap spans MEM1 and MEM2, so mallinfo's "used" figure counts
@@ -230,6 +238,11 @@ static s32 status_json(char *buf, size_t size) {
 	else
 		n += snprintf(buf + n, size - n, ",\"lastlog\":null");
 	n += agent_overlay_cost_json(buf + n, size - n);
+	_CPU_ISR_Disable(level);
+	n += snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
+				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",
+				  app_list_slides, app_list_reloads);
+	_CPU_ISR_Restore(level);
 	n += snprintf(buf + n, size - n, ",\"remotes\":");
 	n += agent_remote_diag(buf + n, size - n);
 	n += snprintf(buf + n, size - n, "}");
@@ -253,10 +266,23 @@ static void note_app_change(const char *path) {
 			strncasecmp(path + len, ":/apps/", 7))
 		return;
 
+	// Any write under apps holds a pending reload back: an upload of a
+	// whole folder reloads it once, after its last file.
+	_CPU_ISR_Disable(level);
+	change_last = gettime();
+	_CPU_ISR_Restore(level);
+
 	name = path + len + 7;
 	p = strchr(name, '/');
 	len = p ? (size_t) (p - name) : strlen(name);
 	if (!len || len >= sizeof(dirname))
+		return;
+	// A file deeper in the folder, or one the list does not show, changes
+	// nothing there (an app's own data, a save).
+	if (p && p[1] && (strchr(p + 1, '/') ||
+			(strcasecmp(p + 1, app_fn_boot_dol) && strcasecmp(p + 1, app_fn_boot_elf) &&
+			 strcasecmp(p + 1, app_fn_meta) && strcasecmp(p + 1, app_fn_icon) &&
+			 strcasecmp(p + 1, app_fn_theme))))
 		return;
 	memcpy(dirname, name, len);
 	dirname[len] = 0;
@@ -270,12 +296,42 @@ static void note_app_change(const char *path) {
 	_CPU_ISR_Restore(level);
 }
 
+void devnet_note_app_list(bool reload) {
+	static const char *sorts[] = { "name", "date", "custom" };
+	static char list[sizeof(app_list)];
+	app_sort sort = app_entry_get_sort();
+	u32 i, level;
+	int n;
+
+	n = snprintf(list, sizeof(list), "\"sort\":\"%s\",\"order\":[",
+				 (u32) sort < 3 ? sorts[sort] : "?");
+	// Folder names, as many as fit (json_text keeps them printable).
+	for (i = 0; i < entry_count && entries[i]; ++i) {
+		char name[64];
+
+		json_text(name, entries[i]->dirname, sizeof(name));
+		if (n + strlen(name) + 8 >= sizeof(list))
+			break;
+		n += snprintf(list + n, sizeof(list) - n, "%s\"%s\"", i ? "," : "", name);
+	}
+	snprintf(list + n, sizeof(list) - n, "]");
+
+	_CPU_ISR_Disable(level);
+	strcpy(app_list, list);
+	if (reload)
+		app_list_reloads++;
+	else
+		app_list_slides++;
+	_CPU_ISR_Restore(level);
+}
+
 bool devnet_take_app_change(char *dirname, size_t size) {
 	bool found = false;
 	u32 level;
 
 	_CPU_ISR_Disable(level);
-	if (change_count) {
+	if (change_count && ticks_to_millisecs(diff_ticks(change_last, gettime())) >=
+			CHANGE_QUIET_MS) {
 		strncpy(dirname, changes[0], size - 1);
 		dirname[size - 1] = 0;
 		memmove(changes[0], changes[1], --change_count * sizeof(changes[0]));
@@ -312,7 +368,7 @@ static void set_log_target(u32 ip, u16 port) {
 }
 
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[2048];
+	char json[2560];
 
 	// `hbc.py key` and `screen`: HOME-overlay presses and the TV picture,
 	// answered by the agent that draws HBC's HOME menu (home.c).

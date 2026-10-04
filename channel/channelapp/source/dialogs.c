@@ -41,6 +41,7 @@ static const char *caption_device_names[DEVICE_COUNT];
 static const char *caption_sort_by;
 static const char *caption_sort_name;
 static const char *caption_sort_date;
+static const char *caption_sort_custom;
 
 static const char *l_version;
 static const char *l_coder;
@@ -76,6 +77,7 @@ void dialogs_theme_reinit (void) {
 	caption_sort_by = _("Sort applications by:");
 	caption_sort_name = _("Name");
 	caption_sort_date = _("Date");
+	caption_sort_custom = _("Custom");
 
 	string_about_pre =
 		"Credits\n\n"
@@ -242,7 +244,7 @@ view * dialog_app (const app_entry *entry, const view *sub_view) {
 	x += gap + theme_gfx[THEME_BUTTON_TINY]->w;
 	widget_button (&v->widgets[10], x, yb, 1, BTN_TINY, caption_back);
 
-	view_set_focus (v, 10);
+	view_set_focus (v, 9);   // Load, the usual choice
 
 	return v;
 }
@@ -516,10 +518,11 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // DLG_DEV_FIRST + n is the n-th button here; dlg_devices[n] is its device
 // (appentry.c's order, which settings.xml stores).
 #define DLG_DEV_FIRST 4
-#define DLG_SORT_NAME (DLG_DEV_FIRST + DEVICE_COUNT)
-#define DLG_SORT_DATE (DLG_SORT_NAME + 1)
-#define DLG_OK (DLG_SORT_NAME + 2)
-#define DLG_BACK (DLG_SORT_NAME + 3)
+// The sort buttons, DLG_SORT_FIRST + an app_sort, in tiny buttons as well.
+#define DLG_SORT_FIRST (DLG_DEV_FIRST + DEVICE_COUNT)
+#define DLG_SORTS 3
+#define DLG_OK (DLG_SORT_FIRST + DLG_SORTS)
+#define DLG_BACK (DLG_OK + 1)
 #define DLG_WIDGETS (DLG_BACK + 1)
 
 static const int dlg_devices[DEVICE_COUNT] = { 0, 1, 4, 2, 3 };
@@ -528,7 +531,7 @@ static const int dlg_devices[DEVICE_COUNT] = { 0, 1, 4, 2, 3 };
 static const int dlg_rows[][3] = {
 	{ DLG_DEV_FIRST, DLG_DEV_FIRST + 1, DLG_DEV_FIRST + 2 },
 	{ DLG_DEV_FIRST + 3, DLG_DEV_FIRST + 4, -1 },
-	{ DLG_SORT_NAME, DLG_SORT_DATE, -1 },
+	{ DLG_SORT_FIRST, DLG_SORT_FIRST + 1, DLG_SORT_FIRST + 2 },
 	{ DLG_OK, DLG_BACK, -1 },
 };
 #define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
@@ -561,6 +564,18 @@ static int dlg_slot(int device) {
 		if (dlg_devices[i] == device)
 			return i;
 	return -1;
+}
+
+static void dlg_sort_captions(view *v, app_sort sort) {
+	static const char **captions[DLG_SORTS] = {
+		&caption_sort_name, &caption_sort_date, &caption_sort_custom
+	};
+	int i;
+
+	for (i = 0; i < DLG_SORTS; ++i)
+		widget_button_set_caption(&v->widgets[DLG_SORT_FIRST + i],
+									(int) sort == i ? FONT_BUTTON : FONT_BUTTON_DESEL,
+									*captions[i]);
 }
 
 dialog_options_result show_options_dialog(const view *sub_view) {
@@ -598,8 +613,9 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		widget_button (&v->widgets[DLG_DEV_FIRST + 3 + i],
 						(dw - 2 * tw - gap) / 2 + i * (gap + tw), row2, 1, BTN_TINY, NULL);
 
-	widget_button (&v->widgets[DLG_SORT_NAME], 52, sort_y, 1, BTN_SMALL, NULL);
-	widget_button (&v->widgets[DLG_SORT_DATE], dw - 52 - sw, sort_y, 1, BTN_SMALL, NULL);
+	for (i = 0; i < DLG_SORTS; ++i)
+		widget_button (&v->widgets[DLG_SORT_FIRST + i], gap + i * (gap + tw), sort_y, 1,
+						BTN_TINY, NULL);
 
 	widget_button (&v->widgets[DLG_OK], 32, dh - sh - 16, 1, BTN_SMALL, caption_ok);
 	widget_button (&v->widgets[DLG_BACK], dw - sw - 32, dh - sh - 16, 1, BTN_SMALL,
@@ -619,12 +635,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		widget_set_flag (&v->widgets[DLG_DEV_FIRST + i], WF_ENABLED, status[dlg_devices[i]]);
 	}
 
-	widget_button_set_caption(&v->widgets[DLG_SORT_NAME],
-								ret.sort == APP_SORT_DATE ? FONT_BUTTON_DESEL : FONT_BUTTON,
-								caption_sort_name);
-	widget_button_set_caption(&v->widgets[DLG_SORT_DATE],
-								ret.sort == APP_SORT_DATE ? FONT_BUTTON : FONT_BUTTON_DESEL,
-								caption_sort_date);
+	dlg_sort_captions(v, ret.sort);
 
 	view_set_focus (v, DLG_BACK);
 
@@ -668,14 +679,10 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 				ret.device = dlg_devices[v->focus - DLG_DEV_FIRST];
 				widget_button_set_caption(&v->widgets[v->focus], FONT_BUTTON,
 											caption_device_names[ret.device]);
-			} else if (v->focus == DLG_SORT_NAME || v->focus == DLG_SORT_DATE) {
-				ret.sort = v->focus == DLG_SORT_NAME ? APP_SORT_NAME : APP_SORT_DATE;
-				widget_button_set_caption(&v->widgets[DLG_SORT_NAME],
-											ret.sort == APP_SORT_NAME ? FONT_BUTTON :
-											FONT_BUTTON_DESEL, caption_sort_name);
-				widget_button_set_caption(&v->widgets[DLG_SORT_DATE],
-											ret.sort == APP_SORT_DATE ? FONT_BUTTON :
-											FONT_BUTTON_DESEL, caption_sort_date);
+			} else if ((v->focus >= DLG_SORT_FIRST) &&
+					(v->focus < DLG_SORT_FIRST + DLG_SORTS)) {
+				ret.sort = (app_sort) (v->focus - DLG_SORT_FIRST);
+				dlg_sort_captions(v, ret.sort);
 			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}

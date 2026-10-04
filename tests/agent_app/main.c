@@ -41,6 +41,7 @@
 #include <unistd.h>
 
 #include <ogcsys.h>
+#include <ogc/machine/processor.h>
 #include <fat.h>
 #include <wiiuse/wpad.h>
 
@@ -202,6 +203,17 @@ int main(int argc, char **argv) {
 
 	if (!strcmp(mode, "exit"))
 		return 0;
+	// What HBC gave the app from its meta.xml (tests/dolphin_meta.py): the
+	// arguments, and the IOS and AHBPROT that ahb_access and no_ios_reload set.
+	if (!strcmp(mode, "meta")) {
+		printf("agent_app: argc %d\n", argc);
+		for (int i = 0; i < argc; ++i)
+			printf("agent_app: argv[%d] '%s'\n", i, argv[i]);
+		printf("agent_app: IOS %d v%d, AHBPROT %s, DVD %s\n", IOS_GetVersion(),
+			   IOS_GetRevision(), read32(0x0d800064) == 0xffffffff ? "open" : "closed",
+			   read32(0x0d800180) & (1 << 21) ? "off" : "on");
+		return 0;
+	}
 	if (!strcmp(mode, "stay") && argc > 2)
 		seconds = atoi(argv[2]);
 

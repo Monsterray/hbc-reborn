@@ -9,6 +9,7 @@ import argparse
 import errno
 import json
 import os
+import re
 import shutil
 import socket
 import struct
@@ -508,6 +509,87 @@ def list_dir(wii, remote):
     return entries, truncated
 
 
+# ---- App order (meta.xml <sort_id>) ------------------------------------------
+
+SORT_ID_STEP = 10
+SORT_ID_RE = re.compile(rb"<sort_id>\s*(-?\d+)\s*</sort_id>")
+
+
+def meta_sort_id(meta):
+    """The <sort_id> in a meta.xml's bytes, or None."""
+    m = SORT_ID_RE.search(meta or b"")
+    return int(m.group(1)) if m else None
+
+
+def meta_name(meta):
+    m = re.search(rb"<name>\s*(.*?)\s*</name>", meta or b"", re.S)
+    return m.group(1).decode("utf-8", "replace") if m else None
+
+
+def meta_with_sort_id(meta, folder, sort_id):
+    """meta.xml's bytes with <sort_id> set (None removes it); a folder with no
+    meta.xml gets a minimal one, named after the folder."""
+    if meta is None:
+        if sort_id is None:
+            return None
+        name = folder.replace("&", "&amp;").replace("<", "&lt;").encode()
+        return (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                b'<app version="1">\n  <name>' + name + b'</name>\n  <sort_id>' +
+                str(sort_id).encode() + b'</sort_id>\n</app>\n')
+    if sort_id is None:
+        return re.sub(rb"[ \t]*<sort_id>[^<]*</sort_id>[ \t]*\r?\n?", b"", meta)
+    tag = b"<sort_id>" + str(sort_id).encode() + b"</sort_id>"
+    if re.search(rb"<sort_id>[^<]*</sort_id>", meta):
+        return re.sub(rb"<sort_id>[^<]*</sort_id>", tag, meta, count=1)
+    m = re.search(rb"(\r?\n?)([ \t]*)</app>", meta)
+    if not m:
+        raise HBCError("meta.xml has no </app>")
+    nl = m.group(1) or b"\n"
+    indent = re.search(rb"\n([ \t]+)<", meta)
+    indent = indent.group(1) if indent else b"  "
+    return meta[:m.start()] + m.group(1) + indent + tag + nl + m.group(2) + meta[m.start(2):]
+
+
+def app_order(wii, apps_dir):
+    """[(sort_id or None, folder, name, meta bytes or None)] for each app
+    folder, in HBC's Custom order (ids first, lowest first; then by name)."""
+    entries, _ = list_dir(wii, apps_dir)
+    rows = []
+    for kind, _, folder in entries:
+        if kind != "d":
+            continue
+        try:
+            meta = get_file(wii, remote_join(apps_dir, folder + "/meta.xml"))
+        except HBCError:
+            meta = None
+        rows.append((meta_sort_id(meta), folder, meta_name(meta), meta))
+    rows.sort(key=lambda r: (r[0] is None, r[0] or 0, (r[2] or r[1]).lower()))
+    return rows
+
+
+def set_order(wii, apps_dir, folders, out=print):
+    """Give the folders <sort_id> 10, 20, 30... in the order given."""
+    rows = {r[1].lower(): r for r in app_order(wii, apps_dir)}
+    for i, folder in enumerate(folders):
+        row = rows.get(folder.lower())
+        if not row:
+            raise HBCError(f"no app folder {folder!r} in {apps_dir}")
+        sort_id = (i + 1) * SORT_ID_STEP
+        if row[0] == sort_id:
+            continue
+        put_file(wii, remote_join(apps_dir, row[1] + "/meta.xml"),
+                 meta_with_sort_id(row[3], row[1], sort_id))
+        out(f"{sort_id:5} {row[1]}")
+
+
+def clear_order(wii, apps_dir, out=print):
+    for sort_id, folder, _, meta in app_order(wii, apps_dir):
+        if sort_id is not None:
+            put_file(wii, remote_join(apps_dir, folder + "/meta.xml"),
+                     meta_with_sort_id(meta, folder, None))
+            out(f"cleared {folder}")
+
+
 def remote_tree(wii, top):
     """List a whole remote tree before anything acts on it. Returns
     (dirs, parents first; {file: size}), paths relative to top joined by "/"."""
@@ -898,6 +980,7 @@ Commands
     sync LOCAL PATH     upload only what changed (--delete removes extras)
     rm PATH             delete a file or empty folder (-r for a whole folder)
     mkdir PATH          make a folder
+    order DIR [APP...]  HBC's Custom app order: show it, or set it (meta.xml)
   Apps built with the in-app agent (sdk/hbc_agent.h)
     exit                ask the running app to go back to HBC
     key KEYS            press buttons on it: h (HOME), u d l r, a, b, 1, 2, w
@@ -1012,6 +1095,19 @@ Deletes a file or an empty folder, or with -r a whole folder. Device roots
 hbc.py mkdir PATH
 
 Makes a folder, and any missing folders above it.""",
+    "order": """\
+hbc.py order [--clear] APPS [FOLDER ...]
+
+HBC's Custom sort (Options > Sort applications by: Custom) puts apps in the
+order of the <sort_id> number in their meta.xml, lowest first; apps without
+one follow, by name. With only APPS (such as sd:/apps), order prints the
+apps in that order with their ids. With folders, it gives them 10, 20, 30...
+in the order named, editing (or making) each meta.xml; the others keep
+theirs. --clear removes every <sort_id> under APPS. The list on the Wii
+updates once the writes stop.
+
+    hbc.py order sd:/apps
+    hbc.py order sd:/apps wiixplorer usbloader_gx nintendont""",
     "exit": """\
 hbc.py exit
 
@@ -1075,7 +1171,7 @@ GLOBAL_FLAGS = {"--wii": ("wii", True), "--log-port": ("log_port", True),
 COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--recursive": ("recursive", ("get", "put", "rm")),
                  "--delete": ("delete", ("sync",)),
-                 "--clear": ("clear", ("crash",)),
+                 "--clear": ("clear", ("crash", "order")),
                  "--yes": ("yes", ("send", "run"))}
 VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
                "--name": ("name", ("send", "run"))}
@@ -1314,6 +1410,20 @@ def main(argv=None):
         elif cmd == "mkdir":
             need(1, "REMOTE")
             file_request(wii, "M", args[0])
+        elif cmd == "order":
+            need(1, "[--clear] APPS [FOLDER ...]")
+            if flags.get("clear"):
+                clear_order(wii, args[0])
+            elif len(args) > 1:
+                set_order(wii, args[0], args[1:])
+            else:
+                rows = app_order(wii, args[0])
+                if opts.json:
+                    print(json.dumps([{"sort_id": r[0], "folder": r[1], "name": r[2]}
+                                      for r in rows]))
+                for sort_id, folder, name, _ in [] if opts.json else rows:
+                    shown = "" if sort_id is None else sort_id
+                    print(f"{shown:>5} {folder}" + (f"  ({name})" if name else ""))
         elif cmd == "sync":
             need(2, "[--delete] LOCALDIR REMOTEDIR")
             sync(wii, args[0], args[1], delete=flags.get("delete", False))

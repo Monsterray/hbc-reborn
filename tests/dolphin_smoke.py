@@ -102,10 +102,15 @@ def wad_title(image):
 
 
 class Dolphin:
-    def __init__(self, image, sd=False, mmu=False):
+    def __init__(self, image, sd=False, mmu=False, extra=(), files=None):
+        """extra: more -C settings; files: {path in the profile: text}, such
+        as a controller mapping (tests/dolphin_meta.py)."""
         self.dolphin = find_dolphin()
         self.profile = pathlib.Path(tempfile.mkdtemp(prefix="hbc-dolphin-"))
-        settings = SETTINGS + (SD_SETTINGS if sd else [])
+        for rel, text in (files or {}).items():
+            (self.profile / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.profile / rel).write_text(text)
+        settings = SETTINGS + (SD_SETTINGS if sd else []) + list(extra)
         if mmu:
             settings.append("Dolphin.Core.MMU=True")
         if str(image).lower().endswith(".wad"):

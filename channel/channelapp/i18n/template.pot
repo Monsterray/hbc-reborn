@@ -107,6 +107,10 @@ msgstr ""
 msgid "Date"
 msgstr ""
 
+#: source/dialogs.c:79
+msgid "Custom"
+msgstr ""
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr ""

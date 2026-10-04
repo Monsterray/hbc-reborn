@@ -10,7 +10,10 @@ typedef enum {
 	BA_REMOVE,
 	BA_REFRESH,
 	BA_NEXT,
-	BA_PREV
+	BA_PREV,
+	// Rebuild the page in place, without the slide: the page that shows the
+	// app given, else the current page (apps changed over the network).
+	BA_RELOAD
 } browser_action;
 
 view * browser_init(void);
