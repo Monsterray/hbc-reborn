@@ -155,6 +155,31 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.7: the HOME overlay at 60 fps
+
+- HBC's overlay drew a frame in 35 ms (28 fps at best; with a remote
+  pointing, every frame is redrawn). HBC lends its framebuffers, so the
+  overlay reads HBC's last frame in place, and it did so through the
+  uncached address it got from `VIDEO_GetCurrentFramebuffer()`: 600 KB a
+  frame, a bus transaction a byte. It now flushes that range once when it
+  opens and reads through the cache (nothing writes the frame meanwhile).
+  The background dim also goes a 32-bit pixel pair at a time instead of a
+  byte.
+- Animations stepped by frames drawn, so slow frames stretched and jerked
+  them; they now step by sixtieths of a second elapsed (at most 8 at once).
+- Measured on the bench Wii (`tests/wii_overlay_speed.py`,
+  `tests/agent_cost.py`): HBC's overlay 35.7 ms a frame to 5.2 (3.2 ms the
+  dim, 1.3 the menus), the in-app overlay 8.7 to 6.5; no pass of the loop
+  over one frame (16.7 ms) in either. HBCS `overlay` now says where the
+  time goes (`dim_us`, `draw_us`, `loop_max_us`, `input_max_us`,
+  `slow_loops`).
+- A report of the overlay being slow only on its first opening right after
+  an app returns did not reproduce on the bench (no remote is connected
+  there; `tests/wii_overlay_return.py`): each opening drew at the same speed,
+  and the play log's NAND write had finished 1 s after HBC started. If it
+  comes back, `hbc.py status` right after shows `input_max_us` and
+  `slow_loops` for that opening.
+
 ### 1.9.6: the agent's safety tools, DEV > Info's hardware pages, `hbc.py hw`
 
 Safety tools (`sdk/hbc_agent/safety.c`, on by default, opt-outs in

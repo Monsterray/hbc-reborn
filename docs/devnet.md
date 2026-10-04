@@ -242,8 +242,14 @@ reports its own cost: `agent_idle_wakes` and `agent_idle_us` (wake-ups to
 check for a connection and their total time), `agent_request_ms` (time
 spent answering), and `heap_arena` (newlib's heap size). After the overlay
 was open, the agent and HBC report `overlay`: frames drawn, `avg_us` and
-`max_us` per drawn frame, `bytes` borrowed, and `buffers` (`own`, `lent`,
-or `app's` when it drew over the app's framebuffer).
+`max_us` per drawn frame (`dim_us` and `draw_us` its two parts, averaged:
+the dimmed background and the menus), `loops` (every pass of its loop, one
+per vertical blank when nothing changes), `loop_max_us` (the longest pass,
+the wait for the VI included), `input_max_us` (the longest read of the
+remotes and the PC's keys), `slow_loops` (passes over 1/30 s, which the user
+sees as a stutter), `bytes` borrowed, and `buffers` (`own`, `lent`, or
+`app's` when it drew over the app's framebuffer). Its animations move by
+time, not by frame, so a slow frame never slows them.
 
 ### HOME overlay
 

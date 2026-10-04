@@ -108,14 +108,18 @@ void ov_dim_copy(ov_canvas *dst, const uint8_t *src, int level) {
 		memcpy(dst->fb, src, n);
 		return;
 	}
-	for (i = 0; i + 4 <= n; i += 4) {
-		uint8_t *d = dst->fb + i;
-		const uint8_t *s = src + i;
+	// One 32-bit load and store per pixel pair (Y Cb Y Cr, big-endian):
+	// a quarter of the memory operations of byte at a time.
+	{
+		const uint32_t *s = (const uint32_t *) src;
+		uint32_t *d = (uint32_t *) dst->fb;
 
-		d[0] = lut_y[s[0]];
-		d[1] = lut_c[s[1]];
-		d[2] = lut_y[s[2]];
-		d[3] = lut_c[s[3]];
+		for (i = 0; i + 4 <= n; i += 4) {
+			uint32_t v = *s++;
+
+			*d++ = (uint32_t) lut_y[v >> 24] << 24 | (uint32_t) lut_c[(v >> 16) & 0xff] << 16 |
+				   (uint32_t) lut_y[(v >> 8) & 0xff] << 8 | lut_c[v & 0xff];
+		}
 	}
 }
 

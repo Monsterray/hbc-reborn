@@ -142,6 +142,10 @@ typedef struct {
 	bool closing, paused;
 	int dev_tab, dev_page, wm_page, wm_sel;
 	int info_page;                      /* OV_INFO_*, on DEV's info page */
+	/* Sixtieths of a second since the last ov_step(), which the caller
+	   sets: animations move by time, so a slow frame never slows them.
+	   0 counts as 1. */
+	int ticks;
 	int focus, bar_focus;
 	int after;                          /* action to run once closed */
 	int after_arg;

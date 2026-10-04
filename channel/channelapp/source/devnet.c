@@ -146,8 +146,7 @@ static s32 crash_json(char *buf, size_t size) {
 }
 
 // What the HOME overlay (home.c, via sdk/hbc_agent) cost the last time.
-void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes,
-						const char **buffers);
+int agent_overlay_cost_json(char *buf, int size);
 // Each Wii Remote's command queue, as the overlay sees it.
 int agent_remote_diag(char *buf, int size);
 
@@ -222,16 +221,7 @@ static s32 status_json(char *buf, size_t size) {
 				lastlog_why(lastlog.why), (unsigned) lastlog.len);
 	else
 		n += snprintf(buf + n, size - n, ",\"lastlog\":null");
-	{
-		u32 frames, avg, max, bytes;
-		const char *buffers;
-
-		agent_overlay_cost(&frames, &avg, &max, &bytes, &buffers);
-		if (frames)
-			n += snprintf(buf + n, size - n, ",\"overlay\":{\"frames\":%u,\"avg_us\":%u,"
-					"\"max_us\":%u,\"bytes\":%u,\"buffers\":\"%s\"}",
-					frames, avg, max, bytes, buffers);
-	}
+	n += agent_overlay_cost_json(buf + n, size - n);
 	n += snprintf(buf + n, size - n, ",\"remotes\":");
 	n += agent_remote_diag(buf + n, size - n);
 	n += snprintf(buf + n, size - n, "}");

@@ -55,14 +55,16 @@ enum {
 #define CW ((IW - 10) / 2)
 #define LOG_LINES 14
 #define LOG_COLS 47
-#define SPEED 26       // animation step per frame, of 256 (about 0.17 s)
+#define SPEED 26       // animation step per 1/60 s, of 256 (about 0.17 s)
 
 static int ease(int t) {
 	return t * t * (3 * 256 - 2 * t) / (256 * 256);
 }
 
-static int approach(int t, bool up) {
-	t += up ? SPEED : -SPEED;
+static int approach(const ov_ui *ui, int t, bool up) {
+	int step = SPEED * (ui->ticks > 0 ? ui->ticks : 1);
+
+	t += up ? step : -step;
 	return t < 0 ? 0 : t > 256 ? 256 : t;
 }
 
@@ -849,7 +851,7 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *user) {
 	bool settled;
 
-	ui->frame++;
+	ui->frame += ui->ticks > 0 ? ui->ticks : 1;
 	if (ui->paused) {
 		if (pressed & OV_HOME) {
 			ui->paused = false;
@@ -899,14 +901,14 @@ bool ov_step(ov_ui *ui, const ov_ext *e, unsigned pressed, ov_act_fn act, void *
 	if (ui->closing)
 		ui->menu = MENU_NONE;
 
-	ui->dev_t = approach(ui->dev_t, ui->menu == MENU_DEV);
-	ui->wm_t = approach(ui->wm_t, ui->menu == MENU_WM);
-	ui->exit_t = approach(ui->exit_t, ui->menu == MENU_EXIT);
-	ui->slot_t[0] = approach(ui->slot_t[0], ui->menu == MENU_SLOT0);
-	ui->slot_t[1] = approach(ui->slot_t[1], ui->menu == MENU_SLOT1);
+	ui->dev_t = approach(ui, ui->dev_t, ui->menu == MENU_DEV);
+	ui->wm_t = approach(ui, ui->wm_t, ui->menu == MENU_WM);
+	ui->exit_t = approach(ui, ui->exit_t, ui->menu == MENU_EXIT);
+	ui->slot_t[0] = approach(ui, ui->slot_t[0], ui->menu == MENU_SLOT0);
+	ui->slot_t[1] = approach(ui, ui->slot_t[1], ui->menu == MENU_SLOT1);
 	settled = !ui->dev_t && !ui->wm_t && !ui->exit_t && !ui->slot_t[0] && !ui->slot_t[1];
 	// The strip leaves only once every menu has closed.
-	ui->open_t = approach(ui->open_t, !(ui->closing && settled));
+	ui->open_t = approach(ui, ui->open_t, !(ui->closing && settled));
 
 	layout(ui, e);
 	ui->hover = ui->pointer >= 0 ? hit(ui, ui->px[ui->pointer], ui->py[ui->pointer]) : 0;

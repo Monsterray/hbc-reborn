@@ -171,7 +171,11 @@ static unsigned ir_read(int x[4], int y[4], float angle[4]) {
 
 static struct {
 	u32 frames, avg_us, max_us;
-	u32 bytes;          // framebuffer memory it borrowed
+	u32 dim_us, draw_us;    // averages of the two parts of a drawn frame
+	u32 loops, loop_max_us; // every pass of the loop, VI wait included
+	u32 input_max_us;       // the longest read of remotes and PC keys
+	u32 slow_loops;         // passes over 1/30 s: the user sees a stutter
+	u32 bytes;              // framebuffer memory it borrowed
 	const char *buffers;
 } cost;
 
@@ -189,12 +193,16 @@ int agent_overlay_state(char *buf, int size) {
 					ui->dev_page, ui->info_page);
 }
 
-void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes, const char **buffers) {
-	*frames = cost.frames;
-	*avg_us = cost.avg_us;
-	*max_us = cost.max_us;
-	*bytes = cost.bytes;
-	*buffers = cost.buffers;
+// HBCS: ,"overlay":{...} after the overlay was open, else nothing.
+int agent_overlay_cost_json(char *buf, int size) {
+	if (!cost.frames)
+		return 0;
+	return snprintf(buf, size, ",\"overlay\":{\"frames\":%u,\"avg_us\":%u,\"max_us\":%u,"
+					"\"dim_us\":%u,\"draw_us\":%u,\"loops\":%u,\"loop_max_us\":%u,"
+					"\"input_max_us\":%u,\"slow_loops\":%u,\"bytes\":%u,\"buffers\":\"%s\"}",
+					cost.frames, cost.avg_us, cost.max_us, cost.dim_us, cost.draw_us, cost.loops,
+					cost.loop_max_us, cost.input_max_us, cost.slow_loops, cost.bytes,
+					cost.buffers);
 }
 
 int agent_wpad_handles(void) {
@@ -972,6 +980,8 @@ typedef struct {
 } ov_run;
 
 static ov_run *run;
+static u64 last_step;   // the overlay loop's last pass
+static int ui_ticks = 1;
 
 static void toast(const char *msg) {
 	snprintf(run->ext.toast, sizeof(run->ext.toast), "%s", msg);
@@ -1163,8 +1173,13 @@ static void poll(ov_run *r) {
 					 c->accel[1], c->accel[2]);
 	}
 
-	if (r->toast_frames && !--r->toast_frames)
-		e->toast[0] = 0;
+	if (r->toast_frames) {
+		r->toast_frames -= ui_ticks;
+		if (r->toast_frames <= 0) {
+			r->toast_frames = 0;
+			e->toast[0] = 0;
+		}
+	}
 }
 
 static void set_all(void (*fn)(int chan)) {
@@ -1475,7 +1490,13 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	// place instead of copying it, so an app with no 600 KB to spare (Wii64) can
 	// still open the overlay.
 	bool frozen_in_place = !own && !same_ram(fb[0], app_fb) && (!fb[1] || !same_ram(fb[1], app_fb));
-	r.frozen = frozen_in_place ? app_fb : memalign(32, size);
+	// Read through the cache: uncached, every byte is a bus transaction,
+	// which made HBC's overlay take 35 ms a frame. Flushed first, so the
+	// cache holds what the VI shows; nothing writes the frame meanwhile.
+	u8 *app_cached = (u8 *) (((u32) app_fb & 0x1fffffff) | 0x80000000);
+
+	DCFlushRange(app_cached, size);
+	r.frozen = frozen_in_place ? app_cached : memalign(32, size);
 	if (own) {
 		fb[0] = memalign(32, size);
 		fb[1] = memalign(32, size);
@@ -1501,7 +1522,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	inside = true;
 	run = &r;
 	if (!frozen_in_place)
-		memcpy(r.frozen, app_fb, size);
+		memcpy(r.frozen, app_cached, size);
 	LWP_CreateThread(&sd, sd_thread, &r, NULL, 16 * 1024, 30);
 
 	// Like the Wii's HOME Menu, pausing stops every remote's rumble; an app
@@ -1519,14 +1540,29 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 			(cost.buffers[0] == 'o' ? size : 0);
 	if (!frozen_in_place)
 		cost.bytes += size;   // the frozen frame
+	last_step = gettime();
 	while (running) {
 		ov_canvas c;
 		unsigned pressed, pointing;
 		int px[4], py[4];
 		float pa[4] = { 0, 0, 0, 0 };
 		u8 *back = fb[fb[1] ? cur : 0];
-		u64 t0 = gettime();
+		u64 t0 = gettime(), t1;
 		u32 us;
+
+		// Time since the last step, in sixtieths: animations follow it.
+		us = ticks_to_microsecs(diff_ticks(last_step, t0));
+		ui.ticks = (us + 8333) / 16667;
+		if (ui.ticks < 1)
+			ui.ticks = 1;
+		if (ui.ticks > 8)
+			ui.ticks = 8;   // a long stall jumps ahead, not to the end
+		cost.loops++;
+		if (us > cost.loop_max_us)
+			cost.loop_max_us = us;
+		if (us > 33333)
+			cost.slow_loops++;
+		last_step = t0;
 
 		if (agent_cfg()->on_frame)
 			agent_cfg()->on_frame(agent_cfg()->user);
@@ -1535,11 +1571,15 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		pressed = read_input();
 		pointing = ir_read(px, py, pa);
 		ov_point(&ui, px, py, pa, pointing, last_chan);
+		us = ticks_to_microsecs(diff_ticks(t0, gettime()));
+		if (us > cost.input_max_us)
+			cost.input_max_us = us;
 		cal_sample();
 		fx_tick();
 		// An Exit choice the app handles: close everything first.
 		if (r.exit_choice && !ui.closing)
 			pressed = OV_HOME;
+		ui_ticks = ui.ticks;
 		running = ov_step(&ui, &r.ext, pressed, act, NULL);
 
 		// Nothing on screen changed (a menu just sitting there): keep the
@@ -1553,11 +1593,17 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		c.h = r.h;
 		c.stride = r.w * 2;
 		ov_noclip(&c);
+		t1 = gettime();
 		if (ui.paused) {
 			memcpy(back, r.frozen, size);
 		} else {
 			ov_dim_copy(&c, r.frozen, 96 + (ui.menu ? 0 : 60) + (256 - ui.open_t) * 100 / 256);
+			us = ticks_to_microsecs(diff_ticks(t1, gettime()));
+			cost.dim_us = (cost.dim_us * cost.frames + us) / (cost.frames + 1);
+			t1 = gettime();
 			ov_draw(&ui, &r.ext, &c);
+			us = ticks_to_microsecs(diff_ticks(t1, gettime()));
+			cost.draw_us = (cost.draw_us * cost.frames + us) / (cost.frames + 1);
 		}
 		DCFlushRange(back, size);
 		// The overlay's own work this frame, before it waits for the VI.

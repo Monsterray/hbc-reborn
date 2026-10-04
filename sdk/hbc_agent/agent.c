@@ -89,8 +89,7 @@ static u64 idle_ticks, request_ticks;
 int agent_wpad_handles(void) __attribute__((weak));
 int agent_remote_diag(char *buf, int size) __attribute__((weak));
 int agent_overlay_state(char *buf, int size) __attribute__((weak));
-void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes,
-						const char **buffers) __attribute__((weak));
+int agent_overlay_cost_json(char *buf, int size) __attribute__((weak));
 volatile bool agent_crash_stay;
 volatile bool agent_listen_enabled = true;
 
@@ -456,16 +455,8 @@ static s32 status_json(char *buf, size_t size) {
 		n += agent_remote_diag(buf + n, size - n);
 	}
 	// What the HOME overlay cost the last time it was open.
-	if (agent_overlay_cost) {
-		u32 frames, avg, max, bytes;
-		const char *buffers;
-
-		agent_overlay_cost(&frames, &avg, &max, &bytes, &buffers);
-		if (frames)
-			n += snprintf(buf + n, size - n, ",\"overlay\":{\"frames\":%u,\"avg_us\":%u,"
-					"\"max_us\":%u,\"bytes\":%u,\"buffers\":\"%s\"}",
-					frames, avg, max, bytes, buffers);
-	}
+	if (agent_overlay_cost_json)
+		n += agent_overlay_cost_json(buf + n, size - n);
 	n += snprintf(buf + n, size - n, ",\"agent_idle_wakes\":%u,\"agent_idle_us\":%u,"
 			"\"agent_request_ms\":%u", idle_wakes, (u32) ticks_to_microsecs(idle_ticks),
 			(u32) ticks_to_millisecs(request_ticks));
