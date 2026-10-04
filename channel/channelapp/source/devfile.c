@@ -26,7 +26,7 @@
 #define DEVFILE_LIST_MAX (256 * 1024)
 #define DEVFILE_CHUNK (32 * 1024)
 
-static const char *device_names[] = { "sd", "usb", "carda", "cardb" };
+static const char *device_names[] = { "sd", "usb", "carda", "cardb", "usb2" };
 #define DEVICES (sizeof(device_names) / sizeof(device_names[0]))
 
 // The raw ops' buffer, allocated per request so an idle agent holds none.
@@ -82,6 +82,8 @@ bool devfile_reply(s32 s, s32 status, const void *data, u32 len) {
 
 // Accept only "<device>:/<path>" on a known device, without "..", "//",
 // backslashes, or control characters.
+void (*devfile_mount_hook)(const char *path);
+
 static bool valid_path(const char *path) {
 	const char *p = strchr(path, ':');
 	size_t len;
@@ -309,6 +311,8 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 	if (path_len > 4 && path[path_len - 1] == '/' && path[path_len - 2] != ':')
 		path[path_len - 1] = 0;
 
+	if (valid_path(path) && devfile_mount_hook)
+		devfile_mount_hook(path);
 	if (!valid_path(path)) {
 		devfile_reply(s, -EINVAL, NULL, 0);
 		return;

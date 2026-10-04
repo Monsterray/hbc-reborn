@@ -218,6 +218,8 @@ static void storage_page(ov_page *pg) {
 
 	volume_row(pg, "SD card", "sd:/");
 	volume_row(pg, "USB drive", "usb:/");
+	if (FindDevice("usb2:/") >= 0)
+		volume_row(pg, "USB drive 2", "usb2:/");
 	// NAND: clusters of 16 KiB; the Wii Menu counts blocks of 128 KiB.
 	if (ISFS_Initialize() >= 0 && ISFS_GetStats(stats) >= 0) {
 		u32 cluster = stats[0] ? stats[0] : 0x4000, free_c = stats[1], used_c = stats[2];

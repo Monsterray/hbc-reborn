@@ -21,6 +21,10 @@ extern devfile_transfer devfile_last;
 // Called after a put or delete of path succeeds.
 typedef void (*devfile_change_fn)(const char *path);
 
+// Set by a host that mounts devices on demand (HBC: a drive other than the
+// one its app list comes from); called with each valid path before use.
+extern void (*devfile_mount_hook)(const char *path);
+
 // Runs the HBCF request whose 16-byte header is hdr on socket s. The calling
 // thread runs at prio (and the transfer worker with it) until the request
 // ends, then returns to restore_prio.

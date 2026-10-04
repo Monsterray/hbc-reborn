@@ -12,6 +12,7 @@
 #include <sdcard/gcsd.h>
 #include <sdcard/wiisd_io.h>
 #include <ogc/usbstorage.h>
+#include "usbmsd.h"
 #include <fat.h>
 
 #include "../config.h"
@@ -40,11 +41,15 @@ const char *app_fn_theme = "theme.zip";
 const char *app_fn_meta = "meta.xml";
 const char *app_fn_icon = "icon.png";
 
+// The order is what settings.xml stores as the preferred device, so a new
+// device goes at the end. Both USB drives come from usbmsd.c: libogc's own
+// driver serves only one.
 static device_t devices[DEVICE_COUNT] = {
 	{ "sd", &__io_wiisd, false },
-	{ "usb", &__io_usbstorage, false },
+	{ "usb", &usbmsd_disc[0], false },
 	{ "carda", &__io_gcsda, false },
-	{ "cardb", &__io_gcsdb, false }
+	{ "cardb", &__io_gcsdb, false },
+	{ "usb2", &usbmsd_disc[1], false }
 };
 
 static int device_active = -1;
@@ -349,9 +354,140 @@ exit:
 	return entry;
 }
 
+// Devices mounted for file requests alone (devnet's hbc.py access), beside
+// the active one the app list comes from. Only those that cost nothing to
+// look for: SD and the USB drives, not the SDGecko slots.
+static u32 le32(const u8 *p) {
+	return p[0] | p[1] << 8 | p[2] << 16 | (u32) p[3] << 24;
+}
+
+// C12A7328-F81F-11D2-BA4B-00A0C93EC93B as stored (its first three fields
+// little-endian).
+static const u8 efi_system[16] = { 0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+								   0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b };
+
+static bool extra_mounted[DEVICE_COUNT];
+static bool mount_failed[DEVICE_COUNT];   // inserted, but fatMountSimple failed
+static char mount_why[DEVICE_COUNT][48];  // what its first sector holds instead
+
+// What is on a drive FAT could not mount, from its first sector: a boot
+// sector's file system name, else the MBR's partition types.
+static void probe_fs(int i) {
+	static u8 sector[512] ATTRIBUTE_ALIGN(32);
+	char *out = mount_why[i];
+	int p, n = 0;
+
+	out[0] = 0;
+	if (!devices[i].device->readSectors(0, 1, sector)) {
+		snprintf(out, sizeof(mount_why[i]), "first sector unreadable");
+		return;
+	}
+	if (!memcmp(sector + 3, "NTFS    ", 8) || !memcmp(sector + 3, "EXFAT   ", 8)) {
+		snprintf(out, sizeof(mount_why[i]), "%.5s volume, no partition table", sector + 3);
+		return;
+	}
+	if (sector[510] != 0x55 || sector[511] != 0xaa) {
+		snprintf(out, sizeof(mount_why[i]), "no boot sector or partition table");
+		return;
+	}
+	// GPT: each partition's file system, by its boot sector's name.
+	if (sector[0x1be + 4] == 0xee && devices[i].device->readSectors(1, 1, sector) &&
+			!memcmp(sector, "EFI PART", 8)) {
+		static u8 entries[512] ATTRIBUTE_ALIGN(32);
+		u32 lba = le32(sector + 72), size = le32(sector + 84), e;
+
+		n = snprintf(out, sizeof(mount_why[i]), "GPT:");
+		if (size >= 128 && size <= 512 && !(512 % size) &&
+				devices[i].device->readSectors(lba, 1, entries))
+			for (e = 0; e < 512 / size; ++e) {
+				const u8 *q = entries + e * size;
+				u32 first = le32(q + 32);
+				const char *fs;
+
+				if (!first)
+					continue;
+				if (!memcmp(q, efi_system, 16))
+					fs = "EFI";
+				else if (!devices[i].device->readSectors(first, 1, sector))
+					fs = "?";
+				else
+					fs = !memcmp(sector + 3, "NTFS", 4) ? "NTFS" :
+						 !memcmp(sector + 3, "EXFAT", 5) ? "exFAT" :
+						 !memcmp(sector + 0x52, "FAT32", 5) ? "FAT32" :
+						 !memcmp(sector + 0x36, "FAT", 3) ? "FAT" : "other";
+				n += snprintf(out + n, sizeof(mount_why[i]) - n, " %u %s", e + 1, fs);
+			}
+		return;
+	}
+	n = snprintf(out, sizeof(mount_why[i]), "MBR types");
+	for (p = 0; p < 4; ++p) {
+		u8 type = sector[0x1be + p * 16 + 4];
+
+		if (type)
+			n += snprintf(out + n, sizeof(mount_why[i]) - n, " %02x%s", type,
+						  type == 0x07 ? " (NTFS/exFAT)" : type == 0xee ? " (GPT)" :
+						  type == 0x83 ? " (Linux)" : "");
+	}
+}
+
+const char *app_entry_mount_why(int device) {
+	return device >= 0 && device < DEVICE_COUNT && mount_failed[device] ? mount_why[device] :
+		NULL;
+}
+static mutex_t extra_lock = LWP_MUTEX_NULL;
+
+// libogc's FAT finds partitions only in an MBR. A GPT disk (its MBR holds just
+// the 0xee protective entry) gets each of its partitions tried in turn, at
+// its first sector. 512-byte sectors (usbmsd.c offers no others).
+static bool mount_gpt(int i) {
+	static u8 sector[512] ATTRIBUTE_ALIGN(32);
+	const DISC_INTERFACE *d = devices[i].device;
+	u32 entries_lba, count, size, e, lba = 0;
+
+	if (!d->readSectors(1, 1, sector) || memcmp(sector, "EFI PART", 8))
+		return false;
+	entries_lba = le32(sector + 72);   // the high word is 0 below 2 TiB
+	count = le32(sector + 80);
+	size = le32(sector + 84);
+	if (size < 128 || size > 512 || 512 % size || count > 128)
+		return false;
+	for (e = 0; e < count; ++e) {
+		const u8 *p;
+		u32 first;
+
+		if (lba != entries_lba + e * size / 512) {
+			lba = entries_lba + e * size / 512;
+			if (!d->readSectors(lba, 1, sector))
+				return false;
+		}
+		p = sector + e * size % 512;
+		first = le32(p + 32);
+		if (!le32(p) && !le32(p + 4) && !le32(p + 8) && !le32(p + 12))
+			continue;   // an unused entry
+		if (!memcmp(p, efi_system, 16))
+			continue;   // the EFI System Partition: boot files, not the user's
+		if (first && fatMount(devices[i].name, d, first, 4, 64)) {
+			hlog("Mounted %s: GPT partition %u at sector %u\n", devices[i].name, e + 1, first);
+			return true;
+		}
+		if (lba != entries_lba + e * size / 512 || !d->readSectors(lba, 1, sector))
+			return false;   // fatMount used the buffer's sector? reread it
+	}
+	return false;
+}
+
+static bool mount_device(int i) {
+	return fatMountSimple(devices[i].name, devices[i].device) || mount_gpt(i);
+}
+
 static bool _mount(int index) {
-	devices[index].last_status = fatMountSimple(devices[index].name,
-											devices[index].device);
+	// Already mounted for file requests: it becomes the active one as is.
+	if (extra_mounted[index]) {
+		extra_mounted[index] = false;
+		devices[index].last_status = true;
+		return true;
+	}
+	devices[index].last_status = mount_device(index);
 
 	if (!devices[index].last_status) {
 		devices[index].device->shutdown();
@@ -586,6 +722,12 @@ void app_entry_deinit (void) {
 			fatUnmount(devices[device_active].name);
 			devices[device_active].device->shutdown();
 		}
+		for (i = 0; i < DEVICE_COUNT; ++i)
+			if (extra_mounted[i]) {
+				fatUnmount(devices[i].name);
+				devices[i].device->shutdown();
+				extra_mounted[i] = false;
+			}
 
 		USB_Deinitialize();
 	}
@@ -637,7 +779,7 @@ int app_entry_get_status(bool *status) {
 
 	if (status)
 		for (i = 0; i < DEVICE_COUNT; ++i)
-			status[i] = ta_ae.status[i];
+			status[i] = ta_ae.status[i] || extra_mounted[i];
 
 	return device_active;
 }
@@ -668,6 +810,41 @@ void app_entry_set_device(int device) {
 
 	ta_ae.umount = true;
 	ta_ae.mount = device;
+}
+
+void app_entry_mount_for(const char *path) {
+	const char *colon = strchr(path, ':');
+	int i;
+
+	if (!colon)
+		return;
+	for (i = 0; i < DEVICE_COUNT; ++i)
+		if (strlen(devices[i].name) == (size_t) (colon - path) &&
+				!strncmp(path, devices[i].name, colon - path))
+			break;
+	// The active device is the app list's; the SDGecko slots are probed
+	// only from Options.
+	if (i == DEVICE_COUNT || i == device_active || !strncmp(devices[i].name, "card", 4))
+		return;
+	if (extra_lock == LWP_MUTEX_NULL)
+		LWP_MutexInit(&extra_lock, false);
+	LWP_MutexLock(extra_lock);
+	if (extra_mounted[i] && !devices[i].device->isInserted()) {
+		fatUnmount(devices[i].name);
+		devices[i].device->shutdown();
+		extra_mounted[i] = false;
+	}
+	if (!extra_mounted[i] && i != device_active && devices[i].device->startup() &&
+			devices[i].device->isInserted()) {
+		extra_mounted[i] = mount_device(i);
+		if (extra_mounted[i])
+			hlog("Mounted %s: for file requests\n", devices[i].name);
+		else {
+			mount_failed[i] = true;   // a drive, but no FAT on it
+			probe_fs(i);
+		}
+	}
+	LWP_MutexUnlock(extra_lock);
 }
 
 bool app_entry_get_path(char *buf) {

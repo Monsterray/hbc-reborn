@@ -67,10 +67,12 @@ void dialogs_theme_reinit (void) {
 	caption_back = _("Back");
 	caption_options = _("Options");
 	caption_device = _("Device:");
-	caption_device_names[0] = _("Internal SD Slot");
-	caption_device_names[1] = _("USB device");
-	caption_device_names[2] = _("SDGecko Slot A");
-	caption_device_names[3] = _("SDGecko Slot B");
+	// Short enough for the theme's tiny buttons, three to a row.
+	caption_device_names[0] = _("SD card");
+	caption_device_names[1] = _("USB 1");
+	caption_device_names[2] = _("SDGecko A");
+	caption_device_names[3] = _("SDGecko B");
+	caption_device_names[4] = _("USB 2");
 	caption_sort_by = _("Sort applications by:");
 	caption_sort_name = _("Name");
 	caption_sort_date = _("Date");
@@ -509,48 +511,98 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 	return res;
 }
 
+// The device buttons: three on the first row (SD and the two USB drives),
+// the two SDGecko slots on the second, in the theme's tiny buttons. Widget
+// DLG_DEV_FIRST + n is the n-th button here; dlg_devices[n] is its device
+// (appentry.c's order, which settings.xml stores).
 #define DLG_DEV_FIRST 4
+#define DLG_SORT_NAME (DLG_DEV_FIRST + DEVICE_COUNT)
+#define DLG_SORT_DATE (DLG_SORT_NAME + 1)
+#define DLG_OK (DLG_SORT_NAME + 2)
+#define DLG_BACK (DLG_SORT_NAME + 3)
+#define DLG_WIDGETS (DLG_BACK + 1)
+
+static const int dlg_devices[DEVICE_COUNT] = { 0, 1, 4, 2, 3 };
+
+// Rows of widgets for up and down: the column carries over, clamped.
+static const int dlg_rows[][3] = {
+	{ DLG_DEV_FIRST, DLG_DEV_FIRST + 1, DLG_DEV_FIRST + 2 },
+	{ DLG_DEV_FIRST + 3, DLG_DEV_FIRST + 4, -1 },
+	{ DLG_SORT_NAME, DLG_SORT_DATE, -1 },
+	{ DLG_OK, DLG_BACK, -1 },
+};
+#define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
+
+static void dlg_move_row(view *v, int dir) {
+	int r, c, n, to = -1;
+
+	for (r = 0; r < DLG_ROWS; ++r)
+		for (c = 0; c < 3; ++c)
+			if (dlg_rows[r][c] == v->focus)
+				goto found;
+	view_set_focus (v, DLG_BACK);
+	return;
+found:
+	for (r += dir; r >= 0 && r < DLG_ROWS && to < 0; r += dir) {
+		for (n = c; n >= 0 && dlg_rows[r][n] < 0; --n)
+			;
+		// Skip a row whose button there is greyed out (no device).
+		if (n >= 0 && (v->widgets[dlg_rows[r][n]].flags & WF_ENABLED))
+			to = dlg_rows[r][n];
+	}
+	if (to >= 0)
+		view_set_focus (v, to);
+}
+
+static int dlg_slot(int device) {
+	int i;
+
+	for (i = 0; i < DEVICE_COUNT; ++i)
+		if (dlg_devices[i] == device)
+			return i;
+	return -1;
+}
 
 dialog_options_result show_options_dialog(const view *sub_view) {
 	u32 frame = 0;
 	view *v;
 	dialog_options_result ret;
-	int device;
+	int device, slot;
 	app_sort sort;
 	bool status[DEVICE_COUNT];
 	u32 i, bd;
+	u16 dw = theme_gfx[THEME_DIALOG]->w, dh = theme_gfx[THEME_DIALOG]->h;
+	u16 tw = theme_gfx[THEME_BUTTON_TINY]->w, th = theme_gfx[THEME_BUTTON_TINY]->h;
+	u16 sw = theme_gfx[THEME_BUTTON_SMALL]->w, sh = theme_gfx[THEME_BUTTON_SMALL]->h;
+	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, sort_y = row2 + th + 28;
 
 	app_entry_poll_status(true);
 
-	v = view_new (12, sub_view, (view_width - theme_gfx[THEME_DIALOG]->w) / 2,
+	v = view_new (DLG_WIDGETS, sub_view, (view_width - dw) / 2,
 					44, TEX_LAYER_DIALOGS, PADS_B);
 
 	widget_image (&v->widgets[0], 0, 0, 0, theme_gfx[THEME_DIALOG],
 					NULL, false, NULL);
 	widget_label (&v->widgets[1], 32, 16, 1, caption_options,
-					theme_gfx[THEME_DIALOG]->w - 64, FA_CENTERED, FA_ASCENDER, FONT_DLGTITLE);
+					dw - 64, FA_CENTERED, FA_ASCENDER, FONT_DLGTITLE);
 
 	widget_label (&v->widgets[2], 32, 60, 1, caption_device,
-					theme_gfx[THEME_DIALOG]->w - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
-	widget_label (&v->widgets[3], 32, 212, 1, caption_sort_by,
-					theme_gfx[THEME_DIALOG]->w - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
+					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
+	widget_label (&v->widgets[3], 32, sort_y - 4, 1, caption_sort_by,
+					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
 
-	widget_button (&v->widgets[4], 52, 64, 1, BTN_SMALL, NULL);
-	widget_button (&v->widgets[5], 268, 64, 1, BTN_SMALL, NULL);
-	widget_button (&v->widgets[6], 52, 128, 1, BTN_SMALL, NULL);
-	widget_button (&v->widgets[7], 268, 128, 1, BTN_SMALL, NULL);
+	for (i = 0; i < 3; ++i)
+		widget_button (&v->widgets[DLG_DEV_FIRST + i], gap + i * (gap + tw), 64, 1,
+						BTN_TINY, NULL);
+	for (i = 0; i < 2; ++i)
+		widget_button (&v->widgets[DLG_DEV_FIRST + 3 + i],
+						(dw - 2 * tw - gap) / 2 + i * (gap + tw), row2, 1, BTN_TINY, NULL);
 
-	widget_button (&v->widgets[8], 52, 216, 1, BTN_SMALL, NULL);
-	widget_button (&v->widgets[9], 268, 216, 1, BTN_SMALL, NULL);
+	widget_button (&v->widgets[DLG_SORT_NAME], 52, sort_y, 1, BTN_SMALL, NULL);
+	widget_button (&v->widgets[DLG_SORT_DATE], dw - 52 - sw, sort_y, 1, BTN_SMALL, NULL);
 
-	widget_button (&v->widgets[10], 32,
-					theme_gfx[THEME_DIALOG]->h -
-					theme_gfx[THEME_BUTTON_SMALL]->h - 16 , 1, BTN_SMALL,
-					caption_ok);
-	widget_button (&v->widgets[11], theme_gfx[THEME_DIALOG]->w -
-					theme_gfx[THEME_BUTTON_SMALL]->w - 32,
-					theme_gfx[THEME_DIALOG]->h -
-					theme_gfx[THEME_BUTTON_SMALL]->h - 16 , 1, BTN_SMALL,
+	widget_button (&v->widgets[DLG_OK], 32, dh - sh - 16, 1, BTN_SMALL, caption_ok);
+	widget_button (&v->widgets[DLG_BACK], dw - sw - 32, dh - sh - 16, 1, BTN_SMALL,
 					caption_back);
 
 	device = app_entry_get_status(status);
@@ -561,35 +613,20 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	ret.sort = sort;
 
 	for (i = 0; i < DEVICE_COUNT; ++i) {
-		if (i == device)
-			widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
-										FONT_BUTTON,
-										caption_device_names[i]);
-		else
-			widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
-										FONT_BUTTON_DESEL,
-										caption_device_names[i]);
-
-		widget_set_flag (&v->widgets[DLG_DEV_FIRST + i], WF_ENABLED, status[i]);
+		widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
+									dlg_devices[i] == device ? FONT_BUTTON : FONT_BUTTON_DESEL,
+									caption_device_names[dlg_devices[i]]);
+		widget_set_flag (&v->widgets[DLG_DEV_FIRST + i], WF_ENABLED, status[dlg_devices[i]]);
 	}
 
-	if (ret.sort == APP_SORT_DATE) {
-		widget_button_set_caption(&v->widgets[8],
-									FONT_BUTTON_DESEL,
-									caption_sort_name);
-		widget_button_set_caption(&v->widgets[9],
-									FONT_BUTTON,
-									caption_sort_date);
-	} else {
-		widget_button_set_caption(&v->widgets[8],
-									FONT_BUTTON,
-									caption_sort_name);
-		widget_button_set_caption(&v->widgets[9],
-									FONT_BUTTON_DESEL,
-									caption_sort_date);
-	}
+	widget_button_set_caption(&v->widgets[DLG_SORT_NAME],
+								ret.sort == APP_SORT_DATE ? FONT_BUTTON_DESEL : FONT_BUTTON,
+								caption_sort_name);
+	widget_button_set_caption(&v->widgets[DLG_SORT_DATE],
+								ret.sort == APP_SORT_DATE ? FONT_BUTTON : FONT_BUTTON_DESEL,
+								caption_sort_date);
 
-	view_set_focus (v, 11);
+	view_set_focus (v, DLG_BACK);
 
 	dialog_fade (v, true);
 
@@ -598,7 +635,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 
 		for (i = 0; i < DEVICE_COUNT; ++i)
 			widget_set_flag (&v->widgets[DLG_DEV_FIRST + i], WF_ENABLED,
-								status[i]);
+								status[dlg_devices[i]]);
 
 		view_plot (v, DIALOG_MASK_COLOR, &bd, NULL, NULL);
 		frame++;
@@ -610,12 +647,10 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 			view_set_focus_next (v);
 
 		if (bd & PADS_UP)
-			if (v->focus == view_move_focus(v, -2))
-				view_move_focus(v, -4);
+			dlg_move_row(v, -1);
 
 		if (bd & PADS_DOWN)
-			if (v->focus == view_move_focus(v, 2))
-				view_move_focus(v, 4);
+			dlg_move_row(v, 1);
 
 		if (bd & (PADS_B | PADS_1))
 			break;
@@ -623,30 +658,23 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		if ((bd & PADS_A) && (v->focus != -1)) {
 			if ((v->focus >= DLG_DEV_FIRST) &&
 					(v->focus < DLG_DEV_FIRST + DEVICE_COUNT)) {
-				widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + ret.device],
-											FONT_BUTTON_DESEL,
+				slot = dlg_slot(ret.device);
+				if (slot >= 0)
+					widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + slot],
+												FONT_BUTTON_DESEL,
+												caption_device_names[ret.device]);
+				ret.device = dlg_devices[v->focus - DLG_DEV_FIRST];
+				widget_button_set_caption(&v->widgets[v->focus], FONT_BUTTON,
 											caption_device_names[ret.device]);
-				ret.device = v->focus - DLG_DEV_FIRST;
-				widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + ret.device],
-											FONT_BUTTON,
-											caption_device_names[ret.device]);
-			} else if (v->focus == 8) {
-				ret.sort = APP_SORT_NAME;
-				widget_button_set_caption(&v->widgets[8],
-											FONT_BUTTON,
-											caption_sort_name);
-				widget_button_set_caption(&v->widgets[9],
-											FONT_BUTTON_DESEL,
-											caption_sort_date);
-			} else if (v->focus == 9) {
-				ret.sort = APP_SORT_DATE;
-				widget_button_set_caption(&v->widgets[8],
-											FONT_BUTTON_DESEL,
-											caption_sort_name);
-				widget_button_set_caption(&v->widgets[9],
-											FONT_BUTTON,
-											caption_sort_date);
-			} else if ((v->focus == 10) || (v->focus == 11)) {
+			} else if (v->focus == DLG_SORT_NAME || v->focus == DLG_SORT_DATE) {
+				ret.sort = v->focus == DLG_SORT_NAME ? APP_SORT_NAME : APP_SORT_DATE;
+				widget_button_set_caption(&v->widgets[DLG_SORT_NAME],
+											ret.sort == APP_SORT_NAME ? FONT_BUTTON :
+											FONT_BUTTON_DESEL, caption_sort_name);
+				widget_button_set_caption(&v->widgets[DLG_SORT_DATE],
+											ret.sort == APP_SORT_DATE ? FONT_BUTTON :
+											FONT_BUTTON_DESEL, caption_sort_date);
+			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}
 		}
@@ -655,7 +683,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 			app_entry_poll_status(false);
 	}
 
-	if ((bd & PADS_A) && (v->focus == 10))
+	if ((bd & PADS_A) && (v->focus == DLG_OK))
 		ret.confirmed = true;
 
 	dialog_fade (v, false);

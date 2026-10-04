@@ -410,13 +410,13 @@ extern void fatUnmount(const char *name) __attribute__((weak));
 #endif
 
 static void flush_storage(void) {
-	static const char *names[] = { "sd:", "usb:" };
+	static const char *names[] = { "sd:", "usb:", "usb2:" };
 	u64 t = gettime();
 	unsigned i, n = 0;
 
 	if (!UNMOUNT)
 		return;
-	for (i = 0; i < 2; ++i)
+	for (i = 0; i < 3; ++i)
 		if (FindDevice(names[i]) >= 0) {
 			UNMOUNT(names[i]);
 			++n;

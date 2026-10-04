@@ -80,4 +80,11 @@ static inline void *agent_uncached(void *p) {
 	return (void *) (((u32) p & 0x1fffffff) | 0xc0000000);
 }
 
+/* The same memory through the data cache (0x8.../0x9...). Reading memory a
+ * DMA wrote (the GPU's frame copies) this way needs DCFlushRange first, so
+ * no stale line is read; writing it for a DMA needs DCFlushRange after. */
+static inline void *agent_cached(void *p) {
+	return (void *) (((u32) p & 0x1fffffff) | 0x80000000);
+}
+
 #endif

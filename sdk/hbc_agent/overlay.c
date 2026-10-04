@@ -1493,7 +1493,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	// Read through the cache: uncached, every byte is a bus transaction,
 	// which made HBC's overlay take 35 ms a frame. Flushed first, so the
 	// cache holds what the VI shows; nothing writes the frame meanwhile.
-	u8 *app_cached = (u8 *) (((u32) app_fb & 0x1fffffff) | 0x80000000);
+	u8 *app_cached = agent_cached(app_fb);
 
 	DCFlushRange(app_cached, size);
 	r.frozen = frozen_in_place ? app_cached : memalign(32, size);
@@ -1621,7 +1621,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	// Give the app its picture back: if we drew over its framebuffer,
 	// restore what was there first.
 	if (((u32) fb[0] & 0x1fffffff) == ((u32) app_fb & 0x1fffffff)) {
-		memcpy(app_fb, r.frozen, size);
+		memcpy(fb[0], r.frozen, size);   // fb[0] is its cached alias
 		DCFlushRange(fb[0], size);
 	}
 	VIDEO_SetNextFramebuffer(app_fb);

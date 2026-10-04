@@ -85,6 +85,13 @@ during the last receive that failed: `r<n>` per `net_read` result,
 crash an agent app reported before it returned to this HBC (see
 [Crash reports](#crash-reports)).
 
+`usb_drives` has one entry per USB slot (`usb`, then `usb2`): its drive's
+`vid`, `pid`, `lun` and whether it runs at USB 2 speed, or `why` there is
+none ("no mass storage device", "could not open it", "no 512-byte-sector
+LUN", ...). `unmountable` maps a device that was there but held no volume HBC
+mounts to what its first sector holds, for example `"usb":"GPT: 1 EFI 2
+NTFS"`.
+
 `upload` is `null`, or what became of the last Wiiload (or USB Gecko)
 upload: `seq` counts uploads from 1, `result` is `launched`, `installed` (a
 ZIP app; `text` is its folder), `theme`, `declined` (a ZIP nobody agreed to)
@@ -102,7 +109,12 @@ and an automated test carries on.
 
 ### Files
 
-Paths are `<device>:/<path>` with device `sd`, `usb`, `carda` or `cardb`. HBC
+Paths are `<device>:/<path>` with device `sd`, `usb`, `usb2`, `carda` or
+`cardb`. `usb` and `usb2` are the first two USB drives (HBC's own driver,
+`usbmsd.c`, serves both at once); a request for `sd`, `usb` or `usb2` when it
+is not the device the app list comes from mounts it then, and it stays
+mounted. FAT and exFAT volumes mount, on an MBR or a GPT disk (on GPT, the
+first partition that mounts, the EFI System Partition skipped). HBC
 rejects paths containing `..`, `//`, a backslash, a second colon, or a control
 character, and paths of 256 bytes or more.
 

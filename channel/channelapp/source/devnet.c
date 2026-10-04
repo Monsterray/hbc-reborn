@@ -25,12 +25,13 @@
 #include "loader.h"
 #include "tcp.h"
 #include "zmem.h"
+#include "usbmsd.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../../../sdk/hbc_netlog.h"
 #include "../../../sdk/hbc_agent.h"
 
-static const char *device_names[DEVICE_COUNT] = { "sd", "usb", "carda", "cardb" };
+static const char *device_names[DEVICE_COUNT] = { "sd", "usb", "carda", "cardb", "usb2" };
 static u32 log_ip;
 static u16 log_port;
 
@@ -205,6 +206,13 @@ static s32 status_json(char *buf, size_t size) {
 				boot_marks[i].name, boot_marks[i].ms);
 	n += snprintf(buf + n, size - n, "}");
 	n += crash_json(buf + n, size - n);
+	n += usbmsd_json(buf + n, size - n);
+	n += snprintf(buf + n, size - n, ",\"unmountable\":{");
+	for (i = 0; i < DEVICE_COUNT; ++i)
+		if (app_entry_mount_why(i))
+			n += snprintf(buf + n, size - n, "%s\"%s\":\"%s\"", buf[n - 1] == '{' ? "" : ",",
+						  device_names[i], app_entry_mount_why(i));
+	n += snprintf(buf + n, size - n, "}");
 	if (upload.seq) {
 		char text[sizeof(upload.text)];
 
@@ -426,6 +434,9 @@ void devnet_early_init(void) {
 
 void devnet_init(void) {
 	hbc_netlog_block *block = (hbc_netlog_block *) HBC_NETLOG_ADDR;
+
+	// hbc.py's file requests reach a drive other than the app list's.
+	devfile_mount_hook = app_entry_mount_for;
 
 	// A target registered before the last app launch: still in low memory
 	// when a loader started this HBC directly, only in the MEM2 copy after

@@ -155,6 +155,35 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.8: two USB drives, GPT disks, cached reads of the frame
+
+- libogc's USB storage driver serves one drive: its command buffer,
+  transfer mode, timeout and "mounted" flag are globals, so a second handle
+  races the first on the buffer and unplugging either unmounts both (the
+  same in libogc 3.1 and libogc2; the libogc 3.1 source is now in
+  `C:\projects\libogc3-src`, in the local code graph). HBC has its own,
+  `usbmsd.c`, adapted from libogc 3.1's (zlib) with all of that per drive,
+  serving `usb` and a new `usb2` (device 4, so `settings.xml`'s stored
+  preference keeps its meaning). The Options dialog shows five device
+  buttons, in the theme's tiny buttons.
+- `hbc.py` file requests mount `sd`, `usb` or `usb2` on demand when it is
+  not the app list's device (`devfile_mount_hook`).
+- libogc 3's FAT (FatFs behind dvm) finds partitions only in an MBR. A GPT
+  disk now has each partition tried at its first sector, the EFI System
+  Partition skipped (it mounted first, an empty 200 MB volume). HBCS
+  `usb_drives` and `unmountable` say what a drive held when nothing mounted.
+- Checked on the bench Wii (`tests/wii_usb2.py`) with a SanDisk Ultra Fit
+  (MBR, 30.8 GB) and a Toshiba drive (GPT, 3.8 GB data partition): both
+  listed, 1 MiB written and read back identical on each, at about 0.5 MB/s
+  over Wi-Fi.
+- Cached and uncached aliases: the frame HBCP sends (`hbc.py screen`) and
+  the overlay's restore of an app framebuffer it drew over now go through
+  the cached alias with one `DCFlushRange`, like the overlay's frozen frame in
+  1.9.7; everything else that uses an uncached alias is a GPU or VI target
+  the CPU does not read (HBC's framebuffer) or the crash screen. The loader
+  flushes and invalidates what it copies before running it, and IOS
+  buffers are flushed before and invalidated after.
+
 ### 1.9.7: the HOME overlay at 60 fps
 
 - HBC's overlay drew a frame in 35 ms (28 fps at best; with a remote

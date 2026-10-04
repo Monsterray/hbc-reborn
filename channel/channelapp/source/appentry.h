@@ -6,7 +6,7 @@
 #include "gfx.h"
 #include "xml.h"
 
-#define DEVICE_COUNT 4
+#define DEVICE_COUNT 5   // sd, usb, carda, cardb, usb2
 #define MAX_THEME_ZIP_SIZE (20 * 1024 * 1024)
 
 typedef enum {
@@ -67,6 +67,12 @@ void app_entry_set_prefered(int device);
 void app_entry_set_device(int device);
 
 bool app_entry_get_path(char *buf);
+// Mounts the device a file request's path names, if it is not the active
+// one and is plugged in (SD and the USB drives), for devnet.
+void app_entry_mount_for(const char *path);
+// The device was there but held no file system HBC can mount: what its
+// first sector says instead; NULL otherwise.
+const char *app_entry_mount_why(int device);
 bool app_entry_get_filename(char *buf, app_entry *app);
 app_entry *app_entry_find(char *dirname);
 

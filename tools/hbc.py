@@ -21,7 +21,7 @@ import zlib
 PORT = 4299
 LOG_PORT = 4405
 TIMEOUT = 15
-DEVICES = ("sd", "usb", "carda", "cardb")
+DEVICES = ("sd", "usb", "carda", "cardb", "usb2")
 PROGRESS_MIN = 256 * 1024
 # Waits poll with short connects: while the Wii reboots, a connection attempt
 # can go unanswered, and one full TIMEOUT per attempt made each wait 15 s.
@@ -977,7 +977,7 @@ HBC remembers the PC for later apps too, until log exits.""",
 hbc.py ls PATH
 
 Lists a folder: "d NAME" for folders, "f SIZE NAME" for files. Paths look
-like sd:/apps or usb:/data (devices: sd, usb, carda, cardb).""",
+like sd:/apps or usb:/data (devices: sd, usb, usb2, carda, cardb).""",
     "get": """\
 hbc.py get [-r] PATH [LOCAL]
 

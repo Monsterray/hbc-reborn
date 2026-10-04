@@ -66,7 +66,7 @@ _Static_assert(__builtin_offsetof(hbc_crash_block, kind) == 4 * HBC_CRASH_V1_WOR
 // libogc: seconds its crash screen shows before returning to the loader.
 extern void __exception_setreload(int t);
 
-static const char *device_names[] = { "sd", "usb", "carda", "cardb" };
+static const char *device_names[] = { "sd", "usb", "carda", "cardb", "usb2" };
 #define DEVICES (sizeof(device_names) / sizeof(device_names[0]))
 
 static hbc_agent_config cfg;
@@ -300,7 +300,10 @@ static void send_screen(s32 s) {
 		devfile_reply(s, -ENODEV, NULL, 0);
 		return;
 	}
-	fb = agent_uncached((void *) fb);
+	// Read through the cache, after writing back and dropping its lines:
+	// uncached, every byte is a bus transaction (about 30 ms a frame).
+	fb = agent_cached((void *) fb);
+	DCFlushRange((void *) fb, size);
 	dims[0] = dims[1] = dims[4] = dims[5] = 0;
 	dims[2] = screen_w >> 8;
 	dims[3] = screen_w;

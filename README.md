@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.9.7**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.9.8**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -89,8 +89,8 @@ and `--` ends option parsing. Large transfers show progress on a terminal.
 The Wii address comes from `--wii`, then `$HBC_WII`, `$WII_BENCH_IP`, or
 `$WIILOAD` (`tcp:ADDR`, the variable the devkitPro `wiiload` uses).
 
-Remote paths are `<device>:/<path>` with device `sd`, `usb`, `carda`, or
-`cardb`; paths containing `..`, `//`, or backslashes are refused. An app you
+Remote paths are `<device>:/<path>` with device `sd`, `usb`, `usb2` (a
+second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslashes are refused. An app you
 `put` or `sync` under `sd:/apps/` appears in the menu right away, and one you
 remove disappears.
 
@@ -443,7 +443,8 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent's safety tools on a real Wii (assert, abort, deadlock, failed malloc, frame pacing, stub guard, Reset, stack overflow) | `make -C tests/agent_app`, then `python3 tests/wii_agent_safety.py --wii WII-IP` | Wii in any HBC |
 | DEV > Info and `hbc.py hw` on a real Wii | `python3 tests/wii_info.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.9.7 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.9.8 WII-IP` | installed channel running |
+| Both USB drives through HBC: list, write and read back 1 MiB on each (file requests only) | `python3 tests/wii_usb2.py WII-IP` | Wii in any HBC, two USB drives |
 | HOME overlay frame time in HBC, first opening and later (HOME presses only) | `python3 tests/wii_overlay_speed.py WII-IP`; right after an app returns: `python3 tests/wii_overlay_return.py WII-IP` | Wii in any HBC |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
