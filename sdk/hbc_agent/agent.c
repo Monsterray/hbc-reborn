@@ -35,27 +35,6 @@
 #include <ogc/libversion.h>
 // libogc2 r1 (September 2026, the first to define _LIBOGC2_REVISION_) names
 // frame_context's fields in lower case; the layout is unchanged.
-#ifdef _LIBOGC2_REVISION_
-#define FC_NUMBER nExcept
-#define FC_SRR0   srr0
-#define FC_SRR1   srr1
-#define FC_GPR    gpr
-#define FC_GQR    gqr
-#define FC_CR     cr
-#define FC_LR     lr
-#define FC_CTR    ctr
-#define FC_XER    xer
-#else
-#define FC_NUMBER EXCPT_Number
-#define FC_SRR0   SRR0
-#define FC_SRR1   SRR1
-#define FC_GPR    GPR
-#define FC_GQR    GQR
-#define FC_CR     CR
-#define FC_LR     LR
-#define FC_CTR    CTR
-#define FC_XER    XER
-#endif
 #endif
 
 #include "../../channel/channelapp/config.h"
@@ -109,6 +88,7 @@ static u64 idle_ticks, request_ticks;
 // In overlay.c, when the app links it: whether the remote handles were found.
 int agent_wpad_handles(void) __attribute__((weak));
 int agent_remote_diag(char *buf, int size) __attribute__((weak));
+int agent_overlay_state(char *buf, int size) __attribute__((weak));
 void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes,
 						const char **buffers) __attribute__((weak));
 volatile bool agent_crash_stay;
@@ -136,6 +116,10 @@ static ssize_t log_write(const devoptab_t *prev, struct _reent *r, void *fd, con
 	if (prev && prev->write_r)
 		prev->write_r(r, fd, ptr, len);
 	return len;
+}
+
+void agent_log_raw(const char *s, u32 len) {
+	log_write(NULL, NULL, NULL, s, len);
 }
 
 static ssize_t log_write_out(struct _reent *r, void *fd, const char *ptr, size_t len) {
@@ -173,6 +157,10 @@ static void lastlog_write(u32 why) {
 		b->text[i] = log_ring[(start + i) % LOG_SIZE];
 	b->check = hbc_lastlog_check(b);
 	DCFlushRange(b, sizeof(*b));
+}
+
+void agent_lastlog(u32 why) {
+	lastlog_write(why);
 }
 
 static void lastlog_at_exit(void) {
@@ -346,6 +334,15 @@ bool hbc_agent_handle(s32 s, const u8 *hdr) {
 		send_screen(s);
 		return true;
 	}
+	if (!memcmp(hdr, "HBCH", 4)) {
+		// The hardware and settings DEV > Info shows, as JSON (info.c).
+		char *json = malloc(8192);
+		s32 n = json ? agent_info_json(json, 8192, get_u16(hdr + 4)) : -ENOMEM;
+
+		devfile_reply(s, n < 0 ? n : 0, json, n < 0 ? 0 : n);
+		free(json);
+		return true;
+	}
 	return false;
 }
 
@@ -472,6 +469,9 @@ static s32 status_json(char *buf, size_t size) {
 	n += snprintf(buf + n, size - n, ",\"agent_idle_wakes\":%u,\"agent_idle_us\":%u,"
 			"\"agent_request_ms\":%u", idle_wakes, (u32) ticks_to_microsecs(idle_ticks),
 			(u32) ticks_to_millisecs(request_ticks));
+	if (agent_overlay_state)
+		n += agent_overlay_state(buf + n, size - n);
+	n += safety_json(buf + n, size - n);
 	n += snprintf(buf + n, size - n, ",\"tcp_last_failure\":\"%s\"}", tcp_last_failure());
 	return n;
 }
@@ -514,8 +514,24 @@ static void __attribute__((noreturn)) agent_exit(void) {
 	exit(0);
 }
 
+void agent_request_exit(void) {
+	agent_exit();
+}
+
+// The Power button (safety.c): the app's on_exit, then libogc powers off,
+// writing back SD and USB on the way (safety.c's reset function).
+void agent_power_off(void) {
+	exit_requested = true;
+	LWP_SetThreadPriority(LWP_GetSelf(), LWP_PRIO_HIGHEST);
+	if (cfg.on_exit)
+		cfg.on_exit(cfg.user);
+	lastlog_write(HBC_LASTLOG_POWER);
+	SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+	__reload();
+}
+
 static void handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[2048];
+	static char json[4096];
 
 	if (!memcmp(hdr, "HBCV", 4)) {
 		static const char version[] = CHANNEL_VERSION_STR " agent";
@@ -583,6 +599,7 @@ static void *agent_thread(void *arg) {
 
 	while (true) {
 		// The overlay's "hbc.py connection" switch.
+		safety_poll(false);
 		if (!agent_listen_enabled) {
 			if (ls >= 0) {
 				net_close(ls);
@@ -689,14 +706,21 @@ static void agent_record_kind(u32 kind, u32 code, const char *reason, u32 exid, 
 }
 
 static void agent_record(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32 sp) {
-	agent_record_kind(HBC_CRASH_EXCEPTION, 0, NULL, exid, pc, msr, lr, cr, ctr, sp, mfspr(19),
-					  mfspr(18));
-	lastlog_write(HBC_LASTLOG_EXCEPTION);
+	u32 dar = mfspr(19), dsisr = mfspr(18);
+	bool stack = safety_stack_hit(exid, dsisr, dar);
+
+	agent_record_kind(stack ? HBC_CRASH_STACK : HBC_CRASH_EXCEPTION, 0,
+					  stack ? "main thread stack overflow" : NULL, exid, pc, msr, lr, cr, ctr,
+					  sp, dar, dsisr);
+	safety_on_death();
+	lastlog_write(stack ? HBC_LASTLOG_STACK : HBC_LASTLOG_EXCEPTION);
+}
+
+void agent_stop_record(u32 kind, u32 code, const char *reason, u32 pc, u32 lr, u32 sp) {
+	agent_record_kind(kind, code, reason, 0, pc, mfmsr(), lr, 0, 0, sp, 0, 0);
 }
 
 // ---- hbc_agent_fatal() ----------------------------------------------------
-
-extern void __reload(void) __attribute__((noreturn));
 
 static void __attribute__((noinline)) fatal_record(u32 code, const char *fmt, va_list ap, u32 pc) {
 	char reason[HBC_CRASH_REASON];
@@ -706,6 +730,7 @@ static void __attribute__((noinline)) fatal_record(u32 code, const char *fmt, va
 	printf("%s: fatal (%u): %s\n", cfg.name ? cfg.name : "app", (unsigned) code, reason);
 	__asm__ volatile ("mr %0,1" : "=r" (sp));
 	agent_record_kind(HBC_CRASH_FATAL, code, reason, 0, pc, mfmsr(), pc, 0, 0, sp, 0, 0);
+	safety_on_death();
 	lastlog_write(HBC_LASTLOG_FATAL);
 }
 
@@ -727,7 +752,7 @@ void hbc_agent_fatal_now(u32 code, const char *fmt, ...) {
 	__reload();
 }
 
-// ---- The hang watchdog ----------------------------------------------------
+// ---- The monitor: the hang watchdog and the safety tools' checks ----------
 
 #define WATCHDOG_STACK (4 * 1024)
 
@@ -741,12 +766,19 @@ static void *alive_thread; // the thread that armed it: KThread* or lwp_cntrl*
 #include <ogc/lwp_threads.h>
 #endif
 
+bool agent_paused(void) {
+	return agent_overlay_open || hold_count > 0;
+}
+
 static void *watchdog(void *arg) {
 	u64 limit = secs_to_ticks(cfg.hang_s ? cfg.hang_s : 60);
 	(void) arg;
 
 	while (true) {
 		usleep(1000 * 1000);
+		safety_poll(true);
+		if (!alive_thread)
+			continue;   // not armed: the safety checks alone
 		if (hold_count > 0 || agent_overlay_open) {
 			alive_at = gettime();
 			continue;
@@ -776,6 +808,7 @@ static void *watchdog(void *arg) {
 			printf("%s: hang: %s\n", cfg.name ? cfg.name : "app", reason);
 			_CPU_ISR_Disable(level);
 			agent_record_kind(HBC_CRASH_HANG, 0, reason, 0, pc, 0, lr, 0, 0, sp, 0, 0);
+			safety_on_death();
 			lastlog_write(HBC_LASTLOG_HANG);
 			(void) level;
 			__reload();
@@ -784,21 +817,34 @@ static void *watchdog(void *arg) {
 	return NULL;
 }
 
-void hbc_agent_alive(void) {
+u32 agent_monitor_start(void) {
 	static u8 *wd_stack;
 
-	alive_at = gettime();
 	if (wd_thread != LWP_THREAD_NULL || wd_stack)
+		return 0;
+	wd_stack = memalign(32, WATCHDOG_STACK);
+	if (!wd_stack || LWP_CreateThread(&wd_thread, watchdog, NULL, wd_stack, WATCHDOG_STACK,
+									  LWP_PRIO_HIGHEST) < 0) {
+		wd_thread = LWP_THREAD_NULL;  // no monitor; wd_stack stops a retry
+		return 0;
+	}
+	return WATCHDOG_STACK;
+}
+
+bool agent_monitor_running(void) {
+	return wd_thread != LWP_THREAD_NULL;
+}
+
+void hbc_agent_alive(void) {
+	alive_at = gettime();
+	if (alive_thread)
 		return;
 #if AGENT_TUXEDO
 	alive_thread = KThreadGetSelf();
 #else
 	alive_thread = _thr_executing;
 #endif
-	wd_stack = memalign(32, WATCHDOG_STACK);
-	if (!wd_stack || LWP_CreateThread(&wd_thread, watchdog, NULL, wd_stack, WATCHDOG_STACK,
-									  LWP_PRIO_HIGHEST) < 0)
-		wd_thread = LWP_THREAD_NULL;  // no watchdog; wd_stack stops a retry
+	agent_monitor_start();
 }
 
 void hbc_agent_alive_reset(void) {
@@ -902,6 +948,7 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 			__exception_setreload(cfg.crash_reload_s);
 		install_crash_hook();
 	}
+	safety_init(&cfg);
 
 	// Keep the app's output for the Log page, still passing it on.
 	log_prev_out = devoptab_list[STD_OUT];

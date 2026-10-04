@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.9.5**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.9.6**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -66,6 +66,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | --- | --- |
 | `version` | Print the running HBC version (`HBCV`). |
 | `status` | Print JSON status: version, protocol, IOS and revision, AHBPROT, free memory, loader stack use, startup and app-scan time, IP, app count, mounted device, log target, and timing of the last transfer. |
+| `hw` | The Wii's hardware and settings, as DEV > Info shows them (`HBCH`): console, serial, console ID, Wii Menu, IOS, boot2, CPU; video mode, cable, TV settings; SD, USB, NAND and memory cards; USB devices; IP, gateway, DNS, MAC, the connection in use. |
 | `wait [SECONDS]` | Wait until HBC answers (default 90 s). |
 | `send FILE [ARG ...]` | Send a DOL, ELF, or ZIP over Wiiload. A ZIP is installed to the SD card after you confirm on the Wii, or at once with `--yes`. Fails with HBC's reason when the Wii cannot load it. |
 | `run FILE [ARG ...]` | Register for logs, send `FILE`, and print its output until it exits (`--timeout`, default 300 s). Fails at once with HBC's reason when the Wii cannot load it. |
@@ -196,6 +197,34 @@ own exception entry, `sdk/hbc_agent/ogc_exc.S`, to the older libogc's
 exception table). The one difference: those libogcs' WPAD has no pairing
 call, so the overlay's Connect asks for the Wii's SYNC button.
 
+#### Safety tools
+
+The agent also guards the app, at no cost until something goes wrong:
+
+- **Stack overflow.** The CPU's data breakpoint watches the main thread's
+  stack 1 KiB above its bottom; the first write there stops the app with a
+  `stack` report at the exact instruction. Markers below it catch a frame
+  big enough to step over it.
+- **`assert()` and `abort()`** come back as reports (`assert` with
+  `file:line: expression`) instead of a frozen screen.
+- **Reset and Power**, when the app left libogc's defaults: Reset exits to
+  HBC, Power switches off after the app's `on_exit`.
+- **SD and USB are written back** when the app exits, after its own
+  `atexit` handlers, so a quick exit does not lose a save.
+- **Frame pacing** in `hbc.py status` (`safety.frames`): frames a second,
+  the longest frame, frames that ran late.
+- **Every thread's state** at the end of the kept log after a crash, fatal,
+  hang or abort: priority, state, stack left and where it is waiting.
+
+Two cost a little time each second, so an app asks for them:
+`guard_reload_stub` keeps a copy of the loader's reload stub and puts it back
+before exit (an app that overwrites low memory still gets back to HBC), and
+`track_memory` records the lowest free MEM1, MEM2 and heap. Linking with
+`-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign` also counts
+failed allocations with their size and caller. `no_safety` leaves out any of
+the defaults; `docs/devnet.md` has the details and `tests/agent_cost.py`
+measures what they cost.
+
 Then:
 
 ```sh
@@ -221,7 +250,7 @@ and batteries, over five buttons:
 
 | Button | What it does |
 | --- | --- |
-| DEV | Actions: Restart app, Pause, Save, Log (the app's recent output), Reset remotes, Sync clock (sets the Wii's clock from an NTP server, keeping its time zone), Log to PC, the crash screen's time, and the `hbc.py` connection. Info: time, play time, network, SD space, the app, and MEM1 and MEM2 free, used and total in KB. |
+| DEV | Actions: Restart app, Pause, Save, Log (the app's recent output), Reset remotes, Sync clock (sets the Wii's clock from an NTP server, keeping its time zone), Log to PC, the crash screen's time, and the `hbc.py` connection. Info: time, play time, network, SD space, the app, and MEM1 and MEM2 free, used and total in KB, then five pages read when one opens: System (console and model, region, serial, console ID, Wii Menu, IOS and AHBPROT, boot2, CPU, Hollywood revision, language), Video (mode, cable, TV type, 16:9, 480p, PAL 60, sound, sensor bar, paired remotes), Storage (SD and USB size and free space, NAND free, GameCube memory cards), USB (each device on the ports, by vendor and product ID) and Network (IP and netmask, gateway, DNS, MAC, the Wii Menu connection in use). |
 | (app slot) | Whatever the app puts there with `hbc_agent_set_slot(0, ...)`; blank otherwise. |
 | Exit | The Homebrew Channel, System Menu, Restart Wii, Power off. |
 | Shot | Saves the game's frame to `sd:/screenshots/<app>-NNN.bmp`. An app can replace it with `hbc_agent_set_slot(1, ...)`. |
@@ -412,7 +441,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.9.5 WII-IP` | installed channel running |
+| The agent's safety tools on a real Wii (assert, abort, deadlock, failed malloc, frame pacing, stub guard, Reset, stack overflow) | `make -C tests/agent_app`, then `python3 tests/wii_agent_safety.py --wii WII-IP` | Wii in any HBC |
+| DEV > Info and `hbc.py hw` on a real Wii | `python3 tests/wii_info.py WII-IP` | Wii in any HBC |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.9.6 WII-IP` | installed channel running |
 | In-app agent on a real Wii, with its speed next to HBC's | `python3 tests/wii_agent.py WII-IP` | Wii in any HBC |
 | Throughput on a real Wii | `python3 tests/wii_netbench.py WII-IP` | Wii in any HBC |
 | MEM1, MEM2 and locked-cache speed on a real Wii | `make -C tests/membench`, then `python3 tools/hbc.py run tests/membench/membench.dol sd:/path/to/sample` | Wii in any HBC |

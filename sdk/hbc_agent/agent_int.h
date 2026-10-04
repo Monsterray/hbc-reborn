@@ -3,9 +3,11 @@
 #ifndef AGENT_INT_H
 #define AGENT_INT_H
 
+#include <stddef.h>
 #include <gctypes.h>
 
 #include "../hbc_agent.h"
+#include "ogc_flavor.h"
 
 const hbc_agent_config *agent_cfg(void);
 u32 agent_uptime_ms(void);
@@ -33,6 +35,44 @@ const hbc_agent_item *agent_slot_menu(int slot, const char **title, int *count);
 int agent_key_pop(void);
 /* The framebuffer size HBCP reports; the overlay sets it from its mode. */
 void agent_set_screen_size(u16 w, u16 h);
+
+/* For safety.c: the log ring (no stdout; safe in an exception), a stop
+ * recorded like a fatal, the kept log, and the ways out. */
+void agent_log_raw(const char *s, u32 len);
+void agent_stop_record(u32 kind, u32 code, const char *reason, u32 pc, u32 lr, u32 sp);
+void agent_lastlog(u32 why);
+void agent_request_exit(void) __attribute__((noreturn));
+void agent_power_off(void) __attribute__((noreturn));
+extern void __reload(void) __attribute__((noreturn));
+/* The overlay is open, or the app holds the hang watchdog (a load). */
+bool agent_paused(void);
+/* The 1 s monitor thread (the hang watchdog's): starts it if it is not
+ * running and returns the bytes that took (its stack), else 0. */
+u32 agent_monitor_start(void);
+bool agent_monitor_running(void);
+
+/* safety.c */
+void safety_init(const hbc_agent_config *cfg);
+/* From the agent thread as it wakes, and from the monitor each second. */
+void safety_poll(bool from_monitor);
+/* The app is stopping (exception, fatal, hang, abort): guards down, and the
+ * stack, memory and thread notes into the log. Integer code only. */
+void safety_on_death(void);
+/* A DSI from the stack guard's breakpoint. */
+bool safety_stack_hit(u32 exid, u32 dsisr, u32 dar);
+/* HBCS: ,"safety":{...} */
+s32 safety_json(char *buf, size_t size);
+
+/* info.c: DEV > Info's pages (rmode NULL for the preferred mode), and the
+ * same as JSON for HBCH. One caller at a time: busy returns false / -EBUSY. */
+struct _gx_rmodeobj;
+bool agent_info_gather(void *pages, const struct _gx_rmodeobj *rmode, u32 mask);
+s32 agent_info_json(char *buf, size_t size, u32 mask);
+
+/* alloc_wrap.c, linked only with -Wl,--wrap=malloc,... */
+typedef struct {
+	u32 count, last_size, last_from;
+} agent_alloc_stats;
 
 /* VIDEO_GetCurrentFramebuffer() gives the VI's physical address; this is the
  * same memory, uncached, whatever form the address took. */

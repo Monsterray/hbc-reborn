@@ -8,6 +8,10 @@ Runs tests/agent_app (the agent in a small app) and reads back:
   overlay     the HOME overlay's frame time and borrowed memory, in the app
               and in this tree's HBC (sent over Wiiload if the Wii runs
               another version)
+  safety      the safety tools (safety.c) over 20 s at 60 frames a second,
+              the defaults alone and with the opt-ins: CPU per second of the
+              once-a-second checks and the per-frame callback, and the
+              memory they hold
 and prints them with the agent's code and static data sizes from the build.
 Leaves the Wii in HBC.
 
@@ -119,6 +123,31 @@ def main():
         run_overlay(wii, [("h", 2), ("llla", 2), ("b", 1), ("rrrra", 2), ("h", 3)])
         report["overlay_app"] = hbc.status(wii).get("overlay")
         hbc.exit_app(wii)
+
+        # The safety tools: defaults, then with the opt-in checks.
+        report["safety"] = {}
+        for label, args in (("defaults", ["flip", "1"]), ("optin", ["flip", "1", "optin"])):
+            hbc.send(wii, str(tmp / "agent_app.dol"), args)
+            agent_checks.wait_agent(wii)
+            time.sleep(3)
+            s0 = hbc.status(wii)
+            time.sleep(20)
+            s1 = hbc.status(wii)
+            hbc.exit_app(wii)
+            c0, c1 = s0["safety"]["cost"], s1["safety"]["cost"]
+            span_s = (s1["uptime_ms"] - s0["uptime_ms"]) / 1000
+            checks = c1["checks"] - c0["checks"]
+            check_us = c1["check_us"] - c0["check_us"]
+            frames = c1["retraces"] - c0["retraces"]
+            frame_us = c1["retrace_us"] - c0["retrace_us"]
+            report["safety"][label] = {
+                "seconds": span_s, "stack_guard": s1["safety"]["stack_guard"],
+                "checks": checks, "us_per_check": check_us / checks if checks else 0,
+                "retraces": frames, "us_per_retrace": frame_us / frames if frames else 0,
+                "cpu_percent": 100 * (check_us + frame_us) / (span_s * 1e6),
+                "bytes_held": c1["bytes"], "fps": s1["safety"]["frames"]["fps"],
+                "mem_low": s1["safety"]["mem_low"]}
+        hbc.hbc_wait(wii, 90)
 
         # The overlay as HBC's HOME menu, in this tree's HBC.
         if hbc.hbc_wait(wii, 90) != expected:

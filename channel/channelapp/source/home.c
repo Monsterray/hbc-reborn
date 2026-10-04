@@ -151,6 +151,10 @@ void home_init(void) {
 	// HBC is the loader apps return to; a crash here has nowhere to report
 	// to, so keep libogc's own crash screen.
 	cfg.no_crash_handler = true;
+	// HBC handles Reset and Power, starts apps itself, and has no main()
+	// stack worth a breakpoint: the agent's safety tools stay out.
+	cfg.no_safety = HBC_AGENT_NO_STACK_GUARD | HBC_AGENT_NO_BUTTONS | HBC_AGENT_NO_FLUSH |
+					HBC_AGENT_NO_FRAMES | HBC_AGENT_NO_THREADS;
 	// HBC reads GameCube controllers too (controls.c calls PAD_Init), and
 	// START on one opens this menu, so the overlay must read them as well.
 	cfg.gc_pads = true;

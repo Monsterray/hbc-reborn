@@ -13,7 +13,10 @@
 #include "ov_ui.h"
 
 enum { MENU_NONE, MENU_DEV, MENU_EXIT, MENU_WM, MENU_SLOT0, MENU_SLOT1 };
-enum { PAGE_MAIN, PAGE_LOG };
+enum { PAGE_MAIN, PAGE_LOG, PAGE_INFO };
+
+static const char *info_names[OV_INFO_PAGES] = { "System", "Video", "Storage", "USB",
+												 "Network" };
 enum { WM_GRID, WM_MORE, WM_TEST, WM_CAL, WM_SETTINGS };
 
 enum {
@@ -31,6 +34,7 @@ enum {
 	ID_EX_HBC = 110, ID_EX_SYS, ID_EX_RESTART, ID_EX_POWER,
 	ID_TAB_ACT = 120, ID_TAB_INFO, ID_RESTART_APP, ID_PAUSE, ID_SAVE, ID_LOG,
 	ID_LOGPC, ID_CRASH_3S, ID_CRASH_STAY, ID_HBCPY, ID_RESET_REMOTES, ID_SYNC_CLOCK,
+	ID_INFO_PAGE = 133,   // + OV_INFO_*
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
 	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS, ID_SND_ADPCM, ID_SND_PCM, ID_SND_WAV,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
@@ -216,6 +220,24 @@ static int build_dev(ov_ui *ui, const ov_ext *e) {
 		return y;
 	}
 
+	if (ui->dev_page == PAGE_INFO) {
+		const ov_page *pg = e->info ? &e->info[ui->info_page] : NULL;
+		int i;
+
+		title(ui, 0, y, IW, info_names[ui->info_page]);
+		y += 28;
+		if (!pg || !pg->count) {
+			value(ui, 0, y, IW, pg ? "Nothing found." : "Checking...", F_LABEL);
+			return y + BH;
+		}
+		for (i = 0; i < pg->count; ++i) {
+			add(ui, K_TEXT, 0, 0, y, 120, 18, F_LABEL, pg->row[i].label);
+			add(ui, K_TEXT, 0, 120, y, IW - 120, 18, 0, pg->row[i].value);
+			y += 19;
+		}
+		return y;
+	}
+
 	tabs(ui, y);
 	y += BH + 12;
 
@@ -276,7 +298,16 @@ static int build_dev(ov_ui *ui, const ov_ext *e) {
 			add(ui, K_TEXT, 0, 80 + 2 * col, y, col, 20, F_RIGHT, t);
 			y += 22;
 		}
-		return y;
+		// The pages with more: one row of buttons.
+		y += 8;
+		{
+			int bw = (IW - (OV_INFO_PAGES - 1) * GAP) / OV_INFO_PAGES;
+
+			for (i = 0; i < OV_INFO_PAGES; ++i)
+				add(ui, K_BUTTON, ID_INFO_PAGE + i, i * (bw + GAP), y, bw, BH, F_FOCUS | F_SMALL,
+					info_names[i]);
+		}
+		return y + BH;
 	}
 }
 
@@ -688,6 +719,9 @@ static void back(ov_ui *ui, ov_act_fn act, void *user) {
 	} else if (ui->menu == MENU_DEV && ui->dev_page == PAGE_LOG) {
 		ui->dev_page = PAGE_MAIN;
 		ui->focus = ID_LOG;
+	} else if (ui->menu == MENU_DEV && ui->dev_page == PAGE_INFO) {
+		ui->dev_page = PAGE_MAIN;
+		ui->focus = ID_INFO_PAGE + ui->info_page;
 	} else if (ui->menu != MENU_NONE) {
 		close_menu(ui);
 	} else {
@@ -770,6 +804,16 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 	case ID_PAUSE: ui->paused = true; act(OVA_PAUSE, 1, user); break;
 	case ID_SAVE: act(OVA_SAVE, 0, user); break;
 	case ID_LOG: ui->dev_page = PAGE_LOG; ui->focus = 0; break;
+	case ID_INFO_PAGE:
+	case ID_INFO_PAGE + 1:
+	case ID_INFO_PAGE + 2:
+	case ID_INFO_PAGE + 3:
+	case ID_INFO_PAGE + 4:
+		ui->info_page = id - ID_INFO_PAGE;
+		ui->dev_page = PAGE_INFO;
+		ui->focus = 0;
+		act(OVA_INFO, ui->info_page, user);
+		break;
 	case ID_LOGPC: act(OVA_LOG_PC, !e->log_pc, user); break;
 	case ID_CRASH_3S: act(OVA_CRASH_STAY, 0, user); break;
 	case ID_CRASH_STAY: act(OVA_CRASH_STAY, 1, user); break;

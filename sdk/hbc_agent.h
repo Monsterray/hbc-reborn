@@ -54,6 +54,18 @@
  * the hang watchdog (hbc_agent_alive()) report the other ways an app stops
  * the same way, and the app's last output is kept for `hbc.py lastlog`.
  *
+ * Safety tools, on unless the app turns them off (no_safety below), each
+ * costing nothing until it fires: a guard on the main thread's stack (the
+ * CPU's data breakpoint stops the first write past it, and a marker below it
+ * is checked as the agent wakes), reports for assert() and abort(), the
+ * Reset button returning to HBC and Power switching off when the app does
+ * not handle them, the SD and USB caches written back at exit, frame pacing
+ * in `hbc.py status`, and every thread's state in the kept log after a
+ * crash or hang. Opt-in, as they cost a little time every second: a guard
+ * on the reload stub, and the lowest free memory seen. Linking with
+ * -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign also
+ * reports failed allocations. HBCS "safety" says what each costs.
+ *
  * Define HBC_AGENT_LAYOUT_ONLY to get only the crash block layout.
  */
 
@@ -75,7 +87,10 @@
 enum {
 	HBC_CRASH_EXCEPTION = 0, /* a CPU exception; `exception` says which */
 	HBC_CRASH_FATAL = 1,     /* hbc_agent_fatal(): the app's code and reason */
-	HBC_CRASH_HANG = 2       /* no hbc_agent_alive() for hang_s seconds */
+	HBC_CRASH_HANG = 2,      /* no hbc_agent_alive() for hang_s seconds */
+	HBC_CRASH_ASSERT = 3,    /* assert() failed; the reason is file:line: expression */
+	HBC_CRASH_ABORT = 4,     /* abort() */
+	HBC_CRASH_STACK = 5      /* the main thread overran its stack */
 };
 
 typedef struct {
@@ -125,7 +140,10 @@ enum {
 	HBC_LASTLOG_EXIT = 0,      /* exit() or a return from main */
 	HBC_LASTLOG_EXCEPTION = 1,
 	HBC_LASTLOG_FATAL = 2,
-	HBC_LASTLOG_HANG = 3
+	HBC_LASTLOG_HANG = 3,
+	HBC_LASTLOG_ABORT = 4,     /* assert() or abort() */
+	HBC_LASTLOG_STACK = 5,     /* a stack overflow */
+	HBC_LASTLOG_POWER = 6      /* the Power button */
 };
 
 typedef struct {
@@ -201,7 +219,33 @@ typedef struct {
 	   seconds without another call before the agent reports a hang and
 	   returns to HBC. Default (0) 60. */
 	u32 hang_s;
+
+	/* Opt-in safety tools, each checked once a second by a 4 KiB thread at
+	   the highest priority (the hang watchdog's):
+	   guard_reload_stub keeps a 6 KiB copy of the loader's reload stub
+	   (0x80001800, how exit() gets back to HBC) and puts it back before
+	   the app exits or crashes, so the app still returns to HBC after
+	   overwriting it; HBCS "safety" says when it was first found changed.
+	   Leave it off for an app that installs a stub of its own on purpose.
+	   track_memory keeps the lowest free MEM1, MEM2 and heap seen, for
+	   HBCS and the end of the kept log. */
+	bool guard_reload_stub;
+	bool track_memory;
+	/* HBC_AGENT_NO_* bits: default safety tools to leave out. */
+	u32 no_safety;
+	/* The main thread's stack, for its guard: libogc's 128 KiB unless the
+	   app gives main() its own (__ppc_main_sp with libogc 3); then its
+	   size here, or HBC_AGENT_NO_STACK_GUARD. */
+	u32 main_stack_size;
 } hbc_agent_config;
+
+enum {
+	HBC_AGENT_NO_STACK_GUARD = 1,  /* the breakpoint and marker under main's stack */
+	HBC_AGENT_NO_BUTTONS = 2,      /* Reset and Power stay libogc's */
+	HBC_AGENT_NO_FLUSH = 4,        /* leave SD and USB mounted at exit */
+	HBC_AGENT_NO_FRAMES = 8,       /* no frame pacing (a vertical blank callback) */
+	HBC_AGENT_NO_THREADS = 16      /* no thread list in the kept log */
+};
 
 enum {
 	HBC_AGENT_EXIT_HBC,         /* exit(0): back through the reload stub */

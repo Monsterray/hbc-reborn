@@ -49,6 +49,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
+| `HBCH` | pages (u16 at 4: bit 0 System, 1 Video, 2 Storage, 3 USB, 4 Network; 0 for all) | none | JSON: the hardware and settings DEV > Info shows, `{"System":{"Console":"...",...},"Video":{...},"Storage":{...},"USB":{...},"Network":{...}}` (HBC 1.9.6 and its agent). In an app that never started libogc's USB, the USB page starts it and leaves it running. |
 
 ### Status
 
@@ -315,9 +316,13 @@ write the same block for the other ways an app stops. HBC takes the block in
 ```
 
 `kind` is `exception`, `fatal` (the app's `hbc_agent_fatal()`, with its own
-`code`, which HBC and `hbc.py` show but never interpret, and its `reason`)
-or `hang` (no `hbc_agent_alive()` for `hang_s` seconds; `pc`, `lr` and the
-frames are the stuck thread's, as saved when the watchdog preempted it).
+`code`, which HBC and `hbc.py` show but never interpret, and its `reason`),
+`hang` (no `hbc_agent_alive()` for `hang_s` seconds; `pc`, `lr` and the
+frames are the stuck thread's, as saved when the watchdog preempted it),
+`assert` (`reason` is `file:line: expression`), `abort`, or `stack` (the
+main thread ran into the stack guard: a DSI from the breakpoint, with
+`dar` the guarded address and DSISR bit `0x00400000`, or the markers found
+overwritten). An HBC before 1.9.6 names the last three `exception`.
 `frames` are return addresses found by walking the stack's back chain; a
 leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
 `sdk/hbc_agent.h`: magic `HBCC`, version 2, the exception number
@@ -328,6 +333,44 @@ reads version 1 blocks (agents before 1.9.0), as exceptions. `hbc.py crash
 --elf app.elf` adds function names and lines with `powerpc-eabi-addr2line`,
 then the last lines of the kept log.
 
+### Safety tools
+
+`HBCS` from an agent app has `safety` (`sdk/hbc_agent/safety.c`):
+
+```json
+"safety":{"stack_guard":"breakpoint","main_stack":{"size":131072,"deepest":2104},
+          "reset":true,"power":true,"flush_at_exit":true,
+          "frames":{"fps":60,"flips":347,"retraces":862,"worst_ms":16,"late":0,
+                    "single_buffer":false},
+          "stub":null,"mem_low":null,"alloc_failures":null,
+          "cost":{"checks":14,"check_us":153,"retraces":861,"retrace_us":14,"bytes":0}}
+```
+
+- `stack_guard`: `breakpoint` (the CPU's DABR watches the doubleword 1 KiB
+  above the main stack's bottom, with marker words below it), `marker` (a
+  debugger had the DABR), or `off`. `deepest` is the most of the main stack
+  used so far (it starts zeroed).
+- `reset` and `power`: whether the agent took the buttons (only from
+  libogc's defaults). Reset exits to HBC like `HBCX`; Power runs `on_exit`
+  and switches off. `flush_at_exit`: a libogc reset function unmounts SD and
+  USB on `exit()` and `SYS_ResetSystem()`, after the app's `atexit` handlers.
+- `frames`: framebuffer flips counted at each vertical blank. `fps` is the
+  last second's; `worst_ms` the longest frame and `late` the frames half again
+  as long as the average, neither counting time the overlay or a
+  `hbc_agent_hold()` paused; `single_buffer` when nothing ever flipped.
+- `stub` and `mem_low`: the opt-ins (`guard_reload_stub`, `track_memory`),
+  else `null`. `changed_at_ms` is when the reload stub's 6 KiB were first
+  found changed (0: never); they are put back on `exit()`, on
+  `SYS_ResetSystem()` and on every crash path. `mem_low` holds the lowest free
+  MEM1 and MEM2 arena and newlib heap seen, also printed at the end of the
+  kept log.
+- `alloc_failures`: with `-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign`,
+  the failed allocations from the app's code: how many, the last size and
+  caller; the first four are also printed.
+- `cost`: the once-a-second checks and the per-frame callback (count and
+  total microseconds), and the bytes the tools hold (the stub copy, the
+  monitor thread's stack if they started it).
+
 ### Kept log
 
 As an agent app stops (an exception, a fatal, a hang, or `exit()` and a
@@ -336,7 +379,13 @@ stderr to MEM2 at `0x91800100` (`hbc_lastlog_block`: magic `HBCL`, why it
 was kept, length, uptime, app name, text, check word). It is written only
 then, because the app's own MEM2 may cover that address while it runs. HBC
 takes it in `main()`, clears it, and serves it with `HBCL`; `HBCS` says
-`"lastlog":{"why":"fatal","bytes":812}` or `"lastlog":null`. A running
+`"lastlog":{"why":"fatal","bytes":812}` or `"lastlog":null`; `why` is
+`exit`, `exception`, `fatal`, `hang`, `abort` (assert or abort), `stack` or
+`power`. After a crash, fatal, hang or abort the text ends with every
+thread: its priority (libogc's scale, 127 highest), state, stack pointer,
+the bytes of stack it had left (the main thread, and libogc2's threads), and
+the return addresses up its stack chain, nearest first (a waiting thread's
+first few are libogc's own wait). A running
 agent answers `HBCL` with its output so far, `why` being `live`.
 `hbc.py lastlog` prints it. A death with no way out (a freeze with
 interrupts off, the power switch) leaves no kept log.

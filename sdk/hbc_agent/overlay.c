@@ -175,6 +175,20 @@ static struct {
 	const char *buffers;
 } cost;
 
+// The open overlay's state for HBCS "overlay_ui": scripted tests check where
+// the focus is before they press A, instead of guessing.
+static ov_ui *open_ui;
+
+int agent_overlay_state(char *buf, int size) {
+	ov_ui *ui = open_ui;
+
+	if (!ui)
+		return 0;
+	return snprintf(buf, size, ",\"overlay_ui\":{\"menu\":%d,\"focus\":%d,\"tab\":%d,"
+					"\"page\":%d,\"info_page\":%d}", ui->menu, ui->focus, ui->dev_tab,
+					ui->dev_page, ui->info_page);
+}
+
 void agent_overlay_cost(u32 *frames, u32 *avg_us, u32 *max_us, u32 *bytes, const char **buffers) {
 	*frames = cost.frames;
 	*avg_us = cost.avg_us;
@@ -951,6 +965,10 @@ typedef struct {
 	int exit_choice;          // an Exit choice the app handles, + 1; 0 for none
 	char sd[24];
 	volatile bool sd_done;
+	const GXRModeObj *rmode;
+	ov_page *info;            // DEV > Info's pages, gathered by info_thread
+	volatile bool info_done;
+	lwp_t info_thread;
 } ov_run;
 
 static ov_run *run;
@@ -979,6 +997,15 @@ static void *sd_thread(void *arg) {
 		snprintf(r->sd, sizeof(r->sd), "No card");
 	}
 	r->sd_done = true;
+	return NULL;
+}
+
+static void *info_thread(void *arg) {
+	ov_run *r = arg;
+
+	while (!agent_info_gather(r->info, r->rmode, (1 << OV_INFO_PAGES) - 1))
+		usleep(100 * 1000);   // HBCH is using it
+	r->info_done = true;
 	return NULL;
 }
 
@@ -1032,6 +1059,7 @@ static void poll(ov_run *r) {
 	else
 		snprintf(e->network, sizeof(e->network), "Not connected");
 	snprintf(e->sd, sizeof(e->sd), "%s", r->sd_done ? r->sd : "Checking...");
+	e->info = r->info_done ? r->info : NULL;
 	e->mem_free_kb[0] = SYS_GetArena1Size() / 1024;
 	e->mem_free_kb[1] = SYS_GetArena2Size() / 1024;
 	e->mem_total_kb[0] = 24 * 1024;
@@ -1294,6 +1322,14 @@ static void act(int action, int arg, void *user) {
 	case OVA_SYNC_CLOCK:
 		ntp_start();
 		break;
+	case OVA_INFO:
+		// Every page at once, below the app's threads like the SD check.
+		if (!run->info && (run->info = malloc(OV_INFO_PAGES * sizeof(ov_page))) &&
+				LWP_CreateThread(&run->info_thread, info_thread, run, NULL, 16 * 1024, 30) < 0) {
+			free(run->info);
+			run->info = NULL;
+		}
+		break;
 	case OVA_RESET_REMOTES:
 		reset_remotes();
 		fx_stop_all();
@@ -1425,6 +1461,8 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	r.w = rmode->fbWidth;
 	r.h = rmode->xfbHeight;
 	r.test_chan = -1;
+	r.rmode = rmode;
+	r.info_thread = LWP_THREAD_NULL;
 	size = r.w * r.h * 2;
 	agent_set_screen_size(r.w, r.h);
 	app_fb = agent_uncached(app_fb);
@@ -1473,6 +1511,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	// pointer so they look right.
 	ov_set_widescreen(CONF_GetAspectRatio() == CONF_ASPECT_16_9);
 	ov_init(&ui, r.w, r.h);
+	open_ui = &ui;
 	last_chan = -1;
 	memset(&cost, 0, sizeof(cost));
 	cost.buffers = !own ? "lent" : fb[0] == (u8 *) ((u32) app_fb & ~0x40000000) ? "app's" : "own";
@@ -1546,6 +1585,10 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	ir_restore();
 	if (sd != LWP_THREAD_NULL)
 		LWP_JoinThread(sd, NULL);
+	if (r.info) {
+		LWP_JoinThread(r.info_thread, NULL);
+		free(r.info);
+	}
 	if (own) {
 		if (in_mem1(fb[1]))
 			free(fb[1]);
@@ -1555,6 +1598,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	if (!frozen_in_place)
 		free(r.frozen);
 	run = NULL;
+	open_ui = NULL;
 	inside = false;
 
 	if (ui.after == OVA_RESTART_APP && agent_cfg()->on_restart)

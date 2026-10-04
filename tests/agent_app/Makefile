@@ -22,6 +22,8 @@ MODE_CFLAGS = -DAGENT_APP_MODE='"$(MODE)"'
 endif
 CFLAGS = -g -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall -Wextra $(MODE_CFLAGS) $(EXTRA_CFLAGS) \
 	-I$(DEVKITPRO)/$(OGC)/include -I$(DEVKITPRO)/portlibs/ppc/include -I../../sdk
+# The agent's failed-allocation reports (sdk/hbc_agent/alloc_wrap.c).
+WRAP = -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign
 LDFLAGS = -mrvl -mcpu=750 -meabi -mhard-float -Wl,-z,noexecstack \
 	-L$(AGENT_LIB) -L$(DEVKITPRO)/$(OGC)/lib/wii -L$(DEVKITPRO)/portlibs/ppc/lib
 
@@ -29,7 +31,7 @@ $(APP).dol: $(APP).elf
 	$(ELF2DOL) $< $@
 
 $(APP).elf: main.c ../../sdk/hbc_netlog.h ../../sdk/hbc_agent.h $(AGENT_LIB)/libhbcagent.a
-	$(CC) $(CFLAGS) main.c $(LDFLAGS) -lhbcagent -lwiiuse -lbte -lfat -lz -logc -lm -o $@
+	$(CC) $(CFLAGS) main.c $(LDFLAGS) $(WRAP) -lhbcagent -lwiiuse -lbte -lfat -lz -logc -lm -o $@
 
 $(AGENT_LIB)/libhbcagent.a: FORCE
 	$(MAKE) -C $(AGENT) OGC=$(OGC) EXTRA_CFLAGS="$(EXTRA_CFLAGS)"

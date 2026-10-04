@@ -90,6 +90,48 @@ static void keys(ov_ui *ui, const char *seq) {
 	}
 }
 
+// DEV > Info's pages, as overlay.c fills them on a Wii.
+static ov_page info[OV_INFO_PAGES];
+
+static void row(int page, const char *label, const char *value) {
+	ov_row *r = &info[page].row[info[page].count++];
+
+	snprintf(r->label, sizeof(r->label), "%s", label);
+	snprintf(r->value, sizeof(r->value), "%s", value);
+}
+
+static void make_info(void) {
+	row(OV_INFO_SYSTEM, "Console", "Wii (RVL-001), USA");
+	row(OV_INFO_SYSTEM, "Serial", "LU123456789");
+	row(OV_INFO_SYSTEM, "Console ID", "0x0a1b2c3d");
+	row(OV_INFO_SYSTEM, "Wii Menu", "4.3U (v513)");
+	row(OV_INFO_SYSTEM, "IOS", "IOS58 v6176, AHBPROT open");
+	row(OV_INFO_SYSTEM, "boot2", "v4");
+	row(OV_INFO_SYSTEM, "CPU", "Broadway 729 MHz (PVR 00087102)");
+	row(OV_INFO_SYSTEM, "Hollywood", "revision 0x11");
+	row(OV_INFO_SYSTEM, "Language", "English");
+	row(OV_INFO_VIDEO, "Mode", "640x480, 480p, 60 Hz");
+	row(OV_INFO_VIDEO, "Cable", "Component");
+	row(OV_INFO_VIDEO, "TV setting", "NTSC, 16:9, 480p on");
+	row(OV_INFO_VIDEO, "PAL 60", "Off");
+	row(OV_INFO_VIDEO, "Sensor bar", "Below the TV");
+	row(OV_INFO_VIDEO, "Paired remotes", "3");
+	row(OV_INFO_STORAGE, "SD card", "SDHC, 31.9 GB, 3.1 GB free");
+	row(OV_INFO_STORAGE, "USB drive", "500.1 GB, 212.4 GB free");
+	row(OV_INFO_STORAGE, "NAND", "312.5 MB free (2500 blocks)");
+	row(OV_INFO_STORAGE, "Memory card A", "251 blocks (16 Mbit)");
+	row(OV_INFO_STORAGE, "Memory card B", "None");
+	row(OV_INFO_USB, "057e:0305", "Bluetooth (Wii's own)");
+	row(OV_INFO_USB, "0781:5567", "Storage, port 0");
+	row(OV_INFO_USB, "057e:0337", "GameCube adapter");
+	row(OV_INFO_NETWORK, "IP", "192.168.8.213 / 255.255.255.0");
+	row(OV_INFO_NETWORK, "Gateway", "192.168.8.1");
+	row(OV_INFO_NETWORK, "DNS", "192.168.8.1, 8.8.8.8");
+	row(OV_INFO_NETWORK, "MAC", "00:19:1d:aa:bb:cc");
+	row(OV_INFO_NETWORK, "Connection", "1, Wi-Fi \"homenet\" (WPA2)");
+	ext.info = info;
+}
+
 int main(int argc, char **argv) {
 	static ov_ui ui;
 	int i;
@@ -165,6 +207,10 @@ int main(int argc, char **argv) {
 	capture(&ui, "04-dev-actions");
 	keys(&ui, "ra");
 	capture(&ui, "05-dev-info");
+	make_info();
+	keys(&ui, "d" "a");
+	capture(&ui, "05b-dev-info-page");
+	keys(&ui, "b" "u");
 	keys(&ui, "la" "dr" "a");
 	capture(&ui, "06-dev-log");
 	keys(&ui, "bb" "rrrr" "a");

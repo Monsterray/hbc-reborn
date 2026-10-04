@@ -212,11 +212,18 @@ def crash_report(crash, elf=None):
                  f"(fatal, app code {crash.get('code', 0)} = {crash.get('code', 0):#x})"]
     elif kind == "hang":
         lines = [f"{crash['app']} hung {after}: {crash.get('reason') or 'hang'}"]
+    elif kind == "assert":
+        lines = [f"{crash['app']} stopped {after}: assertion failed: {crash.get('reason')}"]
+    elif kind == "abort":
+        lines = [f"{crash['app']} stopped {after}: {crash.get('reason') or 'abort() called'}"]
+    elif kind == "stack":
+        lines = [f"{crash['app']} stopped {after}: the main thread overran its stack "
+                 f"({crash.get('reason')})"]
     else:
         lines = [f"{crash['app']} crashed {after}: {crash['name']} exception ({crash['exception']})"]
     for label, key in (("pc", "pc"), ("lr", "lr")):
         lines.append(f"  {label:5} {crash[key]}  {where.get(crash[key], '')}".rstrip())
-    if kind == "exception":
+    if kind == "exception" or (kind == "stack" and crash.get("exception")):
         lines.append(f"  dar   {crash['dar']}  dsisr {crash['dsisr']}  sp {crash['sp']}  "
                      f"msr {crash['msr']}  cr {crash['cr']}  ctr {crash['ctr']}")
     else:
@@ -293,6 +300,21 @@ def relaunch_wait(wii, expected, seconds=90):
 
 def status(wii):
     return json.loads(request(wii, b"HBCS"))
+
+
+INFO_PAGES = ["System", "Video", "Storage", "USB", "Network"]
+
+
+def hardware(wii, pages=None):
+    """DEV > Info's pages (HBCH): {"System": {"Console": "...", ...}, ...};
+    pages, a list of their names, for only those."""
+    mask = sum(1 << INFO_PAGES.index(p) for p in pages or [])
+    try:
+        return json.loads(request(wii, struct.pack(">4sH", b"HBCH", mask)))
+    except HBCError as exc:
+        if exc.code == 88:  # newlib's ENOSYS
+            raise HBCError("this HBC or agent is too old for hw (1.9.6 on)") from None
+        raise
 
 
 def wait(wii, seconds):
@@ -862,6 +884,7 @@ Common tasks
 Commands
   The Wii
     status              what is running: version, IOS, memory, SD card, network
+    hw                  the Wii's hardware and settings, as DEV > Info shows them
     version             just the version (ends in " agent" for an app, below)
     wait [SECONDS]      wait until HBC answers, after a reboot (default 90)
   Running apps
@@ -1019,6 +1042,15 @@ needs devkitPPC's powerpc-eabi-addr2line). --clear forgets the report.
 Besides exceptions, an app can stop itself with hbc_agent_fatal() (its own
 code and a reason), and the agent's watchdog reports a hang. The last lines
 of the app's output follow the report.""",
+    "hw": """\
+hbc.py hw [--json] [PAGE ...]
+
+The Wii's hardware and settings, as the HOME overlay's DEV > Info pages
+show them: console, region, serial and console ID, Wii Menu and IOS
+versions, CPU; video mode, cable and TV settings; SD, USB, NAND and memory
+cards; USB devices; IP, gateway, DNS, MAC and the connection in use. Name
+pages (System, Video, Storage, USB, Network) for only those. HBC 1.9.6 and
+agent apps built with it answer (HBCH).""",
     "lastlog": """\
 hbc.py lastlog
 
@@ -1174,6 +1206,18 @@ def main(argv=None):
                         print(f"    {line}")
             else:
                 print("no crash reported")
+        elif cmd == "hw":
+            want = [p for p in INFO_PAGES for a in args if a.lower() == p.lower()]
+            if len(want) != len(args):
+                raise SystemExit(f"hbc.py: hw pages are {', '.join(INFO_PAGES)}")
+            pages = hardware(wii, want)
+            if opts.json:
+                print(json.dumps(pages, indent=1))
+            else:
+                for page, rows in pages.items():
+                    print(page)
+                    for label, value in rows.items():
+                        print(f"  {label:16} {value}")
         elif cmd == "lastlog":
             kept = lastlog(wii)
             if opts.json:

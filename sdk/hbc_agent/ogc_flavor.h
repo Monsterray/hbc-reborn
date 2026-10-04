@@ -29,4 +29,30 @@
 #define AGENT_EXC_CTR     188
 #define AGENT_EXC_XER     192
 
+// frame_context's field names: libogc2 r1 (September 2026, the first to
+// define _LIBOGC2_REVISION_) put them in lower case, with the same layout.
+#if !AGENT_TUXEDO && !defined(__ASSEMBLER__)
+#ifdef _LIBOGC2_REVISION_
+#define FC_NUMBER nExcept
+#define FC_SRR0   srr0
+#define FC_SRR1   srr1
+#define FC_GPR    gpr
+#define FC_GQR    gqr
+#define FC_CR     cr
+#define FC_LR     lr
+#define FC_CTR    ctr
+#define FC_XER    xer
+#else
+#define FC_NUMBER EXCPT_Number
+#define FC_SRR0   SRR0
+#define FC_SRR1   SRR1
+#define FC_GPR    GPR
+#define FC_GQR    GQR
+#define FC_CR     CR
+#define FC_LR     LR
+#define FC_CTR    CTR
+#define FC_XER    XER
+#endif
+#endif
+
 #endif

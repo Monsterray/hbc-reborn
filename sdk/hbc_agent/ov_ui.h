@@ -40,6 +40,21 @@ typedef struct {
 	ov_menu_item item[OV_MENU_ITEMS];
 } ov_menu;
 
+/* DEV > Info's pages, which overlay.c gathers when one first opens. */
+enum { OV_INFO_SYSTEM, OV_INFO_VIDEO, OV_INFO_STORAGE, OV_INFO_USB, OV_INFO_NETWORK,
+	   OV_INFO_PAGES };
+#define OV_INFO_ROWS 13
+
+typedef struct {
+	char label[20];
+	char value[44];
+} ov_row;
+
+typedef struct {
+	int count;
+	ov_row row[OV_INFO_ROWS];
+} ov_page;
+
 typedef struct {
 	char app[40];         /* "agent_app 1.0" */
 	char clock[8];        /* "14:32" */
@@ -69,6 +84,7 @@ typedef struct {
 	unsigned exit_mask;
 
 	const char *log_text; /* Log page: the app's recent output */
+	const ov_page *info;  /* Info's pages, OV_INFO_PAGES; NULL while gathering */
 	char test[6][40];     /* Test page lines for the selected remote */
 	int cal_progress;     /* 0 to 100 */
 	int cal_wait_s;       /* seconds before it starts measuring */
@@ -102,7 +118,8 @@ enum {
 	OVA_VOLUME,           /* arg: remote | 16 for louder */
 	OVA_RESET_REMOTES,
 	OVA_SOUND_TEST,       /* arg: remote | 16 for PCM, | 32 for speaker.wav (else ADPCM) */
-	OVA_SYNC_CLOCK        /* DEV: set the Wii's clock from NTP */
+	OVA_SYNC_CLOCK,       /* DEV: set the Wii's clock from NTP */
+	OVA_INFO              /* DEV > Info: a page opened (arg); gather them all */
 };
 
 typedef void (*ov_act_fn)(int action, int arg, void *user);
@@ -124,6 +141,7 @@ typedef struct {
 	int menu;                           /* OV_MENU_* */
 	bool closing, paused;
 	int dev_tab, dev_page, wm_page, wm_sel;
+	int info_page;                      /* OV_INFO_*, on DEV's info page */
 	int focus, bar_focus;
 	int after;                          /* action to run once closed */
 	int after_arg;

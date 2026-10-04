@@ -99,12 +99,14 @@ static void json_text(char *out, const char *in, size_t max) {
 }
 
 static const char *crash_kind(u32 kind) {
-	return kind == HBC_CRASH_FATAL ? "fatal" : kind == HBC_CRASH_HANG ? "hang" : "exception";
+	static const char *names[] = { "exception", "fatal", "hang", "assert", "abort", "stack" };
+	return kind < 6 ? names[kind] : "exception";
 }
 
 static const char *lastlog_why(u32 why) {
-	static const char *names[] = { "exit", "exception", "fatal", "hang" };
-	return why < 4 ? names[why] : "unknown";
+	static const char *names[] = { "exit", "exception", "fatal", "hang", "abort", "stack",
+								   "power" };
+	return why < 7 ? names[why] : "unknown";
 }
 
 // ,"crash":{...} or ,"crash":null

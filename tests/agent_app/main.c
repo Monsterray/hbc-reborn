@@ -1,5 +1,5 @@
 // Test app for sdk/hbc_agent, driven by tests/wii_agent.py.
-// usage (argv from Wiiload): agent_app.dol [crash | trap | fatal | hang | exit | stay SECONDS]
+// usage (argv from Wiiload): agent_app.dol [MODE [N]] [optin]
 //
 //   (none)       run until the agent asks it to exit (up to 300 s)
 //   stay N       the same, for up to N seconds
@@ -8,6 +8,23 @@
 //   fatal        hbc_agent_fatal(0x81, ...) after 1 s, in agent_app_fatal()
 //   hang         arms the hang watchdog (5 s), then spins in agent_app_hang()
 //   exit         return at once
+//   assert       a failed assert() after 1 s, in agent_app_assert()
+//   abort        abort() after 1 s
+//   overflow     recursion down the main stack, 256 bytes a level: the stack
+//                guard's breakpoint stops it (a real Wii); without one
+//                (Dolphin) it waits just past the markers for their check
+//   deadlock     two threads take two mutexes in opposite order, main waits
+//                on one of them with the hang watchdog armed
+//   mallocfail   malloc(1.5 GB) (fails), then runs as with no mode
+//   stubsmash    changes 32 bytes of the reload stub's area past HBC's stub
+//                (0x80002f00) after 1 s, then runs as with no mode; with
+//                optin the agent puts them back at exit
+//   reset        after 2 s, calls the Reset callback the agent installed,
+//                as the button would
+//   flip N       runs as with no mode, two framebuffers, a flip every N
+//                vertical blanks (60/N frames a second); N 0 never flips
+//   optin        (anywhere after the mode) guard_reload_stub and track_memory
+//   nosafety=N   (anywhere after the mode) cfg.no_safety = N, HBC_AGENT_NO_* bits
 //
 // A build with -DAGENT_APP_MODE='"crash"' takes that mode when it has no
 // argv, for a direct boot in Dolphin (tests/dolphin_ogc_crash.py).
@@ -15,6 +32,7 @@
 // "Hello", and DEV > Save writes sd:/hbctest/agent_save.txt. Output goes to
 // the network log (hbc_netlog.h) and the TV.
 
+#include <assert.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +47,15 @@
 #include "hbc_netlog.h"
 #include "hbc_agent.h"
 
-static void *xfb;
+#if __has_include(<tuxedo/thread.h>)
+extern void *__ppc_main_sp;
+#define MAIN_STACK_LO ((u32) __ppc_main_sp - 0x20000)
+#else
+#include <ogc/lwp_threads.h>
+#define MAIN_STACK_LO ((u32) _thr_main->stack)
+#endif
+
+static void *xfb, *xfb2;
 static GXRModeObj *rmode;
 
 // Colour bars under the console, so the overlay has something to dim.
@@ -78,6 +104,44 @@ void __attribute__((noinline)) agent_app_trap(void) {
 	__builtin_trap();
 }
 
+void __attribute__((noinline)) agent_app_assert(int argc) {
+	assert(argc == 99);
+}
+
+static u32 overflow_stop;
+static volatile bool overflow_deeper = true;   // never false; gcc cannot tell
+
+// 256 bytes a level, every byte written, so the breakpoint's doubleword and
+// the markers below it are hit on the way down. Stops (and waits) just past
+// the markers, before libogc's own data below the stack.
+void __attribute__((noinline)) agent_app_overflow(int depth) {
+	volatile u8 pad[240];
+	u32 sp;
+	int i;
+
+	for (i = 0; i < (int) sizeof(pad); ++i)
+		pad[i] = depth;
+	__asm__ volatile ("mr %0,1" : "=r" (sp));
+	if (sp < overflow_stop) {
+		printf("agent_app: no stop at %u levels, sp %08x; waiting\n", depth, (unsigned) sp);
+		while (true)
+			sleep(1);
+	}
+	if (overflow_deeper)
+		agent_app_overflow(depth + 1);
+	pad[0] = 0;
+}
+
+static mutex_t lock_a, lock_b;
+
+static void *deadlock_thread(void *arg) {
+	(void) arg;
+	LWP_MutexLock(lock_b);
+	usleep(200 * 1000);
+	LWP_MutexLock(lock_a);   // main holds a, waits for b
+	return NULL;
+}
+
 static bool save(void *user) {
 	FILE *f;
 
@@ -103,7 +167,7 @@ static void hello(void *user) {
 int main(int argc, char **argv) {
 	hbc_agent_config cfg = { 0 };
 	const char *mode = argc > 1 ? argv[1] : AGENT_APP_MODE;
-	u32 seconds = 300, frames = 0;
+	u32 seconds = 300, frames = 0, flip_every = 0;
 	bool fat;
 	s32 res;
 
@@ -117,6 +181,11 @@ int main(int argc, char **argv) {
 	cfg.version = "1";
 	cfg.app_polls_exit = true;
 	cfg.on_save = save;
+	for (int i = 2; i < argc; ++i)
+		if (!strcmp(argv[i], "optin"))
+			cfg.guard_reload_stub = cfg.track_memory = true;
+		else if (!strncmp(argv[i], "nosafety=", 9))
+			cfg.no_safety = strtoul(argv[i] + 9, NULL, 0);
 	{
 		// What starting the agent costs: heap, and MEM1/MEM2 arena.
 		struct mallinfo m0 = mallinfo();
@@ -151,6 +220,56 @@ int main(int argc, char **argv) {
 		agent_app_hang();
 	}
 
+	if (!strcmp(mode, "assert") || !strcmp(mode, "abort")) {
+		sleep(1);
+		printf("agent_app: stopping (%s)\n", mode);
+		if (!strcmp(mode, "abort"))
+			abort();
+		agent_app_assert(argc);
+	}
+	if (!strcmp(mode, "overflow")) {
+		sleep(1);
+		overflow_stop = MAIN_STACK_LO + 600;
+		printf("agent_app: overflowing the main stack (bottom %08x)\n", (unsigned) MAIN_STACK_LO);
+		agent_app_overflow(0);
+	}
+	if (!strcmp(mode, "deadlock")) {
+		lwp_t t;
+
+		LWP_MutexInit(&lock_a, false);
+		LWP_MutexInit(&lock_b, false);
+		hbc_agent_alive();
+		LWP_MutexLock(lock_a);
+		LWP_CreateThread(&t, deadlock_thread, NULL, NULL, 16 * 1024, 50);
+		usleep(100 * 1000);
+		printf("agent_app: deadlocking\n");
+		LWP_MutexLock(lock_b);
+	}
+	if (!strcmp(mode, "mallocfail")) {
+		void *p = malloc(1536u << 20);
+
+		printf("agent_app: malloc(1.5 GB) gave %p\n", p);
+	}
+	if (!strcmp(mode, "stubsmash")) {
+		sleep(1);
+		memset((void *) 0x80002f00, 0x5a, 32);
+		DCFlushRange((void *) 0x80002f00, 32);
+		printf("agent_app: changed 32 bytes at 0x80002f00\n");
+	}
+	if (!strcmp(mode, "reset")) {
+		resetcallback cb = SYS_SetResetCallback(NULL);
+
+		SYS_SetResetCallback(cb);
+		sleep(2);
+		printf("agent_app: pressing Reset\n");
+		((void (*)(u32, void *)) cb)(0, NULL);
+	}
+	if (!strcmp(mode, "flip") && argc > 2) {
+		flip_every = atoi(argv[2]);
+		xfb2 = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+		memcpy(xfb2, xfb, rmode->fbWidth * rmode->xfbHeight * 2);
+	}
+
 	if (!strcmp(mode, "crash") || !strcmp(mode, "trap")) {
 		sleep(1);
 		printf("agent_app: crashing (%s)\n", mode);
@@ -173,6 +292,10 @@ int main(int argc, char **argv) {
 			printf("agent_app: overlay closed (%d)\n", res);
 		}
 		VIDEO_WaitVSync();
+		if (flip_every && frames % flip_every == 0) {
+			VIDEO_SetNextFramebuffer(frames / flip_every & 1 ? xfb2 : xfb);
+			VIDEO_Flush();
+		}
 		if (++frames % (60 * 5) == 0)
 			printf("agent_app: running, %u s\n", frames / 60);
 	}

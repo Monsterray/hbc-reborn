@@ -155,6 +155,76 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.6: the agent's safety tools, DEV > Info's hardware pages, `hbc.py hw`
+
+Safety tools (`sdk/hbc_agent/safety.c`, on by default, opt-outs in
+`no_safety`):
+
+- Stack guard: the DABR watches the doubleword 1 KiB above the main
+  thread's stack bottom (libogc 3's `__ppc_main_sp` less 128 KiB, or
+  libogc2's and 1.x's `_thr_main->stack`), with marker words below it
+  checked as the agent wakes. A hit is a `stack` crash. The libogc2/1.x
+  exception entry clears the DABR first (its frame may cover the
+  doubleword); libogc 3's saves to a fixed buffer in real mode. The DABR is
+  cleared on every way out (crash, fatal, hang, abort, and a libogc reset
+  function for `exit()` and `SYS_ResetSystem()`), so a program started
+  after the app does not inherit it. Dolphin does not emulate the DABR, so
+  there only the markers apply.
+- `assert()` and `abort()` (weak overrides) report `assert` (file:line:
+  expression) and `abort`, then return through the stub.
+- Reset and Power: taken only from libogc's default handlers. libogc2 and
+  1.x restore their default for NULL, so setting NULL twice reveals it;
+  libogc 3 stores NULL and its defaults are a bare `blr`, which is how the
+  agent recognises them. Reset exits like `HBCX`; Power runs `on_exit` and
+  `SYS_ResetSystem(SYS_POWEROFF)`.
+- SD and USB are unmounted from a libogc reset function: `exit()` calls
+  `SYS_ResetSystem(SYS_SHUTDOWN)` after the app's `atexit` handlers (both
+  libogc 3 and libogc2), so their saves are already written.
+- Frame pacing from a chained post-retrace callback; the thread list (all
+  three libogcs' thread tables, libogc 3's priorities mapped to the LWP
+  scale) at the end of the kept log after any stop.
+- Opt-in: `guard_reload_stub` (a 6 KiB copy, checked each second, put back
+  at exit and on every crash path) and `track_memory`; with
+  `-Wl,--wrap=malloc,...`, failed allocations (`alloc_wrap.c`, linked only
+  then).
+
+Measured on the bench Wii (`tests/agent_cost.py`, 20 s at 60 fps): the
+defaults cost 0.1 us a second for the checks and 0.06 us a frame for the
+callback, 0.0004% of the CPU and no memory; with both opt-ins, 5.85 us per
+check, 0.0009%, and 10 KiB held (the stub copy and the monitor thread's
+stack). Code: safety.o 10.7 KB, info.o 10.8 KB (1.3 KB bss; the 7 KiB
+network settings buffer is allocated only while read), alloc_wrap.o 1 KB.
+`tests/wii_agent_safety.py` passed all eight checks on the bench Wii: assert,
+abort, a deadlock (both threads shown on a mutex), a failed 1.5 GB malloc,
+60/30/0 fps, the stub guard (a change past HBC's stub seen and put back,
+the app still returning to HBC), Reset, and a runaway recursion stopped by
+the breakpoint.
+
+DEV > Info (`sdk/hbc_agent/info.c`): five pages gathered in a thread when one
+opens, and the same over `HBCH` (`hbc.py hw`). Found while checking them:
+
+- Dolphin keeps one object behind every handle to a device, so closing a
+  handle of our own on `/dev/net/ip/top` stopped the app's network (HBC
+  stopped answering). The agent keeps its one handle open; IOS drops it when
+  it reloads for the next program.
+- IOS's USB devices hold one device-change request each; asking IOS
+  directly and closing could take the app's, and on a real Wii the close
+  blocked. The USB page reads libogc's lists, starting libogc's USB in an
+  app that had not.
+- `config.dat`'s layout is Dolphin's `WiiNetConfig.h`: flags 1 wired, 2 DNS
+  by DHCP, 4 IP by DHCP, 128 selected; SSID at 0x7c4 (WiiBrew's summary put
+  it at 0x292). Interface option 0xb003 ends its DNS list with
+  255.255.255.255, and buffers are cleared before each query (Dolphin reads
+  an offset from the routing-table buffer).
+- An app that never started ISFS read no `setting.txt`; the gatherer starts
+  ISFS.
+
+Checked on the bench Wii (`tests/wii_info.py`): `hw` from HBC and from
+agent_app agree, and the overlay's five pages render. The overlay test runs
+in agent_app only and checks the focus (HBCS `overlay_ui`) before every A
+press: an earlier version pressed keys blind in HBC's own HOME menu, landed
+on Launch BootMii, and sent the shared Wii to BootMii.
+
 ### 1.9.5: popups from the network close themselves
 
 - An upload HBC could not use (not a Wii app, a broken transfer, a bad ZIP,

@@ -121,6 +121,9 @@ class FakeHBC:
             # 4x2 pixels: a red pair and a white pair on each row.
             frame = bytes([81, 90, 81, 240, 235, 128, 235, 128]) * 2
             conn.sendall(struct.pack(">iIII", 0, 8 + len(frame), 4, 2) + frame)
+        elif magic == b"HBCH":
+            self.reply(conn, 0, json.dumps({"System": {"Console": "Wii RVL-001(USA)"},
+                                            "USB": {"057e:0305": "Device"}}).encode())
         elif magic == b"HBCC":
             self.crash = {}
             self.reply(conn, 0)
@@ -391,6 +394,11 @@ class HBCToolTest(unittest.TestCase):
         self.assertEqual(self.fake.upload_flags[-1], 0)
         self.fake.next_result = None
         self.cli("send", str(app))
+
+    def test_hw_prints_the_info_pages(self):
+        out = self.cli("hw")
+        self.assertIn("System\n  Console          Wii RVL-001(USA)", out)
+        self.assertIn("USB\n  057e:0305        Device", out)
 
     def test_key_sends_presses(self):
         self.fake.keys = b""

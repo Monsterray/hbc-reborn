@@ -25,6 +25,11 @@
 	.align	2
 	.globl	agent_exc_entry
 agent_exc_entry:
+	// The stack guard's breakpoint (safety.c) off first: this frame may
+	// cover its doubleword, and translation is back on. r0 is saved.
+	li	%r0,0
+	mtspr	1013,%r0
+	isync
 	stwu	%r1,-AGENT_EXC_FRAME(%r1)	// the frame the vector code filled
 	mfspr	%r0,912				// GQR0-7
 	stw	%r0,AGENT_EXC_GQR(0)(%r1)
