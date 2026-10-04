@@ -40,6 +40,14 @@ view * dialog_about (const view *sub_view);
 
 s8 show_message (const view *sub_view, dialog_message_type type,
 					dialog_message_buttons buttons, const char *text, u8 focus);
+// The same, picking the last button (OK, Cancel or No) after timeout_s
+// seconds unless a button is pressed first; 0 waits for good. Popups a
+// network request can raise use NET_POPUP_TIMEOUT_S, so that automated
+// tests never wait on someone to press A.
+#define NET_POPUP_TIMEOUT_S 10
+s8 show_message_timed (const view *sub_view, dialog_message_type type,
+						dialog_message_buttons buttons, const char *text,
+						u8 focus, u32 timeout_s);
 dialog_options_result show_options_dialog(const view *sub_view);
 
 #endif

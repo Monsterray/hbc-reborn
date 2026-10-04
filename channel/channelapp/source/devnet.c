@@ -42,7 +42,15 @@ static hbc_netlog_block kept;
 // The next Wiiload upload's name, from its sender (HBCA), and when it came.
 #define UPLOAD_NAME_TTL_S 120
 static char upload_name[64];
+static u32 upload_flags;
 static u64 upload_name_at;
+// What became of the last upload (HBCS "upload"), counted from 1.
+static struct {
+	u32 seq;
+	const char *result, *error;
+	char text[96];
+	u64 at;
+} upload;
 
 // The last app's output, kept by its agent as it stopped (HBCL).
 static hbc_lastlog_block lastlog;
@@ -196,6 +204,17 @@ static s32 status_json(char *buf, size_t size) {
 				boot_marks[i].name, boot_marks[i].ms);
 	n += snprintf(buf + n, size - n, "}");
 	n += crash_json(buf + n, size - n);
+	if (upload.seq) {
+		char text[sizeof(upload.text)];
+
+		json_text(text, upload.text, sizeof(text));
+		n += snprintf(buf + n, size - n, ",\"upload\":{\"seq\":%u,\"result\":\"%s\","
+				"\"error\":%s%s%s,\"text\":\"%s\",\"ago_ms\":%u}", (unsigned) upload.seq,
+				upload.result, upload.error ? "\"" : "", upload.error ? upload.error : "null",
+				upload.error ? "\"" : "", text, MS(diff_ticks(upload.at, gettime())));
+	} else {
+		n += snprintf(buf + n, size - n, ",\"upload\":null");
+	}
 	if (have_lastlog)
 		n += snprintf(buf + n, size - n, ",\"lastlog\":{\"why\":\"%s\",\"bytes\":%u}",
 				lastlog_why(lastlog.why), (unsigned) lastlog.len);
@@ -322,17 +341,20 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	if (!memcmp(hdr, "HBCA", 4)) {
 		// The name of the Wiiload upload that follows, for the Message
 		// Board's play log: hbc.py sends the app's folder or file name.
+		// Flags (protocol 6): DEVNET_UPLOAD_YES installs a ZIP unasked.
 		char name[sizeof(upload_name)];
-		u16 len = get_u16(hdr + 4);
+		u16 len = get_u16(hdr + 4), flags = get_u16(hdr + 6);
 		u32 level;
 
-		if (!len || len >= sizeof(name) || !tcp_read(s, (u8 *) name, len, NULL, NULL)) {
+		if ((!len && !flags) || len >= sizeof(name) ||
+				(len && !tcp_read(s, (u8 *) name, len, NULL, NULL))) {
 			devfile_reply(s, -EINVAL, NULL, 0);
 			return true;
 		}
 		name[len] = 0;
 		_CPU_ISR_Disable(level);
 		memcpy(upload_name, name, len + 1);
+		upload_flags = flags;
 		upload_name_at = gettime();
 		_CPU_ISR_Restore(level);
 		devfile_reply(s, 0, NULL, 0);
@@ -435,6 +457,33 @@ bool devnet_take_upload_name(char *out, size_t size) {
 	upload_name[0] = 0;
 	_CPU_ISR_Restore(level);
 	return have;
+}
+
+u32 devnet_upload_flags(void) {
+	u32 flags, level;
+
+	_CPU_ISR_Disable(level);
+	flags = upload_name_at && diff_sec(upload_name_at, gettime()) < UPLOAD_NAME_TTL_S ?
+			upload_flags : 0;
+	_CPU_ISR_Restore(level);
+	return flags;
+}
+
+void devnet_upload_result(const char *result, const char *error, const char *text) {
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	upload.result = result;
+	upload.error = error;
+	strlcpy(upload.text, text ? text : "", sizeof(upload.text));
+	upload.at = gettime();
+	upload.seq++;
+	// The sender's name and flags were for this upload alone; a launched
+	// app's name goes on to the play log (devnet_take_upload_name).
+	if (strcmp(result, "launched"))
+		upload_name[0] = 0;
+	upload_flags = 0;
+	_CPU_ISR_Restore(level);
 }
 
 const char *devnet_lastlog_app(void) {

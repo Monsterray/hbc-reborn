@@ -665,9 +665,13 @@ def upload_name(path):
     return base
 
 
-def send(wii, path, args, name=None):
+UPLOAD_YES = 1  # HBCA flag: install a ZIP without asking
+
+
+def send(wii, path, args, name=None, yes=False):
     """Wiiload path to HBC. `name` (default upload_name(path)) is what HBC's
-    play log calls it, unless the app's own agent names it."""
+    play log calls it, unless the app's own agent names it. `yes` installs a
+    ZIP without the question on the Wii (HBC 1.9.5 on)."""
     data = read_file(path)
     # The PC has CPU to spare, and the Wii's inflate cost does not depend on the level.
     packed = zlib.compress(data, 9)
@@ -681,13 +685,62 @@ def send(wii, path, args, name=None):
     argv += b"\0"
     header = b"HAXX" + bytes((0, 5)) + struct.pack(">HII", len(argv), len(packed), unpacked_len)
     label = (name or upload_name(path)).encode("utf-8")[:63]
-    if label:
+    flags = UPLOAD_YES if yes else 0
+    if label or flags:
         try:
-            request(wii, struct.pack(">4sH", b"HBCA", len(label)), label)
+            request(wii, struct.pack(">4sHH", b"HBCA", len(label), flags), label)
         except HBCError:
             pass  # an HBC before 1.9.1 (or an agent app): no name, nothing else changes
     with connect(wii) as conn:
         conn.sendall(header + packed + argv)
+
+
+def upload_seq(wii):
+    """The count of uploads HBC has a result for (HBCS "upload"), or None
+    when HBC is too old to say (protocol 5 and before)."""
+    try:
+        st = status(wii)
+    except (OSError, HBCError):
+        return None
+    if st.get("agent") or st.get("proto", 0) < 6:
+        return None
+    return (st.get("upload") or {}).get("seq", 0)
+
+
+def upload_outcome(wii, before, seconds=60):
+    """What became of the upload after `before` (upload_seq): HBC's result,
+    {"result": "launched"} once an app answers or HBC stops answering.
+    HBC's own popups close after 10 s, so an error comes back in time."""
+    deadline, silent = time.monotonic() + seconds, None
+    while time.monotonic() < deadline:
+        try:
+            st = json.loads(request(wii, b"HBCS", timeout=POLL_TIMEOUT))
+            silent = None
+        except (OSError, HBCError):
+            # HBC answers throughout, popups included; a launched app
+            # without an agent does not answer at all.
+            silent = silent or time.monotonic()
+            if time.monotonic() - silent >= 10:
+                return {"result": "launched"}
+            time.sleep(0.5)
+            continue
+        if st.get("agent"):
+            return {"result": "launched"}
+        up = st.get("upload")
+        if up and up.get("seq", 0) > before:
+            return up
+        time.sleep(0.2)
+    raise HBCError(f"HBC gave no result for the upload within {seconds} s")
+
+
+def check_outcome(up):
+    """Raise for an upload HBC could not use; return its result."""
+    if up["result"] == "error":
+        raise HBCError(f"the Wii could not load it ({up.get('error')}): {up.get('text')}")
+    if up["result"] == "declined":
+        raise HBCError("the ZIP was not installed: it was declined on the Wii, "
+                       "or nobody answered (send --yes installs without asking)")
+    return up["result"]
 
 
 class LogServer:
@@ -858,11 +911,13 @@ hbc.py wait [SECONDS]
 Waits until HBC answers (default 90 s) and prints its version. Use it after
 rebooting the Wii or after an app returns to HBC.""",
     "run": """\
-hbc.py run [--name NAME] FILE [ARGS...]
+hbc.py run [--name NAME] [--yes] FILE [ARGS...]
 
 Sends FILE (a .dol, .elf or .zip) to the Wii, starts it, and prints what it
 prints until it exits (or --timeout seconds pass). Arguments after FILE go
-to the app as argv; put -- before any that start with "-".
+to the app as argv; put -- before any that start with "-". If the Wii
+cannot load it, run says why and exits with status 1; a .zip is installed
+and run returns (--yes, as for send).
 
 The Wii Message Board's play log lists the app by the name its agent gives
 itself (sdk/hbc_agent.h), else by --name, else by its folder for an
@@ -879,11 +934,16 @@ report and exits with status 3.
     hbc.py run build/myapp.dol level2
     hbc.py run build/myapp.dol -- --verbose""",
     "send": """\
-hbc.py send [--name NAME] FILE [ARGS...]
+hbc.py send [--name NAME] [--yes] FILE [ARGS...]
 
 Sends FILE to the Wii and starts it, without waiting for output: Wiiload,
 like the devkitPro wiiload tool. A .zip is installed to the SD card after
-you confirm on the Wii. --name is the play log's name for it (see run).""",
+you confirm on the Wii, or at once with --yes. --name is the play log's
+name for it (see run).
+
+send waits for HBC's verdict: if the Wii cannot load it (not a Wii app, a
+broken transfer, a ZIP declined or not answered within HBC's 10 s), send
+says why and exits with status 1. HBC 1.9.5 on; older ones are not asked.""",
     "log": """\
 hbc.py log
 
@@ -983,7 +1043,8 @@ GLOBAL_FLAGS = {"--wii": ("wii", True), "--log-port": ("log_port", True),
 COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--recursive": ("recursive", ("get", "put", "rm")),
                  "--delete": ("delete", ("sync",)),
-                 "--clear": ("clear", ("crash",))}
+                 "--clear": ("clear", ("crash",)),
+                 "--yes": ("yes", ("send", "run"))}
 VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
                "--name": ("name", ("send", "run"))}
 
@@ -1074,7 +1135,12 @@ def main(argv=None):
             need(1, "FILE [ARG ...]")
             if exit_app(wii):
                 print("hbc.py: the running app exited to HBC", file=sys.stderr)
-            send(wii, args[0], args[1:], flags.get("name"))
+            before = upload_seq(wii)
+            send(wii, args[0], args[1:], flags.get("name"), flags.get("yes", False))
+            if before is not None:
+                result = check_outcome(upload_outcome(wii, before))
+                if result != "launched":
+                    print(f"hbc.py: {result}", file=sys.stderr)
         elif cmd == "exit":
             if not exit_app(wii):
                 raise HBCError("no agent app is running (HBC answers itself)")
@@ -1134,7 +1200,13 @@ def main(argv=None):
                     server.serve()
                     return
                 threading.Thread(target=server.serve, args=(True,), daemon=True).start()
-                send(wii, args[0], args[1:], flags.get("name"))
+                before = upload_seq(wii)
+                send(wii, args[0], args[1:], flags.get("name"), flags.get("yes", False))
+                if before is not None:
+                    result = check_outcome(upload_outcome(wii, before))
+                    if result != "launched":
+                        print(f"[hbc log] {result}", file=sys.stderr, flush=True)
+                        return
                 deadline = time.monotonic() + opts.timeout
                 while not server.done.wait(0.5):  # short waits keep ^C working
                     if time.monotonic() >= deadline:

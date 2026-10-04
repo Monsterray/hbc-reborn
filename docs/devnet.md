@@ -46,7 +46,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCF` | op (1), flags (1), path length (2), size (4), 0 (4) | path, then the data for a put | see below |
 | `HBCN` | log port (2), zero | none | empty; sets the app log target |
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
-| `HBCA` | name length (u16 at 4) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5) |
+| `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
 
@@ -62,7 +62,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
+`proto` is 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
 `kind`, `code` and `reason` exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
 `crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
@@ -83,6 +83,21 @@ during the last receive that failed: `r<n>` per `net_read` result,
 `p<events>/<result>` per poll, then the reason. `crash` is `null`, or the
 crash an agent app reported before it returned to this HBC (see
 [Crash reports](#crash-reports)).
+
+`upload` is `null`, or what became of the last Wiiload (or USB Gecko)
+upload: `seq` counts uploads from 1, `result` is `launched`, `installed` (a
+ZIP app; `text` is its folder), `theme`, `declined` (a ZIP nobody agreed to)
+or `error`, with `error` a code (`read`, `receive`, `uncompress`,
+`out_of_memory`, `bad_zip`, `not_wii_app`, `extract`) and `text` the message
+HBC showed; `ago_ms` is its age. `hbc.py send` and `run` read `seq` before
+an upload and wait for the next result, so they fail at once with HBC's
+reason instead of waiting.
+
+Every popup an upload can raise (the load errors, the ZIP question, the
+update question) closes itself after 10 s, showing the count on its last
+button: OK, or No for a question. Any button press stops the count, for
+someone reading it. So a bad upload never leaves HBC waiting for a person,
+and an automated test carries on.
 
 ### Files
 

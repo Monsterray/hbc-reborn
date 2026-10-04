@@ -28,6 +28,10 @@ typedef struct {
 
 	char dirname[PATH_MAX];
 	u32 bytes;
+
+	// Received over the network (or a USB Gecko), not read from a device:
+	// its popups close themselves, and its result goes to HBCS "upload".
+	bool remote;
 } loader_result;
 
 void loader_init (void);

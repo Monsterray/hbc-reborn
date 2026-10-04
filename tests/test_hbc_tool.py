@@ -40,6 +40,11 @@ class FakeHBC:
         self.log_ports = []
         self.uploads = []
         self.upload_names = []  # HBCA: the play log's name for the next upload
+        self.upload_flags = []  # HBCA's flags (protocol 6)
+        # Protocol 6: what HBC makes of each upload, for HBCS "upload"; None
+        # acts as an older HBC that does not say.
+        self.next_result = None
+        self.upload = None
         self.requests = []  # (op, path) of every HBCF request
         self.truncate = False
         self.agent = False  # an agent app answers instead of HBC
@@ -94,6 +99,8 @@ class FakeHBC:
             conn.sendall(b"1.5.0 agent\0" if self.agent else b"1.2.0\0")
         elif magic == b"HBCS":
             st = {"version": "1.2.0", "proto": 2, "log": self.log}
+            if self.next_result is not None:
+                st.update(proto=6, upload=self.upload)
             if self.agent:
                 st = {"agent": True, "version": "1.5.0", "proto": 3, "log": self.log,
                       "app": "otherapp", "uptime_ms": self.agent_uptime_ms}
@@ -129,14 +136,18 @@ class FakeHBC:
             self.log = f"{addr}:{port}" if port else None
             self.reply(conn, 0)
         elif magic == b"HBCA":
-            n = struct.unpack(">H", hdr[4:6])[0]
+            n, flags = struct.unpack(">HH", hdr[4:8])
             self.upload_names.append(self.recv(conn, n).decode())
+            self.upload_flags.append(flags)
             self.reply(conn, 0)
         elif magic == b"HAXX":
             args_len, size, size_un = struct.unpack(">HII", hdr[6:16])
             data = self.recv(conn, size)
             args = self.recv(conn, args_len)
             self.uploads.append((zlib.decompress(data) if size_un else data, args))
+            if self.next_result is not None:
+                seq = (self.upload or {}).get("seq", 0) + 1
+                self.upload = dict(self.next_result, seq=seq, ago_ms=0)
             if self.log and b"log-me" in args:
                 threading.Thread(target=self.send_log, args=(b"hello from the app\n",),
                                  daemon=True).start()
@@ -230,6 +241,8 @@ class HBCToolTest(unittest.TestCase):
         self.fake.crash = None
         self.fake.lastlog = None
         self.fake.exits = 0
+        self.fake.next_result = None
+        self.fake.upload = None
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = pathlib.Path(tmp.name)
@@ -352,6 +365,32 @@ class HBCToolTest(unittest.TestCase):
         # app's arguments (a ROM, an option) are never the name.
         self.assertEqual(self.fake.upload_names[-3:], ["Wii64", "netblock", "WiiStation"])
         self.assertEqual(self.fake.uploads[-1][1], b"boot.dol\0--diag\0\0")
+
+    def test_send_reports_what_hbc_made_of_the_upload(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(64))
+        # An HBC that could not use it: send fails with HBC's message.
+        self.fake.next_result = {"result": "error", "error": "not_wii_app",
+                                 "text": "This is not a valid Wii application"}
+        with self.assertRaises(SystemExit) as caught:
+            self.cli("send", str(app))
+        self.assertIn("not_wii_app", str(caught.exception.code))
+        self.assertIn("not a valid Wii application", str(caught.exception.code))
+        # A ZIP nobody answered for.
+        self.fake.next_result = {"result": "declined", "error": None, "text": ""}
+        with self.assertRaises(SystemExit) as caught:
+            self.cli("send", str(app))
+        self.assertIn("--yes", str(caught.exception.code))
+        # --yes asks HBC to install it unasked (HBCA flag 1).
+        self.fake.next_result = {"result": "installed", "error": None, "text": "myapp"}
+        self.cli("send", "--yes", str(app))
+        self.assertEqual(self.fake.upload_flags[-1], 1)
+        # A launch is fine, and an older HBC is not asked at all.
+        self.fake.next_result = {"result": "launched", "error": None, "text": ""}
+        self.cli("send", str(app))
+        self.assertEqual(self.fake.upload_flags[-1], 0)
+        self.fake.next_result = None
+        self.cli("send", str(app))
 
     def test_key_sends_presses(self):
         self.fake.keys = b""

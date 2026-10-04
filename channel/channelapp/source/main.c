@@ -642,6 +642,7 @@ void main_real(void) {
 				case LT_ZIP_THEME:
 					refresh_theme(v_current, app_sel, ld_res.data,
 									ld_res.data_len);
+					devnet_upload_result("theme", NULL, NULL);
 					fhw = font_get_y_spacing(FONT_MEMO);
 					memstats(true);
 					break;

@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include <ogcsys.h>
+#include <ogc/lwp_watchdog.h>
 
 #include "../config.h"
 #include "controls.h"
@@ -15,6 +16,7 @@
 #include "panic.h"
 
 #include "dialogs.h"
+#include "loader.h"
 
 #include "i18n.h"
 
@@ -416,20 +418,57 @@ static view *dialog_message(const view *sub_view, dialog_message_type type,
 
 s8 show_message (const view *sub_view, dialog_message_type type,
 					dialog_message_buttons buttons, const char *text, u8 focus) {
+	return show_message_timed (sub_view, type, buttons, text, focus, 0);
+}
+
+s8 show_message_timed (const view *sub_view, dialog_message_type type,
+						dialog_message_buttons buttons, const char *text,
+						u8 focus, u32 timeout_s) {
 	view *v;
 	u8 fhw;
 	u32 bd, bu;
 	s8 res;
 	s16 mm;
+	u64 start = gettime ();
+	u32 shown = 0, gone;
+	const char *last;
+	char caption[48];
 
 	v = dialog_message (sub_view, type, buttons, text, focus);
+	last = buttons == DLGB_OK ? caption_ok :
+			buttons == DLGB_OKCANCEL ? caption_cancel : caption_no;
 
 	dialog_fade (v, true);
 
 	fhw = font_get_y_spacing(FONT_MEMO);
 
 	while (true) {
+		// A countdown on the last button, which it picks when it runs out;
+		// any button press stops it, for someone reading the message.
+		if (timeout_s) {
+			gone = ticks_to_secs (diff_ticks (start, gettime ()));
+			if (gone >= timeout_s) {
+				view_set_focus (v, v->widget_count - 1);
+				break;
+			}
+			if (timeout_s - gone != shown) {
+				shown = timeout_s - gone;
+				snprintf (caption, sizeof (caption), "%s (%u)", last, shown);
+				widget_button_set_caption (&v->widgets[v->widget_count - 1],
+											FONT_BUTTON, caption);
+			}
+		}
+
 		view_plot (v, DIALOG_MASK_COLOR, &bd, NULL, &bu);
+		// Keep answering the network meanwhile: hbc.py reads an upload's
+		// result while its popup is up.
+		loader_signal_threads ();
+
+		if (timeout_s && bd) {
+			timeout_s = 0;
+			widget_button_set_caption (&v->widgets[v->widget_count - 1],
+										FONT_BUTTON, last);
+		}
 
 		if (bd & PADS_LEFT)
 			view_set_focus_prev (v);

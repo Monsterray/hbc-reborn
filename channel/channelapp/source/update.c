@@ -237,7 +237,8 @@ bool update_execute (view *sub_view, entry_point *ep) {
 				info->version, CHANNEL_VERSION_STR, info->notes);
 	text[UPDATE_MSG_SIZE-1] = 0;
 
-	if (show_message (sub_view, DLGMT_CONFIRM, DLGB_YESNO, text, 0) == 1) {
+	if (show_message_timed (sub_view, DLGMT_CONFIRM, DLGB_YESNO, text, 0,
+							NET_POPUP_TIMEOUT_S) == 1) {
 		update_free(info);
 		info = NULL;
 		return false;
@@ -301,7 +302,8 @@ bool update_execute (view *sub_view, entry_point *ep) {
 		dialog_fade (v, false);
 
 	if (!b) {
-		show_message (sub_view, DLGMT_ERROR, DLGB_OK, _("Download failed"), 0);
+		show_message_timed (sub_view, DLGMT_ERROR, DLGB_OK, _("Download failed"), 0,
+							NET_POPUP_TIMEOUT_S);
 
 		return false;
 	}

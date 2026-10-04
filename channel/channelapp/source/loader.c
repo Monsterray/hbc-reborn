@@ -828,6 +828,16 @@ static void ld_close_source (ld_load_arg *ta) {
 
 // public loading function
 
+// An error loading result: HBCS "upload" hears of a remote one, whose popup
+// closes itself so that automated tests carry on.
+static void ld_error(const loader_result *result, view *sub_view,
+						const char *error, const char *text) {
+	if (result->remote)
+		devnet_upload_result("error", error, text);
+	show_message_timed (sub_view, DLGMT_ERROR, DLGB_OK, text, 0,
+						result->remote ? NET_POPUP_TIMEOUT_S : 0);
+}
+
 void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 	char caption[PATH_MAX + 32];
 	char filename[PATH_MAX];
@@ -910,6 +920,8 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		return;
 	}
 
+	result->remote = ta.cmd != LDC_FILE;
+
 	if (ta.data_len == ta.data_len_un)
 		ta.data_len_un = 0;
 
@@ -918,7 +930,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 
 		if (!ta.data_un) {
 			ld_close_source (&ta);
-			show_message (sub_view, DLGMT_ERROR, DLGB_OK, text_err_oom, 0);
+			ld_error (result, sub_view, "out_of_memory", text_err_oom);
 			return;
 		}
 	}
@@ -934,7 +946,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 	if (!ta.data) {
 		blob_free(ta.data_un);
 		ld_close_source (&ta);
-		show_message (sub_view, DLGMT_ERROR, DLGB_OK, text_err_oom, 0);
+		ld_error (result, sub_view, "out_of_memory", text_err_oom);
 		return;
 	}
 
@@ -977,6 +989,8 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		dialog_set_progress (v, progress);
 
 		view_plot (v, DIALOG_MASK_COLOR, NULL, NULL, NULL);
+		// Status requests still get answers during a long receive.
+		loader_signal_threads ();
 	}
 
 	dialog_fade (v, false);
@@ -998,7 +1012,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		ta.data_len_un = 0;
 	}
 
-	const char *text = NULL;
+	const char *text = NULL, *error = NULL;
 
 	switch (ta.state) {
 	case LDS_RUNNING:
@@ -1006,18 +1020,21 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		break;
 	case LDS_ERR_READ:
 		text = text_err_read;
+		error = "read";
 		break;
 	case LDS_ERR_RECEIVE:
 		text = text_err_receive;
+		error = "receive";
 		break;
 	case LDS_ERR_UNCOMPRESS:
 		text = text_err_uncompress;
+		error = "uncompress";
 		break;
 	}
 
 	if (text) {
 		blob_free(ta.data);
-		show_message (sub_view, DLGMT_ERROR, DLGB_OK, text, 0);
+		ld_error (result, sub_view, error, text);
 		return;
 	}
 
@@ -1068,8 +1085,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 			blob_free(ta.data);
 			ta.data = NULL;
 			ta.data_len = 0;
-			show_message (sub_view, DLGMT_ERROR, DLGB_OK,
-							text_err_invalid_zip, 0);
+			ld_error (result, sub_view, "bad_zip", text_err_invalid_zip);
 		}
 
 		return;
@@ -1084,7 +1100,9 @@ bool loader_load_executable(entry_point *ep, loader_result *result,
 							result->args, result->args_len, true);
 
 	if (!res)
-		show_message (sub_view, DLGMT_ERROR, DLGB_OK, text_err_invalid_bin, 0);
+		ld_error (result, sub_view, "not_wii_app", text_err_invalid_bin);
+	else if (result->remote)
+		devnet_upload_result("launched", NULL, NULL);
 
 	blob_free(result->data);
 
@@ -1119,20 +1137,27 @@ bool loader_handle_zip_app(loader_result *result, view *sub_view) {
 		strcat(buf, buf2);
 	}
 
-	if (show_message(sub_view, DLGMT_CONFIRM, DLGB_YESNO,
-					buf, 0) != 0) {
+	// hbc.py send --yes answers for the sender; else the question times out
+	// as No, like B.
+	if (!(result->remote && (devnet_upload_flags() & DEVNET_UPLOAD_YES)) &&
+			show_message_timed(sub_view, DLGMT_CONFIRM, DLGB_YESNO, buf, 0,
+								result->remote ? NET_POPUP_TIMEOUT_S : 0) != 0) {
+		if (result->remote)
+			devnet_upload_result("declined", NULL, NULL);
 		blob_free(result->data);
 		return false;
 	}
 
 	if (!manage_run(sub_view, result->dirname, result->data,
 					result->data_len, result->bytes)) {
-		show_message (sub_view, DLGMT_ERROR, DLGB_OK, text_err_extract_zip, 0);
+		ld_error (result, sub_view, "extract", text_err_extract_zip);
 		blob_free(result->data);
 		return false;
 	}
 
 	blob_free(result->data);
+	if (result->remote)
+		devnet_upload_result("installed", NULL, result->dirname);
 
 	return true;
 }

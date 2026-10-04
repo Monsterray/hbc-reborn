@@ -155,6 +155,29 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.5: popups from the network close themselves
+
+- An upload HBC could not use (not a Wii app, a broken transfer, a bad ZIP,
+  no memory) left an error popup up until someone pressed A, and a ZIP sent
+  over Wiiload waited on its Yes/No question: either stalled automated
+  tests, the bench queue's included. Every popup an upload or the update
+  check can raise now closes after 10 s (`show_message_timed`,
+  `NET_POPUP_TIMEOUT_S`), counting down on its last button; a question
+  closes as No. Any button press stops the count. Popups for what the user
+  did on the Wii itself (delete) still wait.
+- HBC records each upload's outcome for HBCS `upload` (protocol 6:
+  `launched`, `installed`, `theme`, `declined`, or `error` with a code and
+  the message shown). `hbc.py send` and `run` read it and fail at once with
+  HBC's reason; HBCA's new flags let `send --yes` install a ZIP unasked.
+- HBC did not answer the network while a popup was up, or during a long
+  receive: its network thread only accepts when the menu loop wakes it.
+  Both loops now wake it too.
+- Checked on the bench Wii (`tests/wii_upload_popups.py`, this tree's DOL):
+  a file that is no app failed `send` in 0.9 s with "This is not a valid
+  Wii application" while the popup counted down; an unanswered ZIP was
+  declined 23.9 s later (the first popup's 10 s, then its own 10 s); `--yes`
+  installed it in 2.1 s without a question.
+
 ### 1.9.4: B backs out of every menu
 
 - The message dialogs (OK, OK/Cancel, Yes/No: delete, install, update)
