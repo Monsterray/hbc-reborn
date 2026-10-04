@@ -639,6 +639,8 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 
 		view_plot (v, DIALOG_MASK_COLOR, &bd, NULL, NULL);
 		frame++;
+		// hbc.py keeps getting answers while Options is open.
+		loader_signal_threads ();
 
 		if (bd & PADS_LEFT)
 			view_set_focus_prev (v);

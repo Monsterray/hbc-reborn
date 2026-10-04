@@ -155,6 +155,12 @@ From the 1.3.6 review, each verified in the code first:
 | Measurement | `HBCS` reports `heap_free`, the loader stack high-water mark, `init_ms`, and `scan_ms`. | Wii: 968 ms to the menu, 300 ms to scan 14 apps, 2,824 of 8,192 stack bytes. |
 | Tools | `hbc.py` gained `get`/`put`/`rm -r`, `sync` (size then CRC-32 through the new op `C`), progress, `--json`, safer paths, and Windows fixes; listings mark truncation. `tests/launch_title` now writes the stub's return-title words and exits instead of calling `WII_LaunchTitle`, and it relaunched the installed channel on the Wii. | 24 unit tests; `dolphin_smoke.py --devnet` and `wii_devnet.py` pass. |
 
+### 1.9.9: hbc.py answered while Options is open
+
+- The Options dialog runs its own loop and never woke HBC's network thread,
+  so `hbc.py` timed out while it was open (found taking a picture of the new
+  five-device layout in Dolphin). It now does, like the popups since 1.9.5.
+
 ### 1.9.8: two USB drives, GPT disks, cached reads of the frame
 
 - libogc's USB storage driver serves one drive: its command buffer,
