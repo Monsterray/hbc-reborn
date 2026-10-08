@@ -333,9 +333,14 @@ status_lines() {
     elif [ -n "$holder" ]; then
         if [ "$holder" = "$host" ]; then plain="Wii: this workstation has it"; w="${c_cyan}${plain}${c_reset}"
         else plain="Wii: $holder has it"; w="${c_yellow}${plain}${c_reset}"; fi
-        local for_; k holder_for; for_="$V"
-        k holder_name; fit "$V" $(( COLS - ${#plain} - ${#for_} - 9 > 50 ? 50 : COLS - ${#plain} - ${#for_} - 9 ))
+        local for_ phase=""; k holder_for; for_="$V"
+        k holder_phase
+        if [[ "$V" == "waiting for HBC"* ]]; then      # it has the lease, the Wii is not in HBC
+            phase="$V"; k holder_phase_for; phase+=" for $V"
+        fi
+        k holder_name; fit "$V" $(( COLS - ${#plain} - ${#for_} - ${#phase} - 12 > 50 ? 50 : COLS - ${#plain} - ${#for_} - ${#phase} - 12 ))
         plain+=" for $V ($for_)"; w+=" for $V ${c_gray}($for_)${c_reset}"
+        [ -n "$phase" ] && { plain+=": $phase"; w+=": ${c_yellow}${phase}${c_reset}"; }
     elif [ "${KV[server]:-}" = "none" ] && [ "${KV[running_n]:-0}" != "0" ]; then
         plain="Wii: in use by a job here"; w="${c_cyan}${plain}${c_reset}"
     else

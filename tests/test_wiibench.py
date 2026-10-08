@@ -440,6 +440,63 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.root / "archive").iterdir()), ["2026-09.tar"])
 
 
+class PhaseTest(unittest.TestCase):
+    """The holder says what its turn is doing; time waiting for HBC is counted, and shown."""
+
+    def test_phases_and_the_wait_for_hbc(self):
+        wb = import_wiibench()
+        now, log = [60.0], []
+        leases = wb.Leases(ttl=1000, clock=lambda: now[0], log=log.append)   # renews between steps are left out
+        leases.grace_until = 0
+        leases.acquire({"ticket": "m", "host": "mac", "name": "restore settings"})
+        renew = lambda ph: leases.renew({"ticket": "m", "phase": ph})
+        renew("waiting for HBC: Wii busy or off")
+        now[0] += 400
+        st = leases.status()["holder"]
+        self.assertEqual((st["phase"], st["phase_s"]), ("waiting for HBC: Wii busy or off", 400))
+        renew("waiting for HBC: Wii busy or off")      # the same phase again: still counting from 400 s ago
+        now[0] += 20
+        renew("waiting for HBC")                       # HBC answers, the quiet period runs
+        now[0] += 2
+        renew("running: restore settings")
+        now[0] += 100
+        renew("checking HBC after the job")
+        now[0] += 1
+        leases.release({"ticket": "m", "wii": "hbc"})
+        rel = [e for e in log if e["type"] == "release"][0]
+        self.assertEqual(rel["hbc_wait_s"], 422.0)     # both waiting phases, not the job
+        self.assertEqual(rel["held_s"], 523.0)
+
+    def test_the_monitor_and_report_show_a_long_wait(self):
+        import threading
+        wb = import_wiibench()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        srv = wb.make_server(0, ttl=60, host="127.0.0.1", history=tmp.name + "/srv")
+        srv.leases.grace_until = 0
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        url = f"http://127.0.0.1:{srv.server_address[1]}"
+        os.environ["WII_BENCH_SERVER"] = url
+        self.addCleanup(os.environ.pop, "WII_BENCH_SERVER")
+        wb.lease_call("/acquire", {"ticket": "m", "host": "mac", "name": "restore settings"})
+        wb.lease_call("/renew", {"ticket": "m", "phase": "waiting for HBC: Wii busy or off"})
+        srv.leases.holder["phase_at"] -= 900           # as if 15 minutes ago
+        env = dict(os.environ, WII_BENCH_HOME=tmp.name, WII_BENCH_SERVER=url, WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9")
+        s = json.loads(subprocess.run([sys.executable, str(BENCH), "snapshot", "--json"], env=env,
+                                      capture_output=True, timeout=60).stdout)
+        self.assertEqual(s["kv"]["holder_phase"], "waiting for HBC: Wii busy or off")
+        self.assertEqual(s["kv"]["holder_phase_for"], "15m00s")
+        self.assertIn(("Wii not in HBC", "mac"), {(e["kind"], e["host"]) for e in s["rows"]["errors"]})
+        srv.leases.holder["hbc_wait"] = 0.0
+        wb.lease_call("/release", {"ticket": "m", "wii": "hbc"})
+        out = subprocess.run([sys.executable, str(BENCH), "report", "--hours", "1"], env=env,
+                             capture_output=True, text=True, timeout=60).stdout
+        self.assertIn("mac held the lease 15 min waiting for HBC before restore settings", out)
+        self.assertIn("mac: 1 turn(s) and no job records", out)
+
+
 class ServerHistoryTest(unittest.TestCase):
     def test_events_and_history_over_http(self):
         import threading

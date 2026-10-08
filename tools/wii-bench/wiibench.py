@@ -256,6 +256,11 @@ def kill_tree(proc):
 # in $WII_BENCH_SERVER, else in the file HOME/server (e.g. http://homeserver:4310).
 
 TTL = 60                                           # a lease or a place in line not renewed dies
+# A holder's phase while it waits for HBC to be idle before a job. It keeps the lease meanwhile
+# (whoever is next would only wait on the same Wii), so the time is accounted for instead: the
+# MacBook's turns of 10.4 h and 5.9 h on 2026-10-03/04 looked like jobs, and were most likely
+# a Wii left out of HBC (WiiXplorer) with the next job waiting for it.
+WAITING_FOR_HBC = "waiting for HBC"
 
 
 class Leases:
@@ -268,7 +273,7 @@ class Leases:
     instead). Only a release with the Wii back in HBC counts as clean for the next holder's
     short idle wait; any other is kept as `left` and shown until a clean release."""
 
-    PRIVATE = ("seen", "ticket", "joined", "granted_at")
+    PRIVATE = ("seen", "ticket", "joined", "granted_at", "phase_at", "hbc_wait")
 
     def __init__(self, ttl=TTL, clock=time.monotonic, log=None):
         self.ttl, self.clock, self.log = ttl, clock, log or (lambda ev: None)
@@ -322,14 +327,26 @@ class Leases:
             self._event("reclaim", d)
         if self.holder and self.holder["ticket"] == d["ticket"]:
             self.holder["seen"] = now
+            if d.get("phase") is not None and d["phase"] != self.holder.get("phase"):
+                self._phase_end(now)
+                self.holder["phase"], self.holder["phase_at"] = d["phase"], now
             return {"ok": True, "waiting": len(self.waiters)}
         return {"ok": False, "waiting": len(self.waiters)}
+
+    def _phase_end(self, now):
+        """The holder's phase ends: time spent waiting for HBC adds up for the release event."""
+        h = self.holder
+        if h.get("phase", "").startswith(WAITING_FOR_HBC) and "phase_at" in h:
+            h["hbc_wait"] = h.get("hbc_wait", 0.0) + now - h["phase_at"]
 
     def release(self, d):
         now = self.clock()
         if self.holder and self.holder["ticket"] == d["ticket"]:
             wii = d.get("wii", "hbc")              # a client before 1.9.1 does not say
-            self._event("release", self.holder, held_s=round(now - self.holder.get("granted_at", now), 1), wii=wii)
+            self._phase_end(now)
+            more = {"hbc_wait_s": round(self.holder["hbc_wait"], 1)} if self.holder.get("hbc_wait") else {}
+            self._event("release", self.holder, held_s=round(now - self.holder.get("granted_at", now), 1), wii=wii,
+                        **more)
             if wii == "hbc":
                 self.released_at, self.left = now, None
             else:
@@ -350,6 +367,8 @@ class Leases:
         more = {"age": int(now - e["seen"])}
         if "granted_at" in e:
             more["held_s"] = int(now - e["granted_at"])
+        if "phase_at" in e:
+            more["phase_s"] = int(now - e["phase_at"])
         elif "joined" in e:
             more["waited_s"] = int(now - e["joined"])
         return {k: v for k, v in dict(e, **more).items() if k not in self.PRIVATE}
@@ -687,6 +706,18 @@ class Turn:
         self.job_id, self.stop, self.released_ago = job_id, None, None
         self.wii = "hbc"                           # what the Wii was doing at the release
 
+    def set_phase(self, phase):
+        """What this turn is doing now, for every workstation's status (and the time a turn
+        spends waiting for HBC). Sent at once, then with every renew."""
+        if self.info.get("phase") == phase:
+            return
+        self.info["phase"] = phase
+        if self.stop:
+            try:
+                lease_call("/renew", self.info)
+            except OSError:
+                pass                               # the next renew carries it
+
     def others_waiting(self):
         """Workstations in line behind this one (0 without a server, or if it cannot say)."""
         if not self.stop:
@@ -871,7 +902,7 @@ def finish_job(job, turn):
             say(f"history: the lease server did not take the job record: {e}")
 
 
-def wait_idle(full, need, job_id=None):
+def wait_idle(full, need, job_id=None, turn=None):
     """Return once HBC's menu has answered for `need` seconds in a row (0: one answer).
 
     Only ever called while this dispatcher holds the Wii and no job of its own runs, so it
@@ -902,6 +933,8 @@ def wait_idle(full, need, job_id=None):
         if msg != said:
             report(job_id, msg)
             said = msg
+        if turn is not None:                       # without the minutes: the server counts them
+            turn.set_phase(WAITING_FOR_HBC + (f": Wii {busy_what.split(': ', 1)[1]}" if busy_what else ""))
         time.sleep(max(0.0, step - (time.monotonic() - t)))
 
 
@@ -982,18 +1015,21 @@ def cmd_run(a):
                 ago = turn.released_ago
                 recent = ((last_end is not None and time.monotonic() - last_end < RECENT)
                           or (ago is not None and ago < RECENT))
-                wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"])
+                wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"], turn)
                 p = jobs(PENDING)[:1]
                 p = p[0] if p else None            # a cancel may have emptied it meanwhile
                 chained = False
                 while p:
                     try:
-                        agent = load(p).get("agent")
+                        pj = load(p)
+                        agent = pj.get("agent")
+                        turn.set_phase(f"running: {pj.get('name')}")
                         job = run_job(p)
                     except (FileNotFoundError, ValueError):   # cancelled just before it started
                         break
                     last_end = time.monotonic()
                     # The Wii is still ours: see that HBC came back, and say so if it did not.
+                    turn.set_phase("checking HBC after the job")
                     back_s, turn.wii, hbc_version = hbc_back()
                     job.update(hbc_back_s=back_s, hbc_version=hbc_version, chained=chained)
                     if back_s is None:
@@ -1013,7 +1049,7 @@ def cmd_run(a):
                     if p:
                         chained = True
                         say(f"chained: {p.stem} from the same agent")
-                        wait_idle(a.idle, 0, p.stem)
+                        wait_idle(a.idle, 0, p.stem, turn)
             empty_since = time.monotonic()
     finally:
         if dispatcher_pid() == os.getpid():
@@ -1161,14 +1197,22 @@ def cmd_report(a):
             gaps.append(e["t"] - rel["t"])
             rel = None
     if gaps:
-        print(f"\nhand-overs to a waiting workstation: {len(gaps)}, median {st.median(gaps):.1f} s, max {max(gaps):.1f} s")
+        print(f"\nhand-overs to a waiting workstation: {len(gaps)}, median {1000 * st.median(gaps):.0f} ms, "
+              f"longest {1000 * max(gaps):.0f} ms")
     long = sorted(grants, key=lambda e: e.get("waited_s", 0), reverse=True)[:5]
     if long and long[0].get("waited_s", 0) >= 60:
         print("longest waits for the Wii:")
         for e in long:
             if e.get("waited_s", 0) >= 60:
                 print(f"  {e['waited_s'] / 60:5.1f} min  {loc(e['t'])}  {e.get('host')}: {e.get('name')}")
-    trouble = ([f"{loc(e['t'])} {e.get('host')}'s {e.get('name')} left the Wii {e['wii']}"
+    turns = {h: sum(1 for e in grants if e.get("host") == h) for h in hosts}
+    trouble = ([f"{loc(e['t'])} {e.get('host')}'s {e.get('name')}: {job_problem(e)[1]}"
+                for e in jobs_ if job_problem(e) and e.get("exit") != "timeout"]
+               + [f"{loc(e['t'])} {e.get('host')} held the lease {e['hbc_wait_s'] / 60:.0f} min waiting for HBC "
+                  f"before {e.get('name')}" for e in evs if e["type"] == "release" and e.get("hbc_wait_s", 0) > 600]
+               + [f"{h}: {turns[h]} turn(s) and no job records: its wiibench.py predates 1.9.1 (git pull)"
+                  for h in hosts if turns.get(h) and not any(e.get("host") == h for e in jobs_) and not src.startswith("this")]
+               + [f"{loc(e['t'])} {e.get('host')}'s {e.get('name')} left the Wii {e['wii']}"
                 for e in evs if e["type"] == "release" and e.get("wii", "hbc") != "hbc"]
                + [f"{loc(e['t'])} {e.get('host')}'s {e.get('name')}: {e.get('wii_left')}"
                   for e in jobs_ if e.get("hbc_back_s") is None and e.get("wii_left") and src.startswith("this")]
@@ -1493,6 +1537,13 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             kv["server_ok"] = "yes"
             h = s.get("holder")
             # Durations from the server (1.9.1); an older one gives only its own clock's times.
+            if h and h.get("phase"):
+                kv.update(holder_phase=h["phase"], holder_phase_for=_age(h.get("phase_s", 0)))
+                if h["phase"].startswith(WAITING_FOR_HBC) and h.get("phase_s", 0) > 300:
+                    problems.append(dict(t=now - h["phase_s"], severity="warn", kind="Wii not in HBC",
+                                         host=h.get("host"), job=h.get("name"), id="-",
+                                         detail=f"has the lease and has been {h['phase']} for {_age(h['phase_s'])}: "
+                                                "everyone waits until HBC is back"))
             if h:
                 kv.update(holder_host=h.get("host"), holder_name=h.get("name"),
                           holder_for=_age(h["held_s"]) if "held_s" in h else f"since {str(h.get('granted'))[-8:]} server time")
@@ -1540,7 +1591,10 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                 problems.append(dict(t=t, severity=sev, kind=kind, host=host, job=e.get("name"), id=e.get("id"),
                                      detail=detail or "see the job's log on its workstation"))
                 seen_ids.add(e.get("id"))
-        elif typ == "release" and e.get("wii", "hbc") != "hbc":
+        elif typ == "release" and e.get("hbc_wait_s", 0) > 600:
+            problems.append(dict(t=t, severity="warn", kind="Wii not in HBC", host=host, job=e.get("name"), id="-",
+                                 detail=f"held the lease {_age(e['hbc_wait_s'])} waiting for HBC before its job"))
+        if typ == "release" and e.get("wii", "hbc") != "hbc":
             if not any(p["kind"] == "Wii left" and p["host"] == host and abs(p["t"] - t) < 30 for p in problems):
                 problems.append(dict(t=t, severity="err", kind="Wii left", host=host, job=e.get("name"), id="-",
                                      detail=f"released with the Wii {e.get('wii')}"))

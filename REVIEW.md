@@ -196,6 +196,45 @@ From the 1.3.6 review, each verified in the code first:
 - Checked in Dolphin (`tests/dolphin_meta.py`) and on the bench Wii
   (`tests/wii_app_list.py`).
 
+#### The bench queue's first five days of logs (2026-10-02 to 10-07)
+
+Tool work in 1.10.0, no version of its own.
+
+- **What the history held:** 717 events, 214 turns and 74 jobs from this PC (60 ok, 14
+  failed). Every job reached the server's history, and every one has its HBC check.
+  - All 74 checks found HBC back, recording 1.9.3 to 1.10.0 as the channel was updated.
+    70 found it there as the job ended. Three "DEV Info pages" jobs left the Wii in an app
+    for 50-65 s after they failed.
+  - All 215 releases left the Wii in HBC. No lease expired.
+  - No dispatcher crash since the 1.9.4 fix, and no lease lost or server unreachable.
+  - The 14 failures were this PC's test scripts on 10-04, during 1.9.5-1.10.0, not the queue.
+- **Found:**
+  - **The MacBook held the lease 1,457 min against this PC's 121.** Two of its turns took
+    10.4 h (10-03 15:02 to 10-04 01:28, "wiixplorer-memory-test-settings-restoration") and
+    5.9 h ("WiiXplorer v0.1.2 FTP retry on 2121"), longer than any job timeout. A dispatcher
+    takes the lease and then waits for HBC to be idle, holding the lease all the while. So
+    these were most likely a Wii left in WiiXplorer, with the MacBook's next job waiting for
+    it. Nobody else queued meanwhile, so nobody was held up, but nothing showed it.
+  - **The MacBook's dispatcher still predates 1.9.1:** 164 turns and no job records.
+  - **`report` said "nothing went wrong" over 14 failed jobs**, and still printed hand-overs
+    as "0.0 s".
+- **Fixed:**
+  - **A turn says what it's doing:** waiting for HBC (and why), running a job, or checking
+    HBC after it.
+    - The holder sends the phase with each renew, and at once when it changes; the server
+      shows it in `status` (`phase`, `phase_s`).
+    - The time a turn waits for HBC is added up into the release (`hbc_wait_s`).
+    - The monitor's status line shows "HOST has it for JOB (5m): waiting for HBC: Wii busy
+      or off for 4m" on every workstation.
+    - Its errors page warns after 5 min (`Wii not in HBC`), and so do the history and
+      `report`, for a wait over 10 min.
+    - The lease is still held while waiting: the next workstation would only wait on the
+      same Wii.
+  - **`report` lists** failed jobs, long waits for HBC, and workstations taking turns
+    without job records, and prints hand-overs in ms.
+- **Checked:** tests for the phase accounting (two waiting phases add up, the job does not),
+  the monitor's warning and `report`'s lines. 77 tests on Windows and 46 on Linux pass.
+
 ### 1.9.8: two USB drives, GPT disks, cached reads of the frame
 
 - libogc's USB storage driver serves one drive: its command buffer,
