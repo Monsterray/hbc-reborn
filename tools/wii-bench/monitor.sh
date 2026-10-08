@@ -336,7 +336,7 @@ status_lines() {
         local for_ phase=""; k holder_for; for_="$V"
         k holder_phase
         if [[ "$V" == "waiting for HBC"* ]]; then      # it has the lease, the Wii is not in HBC
-            phase="$V"; k holder_phase_for; phase+=" for $V"
+            phase="$V"; k holder_phase_for; [ -n "$V" ] && phase+=" for $V"
         fi
         k holder_name; fit "$V" $(( COLS - ${#plain} - ${#for_} - ${#phase} - 12 > 50 ? 50 : COLS - ${#plain} - ${#for_} - ${#phase} - 12 ))
         plain+=" for $V ($for_)"; w+=" for $V ${c_gray}($for_)${c_reset}"

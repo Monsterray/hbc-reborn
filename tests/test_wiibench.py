@@ -704,6 +704,35 @@ class LeaseDispatcherTest(unittest.TestCase):
         local = self.wb.History(self.home / "history").read(0)
         self.assertEqual([e["id"] for e in local], [n1])
 
+    def test_a_cancel_while_waiting_for_hbc(self):
+        # 2026-10-08: a turn's job was cancelled while the Wii was out of HBC; the turn kept the
+        # gone job's name, and with nothing left queued it would have held the lease for ever.
+        import time
+        self.fake.agent = True                     # an app outside the queue: HBC does not answer
+        self.addCleanup(setattr, self.fake, "agent", False)
+        j1, j2 = self.add("first", "A"), self.add("second", "A")
+        self.dispatch()
+        holder = lambda: self.wb.lease_call("/status").get("holder") or {}
+        self.until(lambda: holder().get("phase", "").startswith("waiting for HBC"), 30)
+        self.assertEqual(holder()["name"], "first")
+        subprocess.run([sys.executable, str(BENCH), "cancel", j1], env=self.env, capture_output=True, timeout=30)
+        self.until(lambda: holder().get("name") == "second", 10)      # the turn follows the queue
+        subprocess.run([sys.executable, str(BENCH), "cancel", j2], env=self.env, capture_output=True, timeout=30)
+        t = time.monotonic()
+        self.until(lambda: not holder(), 10)       # nothing left: the lease goes
+        self.assertLess(time.monotonic() - t, 5)
+        rel = [e for e in self.history() if e["type"] == "release"]
+        self.assertGreater(rel[-1].get("hbc_wait_s", 0), 0)
+
+    def test_a_reclaimed_turn_keeps_counting(self):
+        now = [60.0]
+        leases = self.wb.Leases(ttl=60, clock=lambda: now[0])
+        # A server just restarted: the holder renews into it, mid-wait.
+        self.assertTrue(leases.renew({"ticket": "t", "host": "pc", "name": "n", "phase": "waiting for HBC: Wii busy or off"})["ok"])
+        now[0] += 30
+        leases.renew({"ticket": "t", "phase": "waiting for HBC: Wii busy or off"})
+        self.assertEqual(leases.status()["holder"]["phase_s"], 30)     # was missing: "for 0s"
+
     def test_status_leaves_a_run_alone(self):
         seen = []
         orig = self.fake.handle
@@ -812,6 +841,15 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual({r["id"]: r["hbc"] for r in rows["done"]}["j-ok"], "ok")
         self.assertRegex(kv["wii_last"], r"^leaving job left it busy: otherapp is running \(\d+m\d\ds ago\)$")
         self.assertEqual(seen, [])                 # the Wii was never contacted
+
+    def test_back_in_a_stock_hbc(self):
+        # 2026-10-08: an app exited to the original HBC, not hbc-reborn.
+        done = self.home / "queue/done"
+        j = json.loads((done / "j-left.json").read_text())
+        j.update(hbc_back_s=0.4, hbc_version="stock HBC", wii_left=None)
+        (done / "j-left.json").write_text(json.dumps(j))
+        s = json.loads(self.snap("--json"))
+        self.assertIn(("stock HBC", "j-left"), {(e["kind"], e["id"]) for e in s["rows"]["errors"]})
 
     def test_tab_separated_sorted_and_filtered(self):
         out = self.snap("--sort", "done:secs:desc", "--filter", "errors:timeout")

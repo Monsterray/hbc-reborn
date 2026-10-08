@@ -264,6 +264,38 @@ Tool work in 1.10.0, no version of its own.
     and `cancel` takes it away.
   - 80 tests on Windows and 49 on Linux pass.
 
+#### A queue that looked stuck (2026-10-08)
+
+- **What happened:** the jobs queued here at 11:29 and 11:31 sat for 25 min. This PC's
+  dispatcher had taken the lease at 11:19 and was waiting for HBC. The Wii answered ping, but
+  not on TCP 4299: an app had exited to the original HBC instead of hbc-reborn. The queue had
+  not touched the Wii since 02:28, when HBC came back after its last job.
+- **What the queue got wrong, now fixed:**
+  - **The turn's job had been cancelled.** The turn waited on under the gone job's name, and
+    with nothing left queued it would have held the lease for ever.
+    - `wait_idle` now follows the head of the queue, renaming the turn on the server at once
+      (`Turn.rename`).
+    - It gives the turn up when nothing is left.
+    - It checks the local queue (not the Wii) every second between its 15 s probes of a
+      busy Wii.
+  - **The monitor said "dispatcher: idle"** because the state named the cancelled job. Now
+    only a "running" state goes stale with its job.
+  - **"waiting for HBC: Wii busy or off for 0s".** The container's rebuild made the holder
+    reclaim its lease, and a reclaim didn't start the phase clock, so the 5-minute warning
+    never came. A reclaim now starts it, and an unknown duration is left blank instead of 0.
+  - **The warning says what to look for:** an app, a crash screen, the Wii Menu after a power
+    cycle, or another HBC. When HBC is back but is a stock HBC (`hbc_version` "stock HBC"),
+    the monitor warns that hbc.py jobs will fail there.
+  - Windows' exit code 4294967295 now reads as -1.
+- **Checked:**
+  - A dispatcher waiting on a busy fake HBC: cancelling its turn's job renamed the turn to
+    the next one, and cancelling that one gave the lease up within 5 s, with the wait
+    counted in `hbc_wait_s`.
+  - A reclaim mid-wait counted the phase.
+  - A stock HBC after a job was warned about.
+  - 83 tests on Windows and 52 on Linux pass. The homeserver needs a rebuild for the reclaim
+    fix.
+
 ### 1.9.8: two USB drives, GPT disks, cached reads of the frame
 
 - libogc's USB storage driver serves one drive: its command buffer,

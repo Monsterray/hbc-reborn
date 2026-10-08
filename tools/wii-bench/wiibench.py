@@ -352,9 +352,13 @@ class Leases:
         self._expire(now)
         if self.holder is None and d["ticket"] not in self.waiters:   # after a restart: reclaim
             self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed", granted_at=now)
+            if d.get("phase") is not None:         # its phase began no later than now (it was 0 s for ever)
+                self.holder["phase_at"] = now
             self._event("reclaim", d)
         if self.holder and self.holder["ticket"] == d["ticket"]:
             self.holder["seen"] = now
+            if d.get("name"):                      # the job the turn is for now (the first was cancelled)
+                self.holder["name"] = d["name"]
             if d.get("phase") is not None and d["phase"] != self.holder.get("phase"):
                 self._phase_end(now)
                 self.holder["phase"], self.holder["phase_at"] = d["phase"], now
@@ -742,6 +746,17 @@ class Turn:
         self.job_id, self.stop, self.released_ago = job_id, None, None
         self.wii = "hbc"                           # what the Wii was doing at the release
 
+    def rename(self, name):
+        """The job this turn is for now (the one it was for was cancelled): told at once."""
+        if self.info.get("name") == name:
+            return
+        self.info["name"] = name
+        if self.stop:
+            try:
+                lease_call("/renew", dict(self.info, **queue_payload()))
+            except OSError:
+                pass                               # the next renew carries it
+
     def set_phase(self, phase):
         """What this turn is doing now, for every workstation's status (and the time a turn
         spends waiting for HBC). Sent at once, then with every renew."""
@@ -974,7 +989,11 @@ def finish_job(job, turn):
 
 
 def wait_idle(full, need, job_id=None, turn=None):
-    """Return once HBC's menu has answered for `need` seconds in a row (0: one answer).
+    """Return True once HBC's menu has answered for `need` seconds in a row (0: one answer),
+    or False when nothing is queued any more: the turn has nothing to wait for. (On 2026-10-08
+    a turn's job was cancelled while it waited 25 min for a Wii out of HBC: the turn went on
+    waiting under the gone job's name, and with an empty queue it would have held the lease
+    for ever.) While it waits, the turn and dispatcher.state follow the head of the queue.
 
     Only ever called while this dispatcher holds the Wii and no job of its own runs, so it
     never reaches into a queue run. `need` is short only right after a queue job, whose end
@@ -985,14 +1004,34 @@ def wait_idle(full, need, job_id=None, turn=None):
     step = 1.0 if need < full else 5.0
     ok_since = busy_since = None
     said, busy_what = None, None
+    head = [job_id]
+
+    def follow():
+        """False when nothing is queued any more; else the turn follows the head of the queue."""
+        if turn is None:
+            return True
+        q = jobs(PENDING)
+        if not q:
+            return False
+        if q[0].stem != head[0]:
+            try:
+                turn.rename(load(q[0]).get("name"))
+                head[0] = q[0].stem
+            except (OSError, ValueError):
+                pass                               # cancelled meanwhile: the next look sees it
+        return True
+
     while True:
         t = time.monotonic()
+        if not follow():
+            return False
+        job_id = head[0]
         state, text = wii_state()
         if state == "hbc":
             ok_since = t if ok_since is None else ok_since
             busy_since, busy_what = None, None
             if t - ok_since >= need:
-                return
+                return True
             msg = "waiting for HBC to stay idle"
         else:
             ok_since, need, step = None, full, BUSY_STEP
@@ -1006,7 +1045,15 @@ def wait_idle(full, need, job_id=None, turn=None):
             said = msg
         if turn is not None:                       # without the minutes: the server counts them
             turn.set_phase(WAITING_FOR_HBC + (f": Wii {busy_what.split(': ', 1)[1]}" if busy_what else ""))
-        time.sleep(max(0.0, step - (time.monotonic() - t)))
+        # Until the next probe, look at the queue (not the Wii) every second: a cancel ends the
+        # wait at once instead of after up to BUSY_STEP s.
+        while (left := t + step - time.monotonic()) > 0:
+            time.sleep(min(1.0, left))
+            if not follow():
+                return False
+            if head[0] != job_id:                  # a new head: say so under its id
+                job_id, said = head[0], None
+                report(job_id, msg)
 
 
 def hbc_back(limit=RETURN_WAIT):
@@ -1086,7 +1133,8 @@ def cmd_run(a):
                 ago = turn.released_ago
                 recent = ((last_end is not None and time.monotonic() - last_end < RECENT)
                           or (ago is not None and ago < RECENT))
-                wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"], turn)
+                if not wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"], turn):
+                    continue                       # all cancelled while it waited: give the turn up
                 p = jobs(PENDING)[:1]
                 p = p[0] if p else None            # a cancel may have emptied it meanwhile
                 chained = False
@@ -1119,7 +1167,8 @@ def cmd_run(a):
                     if p:
                         chained = True
                         say(f"chained: {p.stem} from the same agent")
-                        wait_idle(a.idle, 0, p.stem, turn)
+                        if not wait_idle(a.idle, 0, p.stem, turn):
+                            break
             empty_since = time.monotonic()
     finally:
         if dispatcher_pid() == os.getpid():
@@ -1536,6 +1585,8 @@ def job_problem(j):
     if ex == "not started":
         return "err", "not started", "the command could not start"
     if ex not in (0, None):
+        if isinstance(ex, int) and ex >= 2 ** 31:  # Windows' unsigned exit code: -1 is 4294967295
+            ex -= 2 ** 32
         return "err", f"exit {ex}", None
     return None
 
@@ -1583,7 +1634,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     kv["running_n"], kv["pending_n"] = len(rows.get("running", [])), len(local_q)
     # dispatcher.state names the last job it worked for; once that job is done it is history.
     live = {r["id"] for r in rows.get("running", [])} | {j["id"] for j in local_q}
-    if kv["dispatcher_job"] not in live:
+    if kv["dispatcher_job"] not in live and (not pid or kv["dispatcher_detail"] in (None, "running")):
         kv["dispatcher_job"] = None
         kv["dispatcher_detail"] = "idle" if pid else None
         kv["dispatcher_since"] = None
@@ -1624,6 +1675,13 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             exit=j.get("exit"), secs=j.get("secs"), secs_s=j.get("secs") or 0,
             hbc=hbc_word(j),
             chained="yes" if j.get("chained") else "no")
+    if recent and recent[0][1].get("hbc_version") == "stock HBC":
+        # HBC answered, but not hbc-reborn: an app exited to the original HBC (2026-10-08). Jobs
+        # that use hbc-reborn's requests (hbc.py) fail there until it is back.
+        tf, j = recent[0]
+        problems.append(dict(t=tf, severity="warn", kind="stock HBC", host=socket.gethostname(), job=j.get("name"),
+                             id=j["id"], detail="the Wii came back to a stock HBC, not hbc-reborn: "
+                                                "jobs that use hbc.py will fail until hbc-reborn runs again"))
     if recent:
         try:
             tf, j = recent[0]
@@ -1653,12 +1711,14 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             h = s.get("holder")
             # Durations from the server (1.9.1); an older one gives only its own clock's times.
             if h and h.get("phase"):
-                kv.update(holder_phase=h["phase"], holder_phase_for=_age(h.get("phase_s", 0)))
+                kv.update(holder_phase=h["phase"], holder_phase_for=_age(h["phase_s"]) if "phase_s" in h else None)
                 if h["phase"].startswith(WAITING_FOR_HBC) and h.get("phase_s", 0) > 300:
                     problems.append(dict(t=now - h["phase_s"], severity="warn", kind="Wii not in HBC",
                                          host=h.get("host"), job=h.get("name"), id="-",
                                          detail=f"has the lease and has been {h['phase']} for {_age(h['phase_s'])}: "
-                                                "everyone waits until HBC is back"))
+                                                "every job waits until someone brings the Wii back to HBC "
+                                                "(an app, a crash screen, the Wii Menu after a power cycle, or another HBC: an app "
+                                                "that exits to the original HBC leaves hbc-reborn)"))
             if h:
                 kv.update(holder_host=h.get("host"), holder_name=h.get("name"),
                           holder_for=_age(h["held_s"]) if "held_s" in h else f"since {str(h.get('granted'))[-8:]} server time")
