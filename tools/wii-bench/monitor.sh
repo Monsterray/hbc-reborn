@@ -61,7 +61,7 @@ OPTIONS
 SECTIONS AND FIELDS
   running   id name agent started elapsed timeout left
   waiting   place host name since waited
-  pending   place id name agent added age
+  pending   turn host id name agent age
   done      finished id name exit secs hbc chained
   errors    when severity kind host job id detail
   hosts     host jobs failed wii_min turns wait_med wait_max
@@ -374,7 +374,7 @@ status_lines() {
 # ---------------------------------------------------------------- page: queue
 
 render_queue() {
-    local i fmt room color nm
+    local i fmt room color nm host
     # RUNNING HERE
     heading "$c_cyan" "RUNNING HERE" "this workstation's dispatcher" running
     if (( ${NROWS[running]:-0} == 0 )); then
@@ -402,29 +402,37 @@ render_queue() {
         printf -v fmt "  %%3s %%-24s %%-%ds %%-11s %%8s" "$W"
         table_header waiting "$fmt" place:'#' host:WORKSTATION name:JOB since:SINCE waited:WAITED
         for (( i = 0; i < ${NROWS[waiting]}; i++ )); do
-            row_fields waiting "$i"; fit "${F[1]}" 24; local host="$V"; fit "${F[2]}" "$W"; nm="$V"
+            row_fields waiting "$i"; fit "${F[1]}" 24; host="$V"; fit "${F[2]}" "$W"; nm="$V"
             table_row "$fmt" "" place:"${F[0]}" host:"$host" name:"$nm" since:"${F[3]}" waited:"${F[4]}"
             MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[2]}"
         done
     fi
     lines+=("")
-    # QUEUED HERE
-    heading "$c_cyan" "QUEUED HERE" "${KV[pending_n]:-0} job(s), oldest first" pending
+    # QUEUED: every workstation's jobs, in the order their turns will come (the lease server
+    # has each workstation's list; without a server, this workstation's alone)
+    local qtitle="QUEUED, EVERY WORKSTATION" qsub="in turn order: workstations take turns, one job each"
+    [ "${KV[server]:-}" = "none" ] && { qtitle="QUEUED HERE"; qsub="oldest first"; }
+    [ "${KV[server_ok]:-}" = "no" ] && qsub="this workstation's only: the lease server does not answer"
+    heading "$c_cyan" "$qtitle" "${KV[queued_n]:-0} job(s), $qsub" pending
     if (( ${NROWS[pending]:-0} == 0 )); then
-        placeholder "nothing queued here"
+        placeholder "nothing queued"
     else
-        name_width $(( 2 + 3 + 1 + 22 + 1 + 12 + 1 + 11 + 1 + 8 + 2 ))
-        printf -v fmt "  %%3s %%-22s %%-%ds %%-12s %%-11s %%8s" "$W"
-        table_header pending "$fmt" place:'#' id:ID name:NAME agent:AGENT added:ADDED age:WAITING
+        local hostname; k host; hostname="$V"
+        name_width $(( 2 + 4 + 1 + 18 + 1 + 22 + 1 + 12 + 1 + 8 + 2 ))
+        printf -v fmt "  %%4s %%-18s %%-22s %%-%ds %%-12s %%8s" "$W"
+        table_header pending "$fmt" turn:TURN host:WORKSTATION id:ID name:NAME agent:AGENT age:WAITING
         room=$(( ROWS_MAX - ${#lines[@]} - 8 ))
         for (( i = 0; i < ${NROWS[pending]}; i++ )); do
             if (( i >= room && i < ${NROWS[pending]} - 1 )); then
                 placeholder "... and $(( ${NROWS[pending]} - i )) more"; break
             fi
-            row_fields pending "$i"; fit "${F[2]}" "$W"; nm="$V"
-            table_row "$fmt" "" place:"${F[0]}" id:"${F[1]}" name:"$nm" agent:"${F[3]}" added:"${F[4]}" age:"${F[5]}"
-            MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[2]}"
+            row_fields pending "$i"; fit "${F[1]}" 18; host="$V"; fit "${F[3]}" "$W"; nm="$V"
+            local color=""; [ "${F[1]}" = "$hostname" ] && color="$c_cyan"     # this workstation's
+            table_row "$fmt" "$color" turn:"${F[0]}" host:"$host" id:"${F[2]}" name:"$nm" agent:"${F[4]}" age:"${F[5]}"
+            MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[3]}"
+            MONITOR_CELL_VALUES["$ROW_AT:host"]="${F[1]}"
         done
+        (( ${KV[queued_more]:-0} > 0 )) && placeholder "and ${KV[queued_more]} more beyond the 50 a workstation sends"
     fi
     lines+=("")
     # RECENT JOBS HERE -- as many as fit

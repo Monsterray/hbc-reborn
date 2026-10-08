@@ -235,6 +235,35 @@ Tool work in 1.10.0, no version of its own.
 - **Checked:** tests for the phase accounting (two waiting phases add up, the job does not),
   the monitor's warning and `report`'s lines. 77 tests on Windows and 46 on Linux pass.
 
+#### Every workstation's queue on the lease server
+
+Tool work in 1.10.0, no version of its own.
+
+- **Asked:** "why can't I see the full queue that is waiting on the server?" A dispatcher asks
+  for the lease for its next job only. So the server knew one job per workstation, and a
+  workstation with eight queued looked like one waiter; the monitor's QUEUED HERE was this
+  workstation's folder.
+- **Now:**
+  - Each dispatcher sends its whole queue (50 jobs at most, and the total) with every acquire,
+    renew and release. `add` and `cancel` send it at once (`/queue`), and so does the job's
+    start, through the "running" phase.
+  - The server keeps one list per workstation and state folder (`qid`). It drops a list not
+    refreshed for 60 s, and ignores one older than what it has (a long poll's request from
+    20 s ago). It sends each job's age, not its time.
+  - `status` lists every workstation's queue.
+  - The monitor's QUEUED, EVERY WORKSTATION shows them in the order the turns will come
+    (`queue_order`), this workstation's in cyan:
+    - the workstations in line take one job each, in line order;
+    - a workstation with more queued goes to the back after each job;
+    - the holder rejoins at the back after its job;
+    - a pre-1.10.0 waiter counts as its one job.
+- **Checked:**
+  - Tests for the server's lists (newer wins, stale ignored, dropped on release and after
+    60 s) and the turn order, including an old dispatcher in line.
+  - End to end: `add` on one workstation shows in another's snapshot and `status` at once,
+    and `cancel` takes it away.
+  - 80 tests on Windows and 49 on Linux pass.
+
 ### 1.9.8: two USB drives, GPT disks, cached reads of the frame
 
 - libogc's USB storage driver serves one drive: its command buffer,

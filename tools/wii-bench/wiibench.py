@@ -261,6 +261,7 @@ TTL = 60                                           # a lease or a place in line 
 # MacBook's turns of 10.4 h and 5.9 h on 2026-10-03/04 looked like jobs, and were most likely
 # a Wii left out of HBC (WiiXplorer) with the next job waiting for it.
 WAITING_FOR_HBC = "waiting for HBC"
+QUEUE_MAX = 50        # jobs per workstation the server keeps (and the total, for the rest)
 
 
 class Leases:
@@ -281,6 +282,25 @@ class Leases:
         self.grace_until = clock() + ttl
         self.released_at = None                    # the last holder's clean release
         self.left = None                           # the last holder left the Wii out of HBC
+        self.queues = {}                           # qid -> a workstation's queued jobs (QUEUE_MAX)
+
+    def queue(self, d):
+        """A workstation's queued jobs, from /queue or with an acquire or renew. A dispatcher
+        asks for the lease for its next job only, so without this a workstation with eight jobs
+        queued looked like one waiter. `qid` is the workstation and its state folder (two
+        queues on one host stay apart); `queue_at` is the sender's clock, compared only with
+        the same sender's, so a list sent before a newer one (a long poll started 20 s ago)
+        cannot replace it."""
+        now = self.clock()
+        q, jobs_ = d.get("qid"), d.get("queue")
+        if not q or not isinstance(jobs_, list):
+            return {"ok": False}
+        old = self.queues.get(q)
+        if old and old["queue_at"] > d.get("queue_at", 0):
+            return {"ok": True}
+        self.queues[q] = {"qid": q, "host": d.get("host"), "jobs": jobs_[:QUEUE_MAX], "total": d.get("total", len(jobs_)),
+                          "queue_at": d.get("queue_at", 0), "seen": now}
+        return {"ok": True}
 
     def _event(self, kind, e, **more):
         self.log(dict({"type": kind, "host": e.get("host"), "name": e.get("name")}, **more))
@@ -293,9 +313,14 @@ class Leases:
         for t in [t for t, w in self.waiters.items() if now - w["seen"] > self.ttl]:
             self._event("expired", self.waiters[t], role="waiter", waited_s=round(now - self.waiters[t]["joined"], 1))
             del self.waiters[t]
+        for q in [q for q, v in self.queues.items() if now - v["seen"] > self.ttl or not v["jobs"]]:
+            del self.queues[q]                     # a workstation gone quiet, or with nothing queued
 
     def acquire(self, d):
         now = self.clock()
+        if "queue" in d:
+            self.queue(d)
+            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total")}
         self._expire(now)
         t = d["ticket"]
         if self.holder and self.holder["ticket"] == t:
@@ -321,6 +346,9 @@ class Leases:
 
     def renew(self, d):
         now = self.clock()
+        if "queue" in d:
+            self.queue(d)
+            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total")}
         self._expire(now)
         if self.holder is None and d["ticket"] not in self.waiters:   # after a restart: reclaim
             self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed", granted_at=now)
@@ -341,6 +369,8 @@ class Leases:
 
     def release(self, d):
         now = self.clock()
+        if "queue" in d:                           # what is left queued there, as it lets go
+            self.queue(d)
         if self.holder and self.holder["ticket"] == d["ticket"]:
             wii = d.get("wii", "hbc")              # a client before 1.9.1 does not say
             self._phase_end(now)
@@ -377,8 +407,10 @@ class Leases:
         now = self.clock()
         self._expire(now)
         left = self.left and {k: v for k, v in dict(self.left, ago_s=int(now - self.left["at"])).items() if k != "at"}
+        queues = [{"qid": v["qid"], "host": v["host"], "jobs": v["jobs"], "total": v["total"],
+                   "age_s": round(now - v["seen"], 1)} for v in self.queues.values()]
         return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in self.waiters.values()],
-                "left": left}
+                "left": left, "queues": queues}
 
 
 # --- the history: every grant, release and job, kept for good -----------------------------
@@ -537,6 +569,10 @@ def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
                     return self.reply({"error": "bad request"}, 400)
                 log(d)
                 return self.reply({"ok": True})
+            if self.path == "/queue":              # a workstation's queued jobs, from add or cancel
+                with cond:
+                    r = leases.queue(d)
+                return self.reply(r, 200 if r["ok"] else 400)
             op = {"/acquire": leases.acquire, "/renew": leases.renew, "/release": leases.release}.get(self.path)
             try:
                 d["ticket"]
@@ -702,7 +738,7 @@ class Turn:
     until released. Without a lease server it is a no-op (a single workstation)."""
 
     def __init__(self, name, job_id=None):
-        self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name}
+        self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name, "qid": queue_id()}
         self.job_id, self.stop, self.released_ago = job_id, None, None
         self.wii = "hbc"                           # what the Wii was doing at the release
 
@@ -714,7 +750,7 @@ class Turn:
         self.info["phase"] = phase
         if self.stop:
             try:
-                lease_call("/renew", self.info)
+                lease_call("/renew", dict(self.info, **queue_payload()))   # the queue changed too
             except OSError:
                 pass                               # the next renew carries it
 
@@ -735,7 +771,7 @@ class Turn:
         while True:
             t = time.monotonic()
             try:
-                r = lease_call("/acquire", dict(self.info, wait=LONG_POLL), timeout=LONG_POLL + 10)
+                r = lease_call("/acquire", dict(self.info, wait=LONG_POLL, **queue_payload()), timeout=LONG_POLL + 10)
             except OSError as e:
                 r = {"granted": False, "error": str(e)}
             if r["granted"]:
@@ -756,7 +792,7 @@ class Turn:
         def renew():
             while not self.stop.wait(TTL / 4):
                 try:
-                    if not lease_call("/renew", self.info)["ok"]:
+                    if not lease_call("/renew", dict(self.info, **queue_payload()))["ok"]:
                         say("lease lost: another workstation may have the Wii")
                 except OSError:
                     pass                           # retried; the server keeps it for TTL
@@ -767,7 +803,7 @@ class Turn:
         if self.stop:
             self.stop.set()
             try:
-                lease_call("/release", dict(self.info, wii=self.wii))
+                lease_call("/release", dict(self.info, wii=self.wii, **queue_payload()))
             except OSError:
                 pass                               # it expires after TTL
 
@@ -819,6 +855,38 @@ def job_agent(given=None):
     return None
 
 
+def queue_id():
+    """This workstation's queue for the lease server: its host and its state folder."""
+    import hashlib
+    return f"{socket.gethostname()}:{hashlib.sha1(str(HOME.resolve()).encode()).hexdigest()[:8]}"
+
+
+def queue_payload():
+    """This workstation's queued jobs, oldest first, for the lease server: each job's age, not
+    its time, so no two clocks are ever compared."""
+    now, out = time.time(), []
+    q = jobs(PENDING) if PENDING.exists() else []
+    for p in q[:QUEUE_MAX]:
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            continue
+        t0 = _parse_local(j.get("added")) or now
+        out.append({"id": j["id"], "name": j.get("name"), "agent": (j.get("agent") or "")[:12],
+                    "age_s": round(now - t0)})
+    return {"qid": queue_id(), "host": socket.gethostname(), "queue": out, "total": len(q),
+            "queue_at": time.time()}
+
+
+def send_queue():
+    """Tell the lease server what is queued here now (add and cancel): best effort."""
+    if lease_server():
+        try:
+            lease_call("/queue", queue_payload(), timeout=3)
+        except OSError:
+            pass                                   # the dispatcher sends it with its next call
+
+
 def cmd_add(a):
     for d in (PENDING, RUNNING, DONE):
         d.mkdir(parents=True, exist_ok=True)
@@ -831,8 +899,9 @@ def cmd_add(a):
     tmp = PENDING / f"{job_id}.tmp"
     tmp.write_text(json.dumps(job, indent=1))
     fs_retry(tmp.rename, PENDING / f"{job_id}.json")
-    print(job_id)
+    print(job_id, flush=True)
     start_dispatcher()
+    send_queue()
 
 
 def job_window():
@@ -844,10 +913,12 @@ def job_window():
     return {"startupinfo": si}
 
 
-def run_job(p):
+def run_job(p, started=None):
     job = load(p)
     r = RUNNING / p.name
     fs_retry(p.rename, r)                          # claims it: a rename is atomic
+    if started:
+        started()                                  # out of the queue: tell the lease server
     report(job["id"], "running")
     job["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
     r.write_text(json.dumps(job, indent=1))
@@ -1023,8 +1094,7 @@ def cmd_run(a):
                     try:
                         pj = load(p)
                         agent = pj.get("agent")
-                        turn.set_phase(f"running: {pj.get('name')}")
-                        job = run_job(p)
+                        job = run_job(p, lambda: turn.set_phase(f"running: {pj.get('name')}"))
                     except (FileNotFoundError, ValueError):   # cancelled just before it started
                         break
                     last_end = time.monotonic()
@@ -1094,6 +1164,11 @@ def cmd_status(a):
             if s.get("left"):
                 l = s["left"]
                 print(f"  left     {l['host']}'s {l['name']} left the Wii {l['wii']} (since {l['since']})")
+            for q in s.get("queues") or []:
+                if q.get("qid") != queue_id():     # this workstation's own are listed below
+                    print(f"  queued on {q['host']}: {q.get('total', len(q['jobs']))} job(s)")
+                    for j in q["jobs"]:
+                        print(f"    {j.get('id')}  {j.get('name')}")
     for d, label in ((RUNNING, "running"), (PENDING, "pending")):
         for p in jobs(d):
             j = load(p)
@@ -1387,6 +1462,45 @@ def _local_history(since, cache=None):
     return evs
 
 
+def queue_order(status, queues, my_qid=None, my_jobs=None):
+    """Every workstation's queued jobs in the order their turns will come: the workstations in
+    line take turns one job each, in line order; a workstation with more queued goes to the back
+    after each job; the holder rejoins at the back after its job; a workstation with jobs and no
+    place in line yet (between two turns) comes after those in line. A waiter from a dispatcher
+    before 1.10.0 sends no queue: it counts as the one job it is waiting with. This
+    workstation's own list is read from disk, not the server's copy, so it is never stale."""
+    lists = {}
+    for q in queues:
+        age = q.get("age_s", 0)
+        lists[q["qid"]] = [dict(j, host=q.get("host"), age_s=(j.get("age_s") or 0) + age) for j in q.get("jobs", [])]
+    if my_qid is not None and my_jobs is not None:
+        lists[my_qid] = [dict(j, host=socket.gethostname()) for j in my_jobs]
+    line, seen = [], set()
+    for w in status.get("waiters") or []:
+        q = w.get("qid")
+        if q in lists and q not in seen:
+            line.append(q)
+            seen.add(q)
+        elif q not in lists:
+            line.append({"host": w.get("host"), "name": w.get("name"), "age_s": w.get("waited_s")})
+    h = (status.get("holder") or {}).get("qid")
+    for q in [h] + sorted(lists):
+        if q in lists and q not in seen and lists[q]:
+            line.append(q)
+            seen.add(q)
+    out = []
+    while line:
+        q = line.pop(0)
+        if isinstance(q, dict):
+            out.append(q)
+            continue
+        if lists[q]:
+            out.append(lists[q].pop(0))
+            if lists[q]:
+                line.append(q)
+    return out
+
+
 def dispatcher_log_problems(since, lines=None):
     """Problems this workstation's dispatcher logged since `since`: (t, severity, kind, detail).
     A traceback is one problem, its last line the detail, at the time of the line before it."""
@@ -1457,17 +1571,18 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         row("running", id=j["id"], name=j.get("name"), agent=(j.get("agent") or "")[:12], started=_when(t0, now),
             elapsed=_age(now - t0), elapsed_s=int(now - t0), timeout=_age(to), left=_age(max(0, to - (now - t0))),
             left_s=int(max(0, to - (now - t0))))
-    for i, p in enumerate(pending, 1):
+    local_q = []
+    for p in pending:
         try:
             j = load(p)
         except (OSError, ValueError):
             continue
         t0 = _parse_local(j.get("added")) or now
-        row("pending", place=i, place_s=i, id=j["id"], name=j.get("name"), agent=(j.get("agent") or "")[:12],
-            added=_when(t0, now), age=_age(now - t0), age_s=int(now - t0))
-    kv["running_n"], kv["pending_n"] = len(rows.get("running", [])), len(rows.get("pending", []))
+        local_q.append({"id": j["id"], "name": j.get("name"), "agent": (j.get("agent") or "")[:12],
+                        "age_s": int(now - t0)})
+    kv["running_n"], kv["pending_n"] = len(rows.get("running", [])), len(local_q)
     # dispatcher.state names the last job it worked for; once that job is done it is history.
-    live = {r["id"] for r in rows.get("running", []) + rows.get("pending", [])}
+    live = {r["id"] for r in rows.get("running", [])} | {j["id"] for j in local_q}
     if kv["dispatcher_job"] not in live:
         kv["dispatcher_job"] = None
         kv["dispatcher_detail"] = "idle" if pid else None
@@ -1524,7 +1639,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     # The lease server: who has the Wii, who waits, and every workstation's history.
     url = lease_server()
     kv["server"] = url or "none"
-    evs = []
+    evs, s, queues = [], {}, None
     down = cache is not None and cache.down_until > time.monotonic()
     if url and down:
         kv["server_ok"], kv["server_err"] = "no", cache.down_error
@@ -1552,6 +1667,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                 row("waiting", place=i, place_s=i, host=w.get("host"), name=w.get("name"),
                     since=_when(now - ws, now) if ws is not None else "-",
                     waited=_age(ws) if ws is not None else "?", waited_s=ws or 0)
+            queues = s.get("queues")
             left = s.get("left")
             if left:
                 ago = f"{_age(left['ago_s'])} ago" if "ago_s" in left else f"since {str(left.get('since'))[-8:]} server time"
@@ -1615,6 +1731,19 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     if d.startswith("Wii busy") and st.get("since") and now - st["since"] > 300:
         problems.append(dict(t=now, severity="warn", kind="Wii busy", host=socket.gethostname(), job="-", id="-",
                              detail=f"{d} (outside the queue?)"))
+    # Every workstation's queue, in the order the turns will come (a server before 1.10.0 sends
+    # none: then only this workstation's).
+    if queues is None:
+        order = [dict(j, host=socket.gethostname()) for j in local_q]
+    else:
+        order = queue_order(s, queues, queue_id(), local_q)
+    for i, j in enumerate(order, 1):
+        row("pending", turn=i, turn_s=i, host=j.get("host"), id=j.get("id") or "-", name=j.get("name"),
+            agent=j.get("agent") or "-", age=_age(j["age_s"]) if j.get("age_s") is not None else "?",
+            age_s=j.get("age_s") or 0)
+    kv["queued_n"] = len(order)
+    kv["queued_more"] = sum(max(0, q.get("total", 0) - len(q.get("jobs", []))) for q in (queues or []))
+
     rank = {"err": 0, "warn": 1, "note": 2}
     problems.sort(key=lambda p: (-p["t"], rank.get(p["severity"], 3)))
     for p in problems:
@@ -1685,7 +1814,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
 
 SNAPSHOT_FIELDS = {
     "running": ("id", "name", "agent", "started", "elapsed", "timeout", "left"),
-    "pending": ("place", "id", "name", "agent", "added", "age"),
+    "pending": ("turn", "host", "id", "name", "agent", "age"),
     "waiting": ("place", "host", "name", "since", "waited"),
     "done": ("finished", "id", "name", "exit", "secs", "hbc", "chained"),
     "errors": ("when", "severity", "kind", "host", "job", "id", "detail"),
@@ -1742,6 +1871,7 @@ def cmd_cancel(a):
         sys.exit(f"{a.id}: {'not found' if d is None else 'already ' + d.name}")
     fs_retry(p.unlink)
     print(f"cancelled {a.id}")
+    send_queue()
 
 
 def main():

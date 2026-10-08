@@ -112,7 +112,7 @@ waits, and anything that needs a look: a Wii left out of HBC, an expired lease, 
 
 | Page | Shows |
 | --- | --- |
-| 1 queue | who has the Wii now, the jobs running and queued here, every workstation waiting for the Wii, and the last jobs here (exit, seconds, HBC after the job, chained or not) |
+| 1 queue | who has the Wii now, the jobs running here, every workstation waiting for the Wii, every job queued on every workstation in the order the turns will come, and the last jobs here (exit, seconds, HBC after the job, chained or not) |
 | 2 errors | every problem in the window, newest first: failed and timed-out jobs with their log's last line, a Wii left out of HBC, an expired lease, a workstation that left the line, the lease server unreachable, a dispatcher that crashed, jobs queued with no dispatcher, a workstation still on a dispatcher before 1.9.1 |
 | 3 history | per workstation: jobs, failures, Wii minutes, turns, median and longest wait; hand-over speed; the longest waits |
 | 4 log | the end of this workstation's `dispatcher.log`, problems in colour |
@@ -203,6 +203,13 @@ server: `wiibench.py serve`, stdlib Python only, on TCP 4310.
 - A lease or a place in line that goes 60 s without renewal is dropped, so a crashed or
   switched-off workstation frees the Wii by itself. After a server restart, nothing is
   granted for 60 s, which gives a job that's still running time to reclaim its lease.
+- Each dispatcher sends the server its whole queue (up to 50 jobs, with the total) with every
+  lease request, renew and release, and `add` and `cancel` send it at once. So `status` and the
+  monitor show every workstation's queued jobs, not only the one job each waits with. The
+  monitor orders them the way the turns will come: the workstations in line take turns one job
+  each, a workstation with more goes to the back after each job, and the one holding the Wii
+  rejoins at the back. A list not refreshed for 60 s is dropped. A dispatcher before 1.10.0 sends
+  none, and shows as the one job it waits with.
 - If the server can't be reached, the dispatcher waits and logs it in `dispatcher.log`
   instead of skipping the lease. `status` shows the holder and the line.
 - The HBC-idle check still runs after the lease is granted, so a test someone sent

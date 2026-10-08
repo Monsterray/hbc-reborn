@@ -440,6 +440,73 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.root / "archive").iterdir()), ["2026-09.tar"])
 
 
+class SharedQueueTest(unittest.TestCase):
+    """Every workstation's queue on the lease server, and the order the turns will come in."""
+
+    def setUp(self):
+        self.wb = import_wiibench()
+
+    def test_the_server_keeps_each_workstations_list(self):
+        now = [60.0]
+        leases = self.wb.Leases(ttl=60, clock=lambda: now[0])
+        leases.grace_until = 0
+        q = lambda qid, names, at, **more: dict(qid=qid, host=qid, queue=[{"id": n, "name": n, "age_s": 5} for n in names],
+                                              queue_at=at, **more)
+        leases.queue(q("pc", ["a", "b"], at=100))
+        self.assertTrue(leases.acquire(dict(q("mac", ["m1", "m2"], at=50), ticket="t", name="m1"))["granted"])
+        st = leases.status()
+        self.assertEqual({x["qid"]: [j["id"] for j in x["jobs"]] for x in st["queues"]}, {"pc": ["a", "b"], "mac": ["m1", "m2"]})
+        self.assertNotIn("queue", st["holder"])        # the list is not part of the holder
+        self.assertEqual(st["holder"]["qid"], "mac")
+        leases.queue(q("pc", ["a"], at=99))            # older than what the server has: ignored
+        leases.renew(dict(q("mac", ["m2"], at=51), ticket="t"))   # m1 started
+        st = leases.status()
+        self.assertEqual({x["qid"]: [j["id"] for j in x["jobs"]] for x in st["queues"]}, {"pc": ["a", "b"], "mac": ["m2"]})
+        leases.release(dict(q("mac", [], at=52), ticket="t"))     # done, nothing left there
+        self.assertEqual([x["qid"] for x in leases.status()["queues"]], ["pc"])
+        now[0] += 61                                    # pc went quiet
+        self.assertEqual(leases.status()["queues"], [])
+
+    def test_turn_order(self):
+        # mac holds the Wii with 2 more queued; pc waits with 3; an old dispatcher waits with
+        # one job and sends no list.
+        status = {"holder": {"host": "mac", "qid": "mac"},
+                  "waiters": [{"host": "pc", "qid": "pc", "name": "p1"}, {"host": "old", "name": "o1", "waited_s": 9}]}
+        queues = [{"qid": "mac", "host": "mac", "jobs": [{"id": "m1"}, {"id": "m2"}], "age_s": 1},
+                  {"qid": "pc", "host": "pc", "jobs": [{"id": "p1"}, {"id": "p2"}, {"id": "p3"}], "age_s": 1}]
+        order = self.wb.queue_order(status, queues)
+        self.assertEqual([j.get("id") or j["name"] for j in order], ["p1", "o1", "m1", "p2", "m2", "p3"])
+        # Nobody waiting: the holder's jobs run one after another.
+        order = self.wb.queue_order({"holder": {"qid": "mac"}, "waiters": []}, queues[:1])
+        self.assertEqual([j["id"] for j in order], ["m1", "m2"])
+
+    def test_add_on_one_workstation_shows_on_another(self):
+        import threading
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        srv = self.wb.make_server(0, ttl=60, host="127.0.0.1")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        url = f"http://127.0.0.1:{srv.server_address[1]}"
+        env = lambda home: dict(os.environ, WII_BENCH_HOME=str(home), WII_BENCH_SERVER=url, WII_BENCH_NO_DISPATCH="1",
+                                WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9")
+        a, b = pathlib.Path(tmp.name) / "a", pathlib.Path(tmp.name) / "b"
+        run = lambda home, *args: subprocess.run([sys.executable, str(BENCH), *args], env=env(home),
+                                                 capture_output=True, text=True, timeout=60)
+        ids = [run(a, "add", "--name", f"job {i}", "--", sys.executable, "-c", "0").stdout.strip() for i in (1, 2)]
+        run(b, "add", "--name", "b's job", "--", sys.executable, "-c", "0")
+        s = json.loads(run(b, "snapshot", "--json").stdout)
+        names = [(r["host"], r["name"]) for r in s["rows"]["pending"]]
+        self.assertEqual(sorted(n for _, n in names), ["b's job", "job 1", "job 2"])   # a's, seen from b
+        self.assertEqual(s["kv"]["queued_n"], 3)
+        self.assertEqual(s["kv"]["pending_n"], 1)       # b's own
+        self.assertIn("queued on", run(b, "status").stdout)
+        run(a, "cancel", ids[0])                         # cancel tells the server at once too
+        s = json.loads(run(b, "snapshot", "--json").stdout)
+        self.assertEqual(sorted(r["name"] for r in s["rows"]["pending"]), ["b's job", "job 2"])
+
+
 class PhaseTest(unittest.TestCase):
     """The holder says what its turn is doing; time waiting for HBC is counted, and shown."""
 
