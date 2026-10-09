@@ -148,6 +148,11 @@ static devoptab_t log_dotab_err = { .name = "hbcagent", .write_r = log_write_err
 
 static volatile bool lastlog_done;
 
+// The app's name for a record, unless the app's crash took the pointer.
+static const char *record_name(void) {
+	return cfg.name && agent_ram((u32) cfg.name, 1) ? cfg.name : "app";
+}
+
 // Runs wherever the app stops, in an exception too (FP off): integer only.
 static void lastlog_write(u32 why) {
 	hbc_lastlog_block *b = (hbc_lastlog_block *) HBC_LASTLOG_ADDR;
@@ -163,7 +168,7 @@ static void lastlog_write(u32 why) {
 	b->why = why;
 	b->len = n;
 	b->uptime_ms = start_ticks ? agent_uptime_ms() : 0;
-	strncpy(b->app, cfg.name ? cfg.name : "app", sizeof(b->app) - 1);
+	strncpy(b->app, record_name(), sizeof(b->app) - 1);
 	for (i = 0; i < n; ++i)
 		b->text[i] = log_ring[(start + i) % LOG_SIZE];
 	b->check = hbc_lastlog_check(b);
@@ -699,13 +704,6 @@ static void *agent_thread(void *arg) {
 	return NULL;
 }
 
-// Return addresses up the stack chain: each frame's back chain at 0(sp), and
-// the saved LR of the frame it called at 4(back chain).
-static bool ram_word(u32 a) {
-	return !(a & 3) && ((a >= 0x80000000 && a < 0x81800000) ||
-						(a >= 0x90000000 && a < 0x94000000));
-}
-
 // Runs inside the exception, with floating point off: integer code only.
 static void agent_record_kind(u32 kind, u32 code, const char *reason, u32 exid, u32 pc, u32 msr,
 							  u32 lr, u32 cr, u32 ctr, u32 sp, u32 dar, u32 dsisr) {
@@ -729,28 +727,91 @@ static void agent_record_kind(u32 kind, u32 code, const char *reason, u32 exid, 
 	b->code = code;
 	if (reason)
 		strncpy(b->reason, reason, sizeof(b->reason) - 1);
-	for (i = 0; i < HBC_CRASH_FRAMES && ram_word(sp); ++i) {
+	// Return addresses up the stack chain: each frame's back chain at 0(sp),
+	// and the saved LR of the frame it called at 4(back chain).
+	for (i = 0; i < HBC_CRASH_FRAMES && agent_ram_word(sp); ++i) {
 		u32 next = *(u32 *) sp;
 
-		if (!ram_word(next) || next <= sp)
+		if ((next & 3) || !agent_ram(next, 8) || next <= sp)
 			break;
 		b->frames[i] = *(u32 *) (next + 4);
 		sp = next;
 	}
-	strncpy(b->app, cfg.name ? cfg.name : "app", sizeof(b->app) - 1);
+	strncpy(b->app, record_name(), sizeof(b->app) - 1);
 	b->check = hbc_crash_check(b);
 	DCFlushRange(b, sizeof(*b));
 }
 
-static void agent_record(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32 sp) {
-	u32 dar = mfspr(19), dsisr = mfspr(18);
-	bool stack = safety_stack_hit(exid, dsisr, dar);
+// The crash hook, for both libogc designs. A fault inside it (in the record,
+// safety_on_death() or the crash screen after them) is taken with MSR[RI]
+// clear. libogc 3 then runs its handler on the stack it faulted on and calls
+// the hook again, below itself: a hook that faults every time recurses down
+// through MEM1 into the vectors with no crash screen at all (USB Loader GX
+// froze so). libogc2 and 1.x send that fault to their own crash screen
+// instead. So the app's crash is recorded once; a fault inside the hook is
+// noted beside it, and the caller shows the app's crash again (hook_enter()
+// puts its DAR and DSISR back first); a fault in that too leaves only HBC.
+// hook_depth and the caller's copy of the first frame are written before
+// anything can fault. What the hook reads, it checks with agent_ram().
+static volatile u32 hook_depth;
+static u32 hook_dar, hook_dsisr, hook_why;
 
+static void put_hex8(char *p, u32 v) {
+	int i;
+
+	for (i = 0; i < 8; ++i)
+		p[i] = "0123456789abcdef"[(v >> (28 - 4 * i)) & 15];
+}
+
+// The fault inside the hook: into the crash block's reason, after whatever
+// it said, and into the log; the kept log goes out too, if the hook faulted
+// before it.
+static void hook_fault(u32 pc, u32 dar) {
+	hbc_crash_block *b = (hbc_crash_block *) HBC_CRASH_ADDR;
+	char note[] = "agent crash hook faulted: pc 00000000 dar 00000000\n";
+	u32 len = strnlen(b->reason, sizeof(b->reason) - 1), n;
+
+	put_hex8(note + 29, pc);
+	put_hex8(note + 42, dar);
+	agent_log_raw(note, sizeof(note) - 1);
+	if (len) {
+		b->reason[len++] = ';';
+		if (len < sizeof(b->reason) - 1)
+			b->reason[len++] = ' ';
+	}
+	n = sizeof(b->reason) - 1 - len;
+	if (n > sizeof(note) - 2)   // not the newline
+		n = sizeof(note) - 2;
+	memcpy(b->reason + len, note, n);
+	b->reason[len + n] = 0;
+	b->check = hbc_crash_check(b);
+	DCFlushRange(b, sizeof(*b));
+	lastlog_write(hook_why);
+}
+
+static void hook_enter(u32 exid, u32 pc, u32 msr, u32 lr, u32 cr, u32 ctr, u32 sp) {
+	u32 depth = hook_depth;
+	bool stack;
+
+	hook_depth = depth + 1;
+	if (depth == 1) {
+		hook_fault(pc, mfspr(19));
+		mtspr(19, hook_dar);
+		mtspr(18, hook_dsisr);
+		return;
+	}
+	if (depth > 1)
+		__reload();
+
+	hook_dar = mfspr(19);
+	hook_dsisr = mfspr(18);
+	stack = safety_stack_hit(exid, hook_dsisr, hook_dar);
+	hook_why = stack ? HBC_LASTLOG_STACK : HBC_LASTLOG_EXCEPTION;
 	agent_record_kind(stack ? HBC_CRASH_STACK : HBC_CRASH_EXCEPTION, 0,
 					  stack ? "main thread stack overflow" : NULL, exid, pc, msr, lr, cr, ctr,
-					  sp, dar, dsisr);
+					  sp, hook_dar, hook_dsisr);
 	safety_on_death();
-	lastlog_write(stack ? HBC_LASTLOG_STACK : HBC_LASTLOG_EXCEPTION);
+	lastlog_write(hook_why);
 }
 
 void agent_stop_record(u32 kind, u32 code, const char *reason, u32 pc, u32 lr, u32 sp) {
@@ -914,9 +975,18 @@ void hbc_agent_hold(bool hold) {
 
 #if AGENT_TUXEDO
 static void agent_panic(unsigned exid, PPCContext *ctx) {
-	agent_record(exid, ctx->pc, ctx->msr, ctx->lr, ctx->cr, ctx->ctr, ctx->gpr[1]);
+	static unsigned first_exid;
+	static PPCContext *first;
+
+	if (!hook_depth) {
+		first_exid = exid;
+		first = ctx;
+	}
+	hook_enter(exid, ctx->pc, ctx->msr, ctx->lr, ctx->cr, ctx->ctr, ctx->gpr[1]);
+	// The app's crash, also after a fault inside the hook: its frame is
+	// still there, above the nested one.
 	if (prev_panic)
-		prev_panic(exid, ctx);
+		prev_panic(first_exid, first);
 }
 
 static void install_crash_hook(void) {
@@ -954,11 +1024,14 @@ static const u8 exc_vector[NUM_EXCEPTIONS] = {
 };
 
 void agent_exc(frame_context *ctx) {
+	static frame_context *first;
 	u32 n = ctx->FC_NUMBER;
 
-	agent_record(n < NUM_EXCEPTIONS ? exc_vector[n] : n, ctx->FC_SRR0, ctx->FC_SRR1, ctx->FC_LR,
-				 ctx->FC_CR, ctx->FC_CTR, ctx->FC_GPR[1]);
-	c_default_exceptionhandler(ctx);
+	if (!hook_depth)
+		first = ctx;
+	hook_enter(n < NUM_EXCEPTIONS ? exc_vector[n] : n, ctx->FC_SRR0, ctx->FC_SRR1, ctx->FC_LR,
+			   ctx->FC_CR, ctx->FC_CTR, ctx->FC_GPR[1]);
+	c_default_exceptionhandler(first);
 }
 
 // Take over only the exceptions that would reach libogc's crash screen; the

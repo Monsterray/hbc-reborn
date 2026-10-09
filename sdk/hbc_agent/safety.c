@@ -23,7 +23,9 @@
 //                  by the monitor thread (agent.c).
 //
 // Code that runs in an exception (safety_on_death and what it calls) is
-// integer only: floating point is off there, so no printf.
+// integer only: floating point is off there, so no printf. It also checks
+// each address it reads (agent_ram()) against what the app's crash may have
+// overwritten, this file's own statics included.
 
 #include <errno.h>
 #include <malloc.h>
@@ -143,7 +145,8 @@ static void guards_down(void) {
 	if (guard && (dabr_get() & ~7u) == guard)
 		dabr_set(0);
 	guard = 0;
-	if (stub_copy && memcmp((void *) STUB_ADDR, stub_copy, STUB_SIZE)) {
+	if (stub_copy && agent_ram((u32) stub_copy, STUB_SIZE) &&
+			memcmp((void *) STUB_ADDR, stub_copy, STUB_SIZE)) {
 		memcpy((void *) STUB_ADDR, stub_copy, STUB_SIZE);
 		DCFlushRange((void *) STUB_ADDR, STUB_SIZE);
 		ICInvalidateRange((void *) STUB_ADDR, STUB_SIZE);
@@ -160,6 +163,16 @@ extern KThread *s_firstThread;
 extern lwp_objinfo _lwp_thr_objects;
 #endif
 
+// A thread's record, whole and in RAM; libogc keeps them on the heap, where
+// the app's crash may have written.
+#if AGENT_TUXEDO
+static bool thread_ok(const KThread *k) {
+#else
+static bool thread_ok(const lwp_cntrl *k) {
+#endif
+	return k && agent_ram_word((u32) k) && agent_ram((u32) k, sizeof(*k));
+}
+
 static u32 current_sp(void) {
 	u32 sp;
 
@@ -167,12 +180,18 @@ static u32 current_sp(void) {
 	return sp;
 }
 
+// Markers out of RAM say only that stk_lo was overwritten, not where the
+// stack went: no overflow is reported from them.
 static bool mark_intact(void) {
-	u32 i;
+	u32 i, a;
 
-	for (i = 0; i < MARK_WORDS; ++i)
-		if (*(volatile u32 *) (stk_lo + 16 + i * MARK_STEP) != (MARK ^ i))
+	for (i = 0; i < MARK_WORDS; ++i) {
+		a = stk_lo + 16 + i * MARK_STEP;
+		if (!agent_ram_word(a))
+			return true;
+		if (*(volatile u32 *) a != (MARK ^ i))
 			return false;
+	}
 	return true;
 }
 
@@ -189,7 +208,7 @@ static void stack_guard_init(void) {
 		stk_lo = stk_hi - cfg->main_stack_size;
 #endif
 	stk_lo = (stk_lo + 7) & ~7u;
-	if (stk_hi <= stk_lo + 16 * 1024 || stk_lo < 0x80000000) {
+	if (stk_hi <= stk_lo + 16 * 1024 || !agent_ram(stk_lo, stk_hi - stk_lo)) {
 		stk_lo = stk_hi = 0;
 		return;
 	}
@@ -225,6 +244,8 @@ bool safety_stack_hit(u32 exid, u32 dsisr, u32 dar) {
 static u32 stack_deepest(void) {
 	u32 a = stk_lo + GUARD_ROOM + 8;
 
+	if (stk_hi <= a || !agent_ram(a, stk_hi - a))
+		return 0;
 	while (a < stk_hi && !*(u32 *) a)
 		a += 4;
 	return stk_hi - a;
@@ -261,10 +282,6 @@ static const char *lwp_state(u32 s) {
 }
 #endif
 
-static bool ram(u32 a) {
-	return (a >= 0x80000000 && a < 0x81800000) || (a >= 0x90000000 && a < 0x94000000);
-}
-
 // One thread: its priority (libogc's LWP_* scale, 127 highest; -1 idle),
 // state, stack pointer and room left, then where it is: the return
 // addresses up its stack chain, nearest first. A thread that is not running
@@ -291,10 +308,10 @@ static void thread_line(text *t, char *start, bool self, int prio, const char *s
 		put(t, " bytes left)");
 	}
 	put(t, ", calls");
-	for (i = 0; i < 6 && ram(back) && !(back & 3); ++i) {
+	for (i = 0; i < 6 && agent_ram_word(back); ++i) {
 		u32 next = *(u32 *) back;
 
-		if (!ram(next) || next <= back || (next & 3))
+		if ((next & 3) || !agent_ram(next, 8) || next <= back)
 			break;
 		put(t, " ");
 		put_hex(t, *(u32 *) (next + 4));
@@ -314,7 +331,7 @@ static void thread_list(void) {
 	{
 		KThread *self = KThreadGetSelf(), *k;
 
-		for (k = s_firstThread; k && ram((u32) k) && n < 24; k = k->next, ++n) {
+		for (k = s_firstThread; thread_ok(k) && n < 24; k = k->next, ++n) {
 			u32 sp = k->ctx.gpr[1];
 
 			// libogc 3 counts 0 highest and puts the idle thread at 128.
@@ -327,10 +344,13 @@ static void thread_list(void) {
 		u32 i;
 
 		for (i = 0; i < _lwp_thr_objects.max_nodes && n < 24; ++i) {
-			lwp_cntrl *k = (lwp_cntrl *) _lwp_thr_objects.local_table[i];
-			u32 core;
+			u32 slot = (u32) &_lwp_thr_objects.local_table[i], core;
+			lwp_cntrl *k;
 
-			if (!k || !ram((u32) k))
+			if (!agent_ram_word(slot))
+				break;
+			k = *(lwp_cntrl **) slot;
+			if (!thread_ok(k))
 				continue;
 			core = k->cur_prio;
 			thread_line(&t, line, k == _thr_executing, core >= 128 ? 255 ^ core : -1,
@@ -497,7 +517,7 @@ static void __attribute__((noreturn)) marks_broken(void) {
 #if AGENT_TUXEDO
 	KThread *k;
 
-	for (k = s_firstThread; k && ram((u32) k); k = k->next)
+	for (k = s_firstThread; thread_ok(k); k = k->next)
 		if (k->ctx.gpr[1] >= stk_lo && k->ctx.gpr[1] < stk_hi) {
 			pc = k->ctx.pc;
 			lr = k->ctx.lr;

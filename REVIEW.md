@@ -161,6 +161,50 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.2: a crash inside the agent's crash hook froze the Wii
+
+- USB Loader GX in Dolphin (2026-10-09, MMU on): its ThreadedTask thread
+  overran its stack, and instead of libogc's crash screen the emulated Wii
+  froze with PC in the DSI vector (0x34c), SP near 0x80000070 and
+  translation off. The crash block held one DSI in `safety_on_death`
+  (`lwz r6,0(r10)`, DAR 0x398, so `stk_lo` read 0x388), frames all
+  `agent_panic` and `PPCExcptDefaultHandler`.
+- Why it recursed: a fault inside an exception handler arrives with
+  MSR[RI] clear. libogc 3's `PPCExcptEntryGeneral` then enters
+  `PPCExcptDefaultHandler` with cr0 equal, which keeps the faulting r1
+  instead of loading `__ppc_excpt_sp`, and calls `PPCExcptCurPanicFn`, the
+  agent's hook, again. A hook that faults every time recurses down from
+  the exception stack (0x8110c780 in GX) through the main stack, `.bss`
+  and the vectors. libogc2 and 1.8.23 send such a fault to their own
+  `default_exceptionhandler` instead, so they show a crash screen.
+- Why `stk_lo` was 0x388: not `__ppc_main_sp`. In GX's `boot.elf` it is
+  libogc 3's weak `.sdata` word (0x81068394), 0x81108780 = `s_mainStack`
+  + 0x20000 at link, never written after; `stack_guard_init()` reads it
+  correctly (`lwz` from 0x81068394 in the disassembly) and rejects any
+  `stk_lo` under 0x80000000, and only it and `safety_stop()` store
+  `stk_lo` (0x8107a444). The recursion that reached 0x80000088 ran its
+  frames over 0x8107a444 on the way; the crash block, rewritten at every
+  level, kept only the last, which read the frame word left there. The
+  fault that started the recursion is not recoverable from that block.
+- Fix (`agent.c`, `safety.c`): the hook records the app's crash once. A
+  fault inside it notes `agent crash hook faulted: pc ... dar ...` in the
+  block's reason and the log, writes the kept log if it had not been,
+  puts the first DAR and DSISR back, and hands libogc the app's own
+  exception frame (still on the stack above); a fault in that too goes to
+  `__reload()`. What the hook reads is checked first (`agent_ram()`): the
+  markers' addresses, each thread record, the stub copy, the app name, the
+  stack walk's saved LR. `hbc.py crash` shows an exception's reason.
+- `tests/dolphin_ogc_crash.py` now takes libogc 3 too, and `--bad-guard`
+  (`stk_lo` = 0x388 before the crash) and `--hook-fault`
+  (`safety_on_death`'s first instruction a load from 0x388). Against
+  1.10.1's agent both froze: `--bad-guard` with PC 0x34c and SP 0x80000070,
+  as in GX. Now all three runs pass on libogc 3 and on libogc2 (where
+  `--hook-fault` shows libogc2's screen for the hook's fault, the app's
+  crash in the block). The libogc 1.8.23 agent builds; its test app needs
+  a libfat this machine does not have.
+- USB Loader GX needs no change: it uses libogc 3's default 128 KiB main
+  stack, which is what the agent assumes without `main_stack_size`.
+
 ### 1.10.1: hbc_agent_stop() and hbc_agent_listen()
 
 - For apps that leave other than through `exit()` (USB Loader GX boots

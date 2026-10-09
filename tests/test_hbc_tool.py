@@ -319,6 +319,9 @@ class HBCToolTest(unittest.TestCase):
         self.assertIn("dar   00000010", out)
         self.assertIn("#0   80004004", out)
         self.assertEqual(json.loads(self.cli("crash", "--json"))["pc"], "80004cac")
+        self.fake.crash["reason"] = "agent crash hook faulted: pc 80bc74cc dar 00000398"
+        self.assertIn("demo crashed after 1.0 s: DSI exception (3); agent crash hook faulted: "
+                      "pc 80bc74cc dar 00000398", self.cli("crash"))
         self.cli("crash", "--clear")
         self.assertEqual(self.cli("crash").strip(), "no crash reported")
         self.fake.agent = True

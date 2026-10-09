@@ -1,9 +1,24 @@
-"""Crash an agent app built on libogc2 (or libogc 1.x) in Dolphin, and check
-the agent recorded it: the older libogc's exception table needs the assembly
-entry in sdk/hbc_agent/ogc_exc.S, and a C function there froze a Wii hard.
+"""Crash an agent app in Dolphin, and check the agent recorded it and handed
+the crash on to libogc's crash screen. On libogc2 (or libogc 1.x) the
+exception table needs the assembly entry in sdk/hbc_agent/ogc_exc.S, and a C
+function there froze a Wii hard; on libogc 3 the hook is PPCExcptCurPanicFn.
 
     make -C tests/agent_app OGC=libogc2 MODE=crash DEVKITPPC=<devkitPPC r41-2>
     python tests/dolphin_ogc_crash.py [tests/agent_app/agent_app-libogc2-crash.dol]
+    make -C tests/agent_app MODE=crash
+    python tests/dolphin_ogc_crash.py [--bad-guard | --hook-fault] tests/agent_app/agent_app-crash.dol
+
+Both options break the crash hook before the crash. A fault inside an
+exception handler comes back to the hook on the stack it faulted on, so
+before HBC 1.10.2 a hook that faulted recursed down through all of MEM1 into
+the vectors, and the Wii froze with no crash screen (USB Loader GX did).
+--bad-guard sets the stack guard's stk_lo (safety.c) to 0x388, the value GX's
+freeze ended with: the hook must check the markers' addresses and not fault.
+--hook-fault makes safety_on_death's first instruction a load from 0x388:
+the app's crash must still be the one recorded. On libogc 3 the hook comes
+back once, notes its fault in the reason and shows the app's crash; libogc2's
+vector code sends a fault inside a handler straight to its own crash screen,
+which shows the hook's fault. Either way libogc's crash screen must show.
 
 The DOL crashes by itself (no Wiiload argv here). Dolphin boots it with its
 GDB stub on; after the crash this reads the crash block from MEM2, checks it
@@ -28,6 +43,7 @@ CRASH_WORDS = 3 + 5 + 2 + 2 + 12   # magic .. uptime_ms, frames
 # Version 2 (sdk/hbc_agent.h): then app[20], kind, code, reason[64], check.
 CRASH_SIZE = CRASH_WORDS * 4 + 20 + 4 + 4 + 64 + 4
 NAMES = {2: "machine check", 3: "DSI", 4: "ISI", 6: "alignment", 7: "program"}
+REASON_AT = CRASH_WORDS * 4 + 20 + 4 + 4
 
 
 class GDB:
@@ -83,6 +99,11 @@ class GDB:
             raise OSError(f"GDB stub read {addr:08x}: {reply!r}")
         return bytes.fromhex(reply)
 
+    def write(self, addr, data):
+        reply = self.send(f"M{addr:x},{len(data):x}:{data.hex()}")
+        if reply != "OK":
+            raise OSError(f"GDB stub write {addr:08x}: {reply!r}")
+
     def pc(self):
         # Dolphin's stub numbers the PC 64 (after r0-r31 and f0-f31).
         return int(self.send("p40"), 16)
@@ -96,6 +117,7 @@ def crash_dict(raw):
             "pc": hexw(w[3]), "msr": hexw(w[4]), "lr": hexw(w[5]), "cr": hexw(w[6]),
             "ctr": hexw(w[7]), "dar": hexw(w[8]), "dsisr": hexw(w[9]), "sp": hexw(w[10]),
             "uptime_ms": w[11], "frames": [hexw(f) for f in w[12:24] if f], "app": app,
+            "reason": raw[REASON_AT:REASON_AT + 64].split(b"\0")[0].decode(errors="replace"),
             "kind": ["exception", "fatal", "hang"][min(2, struct.unpack_from(">I", raw, CRASH_WORDS * 4 + 20)[0])]}
 
 
@@ -107,14 +129,53 @@ def check_block(raw):
     assert x == words[-1], f"crash block check {x:08x} != {words[-1]:08x}"
 
 
+def symbols(elf):
+    """{name: address} for every symbol in the ELF, from nm."""
+    nm = agent_checks.hbc.devkit_tool("powerpc-eabi-nm")
+    out = dolphin_smoke.subprocess.run([nm, str(elf)], capture_output=True, text=True).stdout
+    return {m[2]: int(m[1], 16) for m in re.finditer(r"^([0-9a-f]+) \w (\S+)$", out, re.M)}
+
+
+def break_the_hook(gdb, syms, how):
+    """Once the stack guard is up (the agent has started), break the hook."""
+    deadline = time.monotonic() + 30
+    while not gdb.read(syms["marks"], 1)[0]:
+        if time.monotonic() > deadline:
+            raise OSError("the stack guard never put its markers down")
+        gdb.send("c", reply=False)
+        time.sleep(0.5)
+        gdb.interrupt()
+    if how == "--bad-guard":
+        addr, word = syms["stk_lo"], 0x388
+    else:
+        # lwz r0,0x388(0): nothing has run safety_on_death yet, so no
+        # translated copy of the old instruction is left to run instead.
+        addr, word = syms["safety_on_death"], 0x80000388
+    gdb.write(addr, struct.pack(">I", word))
+    assert gdb.read(addr, 4) == struct.pack(">I", word), f"write to {addr:08x} did not stick"
+    print(f"{how}: {word:08x} written at {addr:08x}")
+
+
 def main():
-    dol = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else
+    args = sys.argv[1:]
+    breaks = [a for a in args if a in ("--bad-guard", "--hook-fault")]
+    args = [a for a in args if a not in breaks]
+    if len(breaks) > 1:
+        raise SystemExit("one of --bad-guard and --hook-fault")
+    how = breaks[0] if breaks else None
+    dol = pathlib.Path(args[0] if args else
                        root / "tests/agent_app/agent_app-libogc2-crash.dol").resolve()
     elf = dol.with_suffix(".elf")
     mode = "trap" if "trap" in dol.stem else "crash"
     if not dol.is_file():
         raise SystemExit(f"no such DOL: {dol} (see this script's docstring)")
     agent_checks.ELF = elf
+    syms = symbols(elf)
+    # libogc 3 (tuxedo) calls the agent's panic function from its own
+    # handler; the older libogc jumps to the agent's assembly entry.
+    # Both end in waitForReload, the screen's loop (inlined in libogc2).
+    tuxedo = "agent_exc_entry" not in syms
+    screen = {"__libogc_panic" if tuxedo else "c_default_exceptionhandler", "waitForReload"}
 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -126,6 +187,8 @@ def main():
     try:
         gdb = GDB(port)
         gdb.send("?")
+        if how:
+            break_the_hook(gdb, syms, how)
         # The app waits up to 10 s for the network, then crashes 1 s later.
         deadline = time.monotonic() + 60
         while True:
@@ -143,6 +206,12 @@ def main():
         assert crash["magic"] == 0x48424343, f"no crash block: {raw[:16].hex()}"
         check_block(raw)
         agent_checks.check_crash(crash, mode)
+        if how == "--hook-fault" and tuxedo:
+            note = f"agent crash hook faulted: pc {syms['safety_on_death']:08x} dar 00000388"
+            assert crash["reason"] == note, f"reason {crash['reason']!r}, not {note!r}"
+            print(f"reason: {crash['reason']}")
+        elif crash["reason"]:
+            raise AssertionError(f"reason {crash['reason']!r} for a crash the hook saw cleanly")
 
         # Where the CPU is now: in libogc's crash screen, which waits for a
         # button or its reload timer, called from the agent's entry. A frame
@@ -162,13 +231,23 @@ def main():
             [f"0x{a:08x}" for a in chain], capture_output=True, text=True).stdout.split("\n")
         names = out[0::2][:len(chain)]
         print("cpu after the crash:", " <- ".join(f"{n} ({a:08x})" for a, n in zip(chain, names)))
-        # (waitForReload is the screen's loop, inlined into the handler.)
-        assert {"c_default_exceptionhandler", "waitForReload"} & set(names),             "not in libogc's crash screen"
-        assert "agent_exc_entry" in names, "libogc's crash screen was not reached through the agent"
-        print("libogc crash hook: PASS")
+        assert screen & set(names), "not in libogc's crash screen"
+        if tuxedo:
+            # agent_panic and __libogc_panic end in tail calls, so neither is
+            # on the stack; the hook must still be the one libogc calls.
+            hook = struct.unpack(">I", gdb.read(syms["PPCExcptCurPanicFn"], 4))[0]
+            assert hook == syms["agent_panic"], f"PPCExcptCurPanicFn is {hook:08x}"
+        else:
+            assert "agent_exc_entry" in names, "libogc's crash screen was not reached through the agent"
+        print(f"libogc crash hook{f' ({how[2:]})' if how else ''}: PASS")
         result = 0
     except (AssertionError, OSError) as exc:
         print(f"FAIL: {exc!r}")
+        try:   # where the CPU is: a nested-exception loop shows here
+            print(f"cpu: pc {gdb.pc():08x} sp {int(gdb.send('p1'), 16):08x} "
+                  f"msr {int(gdb.send('p41'), 16):08x}")
+        except (NameError, OSError, ValueError):
+            pass
     finally:
         run.stop()
     for line in run.faults([r"0x00000010", r"DSI", r"Program"])[:20]:

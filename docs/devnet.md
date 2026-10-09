@@ -383,7 +383,13 @@ frames are the stuck thread's, as saved when the watchdog preempted it),
 `assert` (`reason` is `file:line: expression`), `abort`, or `stack` (the
 main thread ran into the stack guard: a DSI from the breakpoint, with
 `dar` the guarded address and DSISR bit `0x00400000`, or the markers found
-overwritten). An HBC before 1.9.6 names the last three `exception`.
+overwritten). An HBC before 1.9.6 names the last three `exception`. An
+`exception` or `stack` crash with `agent crash hook faulted: pc ... dar ...`
+in its `reason` is still the app's crash: the agent's hook faulted too, at
+that address, after recording it, and libogc 3's crash screen shows the
+app's crash (agents from 1.10.2). On libogc2 and 1.x a fault in the hook
+goes straight to libogc's own crash screen, which shows that fault; the
+block keeps the app's crash, without the note.
 `frames` are return addresses found by walking the stack's back chain; a
 leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
 `sdk/hbc_agent.h`: magic `HBCC`, version 2, the exception number

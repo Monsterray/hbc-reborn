@@ -222,6 +222,9 @@ def crash_report(crash, elf=None):
                  f"({crash.get('reason')})"]
     else:
         lines = [f"{crash['app']} crashed {after}: {crash['name']} exception ({crash['exception']})"]
+        # An agent whose crash hook faulted too says where (HBC 1.10.2 on).
+        if crash.get("reason"):
+            lines[0] += f"; {crash['reason']}"
     for label, key in (("pc", "pc"), ("lr", "lr")):
         lines.append(f"  {label:5} {crash[key]}  {where.get(crash[key], '')}".rstrip())
     if kind == "exception" or (kind == "stack" and crash.get("exception")):

@@ -80,6 +80,18 @@ typedef struct {
 	u32 count, last_size, last_from;
 } agent_alloc_stats;
 
+/* len bytes at a lie in MEM1 or MEM2, where the app's mapping can read them
+ * without a fault. What runs as an app stops checks every address it did not
+ * just make itself: the app may have written over the pointers it follows. */
+static inline bool agent_ram(u32 a, u32 len) {
+	return (a >= 0x80000000 && a < 0x81800000 && len <= 0x81800000 - a) ||
+		   (a >= 0x90000000 && a < 0x94000000 && len <= 0x94000000 - a);
+}
+
+static inline bool agent_ram_word(u32 a) {
+	return !(a & 3) && agent_ram(a, 4);
+}
+
 /* VIDEO_GetCurrentFramebuffer() gives the VI's physical address; this is the
  * same memory, uncached, whatever form the address took. */
 static inline void *agent_uncached(void *p) {
