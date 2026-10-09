@@ -23,6 +23,14 @@
 //                as the button would
 //   flip N       runs as with no mode, two framebuffers, a flip every N
 //                vertical blanks (60/N frames a second); N 0 never flips
+//   stop         hbc_agent_stop(), then what a loader does: unmount, WPAD off,
+//                IOS_ReloadIOS(58), 12 s past the hang watchdog's 5 s; writes
+//                sd:/hbctest/agent_stop.txt and exits (tests/wii_agent_stop.py)
+//   restart      the same, then hbc_agent_init() again and runs as with no mode
+//   stopcrash    hbc_agent_stop(), then the store to 0x10: libogc's own crash
+//   listen       hbc_agent_listen(false), its own server on TCP 4299 answering
+//                one 16-byte request with "MINE", hbc_agent_listen(true), then
+//                runs as with no mode
 //   optin        (anywhere after the mode) guard_reload_stub and track_memory
 //   nosafety=N   (anywhere after the mode) cfg.no_safety = N, HBC_AGENT_NO_* bits
 //
@@ -44,6 +52,9 @@
 #include <ogc/machine/processor.h>
 #include <fat.h>
 #include <wiiuse/wpad.h>
+
+#include <network.h>
+#include <sdcard/wiisd_io.h>
 
 #include "hbc_netlog.h"
 #include "hbc_agent.h"
@@ -165,6 +176,88 @@ static void hello(void *user) {
 #define AGENT_APP_MODE ""
 #endif
 
+// hbc_agent_stop() as a loader uses it. Returns true when the app should
+// exit (stop), false to start the agent again (restart).
+static bool stop_like_a_loader(const char *mode) {
+	char net[160];
+	int n = 0, i;
+	s32 first, second;
+	FILE *f;
+
+	hbc_agent_alive();   // armed: without the stop, a hang after 5 s
+	first = hbc_agent_stop();
+	second = hbc_agent_stop();
+	printf("agent_app: stop %d, again %d\n", (int) first, (int) second);
+	if (!strcmp(mode, "stopcrash")) {
+		sleep(1);
+		agent_app_crash((volatile u32 *) 0x10);
+	}
+	// What a loader shuts down itself before IOS goes: each keeps a handle
+	// to the old IOS otherwise.
+	fatUnmount("sd:");
+	__io_wiisd.shutdown();
+	net_deinit();
+	WPAD_Shutdown();
+	i = IOS_ReloadIOS(58);
+	// Past the watchdog's limit, watching the network: the agent must not
+	// start it again on the new IOS.
+	n += snprintf(net + n, sizeof(net) - n, "reload %d, net", i);
+	for (i = 0; i < 12; ++i) {
+		sleep(1);
+		n += snprintf(net + n, sizeof(net) - n, " %d", (int) net_get_status());
+	}
+	if (fatInitDefault()) {
+		mkdir("sd:/hbctest", 0777);
+		f = fopen("sd:/hbctest/agent_stop.txt", "w");
+		if (f) {
+			hbc_agent_alive();
+			hbc_agent_hold(true);
+			hbc_agent_hold(false);
+			fprintf(f, "stop %d\nagain %d\n%s\n", (int) first, (int) second, net);
+			fprintf(f, "exit_requested %d\nhome_pending %d\nhome %d\nlisten %d\n",
+					hbc_agent_exit_requested(), hbc_agent_home_pending(),
+					(int) hbc_agent_home(rmode), (int) hbc_agent_listen(false));
+			fclose(f);
+		}
+	}
+	if (!strcmp(mode, "stop")) {
+		fatUnmount("sd:");
+		return true;
+	}
+	WPAD_Init();
+	return false;
+}
+
+// hbc_agent_listen(false): the Wiiload port is the app's, then the agent's again.
+static void own_server(void) {
+	struct sockaddr_in sa;
+	u32 len = sizeof(sa), got = 0;
+	s32 ls, s, res;
+	u8 req[16];
+
+	sleep(5);   // the test sees the agent first
+	res = hbc_agent_listen(false);
+	ls = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_len = sizeof(sa);
+	sa.sin_port = htons(4299);
+	sa.sin_addr.s_addr = INADDR_ANY;
+	printf("agent_app: listen(false) %d, bind %d\n", (int) res,
+		   (int) net_bind(ls, (struct sockaddr *) &sa, sizeof(sa)));
+	net_listen(ls, 1);
+	s = net_accept(ls, (struct sockaddr *) &sa, &len);
+	if (s >= 0) {
+		while (got < sizeof(req) && (res = net_recv(s, req + got, sizeof(req) - got, 0)) > 0)
+			got += res;
+		net_send(s, "MINE", 4, 0);
+		net_close(s);
+	}
+	net_close(ls);
+	printf("agent_app: own server answered (%d), listen(true) %d\n", (int) s,
+		   (int) hbc_agent_listen(true));
+}
+
 int main(int argc, char **argv) {
 	hbc_agent_config cfg = { 0 };
 	const char *mode = argc > 1 ? argv[1] : AGENT_APP_MODE;
@@ -219,6 +312,15 @@ int main(int argc, char **argv) {
 
 	res = hbc_agent_net_wait(10000);
 	printf("agent_app: network %d\n", res);
+
+	if (!strcmp(mode, "stop") || !strcmp(mode, "restart") || !strcmp(mode, "stopcrash")) {
+		if (stop_like_a_loader(mode))
+			return 0;
+		res = hbc_agent_init(&cfg);
+		printf("agent_app: init again %d\n", (int) res);
+	}
+	if (!strcmp(mode, "listen"))
+		own_server();
 
 	if (!strcmp(mode, "fatal")) {
 		sleep(1);

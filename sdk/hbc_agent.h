@@ -66,6 +66,12 @@
  * -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign also
  * reports failed allocations. HBCS "safety" says what each costs.
  *
+ * Leaving another way: an app that leaves other than through exit() (a
+ * loader that reloads IOS and jumps to a game, a channel or another .dol)
+ * calls hbc_agent_stop() first, so nothing of the agent's runs or points at
+ * its code afterwards. An app that runs its own server on the Wiiload port
+ * for a while calls hbc_agent_listen(false) first, and true after.
+ *
  * Define HBC_AGENT_LAYOUT_ONLY to get only the crash block layout.
  */
 
@@ -255,8 +261,52 @@ enum {
 };
 
 /* Starts the agent. cfg may be NULL for the defaults. Returns 0, or a
-   negative error when the thread cannot start. Call once. */
+   negative error when the thread cannot start (then nothing of it stays).
+   -EALREADY while it runs; after hbc_agent_stop() it starts again. */
 s32 hbc_agent_init(const hbc_agent_config *cfg);
+
+/* This SDK has hbc_agent_stop() and hbc_agent_listen(); for apps that build
+   against older copies too:  #ifdef HBC_AGENT_HAS_STOP ... #endif */
+#define HBC_AGENT_HAS_STOP 1
+
+/* Undoes hbc_agent_init(), completely, before the app hands the console to
+   something else without exit(): reloads IOS, shuts the network down,
+   overwrites memory or jumps to another program. When it returns, the
+   agent's threads have ended (the listening socket and any connection are
+   closed, a transfer in progress fails for its client), the hang watchdog
+   is off, and the hooks it set are back as they were: the vertical blank
+   callback, the stack guard's breakpoint, Reset and Power, the reset
+   function, stdout and stderr, the crash handler. A hook the app replaced
+   since keeps the app's. The overlay's speaker sounds and threads go too.
+   It does not unmount, flush or shut down the network (the app decides),
+   write a crash report or kept log, or return to HBC; crashes from here on
+   show libogc's own screen, and exit() writes no kept log.
+   Call it from any of the app's threads with interrupts on, never from the
+   overlay's callbacks (on_frame, on_exit, slot presses). It returns within
+   about a second: 0, or -ETIMEDOUT when an agent thread was blocked in IOS
+   (everything else is still undone, and the thread does nothing more when
+   it wakes). Calling it twice, before hbc_agent_init() or after a failed
+   one returns 0. Afterwards hbc_agent_alive() and hbc_agent_hold() do
+   nothing, hbc_agent_exit_requested() and hbc_agent_home_pending() are
+   false, hbc_agent_home() returns -ENODEV, until hbc_agent_init() again.
+   Usage:
+       #ifdef HBC_AGENT_HAS_STOP
+           hbc_agent_stop();
+       #endif
+           IOS_ReloadIOS(...);  // or boot the game */
+s32 hbc_agent_stop(void);
+
+/* The overlay's DEV "hbc.py connection" switch, for the app: false closes
+   the agent's listening socket on the Wiiload port (TCP 4299), ending a
+   transfer in progress with an error for its client, and keeps the network
+   as the app leaves it (the agent starts nothing) until true. It returns
+   once the port is free for the app to bind: 0, or -ETIMEDOUT after about
+   a second if the agent thread did not let go. true listens again on the
+   agent's next loop and returns at once. The overlay's switch shows the
+   same state, and the user can turn it back on there. Does nothing and
+   returns 0 before hbc_agent_init(), after hbc_agent_stop(), or with
+   no_network. */
+s32 hbc_agent_listen(bool on);
 
 /* True once `hbc.py exit` or `hbc.py run` asked the app to exit. */
 bool hbc_agent_exit_requested(void);

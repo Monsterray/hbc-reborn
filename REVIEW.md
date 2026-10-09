@@ -161,6 +161,36 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.1: hbc_agent_stop() and hbc_agent_listen()
+
+- For apps that leave other than through `exit()` (USB Loader GX boots
+  games after `IOS_ReloadIOS`) and apps that run their own Wiiload server
+  for a while (its Homebrew Browser). Before, the agent restarted the
+  network on the new IOS as soon as its socket failed, the hang watchdog
+  could fire during a long boot, and the retrace callback, stack guard,
+  crash handler, Reset/Power, reset function and stdout/stderr pointed at
+  code the next program does not have.
+- `hbc_agent_stop()`: each agent thread runs while the generation it
+  started with is current; the stop moves on, waits up to a second for both
+  threads (the listener and the monitor), joins them, then puts every hook
+  back unless the app replaced it since. A thread blocked in IOS past that
+  is abandoned: it touches nothing when it wakes, and the stop closes the
+  listening socket itself. A failed `hbc_agent_init()` now undoes itself
+  through the same path, and `hbc_agent_init()` works again after a stop.
+  The atexit handlers are registered once and do nothing after a stop.
+- `hbc_agent_listen(bool)` is the overlay's "hbc.py connection" switch for
+  the app; it returns once the port is free, aborting a transfer with
+  `devfile_abort()` (HBC's own path before a launch).
+- alloc_wrap.c is still pulled in only by `--wrap=malloc`: safety.c's
+  reference to it stays weak, so USB Loader GX's own `__wrap_*` link.
+- Built against libogc 3, libogc2 and libogc 1.8.23 with `-Werror`; not
+  against libogc 2.11 here (no Docker for `devkitpro/devkitppc:20250527`),
+  whose code path is libogc2's and 1.8.23's (`_exceptionhandlertable`).
+- `tests/wii_agent_stop.py` on the bench Wii: stop then IOS reload and
+  12 s past the 5 s watchdog (no report, no network start), re-init,
+  the app's own server on 4299, a crash after the stop (libogc's screen,
+  no report).
+
 ### 1.10.0: a Custom app order, and no page cycling while files arrive
 
 - The pages cycling during network traffic: every file request under

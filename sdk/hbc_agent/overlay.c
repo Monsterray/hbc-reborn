@@ -243,6 +243,7 @@ static void apply_remote(int chan) {
 // force: it runs only while one of them is set.
 static lwp_t keeper = LWP_THREAD_NULL;
 static u8 keeper_stack[4096] ATTRIBUTE_ALIGN(32);
+static volatile bool keeper_quit;   // hbc_agent_stop()
 
 static bool keeper_needed(void) {
 	int i;
@@ -255,7 +256,7 @@ static bool keeper_needed(void) {
 
 static void *keeper_thread(void *arg) {
 	(void) arg;
-	while (keeper_needed()) {
+	while (!keeper_quit && keeper_needed()) {
 		int chan;
 
 		for (chan = 0; chan < 4; ++chan) {
@@ -282,6 +283,7 @@ static void *keeper_thread(void *arg) {
 }
 
 static void keeper_start(void) {
+	keeper_quit = false;
 	if (keeper == LWP_THREAD_NULL && keeper_needed())
 		LWP_CreateThread(&keeper, keeper_thread, NULL, keeper_stack, sizeof(keeper_stack), 90);
 }
@@ -1679,11 +1681,48 @@ static s32 home_watched(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	return res;
 }
 
+// hbc_agent_stop(): what outlives the overlay's frames goes. The overlay is
+// closed (stop is not called from inside it).
+void agent_overlay_stop(void) {
+	lwp_t k = keeper;
+	snd *sounds[] = { &chime, &chirp, &test_adpcm, &test_pcm, &wav };
+	unsigned i;
+
+	keeper_quit = true;
+	if (k != LWP_THREAD_NULL)
+		LWP_JoinThread(k, NULL);   // it sleeps 8 ms at a time
+	keeper = LWP_THREAD_NULL;
+	if (handles_ok > 0)
+		wiispk_shutdown();   // the speaker's timer reads the sounds below
+	// ponytail: a speaker.wav load or clock sync still running is left to
+	// end by itself (it only reads the card or asks a time server).
+	if (wav_thread != LWP_THREAD_NULL && wav_state != 1) {
+		LWP_JoinThread(wav_thread, NULL);
+		wav_thread = LWP_THREAD_NULL;
+		wav_state = 0;
+	}
+	if (ntp_thread != LWP_THREAD_NULL && ntp_state == 2) {
+		LWP_JoinThread(ntp_thread, NULL);
+		ntp_thread = LWP_THREAD_NULL;
+		ntp_state = 0;
+	}
+	for (i = 0; i < sizeof(sounds) / sizeof(sounds[0]); ++i) {
+		if (wav_state == 1 && sounds[i] == &wav)
+			continue;
+		free(sounds[i]->pcm);
+		memset(sounds[i], 0, sizeof(*sounds[i]));
+	}
+}
+
 s32 hbc_agent_home(const GXRModeObj *rmode) {
+	if (agent_stopped())
+		return -ENODEV;
 	return home_watched(rmode, NULL, NULL);
 }
 
 s32 hbc_agent_home_fb(const GXRModeObj *rmode, void *fb0, void *fb1) {
+	if (agent_stopped())
+		return -ENODEV;
 	if (!fb0 || !in_vi_ram(fb0) || (fb1 && !in_vi_ram(fb1)))
 		return -EINVAL;
 	return home_watched(rmode, (void *) ((u32) fb0 & ~0x40000000),

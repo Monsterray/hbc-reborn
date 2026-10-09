@@ -99,6 +99,8 @@ static bool marks;             // marker words under it
 
 static volatile u32 button;    // 1 Reset, 2 Power, from the interrupt
 static bool took_reset, took_power;
+static resetcallback prev_reset;  // what the app had, for safety_stop()
+static powercallback prev_power;
 
 static VIRetraceCallback prev_retrace;
 static bool frames_on;
@@ -393,6 +395,8 @@ static void take_buttons(void) {
 	resetcallback old_r = SYS_SetResetCallback(NULL), def_r = SYS_SetResetCallback(NULL);
 	powercallback old_p = SYS_SetPowerCallback(NULL), def_p = SYS_SetPowerCallback(NULL);
 
+	prev_reset = old_r;
+	prev_power = old_p;
 	took_reset = old_r == def_r || does_nothing(old_r);
 	SYS_SetResetCallback(took_reset ? (resetcallback) on_reset : old_r);
 	took_power = old_p == def_p || does_nothing(old_p);
@@ -450,6 +454,8 @@ static sys_resetinfo reset_info = { {}, on_system_reset, 1 };
 // says when the stub was put back. The reset function does it again for
 // the other ways out.
 static void at_exit(void) {
+	if (agent_stopped())
+		return;
 	if (stub_copy && memcmp((void *) STUB_ADDR, stub_copy, STUB_SIZE)) {
 		printf("agent: putting back the reload stub (overwritten at %u ms)\n",
 			   (unsigned) stub_changed_ms);
@@ -602,6 +608,8 @@ void safety_on_death(void) {
 
 // ---- Start-up and status --------------------------------------------------
 
+static bool at_exit_set;
+
 void safety_init(const hbc_agent_config *config) {
 	cfg = config;
 	off = cfg->no_safety;
@@ -611,7 +619,9 @@ void safety_init(const hbc_agent_config *config) {
 	if (!(off & HBC_AGENT_NO_BUTTONS))
 		take_buttons();
 	SYS_RegisterResetFunc(&reset_info);
-	atexit(at_exit);
+	if (!at_exit_set)   // once: atexit() has no undo, and a stop makes it a no-op
+		atexit(at_exit);
+	at_exit_set = true;
 	if (!(off & HBC_AGENT_NO_FRAMES)) {
 		last_fb = VIDEO_GetCurrentFramebuffer();
 		prev_retrace = VIDEO_SetPostRetraceCallback(on_retrace);
@@ -631,6 +641,41 @@ void safety_init(const hbc_agent_config *config) {
 	// the buttons when there is no agent thread to see them.
 	if (stub_copy || mem_on || ((took_reset || took_power) && cfg->no_network))
 		bytes_held += agent_monitor_start();
+}
+
+// Each hook goes back to what it replaced, unless the app has put its own in
+// since: then the app's stays.
+void safety_stop(void) {
+	if (frames_on) {
+		VIRetraceCallback cur = VIDEO_SetPostRetraceCallback(prev_retrace);
+
+		if (cur != on_retrace)
+			VIDEO_SetPostRetraceCallback(cur);
+		frames_on = false;
+	}
+	guards_down();
+	marks = false;
+	stk_lo = stk_hi = 0;
+	if (took_reset) {
+		resetcallback cur = SYS_SetResetCallback(prev_reset);
+
+		if (cur != (resetcallback) on_reset)
+			SYS_SetResetCallback(cur);
+	}
+	if (took_power) {
+		powercallback cur = SYS_SetPowerCallback(prev_power);
+
+		if (cur != on_power)
+			SYS_SetPowerCallback(cur);
+	}
+	took_reset = took_power = false;
+	button = 0;
+	SYS_UnregisterResetFunc(&reset_info);
+	free(stub_copy);
+	stub_copy = NULL;
+	stub_changed_ms = 0;
+	mem_on = false;
+	bytes_held = 0;
 }
 
 s32 safety_json(char *buf, size_t size) {

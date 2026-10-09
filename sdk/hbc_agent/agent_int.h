@@ -50,9 +50,15 @@ bool agent_paused(void);
  * running and returns the bytes that took (its stack), else 0. */
 u32 agent_monitor_start(void);
 bool agent_monitor_running(void);
+/* hbc_agent_stop() ran (and no hbc_agent_init() since). */
+bool agent_stopped(void);
+/* overlay.c, if linked: its speaker, threads and sounds, for the stop. */
+void agent_overlay_stop(void);
 
 /* safety.c */
 void safety_init(const hbc_agent_config *cfg);
+/* Undoes safety_init (hbc_agent_stop). */
+void safety_stop(void);
 /* From the agent thread as it wakes, and from the monitor each second. */
 void safety_poll(bool from_monitor);
 /* The app is stopping (exception, fatal, hang, abort): guards down, and the

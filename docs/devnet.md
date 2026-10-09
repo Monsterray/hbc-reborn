@@ -273,6 +273,39 @@ sees as a stutter), `bytes` borrowed, and `buffers` (`own`, `lent`, or
 `app's` when it drew over the app's framebuffer). Its animations move by
 time, not by frame, so a slow frame never slows them.
 
+### Stopping the agent, and lending the port
+
+An app that leaves other than through `exit()`, such as a loader that reloads
+IOS and boots a game, a channel or another `.dol`, calls `hbc_agent_stop()`
+first. It ends the agent's threads (the listener, and the monitor that runs
+the hang watchdog), closes its sockets, and puts back every hook
+`hbc_agent_init()` set: the vertical blank callback, the stack guard's
+breakpoint, Reset and Power, the reset function, stdout and stderr, and the
+crash handler. A hook the app has replaced since keeps the app's. After that
+nothing of the agent's runs or points at its code, so the app may reload
+IOS, overwrite memory or jump anywhere. The agent leaves storage and the
+network as they are: the app decides what to unmount and what to shut down.
+The stop returns within about a second. It returns `-ETIMEDOUT` only when an
+agent thread was blocked in IOS; that thread does nothing more when it wakes.
+`hbc_agent_init()` starts the agent again afterwards.
+
+```c
+#ifdef HBC_AGENT_HAS_STOP     /* SDKs from HBC 1.10.1 on */
+    hbc_agent_stop();
+#endif
+    IOS_ReloadIOS(ios);
+```
+
+`hbc_agent_listen(false)` lends the Wiiload port (4299) to an app that runs
+its own server for a while, such as a homebrew browser that receives `.dol`
+and `.zip` uploads. The agent closes its listening socket, ends a transfer
+in progress (its client gets an error), and starts no network until
+`hbc_agent_listen(true)`. It returns once the port is free to bind. It is
+the same switch as the overlay's DEV "hbc.py connection", which shows it.
+
+`tests/wii_agent_stop.py` checks both on a Wii (agent_app's `stop`,
+`restart`, `listen` and `stopcrash` modes).
+
 ### HOME overlay
 
 HBC 1.7.0's own HOME menu is the overlay (`channel/channelapp/source/home.c`,
