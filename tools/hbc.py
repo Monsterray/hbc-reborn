@@ -19,7 +19,7 @@ import threading
 import time
 import zlib
 
-PORT = 4299
+PORT = int(os.environ.get("HBC_PORT", "4299"))   # another port only for tests (wiibench's fake Wii)
 LOG_PORT = 4405
 TIMEOUT = 15
 DEVICES = ("sd", "usb", "carda", "cardb", "usb2")

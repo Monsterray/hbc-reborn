@@ -205,6 +205,62 @@ From the 1.3.6 review, each verified in the code first:
 - USB Loader GX needs no change: it uses libogc 3's default 128 KiB main
   stack, which is what the agent assumes without `main_stack_size`.
 
+#### The bench queue: each job's data kept, and jobs in the order received
+
+Tool work in 1.10.2, no version of its own.
+
+- **Asked for:** agents throwing as many runs at the Wii as they can, never losing a run's
+  data, fetching it whenever, and runs going in the order received, stacked only when
+  received one after the other.
+- **Data lost before this:**
+  - 16 of the last 200 jobs (vbagx) wrote to one fixed folder, `.bench/out`, so each run
+    overwrote the last.
+  - WiiStation fetched SD logs with a separate `collect_after_failure` job, which any run
+    getting the Wii in between could overwrite first.
+- **Each job's data:**
+  - Every job gets `runs/<id>/` (`$WII_BENCH_OUT`).
+  - `add --collect PATH` copies `sd:/...` or `usb:/...` from the Wii (a file or a folder,
+    through `hbc.py get`), or a path on the workstation. It runs after the job, after the
+    HBC check and before the next job gets the Wii.
+  - A path that can't be collected is in the record's `collected` and on the monitor's
+    errors page.
+  - `wiibench.py runs [--mine|--agent|--name]` lists jobs, live and archived;
+    `results ID [--to DIR]` shows and copies one.
+  - **Rollover:** a job past 14 days, or the oldest while the live runs pass 20 GB, goes
+    into `runs/archive/YYYY-MM/<id>.tar.gz` (record, log, run folder), with `index.jsonl`.
+    The oldest months go past 100 GB. The limits are `WII_BENCH_KEEP_DAYS`,
+    `WII_BENCH_RUNS_MAX_GB` and `WII_BENCH_ARCHIVE_MAX_GB`.
+  - `hbc.py` takes `HBC_PORT` (tests only).
+- **Receive order:**
+  - The lease server numbers each job when it first hears of it (`add` tells it at once)
+    and grants the Wii to the waiter with the earliest-received job.
+  - A renew answers `next_is_mine`. The holder keeps its turn while its next job is the next
+    received (stacked), and lets go when another workstation's came in first. This replaces
+    1.8.8-1.10.1's one job each in turn.
+  - Between stacked jobs: one HBC answer for the same agent, 2 s for another.
+  - `status` and the monitor list waiters and every queued job in that order.
+  - An old server can't say whose job is next, and the old rule applies; an old dispatcher
+    counts as one job, received when it joined the line.
+- **Checked:**
+  - Two runs writing the same local folder and the same SD file each kept their own, with a
+    whole SD folder too. A missing path was recorded as such.
+  - `runs`, `results --to`, rollover into the archive, and `results --to` from it.
+  - With two workstations, a1, a2, then a rival: a1, a2 stacked, then the rival. With a1,
+    then b1 on another workstation, then a2: three turns, a1, b1, a2.
+  - 85 tests on Windows and 54 on Linux pass.
+  - **On the bench Wii,** through the homeserver's older server: a job wrote
+    `sd:/hbcbench/collect.txt`, and `--collect` fetched it into `runs/<id>/wii/` with the
+    job's content, beside a local file in `local/`; `results` listed both, and a second job
+    removed the file.
+  - The old server can't number jobs, so that second job went one-each-in-turn behind
+    WiiStation's 12-minute upload. The rebuilt server orders them as received, which would
+    have run that upload (received 12:00) before both (12:05).
+- **Fixed while testing:**
+  - A workstation whose dispatcher was still starting lost its place to a job received
+    later. The Wii now waits up to 10 s (`RESERVE`) for the workstation with the
+    earliest-received job, while its queue is fresh.
+  - `runs` orders jobs that finish in the same second by when their records were written.
+
 ### 1.10.1: hbc_agent_stop() and hbc_agent_listen()
 
 - For apps that leave other than through `exit()` (USB Loader GX boots

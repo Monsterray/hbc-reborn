@@ -410,7 +410,7 @@ render_queue() {
     lines+=("")
     # QUEUED: every workstation's jobs, in the order their turns will come (the lease server
     # has each workstation's list; without a server, this workstation's alone)
-    local qtitle="QUEUED, EVERY WORKSTATION" qsub="in turn order: workstations take turns, one job each"
+    local qtitle="QUEUED, EVERY WORKSTATION" qsub="in the order received: the Wii takes them that way"
     [ "${KV[server]:-}" = "none" ] && { qtitle="QUEUED HERE"; qsub="oldest first"; }
     [ "${KV[server_ok]:-}" = "no" ] && qsub="this workstation's only: the lease server does not answer"
     heading "$c_cyan" "$qtitle" "${KV[queued_n]:-0} job(s), $qsub" pending

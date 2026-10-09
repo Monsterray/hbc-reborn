@@ -56,24 +56,66 @@ itself just used the Wii, it's shorter:
 | --- | --- |
 | Nothing known about the Wii (the dispatcher's first job, or a long gap) | 20 s |
 | Up to 60 s after a queue job ended: this workstation's, or the lease's last holder released it | 2 s |
-| The same agent's next job (a chain) | one answer from HBC |
+| The same agent's next job, stacked in the same turn | one answer from HBC |
 
 Any probe that finds the Wii busy or off goes back to the full 20 s.
 
+### Receive order
+
+Jobs run in the order they were received, across every workstation. `add` tells the lease
+server about a job at once, and the server numbers each job as it first hears of it. Then:
+
+- The Wii goes to the workstation with the earliest-received job.
+- A workstation keeps its turn while its next job is also the next one received: jobs
+  received one after the other **stack up** and run back to back. The turn ends as soon as
+  another workstation's job came in first. With a1 and a2 on one workstation and then b1 on
+  another, the order is a1, a2, b1. With a1, then b1, then a2, it is a1, b1, a2.
+- With nothing queued anywhere, the turn is held up to 15 s for this workstation's next
+  `add` (the usual `add`, `wait`, `add`). It's let go within about a second of another
+  workstation's job arriving.
+- Without a lease server, this workstation's queue runs oldest first.
+
 A job's agent is `add --agent NAME`, else `$WII_BENCH_AGENT`, else the Claude Code session
-(`$CLAUDE_CODE_SESSION_ID`). A job with no agent never chains. A chain happens only when
-nobody else wants the Wii:
+(`$CLAUDE_CODE_SESSION_ID`). It decides only the idle wait between stacked jobs: one answer
+from HBC for the same agent's next job, 2 s for anyone else's.
 
-- **Another workstation waiting:** never a chain. The turn ends after every job and the
-  workstations alternate one job at a time. A hand-over costs about 2 s (the long poll,
-  then the short idle wait), so nothing is gained by making anyone wait behind a chain.
-- **Nobody waiting:** the agent's next job runs in the same turn. If it isn't queued yet,
-  the lease is held up to 15 s for the agent's next `add` (the usual `add`, `wait`, `add`),
-  and let go within about a second of another workstation joining the line.
-- A different agent's job at the head of this workstation's queue ends the chain at once.
+A dispatcher or server before 1.10.2 can't number jobs. With an old server, the turns go one
+job each while anyone waits; an old dispatcher counts as one job, received when it joined
+the line. One long job still has the Wii for its whole length.
 
-Fairness is per job: one long job still has the Wii for its whole length. Split long tests
-into separate jobs when other workstations need the Wii.
+### Each job's data, kept
+
+Every job gets its own run folder, `<state dir>/runs/<id>/`, named in `$WII_BENCH_OUT`. No
+other run writes there, so agents can queue as many runs as they like and fetch the data
+whenever they want.
+
+- **Write into it** when the job can: `$WII_BENCH_OUT/whatever`.
+- **`add --collect PATH`** (repeatable) copies data the job left elsewhere into the run
+  folder. It runs after the job and before the next job gets the Wii, so the next run
+  can't overwrite it:
+  - `sd:/...` or `usb:/...`: from the Wii (a file or a folder), into `wii/`. This needs HBC
+    back after the job.
+  - Any other path: from this workstation, relative to `--cwd`, into `local/`. Use it for a
+    fixed output folder such as `.bench/out`.
+
+  A path that can't be collected is recorded in the job's record (`collected`) and warned
+  about on the monitor's errors page.
+
+```bash
+python tools/wii-bench/wiibench.py add --name "chain 5" --cwd . \
+    --collect sd:/wiisxrx/lab.log --collect .bench/out -- python scripts/run_chain.py 5
+python tools/wii-bench/wiibench.py runs --mine            # this agent's jobs, newest first
+python tools/wii-bench/wiibench.py results ID             # record, collected data, the log's end
+python tools/wii-bench/wiibench.py results ID --to DIR    # copy the run folder, job.json, job.log
+```
+
+**Rollover.** A finished job older than 14 days, or the oldest jobs while the live runs pass
+20 GB, is packed into `runs/archive/YYYY-MM/<id>.tar.gz`: its record, log and run folder.
+`runs/archive/index.jsonl` lists everything there. `runs` still shows archived jobs, and
+`results ID --to DIR` unpacks one. The oldest archived months are dropped once the archive
+passes 100 GB. The dispatcher rolls over at most every 10 minutes, and `wiibench.py rollover`
+does it at once. The limits are `WII_BENCH_KEEP_DAYS`, `WII_BENCH_RUNS_MAX_GB` and
+`WII_BENCH_ARCHIVE_MAX_GB`, read by the dispatcher.
 
 ### The history and `report`
 
@@ -402,6 +444,8 @@ The state directory is `~/.wii-bench`, and other projects call `~/.wii-bench/wii
   does it when the stub is there), not power-off or the system menu. Arm
   `__exception_setreload(10)` so a crash goes back to HBC too. A Wii left elsewhere stalls
   the queue for everyone until someone brings it back.
+- Put its data in `$WII_BENCH_OUT`, or name it with `add --collect`, rather than in a
+  folder or SD path every run shares. See "Each job's data, kept".
 - Get its results back itself: hbc-reborn's jobs use the developer network log
   (`tools/hbc.py`, `sdk/hbc_netlog.h`) on TCP 4300; WiiStation's `Gamecube/lab_net.c` does
   the same. The Windows firewall rule "WiiStation bench Wii" allows inbound TCP 4300.

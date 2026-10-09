@@ -34,11 +34,15 @@ workstation's test that did not use this queue -- is left alone, and a quiet per
 the dispatcher from cutting in between another agent's back-to-back runs. Right after a
 queue job (ours, or the lease's last holder's, which released it cleanly) we know why the
 Wii was busy, so QUICK seconds of idle do; any probe that finds it busy brings back the full
-wait. The same agent's next job runs in the same turn after one probe, but only while no other
-workstation waits: with someone in line every job ends the turn. With nobody waiting the
-lease is held CHAIN_GRACE seconds for the agent's next add, let go within a second of someone
-joining. After each job the dispatcher, still holding the Wii, checks that HBC came back
-(RETURN_WAIT s) and says so in the job's record, the release and the history. The queue never
+wait. Jobs run in the order received, across every workstation: the lease server numbers each
+job as add reports it, the Wii goes to the earliest-received, and a turn goes on while its
+workstation's next job is also the next received (jobs received one after the other stack up;
+the same agent's after one probe). With nothing queued anywhere the lease is held CHAIN_GRACE
+seconds for this workstation's next add. After each job the dispatcher, still holding the Wii,
+checks that HBC came back (RETURN_WAIT s), collects the job's --collect paths into its run
+folder (runs/ID, WII_BENCH_OUT) before the next job can overwrite them, and says so in the
+job's record, the release and the history; old runs roll over into runs/archive (`runs`,
+`results ID --to DIR` find them, live or archived). The queue never
 contacts the Wii while a job runs: it probes only between jobs, and `status` reports who has
 the Wii instead of probing it during a run. `report` reads the history. Each job gets
 WII_BENCH_JOB_START (Unix time), and tools/hbc.py will not exit an agent app started before
@@ -80,6 +84,22 @@ HOME = state_home()
 Q = HOME / "queue"
 PENDING, RUNNING, DONE = Q / "pending", Q / "running", Q / "done"
 LOCK = HOME / "dispatcher.lock"
+RUNS = HOME / "runs"                               # runs/<id>/: each job's data (WII_BENCH_OUT)
+ARCHIVE = RUNS / "archive"                         # archive/YYYY-MM/<id>.tar.gz, index.jsonl
+HBC_PY = pathlib.Path(__file__).resolve().parent.parent / "hbc.py"
+
+
+def _env_num(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return float(default)
+
+
+KEEP_DAYS = _env_num("WII_BENCH_KEEP_DAYS", 14)      # days a job's run stays live before it is archived
+RUNS_MAX_GB = _env_num("WII_BENCH_RUNS_MAX_GB", 20)  # live runs past this are archived, oldest first
+ARCHIVE_MAX_GB = _env_num("WII_BENCH_ARCHIVE_MAX_GB", 100)   # archived months past this go, oldest first
+COLLECT_TIMEOUT = 600                              # s for one --collect from the Wii
 WII = os.environ.get("WII_BENCH_IP", "192.168.8.213")
 PORT = int(os.environ.get("WII_BENCH_PORT", "4299"))  # another port only for tests
 TIMEOUT = 1800        # s a job may run by default: the slowest 1% took 2,111 s and set --timeout
@@ -262,6 +282,7 @@ TTL = 60                                           # a lease or a place in line 
 # a Wii left out of HBC (WiiXplorer) with the next job waiting for it.
 WAITING_FOR_HBC = "waiting for HBC"
 QUEUE_MAX = 50        # jobs per workstation the server keeps (and the total, for the rest)
+RESERVE = 10          # s the Wii waits for the workstation with the earliest job to ask for it
 
 
 class Leases:
@@ -274,7 +295,7 @@ class Leases:
     instead). Only a release with the Wii back in HBC counts as clean for the next holder's
     short idle wait; any other is kept as `left` and shown until a clean release."""
 
-    PRIVATE = ("seen", "ticket", "joined", "granted_at", "phase_at", "hbc_wait")
+    PRIVATE = ("seen", "ticket", "joined", "granted_at", "phase_at", "hbc_wait")   # seq_join is shown: the order
 
     def __init__(self, ttl=TTL, clock=time.monotonic, log=None):
         self.ttl, self.clock, self.log = ttl, clock, log or (lambda ev: None)
@@ -283,6 +304,9 @@ class Leases:
         self.released_at = None                    # the last holder's clean release
         self.left = None                           # the last holder left the Wii out of HBC
         self.queues = {}                           # qid -> a workstation's queued jobs (QUEUE_MAX)
+        # Receive order: every job gets a number when the server first hears of it (add tells it
+        # at once), and the Wii goes to the earliest-received job, whichever workstation has it.
+        self.seq, self.received = 0, {}
 
     def queue(self, d):
         """A workstation's queued jobs, from /queue or with an acquire or renew. A dispatcher
@@ -298,9 +322,47 @@ class Leases:
         old = self.queues.get(q)
         if old and old["queue_at"] > d.get("queue_at", 0):
             return {"ok": True}
-        self.queues[q] = {"qid": q, "host": d.get("host"), "jobs": jobs_[:QUEUE_MAX], "total": d.get("total", len(jobs_)),
+        listed = []
+        for j in jobs_[:QUEUE_MAX]:                # a workstation's own list is in its receive order
+            if not isinstance(j, dict) or not j.get("id"):
+                continue
+            if j["id"] not in self.received:
+                self.seq += 1
+                self.received[j["id"]] = self.seq
+            listed.append(dict(j, seq=self.received[j["id"]]))
+        self.queues[q] = {"qid": q, "host": d.get("host"), "jobs": listed, "total": d.get("total", len(jobs_)),
                           "queue_at": d.get("queue_at", 0), "seen": now}
         return {"ok": True}
+
+    def _head_seq(self, w):
+        """When the job a waiter waits with was received: its queue's first job, or (a
+        dispatcher before 1.10.2 sends no queue) when it joined the line."""
+        q = self.queues.get(w.get("qid"))
+        return q["jobs"][0]["seq"] if q and q["jobs"] else w["seq_join"]
+
+    def _reserved(self, w, now):
+        """True while the earliest-received job of all belongs to a workstation not in line yet
+        whose queue came in less than RESERVE s ago: its dispatcher is starting, or about to
+        ask, and the Wii waits for it rather than go to a job received later. A workstation
+        that went quiet holds nobody up for longer."""
+        mine = self._head_seq(w)
+        for q in self.queues.values():
+            if (q["jobs"] and q["jobs"][0]["seq"] < mine and now - q["seen"] < RESERVE
+                    and q["qid"] != w.get("qid") and not any(x.get("qid") == q["qid"] for x in self.waiters.values())):
+                return True
+        return False
+
+    def next_up(self):
+        """The qid (or a waiter's ticket) with the earliest-received job of all."""
+        best = None
+        for q in self.queues.values():
+            if q["jobs"] and (best is None or q["jobs"][0]["seq"] < best[0]):
+                best = (q["jobs"][0]["seq"], q["qid"])
+        for t, w in self.waiters.items():
+            if not (w.get("qid") in self.queues and self.queues[w["qid"]]["jobs"]):
+                if best is None or w["seq_join"] < best[0]:
+                    best = (w["seq_join"], t)
+        return best and best[1]
 
     def _event(self, kind, e, **more):
         self.log(dict({"type": kind, "host": e.get("host"), "name": e.get("name")}, **more))
@@ -315,6 +377,9 @@ class Leases:
             del self.waiters[t]
         for q in [q for q, v in self.queues.items() if now - v["seen"] > self.ttl or not v["jobs"]]:
             del self.queues[q]                     # a workstation gone quiet, or with nothing queued
+        if len(self.received) > 4 * QUEUE_MAX:     # forget numbers of jobs no list has any more
+            listed = {j["id"] for v in self.queues.values() for j in v["jobs"]}
+            self.received = {k: v for k, v in self.received.items() if k in listed}
 
     def acquire(self, d):
         now = self.clock()
@@ -328,12 +393,14 @@ class Leases:
             return {"granted": True}
         if t not in self.waiters:
             d = {k: v for k, v in d.items() if k != "wait"}
-            self.waiters[t] = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), joined=now)
+            self.seq += 1
+            self.waiters[t] = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), joined=now, seq_join=self.seq)
             self._event("join", d, place=len(self.waiters),
                         holder=self.holder and self.holder.get("host"))
         w = self.waiters[t]
         w["seen"] = now
-        if self.holder is None and now >= self.grace_until and next(iter(self.waiters)) == t:
+        line = sorted(self.waiters, key=lambda k: (self._head_seq(self.waiters[k]), self.waiters[k]["seq_join"]))
+        if self.holder is None and now >= self.grace_until and line[0] == t and not self._reserved(w, now):
             self.holder = self.waiters.pop(t)
             self.holder.update(granted=time.strftime("%Y-%m-%d %H:%M:%S"), granted_at=now)
             # How long ago a queued job last let go with the Wii back in HBC: the Wii came
@@ -342,7 +409,7 @@ class Leases:
             ago = None if self.released_at is None else round(now - self.released_at, 1)
             self._event("grant", w, waited_s=round(now - w["joined"], 1), released_ago=ago)
             return {"granted": True, "released_ago": ago}
-        return {"granted": False, "position": list(self.waiters).index(t) + 1, "holder": self._show(self.holder, now)}
+        return {"granted": False, "position": line.index(t) + 1, "holder": self._show(self.holder, now)}
 
     def renew(self, d):
         now = self.clock()
@@ -362,7 +429,9 @@ class Leases:
             if d.get("phase") is not None and d["phase"] != self.holder.get("phase"):
                 self._phase_end(now)
                 self.holder["phase"], self.holder["phase_at"] = d["phase"], now
-            return {"ok": True, "waiting": len(self.waiters)}
+            nxt = self.next_up()
+            return {"ok": True, "waiting": len(self.waiters), "next": nxt,
+                    "next_is_mine": nxt is not None and nxt == self.holder.get("qid")}
         return {"ok": False, "waiting": len(self.waiters)}
 
     def _phase_end(self, now):
@@ -413,7 +482,8 @@ class Leases:
         left = self.left and {k: v for k, v in dict(self.left, ago_s=int(now - self.left["at"])).items() if k != "at"}
         queues = [{"qid": v["qid"], "host": v["host"], "jobs": v["jobs"], "total": v["total"],
                    "age_s": round(now - v["seen"], 1)} for v in self.queues.values()]
-        return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in self.waiters.values()],
+        line = sorted(self.waiters.values(), key=lambda w: (self._head_seq(w), w["seq_join"]))   # the order served
+        return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in line],
                 "left": left, "queues": queues}
 
 
@@ -769,6 +839,22 @@ class Turn:
             except OSError:
                 pass                               # the next renew carries it
 
+    def next_is_mine(self):
+        """After a job: True when the earliest-received job of all is this workstation's (keep
+        the turn: stack it), False when another workstation's is, None when no job is queued
+        anywhere, or when the server is older than 1.10.2 and cannot say (then: others_waiting)."""
+        if not self.stop:                          # no server: this workstation's queue is all
+            return True if jobs(PENDING) else None
+        try:
+            r = lease_call("/renew", dict(self.info, **queue_payload()))
+        except OSError:
+            return None
+        if "next_is_mine" not in r:
+            return "old"
+        if r["next_is_mine"]:
+            return True
+        return False if r.get("next") else None
+
     def others_waiting(self):
         """Workstations in line behind this one (0 without a server, or if it cannot say)."""
         if not self.stop:
@@ -911,6 +997,8 @@ def cmd_add(a):
     job = {"id": job_id, "name": a.name or pathlib.Path(a.cmd[0]).name, "cwd": str(pathlib.Path(a.cwd).resolve()),
            "cmd": a.cmd, "timeout": a.timeout, "added": time.strftime("%Y-%m-%d %H:%M:%S"),
            "agent": job_agent(a.agent)}
+    if a.collect:
+        job["collect"] = a.collect
     tmp = PENDING / f"{job_id}.tmp"
     tmp.write_text(json.dumps(job, indent=1))
     fs_retry(tmp.rename, PENDING / f"{job_id}.json")
@@ -938,8 +1026,12 @@ def run_job(p, started=None):
     job["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
     r.write_text(json.dumps(job, indent=1))
     log = RUNNING / f"{job['id']}.log"
+    out_dir = RUNS / job["id"]                     # this job's own: no other run writes here
+    out_dir.mkdir(parents=True, exist_ok=True)
+    job["out"] = str(out_dir)
+    r.write_text(json.dumps(job, indent=1))
     t0 = time.monotonic()
-    env = dict(os.environ, WII_BENCH_IP=WII, WII_BENCH_JOB=job["id"],
+    env = dict(os.environ, WII_BENCH_IP=WII, WII_BENCH_JOB=job["id"], WII_BENCH_OUT=str(out_dir),
                WII_BENCH_JOB_START=f"{time.time():.3f}")
     with open(log, "w") as out:
         try:
@@ -963,6 +1055,300 @@ def run_job(p, started=None):
     return job
 
 
+def _tree_size(path):
+    files = size = 0
+    for root, _, names in os.walk(path):
+        for n in names:
+            try:
+                size += os.path.getsize(os.path.join(root, n))
+                files += 1
+            except OSError:
+                pass
+    return files, size
+
+
+def collect_job(job, wii_ok):
+    """The job's --collect paths, into its run folder, after the job and before anything else
+    gets the Wii, so the next run cannot overwrite them (a fixed output folder, a log at a fixed
+    place on the SD card). A Wii path needs HBC back; a local one is copied either way.
+    Returns one record per path: src, dest (in the run folder), files, bytes, error."""
+    import shutil
+    out_dir = pathlib.Path(job["out"])
+    results = []
+    for src in job.get("collect") or []:
+        rec = {"src": src}
+        try:
+            if src.split(":", 1)[0].lower() in ("sd", "usb", "usb1", "usb2") and ":/" in src:
+                name = src.rstrip("/").rsplit("/", 1)[-1] or "root"
+                dest = out_dir / "wii" / name
+                rec["dest"] = dest.relative_to(out_dir).as_posix()
+                if not wii_ok:
+                    raise OSError("HBC did not come back after the job, so nothing could be fetched")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                env = dict(os.environ, HBC_PORT=str(PORT))
+                env.pop("WII_BENCH_JOB", None)
+                base = [sys.executable, str(HBC_PY), "--wii", WII, "get"]
+                r = subprocess.run(base + [src, str(dest)], env=env, capture_output=True, text=True,
+                                   timeout=COLLECT_TIMEOUT)
+                if r.returncode and "use get -r" in (r.stdout + r.stderr):   # a folder
+                    r = subprocess.run(base + ["-r", src, str(dest)], env=env, capture_output=True, text=True,
+                                       timeout=COLLECT_TIMEOUT)
+                if r.returncode:
+                    raise OSError((r.stderr or r.stdout).strip().splitlines()[-1][:200] if (r.stderr or r.stdout).strip()
+                                  else f"hbc.py get: exit {r.returncode}")
+            else:
+                path = pathlib.Path(src)
+                if not path.is_absolute():
+                    path = pathlib.Path(job["cwd"]) / path
+                dest = out_dir / "local" / (path.name or "root")
+                rec["dest"] = dest.relative_to(out_dir).as_posix()
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if path.is_dir():
+                    shutil.copytree(path, dest, dirs_exist_ok=True)
+                elif path.exists():
+                    shutil.copy2(path, dest)
+                else:
+                    raise OSError(f"{path} does not exist")
+            rec["files"], rec["bytes"] = _tree_size(dest) if dest.is_dir() else (1, dest.stat().st_size)
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            rec["error"] = str(e)[:200]
+            say(f"collect {src} for {job['id']}: {rec['error']}")
+        results.append(rec)
+    return results
+
+
+def _archive_month(job):
+    t = _parse_local(job.get("finished") or job.get("added") or "")
+    return time.strftime("%Y-%m", time.localtime(t)) if t else "unknown"
+
+
+def archive_job(job_id):
+    """A finished job's record, log and run folder, packed into ARCHIVE/YYYY-MM/<id>.tar.gz
+    (listed in ARCHIVE/index.jsonl), then removed from done/ and runs/."""
+    import shutil
+    import tarfile
+    rec_p, log_p, run_p = DONE / f"{job_id}.json", DONE / f"{job_id}.log", RUNS / job_id
+    try:
+        job = load(rec_p)
+    except (OSError, ValueError):
+        return False
+    month = ARCHIVE / _archive_month(job)
+    month.mkdir(parents=True, exist_ok=True)
+    tmp, dest = month / f"{job_id}.tar.gz.tmp", month / f"{job_id}.tar.gz"
+    with tarfile.open(tmp, "w:gz") as t:
+        t.add(rec_p, arcname=f"{job_id}/job.json")
+        if log_p.exists():
+            t.add(log_p, arcname=f"{job_id}/job.log")
+        if run_p.exists():
+            t.add(run_p, arcname=f"{job_id}/run")
+    os.replace(tmp, dest)
+    entry = {k: job.get(k) for k in ("id", "name", "agent", "added", "finished", "exit", "secs")}
+    entry["archive"] = dest.relative_to(ARCHIVE).as_posix()
+    with open(ARCHIVE / "index.jsonl", "a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(entry) + "\n")
+    for path in (rec_p, log_p):
+        try:
+            fs_retry(path.unlink)
+        except OSError:
+            pass
+    shutil.rmtree(run_p, ignore_errors=True)
+    return True
+
+
+def rollover(force=False):
+    """Keep the live runs small and the archive bounded: a finished job older than KEEP_DAYS,
+    or the oldest while the live runs pass RUNS_MAX_GB, goes into the archive; the oldest
+    archived months go while the archive passes ARCHIVE_MAX_GB. Runs at most every 10 minutes
+    unless forced; returns how many jobs were archived."""
+    import shutil
+    stamp = HOME / "rollover.stamp"
+    try:
+        if not force and time.time() - stamp.stat().st_mtime < 600:
+            return 0
+    except OSError:
+        pass
+    HOME.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+    now, moved = time.time(), 0
+    finished = []
+    for p in DONE.glob("*.json") if DONE.exists() else []:
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            continue
+        t = _parse_local(j.get("finished") or "") or p.stat().st_mtime
+        finished.append((t, j["id"]))
+    finished.sort()
+    sizes = {jid: _tree_size(RUNS / jid)[1] for _, jid in finished if (RUNS / jid).exists()}
+    live = sum(sizes.values())
+    for t, jid in finished:
+        if now - t > KEEP_DAYS * 86400 or live > RUNS_MAX_GB * 1e9:
+            try:
+                if archive_job(jid):
+                    moved += 1
+                    live -= sizes.get(jid, 0)
+            except (OSError, EOFError) as e:
+                say(f"rollover: {jid}: {e}")
+        else:
+            break
+    if ARCHIVE.exists():
+        months = sorted(d for d in ARCHIVE.iterdir() if d.is_dir())
+        total = sum(_tree_size(d)[1] for d in months)
+        while months and total > ARCHIVE_MAX_GB * 1e9:
+            d = months.pop(0)
+            total -= _tree_size(d)[1]
+            shutil.rmtree(d, ignore_errors=True)
+            say(f"rollover: dropped the archive of {d.name} (over {ARCHIVE_MAX_GB:g} GB)")
+    return moved
+
+
+def find_job(job_id):
+    """Where a job is: ("pending"|"running"|"done", record) or ("archive", index entry), or None."""
+    for d, where in ((PENDING, "pending"), (RUNNING, "running"), (DONE, "done")):
+        p = d / f"{job_id}.json"
+        if p.exists():
+            try:
+                return where, load(p)
+            except (OSError, ValueError):
+                pass
+    for e in archive_index():
+        if e.get("id") == job_id:
+            return "archive", e
+    return None
+
+
+def archive_index():
+    try:
+        lines = (ARCHIVE / "index.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for l in lines:
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            pass
+    return out
+
+
+def cmd_runs(a):
+    """Jobs here, newest first: queued, running, done and archived, with their data."""
+    agent = job_agent() if a.mine else a.agent
+    rows = []
+    for d, where in ((PENDING, "queued"), (RUNNING, "running"), (DONE, "done")):
+        for p in jobs(d) if d.exists() else []:
+            try:
+                j = load(p)
+            except (OSError, ValueError):
+                continue
+            try:
+                order = p.stat().st_mtime_ns          # written in the order they ran or came in
+            except OSError:
+                order = 0
+            rows.append((j.get("finished") or j.get("started") or j.get("added") or "", order, where, j))
+    for i, e in enumerate(archive_index()):          # the index is in the order they were archived
+        rows.append((e.get("finished") or "", i, "archived", e))
+    seen, out = set(), []
+    # newest first; within one second (ids end in a random tail) by when each record was written
+    for when, _, where, j in sorted(rows, key=lambda r: (r[0], r[1]), reverse=True):
+        if j.get("id") in seen:
+            continue
+        seen.add(j.get("id"))
+        if agent and j.get("agent") != agent:
+            continue
+        if a.name and a.name.lower() not in (j.get("name") or "").lower():
+            continue
+        out.append((where, j))
+        if len(out) >= a.last:
+            break
+    if a.json:
+        print(json.dumps([dict(j, where=w) for w, j in out], indent=1))
+        return
+    for where, j in out:
+        files, size = _tree_size(RUNS / j["id"]) if where in ("done", "running") and (RUNS / j["id"]).exists() else (0, 0)
+        data = f"{files} file(s), {size / 1e6:.1f} MB" if files else ("archived" if where == "archived" else "-")
+        print(f"{j['id']}  {where:8} exit {str(j.get('exit', '-')):>4}  {(j.get('finished') or j.get('added') or '')[5:16]}  "
+              f"{data:24} {j.get('name')}")
+
+
+def cmd_results(a):
+    """A job's record, the end of its log, and what it collected; --to copies it all out,
+    from the live run or from the archive."""
+    import shutil
+    import tarfile
+    found = find_job(a.id)
+    if not found:
+        sys.exit(f"no job {a.id} here (runs lists them)")
+    where, j = found
+    if where in ("pending", "running"):
+        print(f"job {a.id} {j.get('name')}: {where}; its results are not in yet (wait {a.id})")
+        sys.exit(3)
+    if where == "archive":
+        tar = ARCHIVE / j["archive"]
+        if not tar.exists():
+            sys.exit(f"job {a.id} was archived in {tar}, and that month has since been dropped")
+        with tarfile.open(tar) as t:
+            rec = json.loads(t.extractfile(f"{a.id}/job.json").read())
+            try:
+                log = t.extractfile(f"{a.id}/job.log").read().decode("utf-8", "replace")
+            except KeyError:
+                log = ""
+            names = [m.name for m in t.getmembers() if m.isfile() and m.name.startswith(f"{a.id}/run/")]
+            if a.to:
+                dest = pathlib.Path(a.to)
+                dest.mkdir(parents=True, exist_ok=True)
+                for m in t.getmembers():
+                    if m.name.startswith(f"{a.id}/") and m.isfile():
+                        rel = m.name[len(a.id) + 1:]
+                        rel = rel[4:] if rel.startswith("run/") else rel
+                        target = dest / rel
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with t.extractfile(m) as src, open(target, "wb") as f:
+                            shutil.copyfileobj(src, f)
+        files = [n[len(a.id) + 5:] for n in names]
+    else:
+        rec = j
+        try:
+            log = (DONE / f"{a.id}.log").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log = ""
+        run = RUNS / a.id
+        files = sorted(str(f.relative_to(run)).replace("\\", "/") for f in run.rglob("*") if f.is_file()) if run.exists() else []
+        if a.to:
+            dest = pathlib.Path(a.to)
+            dest.mkdir(parents=True, exist_ok=True)
+            if run.exists():
+                shutil.copytree(run, dest, dirs_exist_ok=True)
+            shutil.copy2(DONE / f"{a.id}.json", dest / "job.json")
+            if (DONE / f"{a.id}.log").exists():
+                shutil.copy2(DONE / f"{a.id}.log", dest / "job.log")
+    if a.json:
+        print(json.dumps(dict(rec, where=where, files=files), indent=1))
+        return
+    print(f"job {a.id} {rec.get('name')}: exit {rec.get('exit')} in {rec.get('secs')} s, finished {rec.get('finished')} ({where})")
+    for c in rec.get("collected") or []:
+        print(f"  collected {c['src']} -> {c.get('dest')}: " + (f"ERROR {c['error']}" if c.get("error") else
+                                                               f"{c.get('files')} file(s), {c.get('bytes')} bytes"))
+    print(f"  files: {len(files)}" + (f" in {RUNS / a.id}" if where == "done" else ""))
+    for f in files[:a.files]:
+        print(f"    {f}")
+    if len(files) > a.files:
+        print(f"    ... and {len(files) - a.files} more")
+    if a.to:
+        print(f"  copied to {a.to}")
+    tail = log.splitlines()[-a.tail:]
+    if tail:
+        print("  log:")
+        for l in tail:
+            print(f"    {l}")
+
+
+def cmd_rollover(a):
+    n = rollover(force=True)
+    print(f"archived {n} job(s); live runs keep {KEEP_DAYS:g} days and at most {RUNS_MAX_GB:g} GB, "
+          f"the archive at most {ARCHIVE_MAX_GB:g} GB ({ARCHIVE})")
+
+
 def finish_job(job, turn):
     """After the HBC check: the job's record gets it, and the job goes into the history,
     the lease server's (every workstation's) and this workstation's own."""
@@ -976,7 +1362,8 @@ def finish_job(job, turn):
         tmp.unlink(missing_ok=True)
     ev = {"type": "job", "host": socket.gethostname(), **{k: job.get(k) for k in (
         "id", "name", "agent", "added", "started", "finished", "secs", "exit", "timeout",
-        "hbc_back_s", "hbc_version", "wii_left", "chained")}}
+        "hbc_back_s", "hbc_version", "wii_left", "chained")},
+          "collected": [{k: c.get(k) for k in ("src", "files", "bytes", "error")} for c in job.get("collected") or []]}
     try:
         History(HOME / "history").write(ev)
     except OSError as e:
@@ -1075,6 +1462,33 @@ def hbc_back(limit=RETURN_WAIT):
         time.sleep(max(0.0, 1 - (time.monotonic() - t)))
 
 
+def next_in_turn(turn, agent):
+    """The next job this turn runs, or None: the turn ends. Receive order decides (see
+    Turn.next_is_mine); a server before 1.10.2 cannot say, and the rule before it applies
+    (the same agent's next job, while nobody else waits)."""
+    mine = turn.next_is_mine()
+    if mine == "old":
+        if turn.others_waiting() or not agent:
+            return None
+        return next_job(agent, CHAIN_GRACE, turn.others_waiting)
+    if mine:
+        q = jobs(PENDING)
+        return q[0] if q else None
+    if mine is False:                              # another workstation's job came in first
+        return None
+    # Nothing queued anywhere: hold the turn a moment for this workstation's next add, and let
+    # go as soon as another workstation's job arrives first.
+    end = time.monotonic() + CHAIN_GRACE
+    while time.monotonic() < end:
+        q = jobs(PENDING)
+        if q:
+            return q[0] if turn.next_is_mine() in (True, None) else None
+        if turn.next_is_mine() is False:
+            return None
+        time.sleep(1)
+    return None
+
+
 def next_job(agent, grace, waiting=lambda: 0):
     """The next pending job if it is this agent's, waiting up to `grace` s for it to be
     added (an agent that waits for one job and then adds the next). Another agent's job at
@@ -1153,21 +1567,27 @@ def cmd_run(a):
                     if back_s is None:
                         job["wii_left"] = turn.wii
                         say(f"the Wii did not come back to HBC within {RETURN_WAIT} s: {turn.wii}")
+                    # Its data, before anything else gets the Wii: the next run cannot overwrite it.
+                    if job.get("collect"):
+                        turn.set_phase("collecting the job's data")
+                        job["collected"] = collect_job(job, back_s is not None)
                     finish_job(job, turn)
-                    if back_s is None or not agent:
+                    rollover()
+                    if back_s is None:
                         break
-                    # The same agent's next job runs in this turn without the idle wait, but
-                    # only while no other workstation waits: with someone in line, this turn
-                    # ends after every job (a hand-over costs about 2 s since the long poll).
-                    # With nobody waiting, the lease is held CHAIN_GRACE s for the agent's
-                    # next add, and let go within a second of someone joining the line.
-                    if turn.others_waiting():
-                        break
-                    p = next_job(agent, CHAIN_GRACE, turn.others_waiting)
+                    # Receive order: the turn goes on while the earliest-received job of all is
+                    # this workstation's (jobs received one after the other stack up); when
+                    # another workstation's came in first, it goes. With nothing queued anywhere,
+                    # the lease is held CHAIN_GRACE s for this workstation's next add.
+                    p = next_in_turn(turn, agent)
                     if p:
+                        try:
+                            same = agent and load(p).get("agent") == agent
+                        except (OSError, ValueError):
+                            same = False
                         chained = True
-                        say(f"chained: {p.stem} from the same agent")
-                        if not wait_idle(a.idle, 0, p.stem, turn):
+                        say(f"chained: {p.stem}" + (" from the same agent" if same else " (received next)"))
+                        if not wait_idle(a.idle, 0 if same else min(QUICK, a.idle), p.stem, turn):
                             break
             empty_since = time.monotonic()
     finally:
@@ -1512,6 +1932,28 @@ def _local_history(since, cache=None):
 
 
 def queue_order(status, queues, my_qid=None, my_jobs=None):
+    """Every workstation's queued jobs in the order their turns will come. A server from
+    1.10.2 on numbers each job as it is received: then that is the order. An older one does
+    not, and the order is its turns' (see queue_order_turns)."""
+    if any(j.get("seq") is not None for q in queues for j in q.get("jobs", [])):
+        seqs = {j["id"]: j["seq"] for q in queues for j in q.get("jobs", []) if j.get("id") and j.get("seq") is not None}
+        out = []
+        for q in queues:
+            if my_qid is not None and q.get("qid") == my_qid:
+                continue                           # this workstation's own: from disk, below
+            age = q.get("age_s", 0)
+            out += [dict(j, host=q.get("host"), age_s=(j.get("age_s") or 0) + age) for j in q.get("jobs", [])]
+        for j in my_jobs or []:                    # not yet on the server: after everything it knows
+            out.append(dict(j, host=socket.gethostname(), seq=seqs.get(j["id"], 10 ** 9)))
+        listed = {q.get("qid") for q in queues if q.get("jobs")}
+        for w in status.get("waiters") or []:      # a waiter before 1.10.2: its one job
+            if w.get("qid") not in listed and w.get("seq_join") is not None:
+                out.append({"host": w.get("host"), "name": w.get("name"), "age_s": w.get("waited_s"), "seq": w["seq_join"]})
+        return sorted(out, key=lambda j: (j.get("seq", 10 ** 9), -(j.get("age_s") or 0)))
+    return queue_order_turns(status, queues, my_qid, my_jobs)
+
+
+def queue_order_turns(status, queues, my_qid=None, my_jobs=None):
     """Every workstation's queued jobs in the order their turns will come: the workstations in
     line take turns one job each, in line order; a workstation with more queued goes to the back
     after each job; the holder rejoins at the back after its job; a workstation with jobs and no
@@ -1661,6 +2103,10 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             continue
         tf = _parse_local(j.get("finished")) or m
         recent.append((tf, j))
+        for c in (j.get("collected") or []) if tf >= since else []:
+            if c.get("error"):                     # the job's data, or some of it, was not kept
+                problems.append(dict(t=tf, severity="warn", kind="collect", host=socket.gethostname(),
+                                     job=j.get("name"), id=j["id"], detail=f"{c['src']}: {c['error']}"))
         pr = job_problem(j) if tf >= since else None
         if pr:
             sev, kind, detail = pr
@@ -1939,6 +2385,9 @@ def main():
     sub = ap.add_subparsers(dest="op", required=True)
     s = sub.add_parser("add"); s.add_argument("--name"); s.add_argument("--cwd", default=".")
     s.add_argument("--timeout", type=int, default=TIMEOUT); s.add_argument("--agent")
+    s.add_argument("--collect", action="append", metavar="PATH",
+                   help="after the job, before the next one: copy PATH into the job's run folder "
+                        "(sd:/... or usb:/... from the Wii, else a path here, relative to --cwd)")
     s.add_argument("cmd", nargs=argparse.REMAINDER)
     s = sub.add_parser("run"); s.add_argument("--idle", type=float, default=20)
     s = sub.add_parser("status"); s.add_argument("--last", type=int, default=5)
@@ -1949,6 +2398,14 @@ def main():
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--history", help="keep the history (events, rotated and archived) in this directory")
     s.add_argument("--keep-months", type=int, default=0, help="months of archives to keep (0: forever)")
+    s = sub.add_parser("runs", help="jobs here, newest first, with their data (live and archived)")
+    s.add_argument("--agent"); s.add_argument("--mine", action="store_true", help="this agent's (as add would tag it)")
+    s.add_argument("--name", help="only names containing this"); s.add_argument("--last", type=int, default=30)
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("results", help="a job's record, log and collected data; --to DIR copies them out")
+    s.add_argument("id"); s.add_argument("--to"); s.add_argument("--tail", type=int, default=15)
+    s.add_argument("--files", type=int, default=40); s.add_argument("--json", action="store_true")
+    s = sub.add_parser("rollover", help="archive old runs now (the dispatcher does it every 10 minutes)")
     s = sub.add_parser("snapshot", help="what monitor.sh shows, as tab-separated lines (never touches the Wii)")
     s.add_argument("--hours", type=float, default=24); s.add_argument("--json", action="store_true")
     s.add_argument("--serve", action="store_true", help="answer requests on stdin (monitor.sh's coprocess)")
@@ -1966,7 +2423,7 @@ def main():
         a.cmd = a.cmd[1:]
     {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel,
      "serve": cmd_serve, "setup": cmd_setup, "report": cmd_report,
-     "snapshot": cmd_snapshot}[a.op](a)
+     "snapshot": cmd_snapshot, "runs": cmd_runs, "results": cmd_results, "rollover": cmd_rollover}[a.op](a)
 
 
 if __name__ == "__main__":

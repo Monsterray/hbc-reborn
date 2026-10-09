@@ -181,6 +181,12 @@ class LeaseTest(unittest.TestCase):
 
     def test_http_round_trip(self):
         import threading
+        from unittest import mock
+        empty = tempfile.TemporaryDirectory()        # Turn sends this workstation's queue: not the real one
+        self.addCleanup(empty.cleanup)
+        patch = mock.patch.object(self.wb, "PENDING", pathlib.Path(empty.name))
+        patch.start()
+        self.addCleanup(patch.stop)
         srv = self.wb.make_server(0, ttl=0.5, host="127.0.0.1")
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
@@ -199,7 +205,9 @@ class LeaseTest(unittest.TestCase):
     def test_release_and_waiting_are_reported(self):
         self.acq("a")
         self.acq("b")
-        self.assertEqual(self.leases.renew({"ticket": "a"}), {"ok": True, "waiting": 1})
+        r = self.leases.renew({"ticket": "a"})
+        self.assertEqual((r["ok"], r["waiting"]), (True, 1))
+        self.assertEqual((r["next"], r["next_is_mine"]), ("b", False))   # b's turn is next (it joined, no list)
         self.leases.release({"ticket": "a"})
         self.now += 3
         self.assertEqual(self.acq("b"), {"granted": True, "released_ago": 3.0})
@@ -453,6 +461,7 @@ class SharedQueueTest(unittest.TestCase):
         q = lambda qid, names, at, **more: dict(qid=qid, host=qid, queue=[{"id": n, "name": n, "age_s": 5} for n in names],
                                               queue_at=at, **more)
         leases.queue(q("pc", ["a", "b"], at=100))
+        now[0] += self.wb.RESERVE + 1                  # pc's jobs came first, but pc is not asking
         self.assertTrue(leases.acquire(dict(q("mac", ["m1", "m2"], at=50), ticket="t", name="m1"))["granted"])
         st = leases.status()
         self.assertEqual({x["qid"]: [j["id"] for j in x["jobs"]] for x in st["queues"]}, {"pc": ["a", "b"], "mac": ["m1", "m2"]})
@@ -466,6 +475,17 @@ class SharedQueueTest(unittest.TestCase):
         self.assertEqual([x["qid"] for x in leases.status()["queues"]], ["pc"])
         now[0] += 61                                    # pc went quiet
         self.assertEqual(leases.status()["queues"], [])
+
+    def test_the_wii_waits_a_moment_for_the_earliest_job(self):
+        now = [60.0]
+        leases = self.wb.Leases(ttl=60, clock=lambda: now[0])
+        leases.grace_until = 0
+        leases.queue({"qid": "a", "host": "a", "queue": [{"id": "a1"}], "queue_at": 1})   # received first
+        leases.queue({"qid": "b", "host": "b", "queue": [{"id": "b1"}], "queue_at": 1})
+        b = {"ticket": "tb", "host": "b", "name": "b1", "qid": "b"}
+        self.assertFalse(leases.acquire(b)["granted"])        # a1's workstation is not in line yet
+        now[0] += self.wb.RESERVE + 1                          # and it stays quiet: b1 goes
+        self.assertTrue(leases.acquire(b)["granted"])
 
     def test_turn_order(self):
         # mac holds the Wii with 2 more queued; pc waits with 3; an old dispatcher waits with
@@ -654,21 +674,65 @@ class LeaseDispatcherTest(unittest.TestCase):
     def history(self):
         return self.wb.lease_call("/history?since=0")["events"]
 
-    def test_no_chain_while_someone_waits(self):
+    def test_jobs_received_first_go_first(self):
+        # a1 and a2 were received before the rival asked: both run before it (stacked), not
+        # one each in turn as before 1.10.2.
         a1, a2 = self.add("a1", "A", secs=2), self.add("a2", "A", secs=0.3)
         self.dispatch()
         self.until(lambda: list((self.home / "queue/running").glob("*.json")))
         got, th = self.rival()
         s1, _ = self.done(a1)
         s2, j2 = self.done(a2)
-        th.join(10)
-        self.assertGreater(got["t"], s1 + 2)       # the rival went after a1 ...
-        self.assertLess(got["t"], s2)              # ... and before a2
-        self.assertFalse(j2["chained"])
+        th.join(20)
+        self.assertGreater(got["t"], s2)           # the rival after a2: it was received last
+        self.assertTrue(j2["chained"])
         self.assertLess(j2["hbc_back_s"], self.wb.HBC_AT_ONCE)   # measured: HBC was there as it ended
         self.assertEqual(j2["hbc_version"], "1.2.0")             # the fake HBC's
         hosts = [e["host"] for e in self.history() if e["type"] == "grant"]
-        self.assertEqual(hosts[-2:], ["rival-pc", hosts[0]])
+        self.assertEqual(hosts[-1], "rival-pc")
+
+    def second_workstation(self):
+        """Another state folder on the same lease server: another workstation's queue."""
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        env = dict(self.env, WII_BENCH_HOME=other.name)
+        return pathlib.Path(other.name), env
+
+    def add_to(self, env, name, secs=0.5):
+        code = f"import time; print(time.time()); time.sleep({secs})"
+        r = subprocess.run([sys.executable, str(BENCH), "add", "--name", name, "--agent", name[0], "--",
+                            sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_receive_order_across_workstations(self):
+        # Received a1, then b1 on another workstation, then a2: they run a1, b1, a2.
+        import time
+        bhome, benv = self.second_workstation()
+        a1 = self.add_to(self.env, "a1")
+        b1 = self.add_to(benv, "b1")
+        a2 = self.add_to(self.env, "a2")
+        # B's dispatcher asks first: the Wii still waits for a1's workstation (RESERVE), which
+        # starts 1.5 s later, instead of going to b1, received after a1.
+        db = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", "4"], env=benv,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(db.wait)
+        self.addCleanup(db.kill)
+        time.sleep(1.5)
+        da = self.dispatch()
+        starts = {}
+        for jid, home in ((a1, self.home), (b1, bhome), (a2, self.home)):
+            p = home / "queue/done" / f"{jid}.log"
+            end = time.monotonic() + 90
+            while not p.exists():
+                self.assertLess(time.monotonic(), end, f"{jid} did not finish")
+                time.sleep(0.2)
+            time.sleep(0.2)
+            starts[jid] = float(p.read_text().split()[0])
+        self.assertLess(starts[a1], starts[b1])
+        self.assertLess(starts[b1], starts[a2])
+        grants = [e["host"] for e in self.history() if e["type"] == "grant"]
+        self.assertEqual(len(grants), 3)           # three turns: none of them stacked
 
     def test_the_hold_lets_go_when_someone_joins(self):
         import time
@@ -703,6 +767,63 @@ class LeaseDispatcherTest(unittest.TestCase):
         self.assertEqual(rel[-1]["wii"], "busy: otherapp is running")
         local = self.wb.History(self.home / "history").read(0)
         self.assertEqual([e["id"] for e in local], [n1])
+
+    def data_job(self, name, work):
+        """A job like the bench's: it writes its data to a fixed local folder and to a fixed
+        place on the SD card, as the next run will too."""
+        hbc = str(root / "tools/hbc.py")
+        code = (f"import pathlib, subprocess, sys; d = pathlib.Path('out'); d.mkdir(exist_ok=True); "
+                f"(d / 'data.txt').write_text('{name}'); pathlib.Path('lab.log').write_text('{name}'); "
+                f"sys.exit(subprocess.call([sys.executable, r'{hbc}', '--wii', '127.0.0.1', 'put', 'lab.log', 'sd:/lab/lab.log']))")
+        r = subprocess.run([sys.executable, str(BENCH), "add", "--name", name, "--agent", "A", "--cwd", str(work),
+                            "--collect", "out", "--collect", "sd:/lab/lab.log", "--collect", "sd:/lab", "--collect", "missing.txt",
+                            "--", sys.executable, "-c", code], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_each_run_keeps_its_data(self):
+        self.env["HBC_PORT"] = str(self.fake.port)
+        work = self.home / "work"
+        work.mkdir()
+        r1, r2 = self.data_job("run one", work), self.data_job("run two", work)
+        self.dispatch()
+        for jid in (r1, r2):                       # finished, its data collected and recorded
+            rec = self.home / "queue/done" / f"{jid}.json"
+            self.until(lambda: rec.exists() and "collected" in rec.read_text(), 90)
+        for jid, name in ((r1, "run one"), (r2, "run two")):
+            run = self.home / "runs" / jid
+            self.assertEqual((run / "local/out/data.txt").read_text(), name)   # not the next run's
+            self.assertEqual((run / "wii/lab.log").read_text(), name)
+            self.assertEqual((run / "wii/lab/lab.log").read_text(), name)      # a whole folder
+            rec = json.loads((self.home / "queue/done" / f"{jid}.json").read_text())
+            self.assertEqual(rec["out"], str(run))
+            errors = {c["src"]: c.get("error") for c in rec["collected"]}
+            self.assertEqual([k for k, v in errors.items() if v], ["missing.txt"])
+        # Grab it whenever: runs lists them, results copies one out.
+        env = dict(self.env, WII_BENCH_NO_DISPATCH="1")
+        bench = lambda *a: subprocess.run([sys.executable, str(BENCH), *a], env=env, capture_output=True, text=True, timeout=60)
+        listed = json.loads(bench("runs", "--json").stdout)
+        self.assertEqual([j["id"] for j in listed[:2]], [r2, r1])
+        out = self.home / "got"
+        r = bench("results", r1, "--to", str(out))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("collected out -> local/out: 1 file(s)", r.stdout)
+        self.assertEqual((out / "local/out/data.txt").read_text(), "run one")
+        self.assertTrue((out / "job.json").exists() and (out / "job.log").exists())
+        # Rollover: into the archive, and out again.
+        r = subprocess.run([sys.executable, str(BENCH), "rollover"], env=dict(env, WII_BENCH_KEEP_DAYS="0"),
+                           capture_output=True, text=True, timeout=60)
+        self.assertIn("archived 2 job(s)", r.stdout)
+        self.assertFalse((self.home / "runs" / r1).exists())
+        self.assertFalse((self.home / "queue/done" / f"{r1}.json").exists())
+        self.assertEqual({j["id"]: j["where"] for j in json.loads(bench("runs", "--json").stdout)}[r1], "archived")
+        back = self.home / "back"
+        r = bench("results", r1, "--to", str(back))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("(archive)", r.stdout)
+        self.assertEqual((back / "local/out/data.txt").read_text(), "run one")
+        self.assertEqual((back / "wii/lab/lab.log").read_text(), "run one")
+        self.assertNotEqual(bench("results", "no-such-job").returncode, 0)
 
     def test_a_cancel_while_waiting_for_hbc(self):
         # 2026-10-08: a turn's job was cancelled while the Wii was out of HBC; the turn kept the
