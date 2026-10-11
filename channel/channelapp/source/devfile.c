@@ -36,6 +36,8 @@ devfile_transfer devfile_last;
 
 // Request state, for aborting before an app launch unmounts the card.
 static volatile bool busy, abort_requested;
+// The file a transfer moves, for devfile_progress().
+static char moving[48];
 static volatile s32 active_socket = -1;
 static s32 request_prio;
 
@@ -151,6 +153,7 @@ static s32 file_put_raw(s32 s, const char *path, const char *part, u32 size) {
 		st->net += diff_ticks(t0, t1);
 		st->disk += diff_ticks(t1, gettime());
 		st->wire += block;
+		st->raw += block;
 		left -= block;
 	}
 
@@ -188,6 +191,7 @@ static void file_get_raw(s32 s, const char *path) {
 	}
 
 	left = sb.st_size;
+	st->size = left;
 	put_u32(hdr, 0);
 	put_u32(hdr + 4, left);
 	if (devfile_send_all(s, hdr, sizeof(hdr))) {
@@ -204,6 +208,7 @@ static void file_get_raw(s32 s, const char *path) {
 			st->disk += diff_ticks(t0, t1);
 			st->net += diff_ticks(t1, gettime());
 			st->wire += block;
+			st->raw += block;
 			if (!ok)
 				break;
 			left -= block;
@@ -319,6 +324,17 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 	}
 
 	gprintf("devnet: %c %s (%u)\n", op, path, size);
+	if (strchr("pPgG", op)) {
+		const char *base = strrchr(path, '/');
+		const char *name = base ? base + 1 : path;
+		size_t len = strlen(name);
+
+		if (len >= sizeof(moving))   // a long name is cut short
+			len = sizeof(moving) - 1;
+		memcpy(moving, name, len);
+		moving[len] = 0;
+		devfile_last.st.size = op == 'p' || op == 'P' ? size : 0;
+	}
 
 	switch (op) {
 	case 'P':
@@ -402,6 +418,17 @@ void devfile_handle(s32 s, const u8 *hdr, s32 prio, s32 restore_prio,
 	free(chunk);
 	chunk = NULL;
 	devfile_last.total = diff_ticks(start, gettime());
+}
+
+char devfile_progress(const char **name, u32 *done, u32 *total) {
+	char op = devfile_last.op;
+
+	if (!busy || !op || !strchr("pPgG", op))
+		return 0;
+	*name = moving;
+	*done = devfile_last.st.raw;
+	*total = devfile_last.st.size;
+	return op == 'p' || op == 'P' ? 'p' : 'g';
 }
 
 bool devfile_aborted(void) {

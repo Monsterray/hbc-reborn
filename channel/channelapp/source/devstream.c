@@ -240,6 +240,7 @@ s32 devstream_put(s32 s, const char *path, const char *part, u32 size,
 		}
 
 		stats->wire += slot->wire_len;
+		stats->raw += slot->raw_len;
 		left -= slot->raw_len;
 		MQ_Send(q_full, slot, MQ_MSG_BLOCK);
 	}
@@ -341,6 +342,7 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 		return;
 	}
 	job.size = st.st_size;
+	stats->size = job.size;
 	job.compress = compress;
 	job.stats = stats;
 
@@ -388,6 +390,7 @@ void devstream_get(s32 s, const char *path, bool compress, devstream_stats *stat
 			sending = devfile_send_all(s, frame, len);
 			stats->net += diff_ticks(t1, gettime());
 			stats->wire += len;
+			stats->raw += slot->raw_len;
 			if (!sending)
 				abort_flag = true;
 		}

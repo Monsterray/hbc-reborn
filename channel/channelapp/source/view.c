@@ -7,6 +7,9 @@
 
 #include "../config.h"
 #include "controls.h"
+#include "devfile.h"
+#include "i18n.h"
+#include "font.h"
 #include "theme.h"
 #include "cursors.h"
 #include "widgets.h"
@@ -159,6 +162,38 @@ static void view_push_view (const view *v, u32 subview_alpha) {
 	gfx_frame_push (&v->qe_coords_pop, 1);
 }
 
+// What hbc.py is moving, at the bottom right of every screen, so a transfer
+// in the background shows: "Receiving boot.dol 42%", "Sending save.dat".
+static void transfer_line(void) {
+	static gfx_queue_entry glyphs[64];
+	static char shown[80];
+	static int count;
+	char line[80] = "";
+	const char *name;
+	u32 done, total;
+	char dir = devfile_progress(&name, &done, &total);
+
+	if (dir)
+		snprintf(line, sizeof(line), total ? "%s %s  %u%%" : "%s %s",
+				 dir == 'p' ? _("Receiving") : _("Sending"), name,
+				 total ? (unsigned) ((u64) done * 100 / total) : 0);
+	if (strcmp(line, shown)) {
+		strcpy(shown, line);
+		count = line[0] ? font_get_char_count(FONT_LABEL, line, 360) : 0;
+		if (count > 64)
+			count = 64;
+		// Left of the USB Gecko and network icons (browser.c), on their line.
+		if (count)
+			font_plot_string(glyphs, count, FONT_LABEL, line,
+							 view_width - 40 - theme_gfx[THEME_GECKO_ACTIVE]->w -
+							 theme_gfx[THEME_LAN_ACTIVE]->w - 360,
+							 412 + theme_gfx[THEME_LAN_ACTIVE]->h / 2, 0, 360,
+							 FA_RIGHT, FA_EM_CENTERED);
+	}
+	if (count)
+		gfx_frame_push(glyphs, count);
+}
+
 void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 	u32 bd, bh, bu;
 	bool wm;
@@ -245,6 +280,8 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 
 	if (throbber_enabled)
 		gfx_frame_push(&entry_throbber, 1);
+
+	transfer_line();
 
 	if (wm) {
 		if ((w != -1) && (ct != CUR_DRAG))

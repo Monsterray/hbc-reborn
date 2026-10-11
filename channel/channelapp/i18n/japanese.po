@@ -111,6 +111,14 @@ msgstr "日付"
 msgid "Custom"
 msgstr "カスタム"
 
+#: source/view.c
+msgid "Receiving"
+msgstr "受信中"
+
+#: source/view.c
+msgid "Sending"
+msgstr "送信中"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr "日本語、JEEB氏による翻訳"

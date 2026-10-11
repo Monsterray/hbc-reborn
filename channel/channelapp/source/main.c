@@ -65,16 +65,17 @@ extern const u32 stub_bin_size;
 u64 *conf_magic = STUB_ADDR_MAGIC;
 u64 *conf_title_id = STUB_ADDR_TITLE;
 
-static bool should_exit;
+// Set from the Reset and Power callbacks (interrupt context) too.
+static volatile bool should_exit;
 static s64 hbc_start;
 
 static void mark(const char *name) {
 	devnet_boot_mark(name);
 }
-static bool shutdown;
+static volatile bool shutdown;
 static bool restart;
 #ifdef GDBSTUB
-static bool gdb;
+static volatile bool gdb;
 #endif
 static const char *text_delete;
 static const char *text_error_delete;

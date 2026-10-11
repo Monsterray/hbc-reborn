@@ -111,6 +111,14 @@ msgstr "Date"
 msgid "Custom"
 msgstr "Perso"
 
+#: source/view.c
+msgid "Receiving"
+msgstr "Réception"
+
+#: source/view.c
+msgid "Sending"
+msgstr "Envoi"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr "Traduction française par Chandler et Strangerke"

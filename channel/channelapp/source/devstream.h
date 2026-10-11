@@ -6,6 +6,7 @@
 typedef struct {
 	u64 net, disk, cpu;   // ticks spent on Wi-Fi, SD and zlib/CRC
 	u32 wire;             // bytes that crossed the network
+	u32 raw, size;        // the file's bytes moved so far, of size (0: unknown)
 } devstream_stats;
 
 // Receives a framed upload of size raw bytes into part, then renames it to

@@ -109,6 +109,14 @@ msgstr "Fecha"
 msgid "Custom"
 msgstr "Propio"
 
+#: source/view.c
+msgid "Receiving"
+msgstr "Recibiendo"
+
+#: source/view.c
+msgid "Sending"
+msgstr "Enviando"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr "Traducción al español - marcan"

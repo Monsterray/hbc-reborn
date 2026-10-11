@@ -106,6 +106,14 @@ msgstr "Datum"
 msgid "Custom"
 msgstr "Eigene"
 
+#: source/view.c
+msgid "Receiving"
+msgstr "Empfange"
+
+#: source/view.c
+msgid "Sending"
+msgstr "Sende"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr "Deutsche Übersetzung: Elena Vectoradvenberg"

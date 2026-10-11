@@ -161,6 +161,25 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.3: transfers on screen, volatile interrupt flags, a steadier list reload
+
+- An audit of state shared between threads, callbacks and interrupts:
+  `main.c`'s `should_exit`, `shutdown` and `gdb`, set by the Reset and
+  Power callbacks in interrupt context and polled by the main loop, are now
+  `volatile` (the loop's calls happened to force a reload). Everything else
+  is volatile already, guarded by `_CPU_ISR_Disable` (a compiler barrier in
+  libogc 3 and libogc2), waited on through a mutex or condition variable,
+  read through a call from another file, or used by one context only.
+- While `hbc.py` moves a file, every screen shows it at the bottom right,
+  left of the network icons: "Receiving boot.dol 42%", "Sending
+  save.dat 7%" (`devfile_progress()`, drawn in `view_plot()`; devstream
+  now counts the file's bytes, `raw`, beside the wire's). Checked in
+  Dolphin with frames dumped during a 20 MB put and get.
+- The app list's reload after uploads waited for one second without a
+  finished file request, so a single slow upload (the bench's Wi-Fi: 12
+  files in 2.5 s) could reload mid-burst. It now also waits while a file
+  request is open, and the quiet second starts when one ends.
+
 ### 1.10.2: a crash inside the agent's crash hook froze the Wii
 
 - USB Loader GX in Dolphin (2026-10-09, MMU on): its ThreadedTask thread

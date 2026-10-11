@@ -111,6 +111,14 @@ msgstr "Data"
 msgid "Custom"
 msgstr "Personale"
 
+#: source/view.c
+msgid "Receiving"
+msgstr "Ricezione"
+
+#: source/view.c
+msgid "Sending"
+msgstr "Invio"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr ""

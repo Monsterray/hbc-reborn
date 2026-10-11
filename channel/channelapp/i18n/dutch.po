@@ -107,6 +107,14 @@ msgstr "Datum"
 msgid "Custom"
 msgstr "Eigen"
 
+#: source/view.c
+msgid "Receiving"
+msgstr "Ontvangen"
+
+#: source/view.c
+msgid "Sending"
+msgstr "Verzenden"
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr "Nederlandse vertaling door bLAStY en ChronoX"

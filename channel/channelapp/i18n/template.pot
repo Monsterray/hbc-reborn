@@ -111,6 +111,14 @@ msgstr ""
 msgid "Custom"
 msgstr ""
 
+#: source/view.c
+msgid "Receiving"
+msgstr ""
+
+#: source/view.c
+msgid "Sending"
+msgstr ""
+
 #: source/dialogs.c:110
 msgid "<YourLanguageHere> translation by <YourNickNameHere>"
 msgstr ""

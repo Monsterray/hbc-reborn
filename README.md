@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.10.1**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.10.3**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -95,6 +95,8 @@ second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslas
 `put` or `sync` under `sd:/apps/` appears in the menu right away, and one you
 remove disappears. The menu reloads once the writes stop (a second of
 quiet), on the page it shows, so a whole folder's upload is one quiet reload.
+While a file moves, HBC shows it at the bottom right of the screen
+("Receiving boot.dol 42%", "Sending save.dat").
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame
@@ -473,7 +475,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | `hbc_agent_stop()` (then an IOS reload, a re-init, a crash) and `hbc_agent_listen()` (the app's own server on 4299) on a real Wii | `make -C tests/agent_app`, then `python3 tests/wii_agent_stop.py --wii WII-IP` (`--dol` for another build) | Wii in any HBC |
 | The agent's safety tools on a real Wii (assert, abort, deadlock, failed malloc, frame pacing, stub guard, Reset, stack overflow) | `make -C tests/agent_app`, then `python3 tests/wii_agent_safety.py --wii WII-IP` | Wii in any HBC |
 | DEV > Info and `hbc.py hw` on a real Wii | `python3 tests/wii_info.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.10.1 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.10.3 WII-IP` | installed channel running |
 | Every `meta.xml` option through the menu, driven by a scripted Wii Remote: arguments, `ahb_access`, `no_ios_reload`, author/coder, version, descriptions, icon, the Name, Date and Custom sorts, Load as the dialog's default | `python3 tests/dolphin_meta.py [OUTDIR]` | Dolphin (no other test Dolphin running) |
 | App list while files arrive (one in-place reload, no page slides) and `hbc.py order` (file requests only) | `python3 tests/wii_app_list.py WII-IP` | Wii in any HBC |
 | Both USB drives through HBC: list, write and read back 1 MiB on each (file requests only) | `python3 tests/wii_usb2.py WII-IP` | Wii in any HBC, two USB drives |

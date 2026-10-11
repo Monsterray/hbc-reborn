@@ -63,6 +63,9 @@ static char changes[CHANGES][64];
 static u32 change_count;
 static u64 change_last;
 #define CHANGE_QUIET_MS 1000
+// A file request is running: its change is not noted until it ends, so a
+// pending reload waits for it (a slow upload is no quiet gap).
+static volatile bool file_request_open;
 
 // HBCS "app_list": the list as shown, which the menu notes as it draws it
 // (devnet_note_app_list), so this thread never reads the entries themselves.
@@ -330,8 +333,8 @@ bool devnet_take_app_change(char *dirname, size_t size) {
 	u32 level;
 
 	_CPU_ISR_Disable(level);
-	if (change_count && ticks_to_millisecs(diff_ticks(change_last, gettime())) >=
-			CHANGE_QUIET_MS) {
+	if (change_count && !file_request_open &&
+			ticks_to_millisecs(diff_ticks(change_last, gettime())) >= CHANGE_QUIET_MS) {
 		strncpy(dirname, changes[0], size - 1);
 		dirname[size - 1] = 0;
 		memmove(changes[0], changes[1], --change_count * sizeof(changes[0]));
@@ -384,7 +387,14 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	if (!memcmp(hdr, "HBCF", 4)) {
 		// The UI thread outranks the loader; run transfers above it. The
 		// thread mostly waits on IOS, so the menu keeps drawing meanwhile.
+		u32 level;
+
+		file_request_open = true;
 		devfile_handle(s, hdr, DEVNET_THREAD_PRIO, LD_THREAD_PRIO, note_app_change);
+		_CPU_ISR_Disable(level);
+		change_last = gettime();   // the quiet second starts as it ends
+		file_request_open = false;
+		_CPU_ISR_Restore(level);
 		return true;
 	}
 
