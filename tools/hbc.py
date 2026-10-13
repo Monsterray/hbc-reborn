@@ -28,6 +28,9 @@ PROGRESS_MIN = 256 * 1024
 # Waits poll with short connects: while the Wii reboots, a connection attempt
 # can go unanswered, and one full TIMEOUT per attempt made each wait 15 s.
 POLL_TIMEOUT = 2
+# The Wii reads and CRCs a whole file before it answers a checksum request
+# (op C): allow for this rate on top of TIMEOUT, below a slow SD card's.
+CHECKSUM_BYTES_PER_S = 1 << 20
 
 # newlib errno values the client acts on
 ENOENT, EISDIR = 2, 21
@@ -347,9 +350,9 @@ def file_header(op, remote, size=0, flags=0):
             ).ljust(16, b"\0") + path
 
 
-def file_request(wii, op, remote, size=0, payload=b""):
+def file_request(wii, op, remote, size=0, payload=b"", timeout=TIMEOUT):
     """A protocol 1 file request: raw payload in, raw reply body out."""
-    with connect(wii) as conn:
+    with connect(wii, timeout) as conn:
         conn.sendall(file_header(op, remote, size) + payload)
         return recv_reply(conn, f"{remote}: Wii returned")
 
@@ -447,9 +450,11 @@ def get_file(wii, remote, compress=True, progress=None):
         return bytes(out)
 
 
-def checksum(wii, remote):
-    """Return (size, CRC-32) of a remote file (op C)."""
-    reply = file_request(wii, "C", remote)
+def checksum(wii, remote, size=0):
+    """Return (size, CRC-32) of a remote file (op C). size, when known,
+    gives the Wii time to read all of it before it answers."""
+    reply = file_request(wii, "C", remote,
+                         timeout=TIMEOUT + size / CHECKSUM_BYTES_PER_S)
     if len(reply) != 8:
         raise HBCError(f"malformed checksum reply for {remote}")
     return struct.unpack(">II", reply)
@@ -657,6 +662,15 @@ def local_tree(local):
     return dirs, files
 
 
+def file_crc(path):
+    """CRC-32 of a local file, read 1 MiB at a time."""
+    crc = 0
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            crc = zlib.crc32(chunk, crc)
+    return crc
+
+
 def read_file(path):
     with open(path, "rb") as f:
         return f.read()
@@ -743,6 +757,7 @@ def sync(wii, local, remote, delete=False, out=print):
         raise HBCError(f"{remote_join(remote, clash[0])} is a file on one side and a "
                        "directory on the other; use --delete to replace it")
     uploaded = skipped = deleted = nbytes = 0
+    failed = []
     if delete:
         for rel in sorted(f for f in rfiles if f not in lfiles):
             file_request(wii, "D", remote_join(remote, rel))
@@ -759,16 +774,26 @@ def sync(wii, local, remote, delete=False, out=print):
             file_request(wii, "M", remote_join(remote, rel))
     for rel, path in lfiles.items():
         target = remote_join(remote, rel)
-        data = read_file(path)
-        if rfiles.get(rel) == len(data) and \
-                checksum(wii, target) == (len(data), zlib.crc32(data)):
-            skipped += 1
+        # One file that fails (a timeout, a full card) does not stop the rest.
+        try:
+            size = os.path.getsize(path)
+            if rfiles.get(rel) == size and \
+                    checksum(wii, target, size) == (size, file_crc(path)):
+                skipped += 1
+                continue
+            data = read_file(path)
+            put_file(wii, target, data, progress=Progress(target))
+        except (OSError, HBCError) as exc:
+            out(f"{target}: failed: {exc}")
+            failed.append(target)
             continue
-        put_file(wii, target, data, progress=Progress(target))
         out(f"{path} -> {target} ({len(data)} bytes)")
         uploaded += 1
         nbytes += len(data)
-    out(f"sync: {uploaded} uploaded ({nbytes} bytes), {skipped} unchanged, {deleted} deleted")
+    out(f"sync: {uploaded} uploaded ({nbytes} bytes), {skipped} unchanged, {deleted} deleted"
+        + (f", {len(failed)} failed" if failed else ""))
+    if failed:
+        raise HBCError(f"sync: {len(failed)} file(s) failed: {', '.join(failed)}")
     return uploaded, skipped, deleted, nbytes
 
 

@@ -161,6 +161,36 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.5: sync with big files, and the agent's stack figure
+
+- `hbc.py sync` timed out on a folder holding large files that were already
+  on the Wii at the same size: the Wii reads and CRCs the whole file before
+  it answers op `C`, and the request had the default 15 s timeout (a
+  400-700 MB disc image takes far longer at SD speed). The first such file
+  ended the sync. Now the checksum's timeout grows with the file's size (15
+  s plus 1 MiB/s, below a slow SD card's rate), the local CRC is read 1 MiB
+  at a time instead of loading the file, and a file that fails is reported
+  and skipped: the sync carries on, lists the failures at the end and
+  exits non-zero.
+- The agent's `agent_stack_used` read about 12,280 of 12,288 bytes since
+  1.10.1: the rewrite of the thread start in `hbc_agent_init()` (f0fe12d)
+  dropped the `memset(stack, 0, AGENT_STACK)` that `stack_used()` depends on
+  (it finds the lowest non-zero byte). Put back; the real use is about
+  1.6 KB.
+- Future work, full directory and file metadata: the listing (op `L`)
+  carries only "d NAME" and "f SIZE NAME", and there is no stat op, so a
+  client cannot see dates or attributes, and sync cannot skip a big file by
+  size and date (it must have the Wii read it all). What it would take: a
+  listing with each entry's modification time (and attributes: read-only,
+  hidden), a stat op for one path, and, for sync to compare dates, setting
+  a file's time after an upload to the PC's, or sync comparing against the
+  time the Wii wrote it. Open questions before starting: whether each FAT
+  layer (libogc 3's FatFs/dvm, libogc2's and 1.8.23's libfat) fills
+  `st_mtime` and supports setting it (utime/f_utime); whether the Wii's
+  clock is right (the overlay's Sync clock exists for that); FAT's 2 s date
+  granularity and local time; and keeping the old listing for older
+  clients (a new op, or a flag in the request header).
+
 ### 1.10.4: Restart network, and file errors that say what happened
 
 - HOME > HBC > Restart network: the loader's TCP thread closes its

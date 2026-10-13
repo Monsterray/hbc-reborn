@@ -1109,6 +1109,8 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 		net_init_async(NULL, NULL);
 
 	stack = memalign(32, AGENT_STACK);
+	if (stack)
+		memset(stack, 0, AGENT_STACK);   // stack_used() finds the lowest non-zero byte
 	res = stack ? LWP_CreateThread(&thread, agent_thread, (void *) gen, stack, AGENT_STACK,
 								   cfg.priority) : -ENOMEM;
 	if (res) {

@@ -617,6 +617,36 @@ class HBCToolTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.cli("order", "sd:/ordertest", "nosuch")
 
+    def test_sync_goes_on_past_a_failed_file(self):
+        src = self.tmp / "src2"
+        self.make_tree(src, {"a.bin": b"a" * 10, "b.bin": b"b" * 20, "c.bin": b"c" * 30})
+        quiet = lambda _: None  # noqa: E731
+        hbc.sync(WII, str(src), "sd:/apps/sync2", out=quiet)
+        (src / "a.bin").write_bytes(b"A" * 10)   # same size: the CRC decides
+        (src / "c.bin").write_bytes(b"C" * 30)
+        real = hbc.checksum
+        seen = []
+
+        def flaky(wii, remote, size=0):
+            seen.append((remote, size))
+            if remote.endswith("a.bin"):
+                raise hbc.HBCError("timed out")
+            return real(wii, remote, size)
+
+        lines = []
+        with mock.patch.object(hbc, "checksum", flaky):
+            with self.assertRaisesRegex(hbc.HBCError, "1 file\\(s\\) failed: sd:/apps/sync2/a.bin"):
+                hbc.sync(WII, str(src), "sd:/apps/sync2", out=lines.append)
+        self.assertIn(("sd:/apps/sync2/a.bin", 10), seen)   # the size, for the timeout
+        self.assertEqual(self.fake.files["sd:/apps/sync2/c.bin"], b"C" * 30)   # went on
+        self.assertTrue(any("1 failed" in l for l in lines))
+
+    def test_file_crc_streams(self):
+        path = self.tmp / "big.bin"
+        data = bytes(range(256)) * 9000   # over 1 MiB
+        path.write_bytes(data)
+        self.assertEqual(hbc.file_crc(str(path)), zlib.crc32(data))
+
     def test_sync_uploads_only_changes(self):
         src = self.tmp / "src"
         self.make_tree(src, {"boot.dol": b"one", "data/a.bin": b"a" * 50, "data/b.bin": b"b"})

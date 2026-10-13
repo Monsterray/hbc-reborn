@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.10.4**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.10.5**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -484,7 +484,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | File errors from HBC and an app's agent: a missing folder, a missing local file, a 400 MB upload to a card without room (`ENOSPC` at once) | `python3 tests/wii_file_errors.py WII-IP` (SD with under 400 MB free), or `--dolphin` | Wii in any HBC, or Dolphin |
 | The agent's safety tools on a real Wii (assert, abort, deadlock, failed malloc, frame pacing, stub guard, Reset, stack overflow) | `make -C tests/agent_app`, then `python3 tests/wii_agent_safety.py --wii WII-IP` | Wii in any HBC |
 | DEV > Info and `hbc.py hw` on a real Wii | `python3 tests/wii_info.py WII-IP` | Wii in any HBC |
-| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.10.4 WII-IP` | installed channel running |
+| Installed channel on a real Wii | `python3 tests/wii_devnet.py --installed --expect 1.10.5 WII-IP` | installed channel running |
 | Every `meta.xml` option through the menu, driven by a scripted Wii Remote: arguments, `ahb_access`, `no_ios_reload`, author/coder, version, descriptions, icon, the Name, Date and Custom sorts, Load as the dialog's default | `python3 tests/dolphin_meta.py [OUTDIR]` | Dolphin (no other test Dolphin running) |
 | App list while files arrive (one in-place reload, no page slides) and `hbc.py order` (file requests only) | `python3 tests/wii_app_list.py WII-IP` | Wii in any HBC |
 | Both USB drives through HBC: list, write and read back 1 MiB on each (file requests only) | `python3 tests/wii_usb2.py WII-IP` | Wii in any HBC, two USB drives |
