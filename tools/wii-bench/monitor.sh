@@ -13,6 +13,9 @@
 #   3 history  per workstation over the window: jobs, failures, Wii minutes, turns and waits,
 #              and the longest waits for the Wii.
 #   4 log      the end of this workstation's dispatcher.log.
+#   5 manage   every job that is running, waiting or queued, on every workstation, to cancel or
+#              stop: one, an agent's, a workstation's, or all; and give up waiting for a frozen
+#              Wii to come back. Each asks y first.
 #
 # IT NEVER TOUCHES THE WII. Everything comes from this workstation's queue files and
 # dispatcher.log, and from the lease server's status and history: the queue's rule that
@@ -49,7 +52,8 @@ USAGE
 
 OPTIONS
   refresh_seconds   Redraw interval, in seconds. Default: 3.
-  --page=NAME       Page to open: queue, errors, history or log. Default: queue.
+  --page=NAME       Page to open: queue, errors, history, log or manage.
+                    Default: queue.
   --hours=N         The window for errors and history. Default: 24.
   --once            Print one frame and exit (plain text when not a terminal).
   --sort=SECTION:FIELD[:DIR]
@@ -66,9 +70,18 @@ SECTIONS AND FIELDS
   errors    when severity kind host job id detail
   hosts     host jobs failed wii_min turns wait_med wait_max
   waits     when waited host name
+  manage    state turn host id name agent folder age
 
 KEYS
-  1-4 page   n/p or Tab next/previous page   q quit   any other key: refresh now
+  1-5 page   n/p or Tab next/previous page   q quit   any other key: refresh now
+  On the manage page: click a job (or j/k, or the arrow keys) to select it, then
+    c   cancel it (stop it, if it is running)
+    a   cancel every queued job of its agent
+    w   cancel every queued job of its workstation
+    X   cancel every queued job, on every workstation
+    g   give up waiting for a frozen Wii to come back (its data is not saved)
+  Each asks y first. Another workstation's job is cancelled by its own
+  dispatcher, through the lease server, within a few seconds.
 
 NEEDS
   bash 4.3 or newer (macOS: brew install bash), Python 3.8+, a terminal
@@ -112,7 +125,7 @@ declare -A SORT_FIELD SORT_DESC FILTER_VAL
 MONITOR_DEFAULT_REFRESH=3 monitor_parse_args "" "${REST[@]+"${REST[@]}"}"
 [[ "$HOURS" =~ ^[0-9]+([.][0-9]+)?$ ]] && [ "$HOURS" != "0" ] || { echo "monitor.sh: --hours takes a number of hours, not '$HOURS'" >&2; exit 2; }
 [[ "$REFRESH" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "monitor.sh: the refresh is a number of seconds, not '$REFRESH'" >&2; exit 2; }
-monitor_pages_init "$PAGE" queue errors history log
+monitor_pages_init "$PAGE" queue errors history log manage
 
 ERRFILE="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/wiibench-monitor.$$")"
 declare -A KV ROWS NROWS
@@ -543,6 +556,147 @@ render_log() {
     done
 }
 
+# ---------------------------------------------------------------- page: manage
+
+SELECTED=""                                        # the selected job's id
+epoch() { printf -v EPOCH '%(%s)T' -1; }           # EPOCHSECONDS without bash 5
+declare -A MANAGE_AT                               # screen row -> job id, this frame
+CONFIRM=""; CONFIRM_ARGS=()                        # an action waiting for its y
+MSG=""; MSG_UNTIL=0                                # the last action's answer, shown a while
+
+render_manage() {
+    local i fmt nm host color mark n="${NROWS[manage]:-0}" ids=() sel_ok=0
+    MANAGE_AT=()
+    heading "$c_cyan" "MANAGE" "click a job or j/k to select; c cancel/stop it, a its agent's, w its workstation's, X all queued, g give up a freeze wait" manage
+    if [ -n "$CONFIRM" ]; then
+        lines+=("  ${c_bold}${c_yellow}${CONFIRM}  y to do it, any other key to leave it${c_reset}")
+    elif epoch; [ -n "$MSG" ] && (( EPOCH < MSG_UNTIL )); then
+        lines+=("  ${c_green}${MSG}${c_reset}")
+    else
+        lines+=("")
+    fi
+    if [ -n "${KV[recovering_id]:-}" ]; then
+        lines+=("  ${c_red}This workstation keeps the Wii to save ${KV[recovering_name]}'s data after a freeze (${KV[recovering_for]}): reset or power-cycle the Wii, or g to give up.${c_reset}")
+    fi
+    lines+=("")
+    if (( n == 0 )); then
+        placeholder "nothing running or queued anywhere"
+        SELECTED=""
+        return
+    fi
+    name_width $(( 2 + 1 + 8 + 1 + 4 + 1 + 16 + 1 + 22 + 1 + 12 + 1 + 14 + 1 + 8 + 2 ))
+    printf -v fmt "%%1s %%-8s %%4s %%-16s %%-22s %%-%ds %%-12s %%-14s %%8s" "$W"
+    table_header manage "$fmt" mark:' ' state:STATE turn:TURN host:WORKSTATION id:ID name:NAME agent:AGENT folder:FOLDER age:FOR
+    for (( i = 0; i < n; i++ )); do
+        row_fields manage "$i"; ids+=("${F[3]}")
+        [ "${F[3]}" = "$SELECTED" ] && sel_ok=1
+    done
+    if (( ! sel_ok )); then SELECTED=""; fi
+    for (( i = 0; i < n && ${#lines[@]} < ROWS_MAX; i++ )); do
+        row_fields manage "$i"
+        fit "${F[2]}" 16; host="$V"; fit "${F[4]}" "$W"; nm="$V"
+        mark=" "; color=""
+        case "${F[0]}" in running) color="$c_cyan" ;; waiting) color="$c_yellow" ;; esac
+        if [ -n "$SELECTED" ] && [ "${F[3]}" = "$SELECTED" ]; then mark=">"; color=$'\e[7m'; fi
+        table_row "$fmt" "$color" mark:"$mark" state:"${F[0]}" turn:"${F[1]}" host:"$host" id:"${F[3]}" name:"$nm" \
+            agent:"${F[5]}" folder:"${F[6]}" age:"${F[7]}"
+        MANAGE_AT[$ROW_AT]="${F[3]}"
+    done
+    MANAGE_IDS=("${ids[@]}")
+}
+
+# manage_field ID FIELD_INDEX -- sets V to a field of the manage row for job ID
+manage_field() {
+    local i
+    V=""
+    for (( i = 0; i < ${NROWS[manage]:-0}; i++ )); do
+        row_fields manage "$i"
+        [ "${F[3]}" = "$1" ] && { V="${F[$2]}"; return; }
+    done
+}
+
+manage_move() {                                    # j/k: the next or previous job
+    local i n="${#MANAGE_IDS[@]}" at=-1
+    (( n == 0 )) && return
+    for (( i = 0; i < n; i++ )); do [ "${MANAGE_IDS[$i]}" = "$SELECTED" ] && at=$i; done
+    at=$(( at + $1 ))
+    (( at < 0 )) && at=0
+    (( at >= n )) && at=$(( n - 1 ))
+    [ "${MANAGE_IDS[$at]}" = "-" ] || SELECTED="${MANAGE_IDS[$at]}"
+}
+
+# manage_key KEY -- 0 if the manage page took the key
+manage_key() {
+    local key="$1" state agent host
+    if [ -n "$CONFIRM" ]; then                     # the answer to "...? y"
+        if [ "$key" = "y" ] || [ "$key" = "Y" ]; then
+            MSG="$("$PY" "$BENCH" "${CONFIRM_ARGS[@]}" 2>&1 | tr '\n' ' ')"
+            epoch; MSG_UNTIL=$(( EPOCH + 8 ))
+            collect
+        else
+            MSG="left as it was"; epoch; MSG_UNTIL=$(( EPOCH + 3 ))
+        fi
+        CONFIRM=""; CONFIRM_ARGS=()
+        return 0
+    fi
+    case "$key" in
+        j|DOWN) manage_move 1; return 0 ;;
+        k|UP)   manage_move -1; return 0 ;;
+        c)
+            [ -n "$SELECTED" ] || { MSG="select a job first: click it, or j/k"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
+            manage_field "$SELECTED" 0; state="$V"; manage_field "$SELECTED" 4
+            if [ "$state" = "queued" ]; then
+                CONFIRM="Cancel $SELECTED ($V)?"; CONFIRM_ARGS=(cancel "$SELECTED")
+            else
+                CONFIRM="Stop $SELECTED ($V) now? It ends like a timeout."; CONFIRM_ARGS=(stop "$SELECTED")
+            fi ;;
+        a)
+            [ -n "$SELECTED" ] || return 0
+            manage_field "$SELECTED" 5; agent="$V"
+            [ -n "$agent" ] && [ "$agent" != "-" ] || { MSG="that job has no agent"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
+            CONFIRM="Cancel every queued job of agent $agent?"; CONFIRM_ARGS=(cancel --agent "$agent") ;;
+        w)
+            [ -n "$SELECTED" ] || return 0
+            manage_field "$SELECTED" 2; host="$V"
+            CONFIRM="Cancel every queued job on $host?"; CONFIRM_ARGS=(cancel --host "$host") ;;
+        X)
+            CONFIRM="Cancel EVERY queued job, on every workstation?"; CONFIRM_ARGS=(cancel --all) ;;
+        g)
+            [ -n "${KV[recovering_id]:-}" ] || { MSG="no freeze being waited out here"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
+            CONFIRM="Give up waiting for the Wii to save ${KV[recovering_name]}'s data?"; CONFIRM_ARGS=(stop "${KV[recovering_id]}") ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+# The library's monitor_read_input, which reads an arrow key's ESC [ A as a no-op: the same,
+# with UP and DOWN for the arrows (the manage page moves its selection with them).
+monitor_read_input() {
+    local timeout="$1" key rest seq="" c cb col row term
+    MONITOR_INPUT_KEY=""; MONITOR_INPUT_COL=""; MONITOR_INPUT_ROW=""
+    read -s -t "$timeout" -n 1 key || return 1
+    if [ "$key" != $'\e' ]; then
+        MONITOR_INPUT_KEY="$key"
+        return 0
+    fi
+    read -s -t 0.05 -n 2 rest 2>/dev/null
+    case "$rest" in
+        "[A") MONITOR_INPUT_KEY="UP"; return 0 ;;
+        "[B") MONITOR_INPUT_KEY="DOWN"; return 0 ;;
+        "[<") ;;
+        *) return 0 ;;
+    esac
+    while read -s -t 0.05 -n 1 c 2>/dev/null; do
+        seq+="$c"
+        { [ "$c" = "M" ] || [ "$c" = "m" ]; } && break
+    done
+    [[ "$seq" =~ ^([0-9]+)\;([0-9]+)\;([0-9]+)(M|m)$ ]] || return 0
+    cb="${BASH_REMATCH[1]}"; col="${BASH_REMATCH[2]}"; row="${BASH_REMATCH[3]}"; term="${BASH_REMATCH[4]}"
+    { [ "$term" = "M" ] && [ "$cb" = "0" ]; } || return 0
+    MONITOR_INPUT_COL="$col"; MONITOR_INPUT_ROW="$row"
+    return 0
+}
+
 # ---------------------------------------------------------------- frame and loop
 
 # The terminal's size: asked once (two forks), then again only when it changes (SIGWINCH).
@@ -571,6 +725,7 @@ build_frame() {
         errors)  render_errors ;;
         history) render_history ;;
         log)     render_log ;;
+        manage)  render_manage ;;
     esac
 }
 
@@ -622,11 +777,17 @@ while true; do
                 continue                                 # the same snapshot, another page: instant
             elif monitor_header_click "$MONITOR_INPUT_COL" "$MONITOR_INPUT_ROW"; then
                 collect
+            elif [ "$MONITOR_PAGE" = manage ] && [ -n "${MANAGE_AT[$MONITOR_INPUT_ROW]:-}" ]; then
+                [ "${MANAGE_AT[$MONITOR_INPUT_ROW]}" != "-" ] && SELECTED="${MANAGE_AT[$MONITOR_INPUT_ROW]}"
+                continue                                 # selected: redraw at once
             elif monitor_cell_click "$MONITOR_INPUT_COL" "$MONITOR_INPUT_ROW"; then
                 monitor_clipboard_copy "$MONITOR_CELL_VALUE"
                 monitor_flash_cell "$MONITOR_INPUT_ROW" "$MONITOR_CELL_COL_LO" "$MONITOR_CELL_COL_HI" "$MONITOR_CELL_VALUE"
             fi
         else
+            if [ "$MONITOR_PAGE" = manage ] && [ -n "$MONITOR_INPUT_KEY" ] && manage_key "$MONITOR_INPUT_KEY"; then
+                continue                                 # handled: redraw at once
+            fi
             case "$MONITOR_INPUT_KEY" in
                 q|Q) restore_cursor ;;
                 *)   monitor_page_key "$MONITOR_INPUT_KEY" || collect ;;   # a page key redraws at once

@@ -180,6 +180,60 @@ From the 1.3.6 review, each verified in the code first:
   files in 2.5 s) could reload mid-burst. It now also waits while a file
   request is open, and the quiet second starts when one ends.
 
+#### The bench queue: a manage page, jobs that say whose they are, data after a freeze
+
+Tool work in 1.10.3, no version of its own.
+
+- **Asked for:** a way to clear out stuck jobs that an agent did not recognize as its own; why
+  so many errors; and data from a run that froze the Wii hard enough to need a power-off.
+- **Errors, 10-09 to 10-12** (121 jobs, 22 failed):
+  - **Natural (the bench finding things):** WiiStation's crash on Quit, the libogc3 crash
+    and hang tests, the channel's "burst" check, the freeze triage that found a stale
+    `boot.dol`, the MacBook's experiments.
+  - **Agent mistakes the tools now catch earlier or name better:** a 400 MB `.img` to a full
+    SD card, a missing local path, and listings of SD folders that don't exist.
+  - **The queue's own:**
+    - jobs named `python.exe`;
+    - each of this PC's job records logged twice (a kept connection's retry repeated the
+      post);
+    - no way to clear a stuck queue;
+    - a freeze losing the run's data.
+- **Names:** a job given no `--name` is named after its script and first argument
+  (`wii_lab.py fmt_hw`, `hardware_run.sh gpu_survey`), not its interpreter. Every one of
+  WiiStation's jobs on 10-12 was `python.exe`.
+- **Records once:** the server logs a job's record once, whatever the retries.
+- **Cancel and stop, anywhere:**
+  - `cancel ID...`, `--agent`, `--host` and `--all`, and `stop ID`.
+  - A job on another workstation goes through the lease server (`/request`). The server
+    drops a cancelled job from every list at once, and hands the request to the owning
+    workstation's dispatcher with its next acquire or renew (a long poll answers at once).
+    The dispatcher cancels it and acknowledges.
+  - A cancelled job leaves a record with exit `cancelled`, so the agent waiting on it hears
+    so. It is neither a failure nor the Wii's last job.
+  - A stop file ends a running job like a timeout (`stopped`).
+- **The manage page:** the monitor's page 5 lists every job running, waiting or queued on
+  every workstation, with agent and project folder. Click or `j`/`k`/arrows to select; `c`,
+  `a`, `w`, `X` and `g` act, each after `y`.
+- **Freezes:** after a job that left the Wii out of HBC:
+  - **The app's agent answers:** status, the app's output so far and the screen are saved in
+    `runs/ID/freeze/agent/`, and `--collect` fetches through the agent. On 10-09 16:40
+    WiiStation's agent answered while its app was stuck, and nothing was kept.
+  - **Nothing answers:** the dispatcher keeps the Wii and waits for HBC (a reset or a power
+    cycle). It then saves `freeze/after/` (HBC's kept log and crash report, kept by a
+    RESET, lost by a power cut) and collects the job's Wii paths, before any other job.
+    `stop ID` or `g` gives the wait up.
+  - The README says what an app must do for its data to survive a power cut: stream it to
+    the PC, flush it to SD.
+- **Checked:**
+  - Tests for the server's relay (owner, acknowledgement, cancels kept off lists) and for
+    names.
+  - End to end: a cancel from this workstation reached the other's dispatcher, its `wait`
+    returned "cancelled"; `cancel --all`; `stop` of a running job from another workstation.
+  - A stuck app's agent saving `freeze/agent/` and serving `--collect`.
+  - The wait for a frozen Wii, saving and then given up.
+  - The live manage page under a pseudo-terminal: select, cancel with `y`, `X` declined.
+  - 94 tests on Windows and 62 on Linux pass.
+
 ### 1.10.2: a crash inside the agent's crash hook froze the Wii
 
 - USB Loader GX in Dolphin (2026-10-09, MMU on): its ThreadedTask thread

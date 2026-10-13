@@ -83,6 +83,54 @@ A dispatcher or server before 1.10.2 can't number jobs. With an old server, the 
 job each while anyone waits; an old dispatcher counts as one job, received when it joined
 the line. One long job still has the Wii for its whole length.
 
+### Cancelling and stopping, anywhere
+
+```bash
+python tools/wii-bench/wiibench.py cancel ID [ID...]       # here, or on another workstation
+python tools/wii-bench/wiibench.py cancel --agent AGENT     # every queued job of an agent
+python tools/wii-bench/wiibench.py cancel --host HOST       # ... of a workstation
+python tools/wii-bench/wiibench.py cancel --all             # every queued job, everywhere
+python tools/wii-bench/wiibench.py stop ID                  # a running job: ends like a timeout
+```
+
+The monitor's manage page does the same with a click and a key, and asks `y` first: click a
+job (or `j`/`k`, or the arrow keys), then `c` cancels it (or stops it, when it runs), `a`
+cancels its agent's, `w` its workstation's, `X` everything queued, `g` gives up waiting for a
+frozen Wii.
+
+- A job on another workstation is cancelled by that workstation's dispatcher. The lease server
+  hands the request on with the dispatcher's next call, within a few seconds, and drops the job
+  from every list at once.
+- A cancelled job leaves a record with exit `cancelled`: an agent waiting on it gets
+  "cancelled ..." and exit 1, not a job that vanished. It is not counted as a failure.
+- A stopped job ends like a timeout (`stopped`). Then HBC is checked and the job's data is
+  collected as after any job.
+- A job given no `--name` is named after its script and first argument (`wii_lab.py fmt_hw`),
+  not its interpreter. Until 1.10.4 that was `python.exe`, and an agent could not tell its own
+  jobs. Name them anyway, and the manage page also shows each job's agent and project folder.
+
+### When the Wii freezes
+
+After a job, the dispatcher checks that HBC came back. When it did not, what happens depends
+on what still answers:
+
+| After the job | The queue |
+| --- | --- |
+| HBC | as normal: collects the job's data, and the next job goes |
+| The app's agent (`sdk/hbc_agent`): the app is stuck, the agent thread is not | saves `freeze/agent/` in the job's run folder (status, the app's output so far, a picture of the screen), and collects `--collect` paths through the agent |
+| Nothing: a hard freeze, or the Wii is off | keeps the Wii and waits. When someone resets or power-cycles the Wii and HBC runs again, it saves `freeze/after/` (HBC's kept log and crash report, which a RESET keeps and a power cut loses), and collects the job's Wii paths. Only then does the next job go |
+
+The monitor shows such a wait in red on the manage page, and the errors page says what
+happened. `stop ID`, or `g` on the manage page, gives the wait up. After a hard freeze only
+what is already on the PC, or written to the SD card and flushed, survives. So an app that
+may freeze should:
+
+- stream what matters to the PC as it happens: the agent's network log
+  (`sdk/hbc_netlog.h`), or the job's own TCP link, as WiiStation's `lab_net.c` does;
+- close or `fsync` its log files on the SD card often, not only at exit;
+- arm `__exception_setreload(10)` and the agent's hang watchdog, so a crash or a hang comes
+  back to HBC on its own, and the agent keeps the log.
+
 ### Each job's data, kept
 
 Every job gets its own run folder, `<state dir>/runs/<id>/`, named in `$WII_BENCH_OUT`. No
@@ -158,6 +206,7 @@ waits, and anything that needs a look: a Wii left out of HBC, an expired lease, 
 | 2 errors | every problem in the window, newest first: failed and timed-out jobs with their log's last line, a Wii left out of HBC, an expired lease, a workstation that left the line, the lease server unreachable, a dispatcher that crashed, jobs queued with no dispatcher, a workstation still on a dispatcher before 1.9.1 |
 | 3 history | per workstation: jobs, failures, Wii minutes, turns, median and longest wait; hand-over speed; the longest waits |
 | 4 log | the end of this workstation's `dispatcher.log`, problems in colour |
+| 5 manage | every job running, waiting or queued, on every workstation, with its agent and project folder; cancel or stop one, an agent's, a workstation's or all; give up waiting for a frozen Wii |
 
 The two lines under the tabs, on every page, say who has the Wii (or that it was left out of
 HBC), whether the lease server answers, what this dispatcher is doing, and how many errors and

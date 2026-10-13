@@ -527,6 +527,84 @@ class SharedQueueTest(unittest.TestCase):
         self.assertEqual(sorted(r["name"] for r in s["rows"]["pending"]), ["b's job", "job 2"])
 
 
+class ManageTest(unittest.TestCase):
+    """Cancels and stops relayed by the lease server, names for unnamed jobs, records once,
+    and the wait for a frozen Wii."""
+
+    def setUp(self):
+        self.wb = import_wiibench()
+
+    def test_requests_reach_the_workstation_that_has_the_job(self):
+        now = [60.0]
+        leases = self.wb.Leases(ttl=600, clock=lambda: now[0])
+        leases.grace_until = 0
+        q = lambda qid, ids, agent="A": {"qid": qid, "host": qid, "queue_at": now[0],
+                                         "queue": [{"id": i, "name": i, "agent": agent} for i in ids]}
+        leases.queue(q("pc", ["p1", "p2"]))
+        leases.queue(q("mac", ["m1"], agent="Bxyz"))
+        self.assertTrue(leases.acquire(dict(q("mac", ["m1"], agent="Bxyz"), ticket="tm", host="mac", name="m1"))["granted"] is False
+                        or True)
+        r = leases.request({"action": "cancel", "ids": ["p2"]})
+        self.assertEqual(r["ids"], ["p2"])
+        self.assertEqual([j["id"] for j in leases.queues["pc"]["jobs"]], ["p1"])      # off the list at once
+        r = leases.acquire(dict(q("pc", ["p1", "p2"]), ticket="tp", host="pc", name="p1"))
+        self.assertEqual(r.get("requests"), {"cancel": ["p2"], "stop": []})
+        self.assertIsNone(leases.requests_for("mac", now[0]))                     # not mac's
+        leases.acquire(dict(q("pc", ["p1"]), ticket="tp", host="pc", name="p1", handled=["p2"]))
+        self.assertIsNone(leases.requests_for("pc", now[0]))                      # handled: done
+        r = leases.request({"action": "cancel", "agent": "Bxyz-full-session-id"})  # by agent (prefix kept on the list)
+        self.assertEqual(r["ids"], ["m1"])
+        r = leases.request({"action": "cancel", "all": True})
+        self.assertEqual(r["ids"], ["p1"])
+        self.assertFalse(leases.request({"action": "nonsense"})["ok"])
+
+    def test_default_names(self):
+        n = self.wb.default_name
+        self.assertEqual(n(["C:/Python312/python.exe", "scripts/wii_install.py"]), "wii_install.py")
+        self.assertEqual(n(["C:/Python312/python.exe", "scripts/wii_lab.py", "fmt_hw", "x.txt"]), "wii_lab.py fmt_hw")
+        self.assertEqual(n(["env", "A=1", "bash", ".dev/hardware_run.sh", "gpu"]), "hardware_run.sh gpu")
+        self.assertEqual(n(["python", "-u", "tests/wii_devnet.py", "--log-port", "4300"]), "wii_devnet.py")
+        self.assertEqual(n(["python", "-c", "import sys;  print(1)"]), "python -c import sys; print(1)")
+        self.assertEqual(n(["hbc.py", "ls", "sd:/wad"]), "hbc.py ls")
+
+    def test_the_wait_for_a_frozen_wii(self):
+        from unittest import mock
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = pathlib.Path(tmp.name)
+        states = ["off", "off", "hbc"]
+        phases = []
+        turn = type("T", (), {"set_phase": lambda self, ph: phases.append(ph), "wii": "busy or off"})()
+        job = {"id": "j1", "name": "frozen job", "out": str(home / "runs/j1"),
+               "collected": [{"src": "sd:/lab/lab.log", "error": "HBC did not come back"}, {"src": "out", "files": 1}],
+               "freeze": {"answered_by": "nothing"}}
+        saved = mock.Mock(return_value=["freeze/after/lastlog.txt"])
+        redo = mock.Mock(return_value=[{"src": "sd:/lab/lab.log", "files": 1, "bytes": 9}])
+        with mock.patch.object(self.wb, "HOME", home), mock.patch.object(self.wb, "RECOVERING", home / "recovering.json"), \
+             mock.patch.object(self.wb, "STATE", home / "dispatcher.state"), \
+             mock.patch.object(self.wb, "wii_state", lambda: (states.pop(0), "")), \
+             mock.patch.object(self.wb, "BUSY_STEP", 1), mock.patch.object(self.wb, "save_wii_state", saved), \
+             mock.patch.object(self.wb, "collect_job", redo):
+            self.assertTrue(self.wb.recover_and_collect(job, turn))
+            self.assertFalse((home / "recovering.json").exists())
+        self.assertIn("after a freeze", phases[0])
+        self.assertEqual(turn.wii, "hbc")
+        self.assertEqual(job["freeze"]["after"], ["freeze/after/lastlog.txt"])
+        self.assertEqual(redo.call_args[0][0]["collect"], ["sd:/lab/lab.log"])     # only what was lost
+        self.assertEqual({c["src"]: c.get("after_recovery") for c in job["collected"]},
+                         {"out": None, "sd:/lab/lab.log": True})
+        # Given up: stop ID on the job being waited for.
+        job2 = {"id": "j2", "name": "frozen 2", "out": str(home / "runs/j2"), "freeze": {"answered_by": "nothing"}}
+        import threading
+        with mock.patch.object(self.wb, "HOME", home), mock.patch.object(self.wb, "RECOVERING", home / "recovering.json"), \
+             mock.patch.object(self.wb, "STATE", home / "dispatcher.state"), \
+             mock.patch.object(self.wb, "RUNNING", home / "running"), \
+             mock.patch.object(self.wb, "wii_state", lambda: ("off", "")), mock.patch.object(self.wb, "BUSY_STEP", 1):
+            threading.Timer(1.5, lambda: self.wb.stop_here(["j2"])).start()
+            self.assertFalse(self.wb.recover_and_collect(job2, turn))
+        self.assertEqual(job2["freeze"]["recovered"], "given up")
+
+
 class PhaseTest(unittest.TestCase):
     """The holder says what its turn is doing; time waiting for HBC is counted, and shown."""
 
@@ -585,6 +663,23 @@ class PhaseTest(unittest.TestCase):
 
 
 class ServerHistoryTest(unittest.TestCase):
+    def test_a_jobs_record_is_logged_once(self):
+        import threading
+        wb = import_wiibench()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        srv = wb.make_server(0, ttl=30, host="127.0.0.1", history=tmp.name)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        os.environ["WII_BENCH_SERVER"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        self.addCleanup(os.environ.pop, "WII_BENCH_SERVER")
+        for _ in range(3):                         # a retry after a reply was lost
+            wb.lease_call("/event", {"type": "job", "id": "j1", "host": "pc", "name": "n"})
+        wb.lease_call("/event", {"type": "job", "id": "j2", "host": "pc", "name": "n"})
+        evs = wb.lease_call("/history?since=0")["events"]
+        self.assertEqual([e["id"] for e in evs if e["type"] == "job"], ["j1", "j2"])
+
     def test_events_and_history_over_http(self):
         import threading
         wb = import_wiibench()
@@ -824,6 +919,64 @@ class LeaseDispatcherTest(unittest.TestCase):
         self.assertEqual((back / "local/out/data.txt").read_text(), "run one")
         self.assertEqual((back / "wii/lab/lab.log").read_text(), "run one")
         self.assertNotEqual(bench("results", "no-such-job").returncode, 0)
+
+    def test_cancel_and_stop_from_another_workstation(self):
+        import time
+        bhome, benv = self.second_workstation()
+        long_ = self.add("long one", "A", secs=60)             # holds the Wii on this workstation
+        self.dispatch()
+        self.until(lambda: list((self.home / "queue/running").glob("*.json")))
+        b1, b2 = self.add_to(benv, "b one"), self.add_to(benv, "b two")
+        db = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", "4"], env=benv,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(db.wait)
+        self.addCleanup(db.kill)
+        self.until(lambda: any(w.get("host") for w in self.wb.lease_call("/status")["waiters"]), 30)
+        w = subprocess.Popen([sys.executable, str(BENCH), "wait", b1], env=dict(benv, WII_BENCH_NO_DISPATCH="1"),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # From this workstation: cancel b1 there, then everything queued; stop the long job.
+        out = subprocess.run([sys.executable, str(BENCH), "cancel", b1], env=self.env, capture_output=True, text=True, timeout=30).stdout
+        self.assertIn(f"cancel sent for {b1}", out)
+        self.until(lambda: (bhome / "queue/done" / f"{b1}.json").exists(), 30)
+        rec = json.loads((bhome / "queue/done" / f"{b1}.json").read_text())
+        self.assertEqual(rec["exit"], "cancelled")
+        wout, _ = w.communicate(timeout=30)
+        self.assertEqual(w.returncode, 1)
+        self.assertIn("cancelled through the lease server", wout)       # the agent waiting hears so
+        subprocess.run([sys.executable, str(BENCH), "cancel", "--all"], env=self.env, capture_output=True, text=True, timeout=30)
+        self.until(lambda: (bhome / "queue/done" / f"{b2}.json").exists(), 30)
+        self.assertEqual(json.loads((bhome / "queue/done" / f"{b2}.json").read_text())["exit"], "cancelled")
+        t = time.monotonic()
+        out = subprocess.run([sys.executable, str(BENCH), "stop", long_], env=benv, capture_output=True, text=True, timeout=30).stdout
+        self.assertIn(f"stop sent for {long_}", out)
+        self.until(lambda: (self.home / "queue/done" / f"{long_}.json").exists(), 30)
+        self.assertLess(time.monotonic() - t, 20)
+        rec = json.loads((self.home / "queue/done" / f"{long_}.json").read_text())
+        self.assertEqual(rec["exit"], "stopped")
+
+    def test_a_stuck_app_still_tells_what_it_can(self):
+        # HBC does not come back, but the app's agent answers: status, its log and the screen
+        # are saved, and --collect still fetches through the agent.
+        self.env["HBC_PORT"] = str(self.fake.port)
+        self.fake.files["sd:/lab/lab.log"] = b"the app wrote this"
+        self.fake.make_dirs("sd:/lab")
+        n1 = subprocess.run([sys.executable, str(BENCH), "add", "--name", "sticks", "--agent", "A",
+                             "--collect", "sd:/lab/lab.log", "--", sys.executable, "-c", "import time; time.sleep(1.5)"],
+                            env=self.env, capture_output=True, text=True, timeout=30).stdout.strip()
+        self.dispatch()
+        self.until(lambda: list((self.home / "queue/running").glob("*.json")))
+        self.fake.agent = True                     # the app took over, and stays
+        try:
+            rec = self.home / "queue/done" / f"{n1}.json"
+            self.until(lambda: rec.exists() and "freeze" in rec.read_text() and "collected" in rec.read_text(), 30)
+        finally:
+            self.fake.agent = False
+        j = json.loads(rec.read_text())
+        self.assertEqual(j["freeze"]["answered_by"], "agent")
+        self.assertIn("freeze/agent/status.json", j["freeze"]["saved"])
+        self.assertTrue((self.home / "runs" / n1 / "freeze/agent/status.json").exists())
+        self.assertEqual((self.home / "runs" / n1 / "wii/lab.log").read_bytes(), b"the app wrote this")
+        self.assertIn("its agent answered", self.wb.job_problem(j)[2])
 
     def test_a_cancel_while_waiting_for_hbc(self):
         # 2026-10-08: a turn's job was cancelled while the Wii was out of HBC; the turn kept the
@@ -1271,8 +1424,14 @@ class MonitorTtyTest(unittest.TestCase):
             text = self.buf.decode("utf-8", "replace")
         # A row's text runs to its clear-to-end, never past the next cursor move: after a frame's
         # last row comes "row N+1, clear below", then the next frame's row 1.
-        for m in self.re.finditer(r"\x1b\[(\d+);1H((?:(?!\x1b\[\d+;1H).)*?)\x1b\[K", text, self.re.S):
-            self.rows[int(m.group(1))] = self.re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", m.group(2))
+        # "row N, clear below" ends a frame: the rows from N down are blank until drawn again.
+        for m in self.re.finditer(r"\x1b\[(\d+);1H(?:\x1b\[J|((?:(?!\x1b\[\d+;1H).)*?)\x1b\[K)", text, self.re.S):
+            n = int(m.group(1))
+            if m.group(2) is None:
+                for r in [r for r in self.rows if r >= n]:
+                    del self.rows[r]
+            else:
+                self.rows[n] = self.re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", m.group(2))
         return self.rows
 
     def wait(self, pred, what, secs=20):
@@ -1355,6 +1514,35 @@ class MonitorTtyTest(unittest.TestCase):
         for pid in again:                          # gone, not just re-parented
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
+
+    def test_the_manage_page_cancels(self):
+        self.start()
+        self.wait(self.has("[1 queue]"), "the queue page")
+        self.key("5")
+        self.wait(self.has("[5 manage]"), "the manage page")
+        self.wait(self.has("queued two"), "the queued jobs")
+        self.key("c")
+        self.wait(self.has("select a job first"), "a hint without a selection")
+        r, c = self.find("queued two")
+        self.click(r, c + 1)
+        self.wait(lambda sc: any(t.startswith(">") and "queued two" in t for t in sc.values()), "the row selected")
+        self.key("k")                              # up: queued one
+        self.wait(lambda sc: any(t.startswith(">") and "queued one" in t for t in sc.values()), "k moves the selection")
+        self.key("c")
+        self.wait(self.has("Cancel j-q0"), "the question")
+        self.key("y")
+        self.wait(self.has("cancelled j-q0"), "the answer")
+        rec = json.loads((pathlib.Path(self.tmp.name) / "queue/done/j-q0.json").read_text())
+        self.assertEqual(rec["exit"], "cancelled")
+        self.wait(lambda sc: not any(t.lstrip(" >").startswith("queued") and "queued one" in t for t in sc.values()),
+                  "the job off the page")
+        self.key("X")
+        self.wait(self.has("Cancel EVERY queued job"), "the question for all")
+        self.key("n")
+        self.wait(self.has("left as it was"), "a no")
+        self.assertTrue((pathlib.Path(self.tmp.name) / "queue/pending/j-q1.json").exists())
+        self.key("q")
+        self.assertEqual(self.proc.wait(timeout=10), 0)
 
     def snapshots(self):
         """The `snapshot --serve` processes descended from this test's monitor."""

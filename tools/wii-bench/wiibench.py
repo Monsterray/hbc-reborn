@@ -282,6 +282,7 @@ TTL = 60                                           # a lease or a place in line 
 # a Wii left out of HBC (WiiXplorer) with the next job waiting for it.
 WAITING_FOR_HBC = "waiting for HBC"
 QUEUE_MAX = 50        # jobs per workstation the server keeps (and the total, for the rest)
+REQUEST_TTL = 3600    # s a cancel or stop waits for the workstation that has the job
 RESERVE = 10          # s the Wii waits for the workstation with the earliest job to ask for it
 
 
@@ -307,6 +308,11 @@ class Leases:
         # Receive order: every job gets a number when the server first hears of it (add tells it
         # at once), and the Wii goes to the earliest-received job, whichever workstation has it.
         self.seq, self.received = 0, {}
+        # Cancels and stops for jobs on other workstations (from the monitor's manage page or
+        # `cancel`/`stop` there), handed to the workstation's dispatcher with its next acquire or
+        # renew: job id -> ("cancel"|"stop", when). Kept REQUEST_TTL s.
+        self.requests = {}
+        self.jobs_logged = {}                      # job id -> when its record was logged (no twice)
 
     def queue(self, d):
         """A workstation's queued jobs, from /queue or with an acquire or renew. A dispatcher
@@ -326,6 +332,8 @@ class Leases:
         for j in jobs_[:QUEUE_MAX]:                # a workstation's own list is in its receive order
             if not isinstance(j, dict) or not j.get("id"):
                 continue
+            if self.requests.get(j["id"], ("",))[0] == "cancel":
+                continue                           # cancelled: its workstation has not heard yet
             if j["id"] not in self.received:
                 self.seq += 1
                 self.received[j["id"]] = self.seq
@@ -333,6 +341,49 @@ class Leases:
         self.queues[q] = {"qid": q, "host": d.get("host"), "jobs": listed, "total": d.get("total", len(jobs_)),
                           "queue_at": d.get("queue_at", 0), "seen": now}
         return {"ok": True}
+
+    def request(self, d):
+        """Cancel or stop jobs: by id, or every queued job of an agent, a host, or all."""
+        now = self.clock()
+        action = d.get("action")
+        if action not in ("cancel", "stop"):
+            return {"ok": False, "error": "action: cancel or stop"}
+        ids = set(d.get("ids") or [])
+        if action == "cancel" and (d.get("agent") or d.get("host") or d.get("all")):
+            for q in self.queues.values():
+                for j in q["jobs"]:
+                    if (d.get("all") or (d.get("host") and q["host"] == d["host"])
+                            or (d.get("agent") and j.get("agent") and str(d["agent"]).startswith(j["agent"]))):
+                        ids.add(j["id"])
+        for i in ids:                              # whose job it is: the list that has it, or the holder
+            owner = next((q["qid"] for q in self.queues.values() if any(j["id"] == i for j in q["jobs"])), None)
+            if owner is None and self.holder and self.holder.get("job") == i:
+                owner = self.holder.get("qid")
+            self.requests[i] = (action, now, owner)
+        if action == "cancel":                     # off every list now, so monitors stop showing them
+            for q in self.queues.values():
+                q["jobs"] = [j for j in q["jobs"] if j["id"] not in ids]
+        self.log({"type": action, "ids": sorted(ids), "by": d.get("by"), "host": d.get("by_host")})
+        return {"ok": True, "ids": sorted(ids)}
+
+    def requests_for(self, qid, now):
+        """The cancels and stops waiting for this workstation: its own jobs', and those of jobs
+        no list knew (a dispatcher before 1.10.4), which go to every workstation until they expire."""
+        out = {"cancel": [], "stop": []}
+        for i, (action, t, owner) in list(self.requests.items()):
+            if now - t > REQUEST_TTL:
+                del self.requests[i]
+            elif owner in (qid, None):
+                out[action].append(i)
+        if not out["cancel"] and not out["stop"]:
+            return None
+        return out
+
+    def done_with(self, ids, qid=None):
+        """The workstation handled these: its own are done (one nobody owned waits for its TTL)."""
+        for i in ids or []:
+            if i in self.requests and self.requests[i][2] is not None and self.requests[i][2] == qid:
+                del self.requests[i]
 
     def _head_seq(self, w):
         """When the job a waiter waits with was received: its queue's first job, or (a
@@ -383,11 +434,13 @@ class Leases:
 
     def acquire(self, d):
         now = self.clock()
+        self.done_with(d.get("handled"), d.get("qid"))
         if "queue" in d:
             self.queue(d)
-            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total")}
+            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total", "handled")}
         self._expire(now)
         t = d["ticket"]
+        reqs = self.requests_for(d.get("qid"), now) if d.get("qid") else None
         if self.holder and self.holder["ticket"] == t:
             self.holder["seen"] = now
             return {"granted": True}
@@ -408,14 +461,21 @@ class Leases:
             # skip most of its idle wait.
             ago = None if self.released_at is None else round(now - self.released_at, 1)
             self._event("grant", w, waited_s=round(now - w["joined"], 1), released_ago=ago)
-            return {"granted": True, "released_ago": ago}
-        return {"granted": False, "position": line.index(t) + 1, "holder": self._show(self.holder, now)}
+            r = {"granted": True, "released_ago": ago}
+            if reqs:                               # cancels for the jobs it got the Wii with
+                r["requests"] = reqs
+            return r
+        r = {"granted": False, "position": line.index(t) + 1, "holder": self._show(self.holder, now)}
+        if reqs:
+            r["requests"] = reqs
+        return r
 
     def renew(self, d):
         now = self.clock()
+        self.done_with(d.get("handled"), d.get("qid"))
         if "queue" in d:
             self.queue(d)
-            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total")}
+            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total", "handled")}
         self._expire(now)
         if self.holder is None and d["ticket"] not in self.waiters:   # after a restart: reclaim
             self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed", granted_at=now)
@@ -430,8 +490,12 @@ class Leases:
                 self._phase_end(now)
                 self.holder["phase"], self.holder["phase_at"] = d["phase"], now
             nxt = self.next_up()
-            return {"ok": True, "waiting": len(self.waiters), "next": nxt,
-                    "next_is_mine": nxt is not None and nxt == self.holder.get("qid")}
+            r = {"ok": True, "waiting": len(self.waiters), "next": nxt,
+                 "next_is_mine": nxt is not None and nxt == self.holder.get("qid")}
+            reqs = self.requests_for(self.holder.get("qid"), now) if self.holder.get("qid") else None
+            if reqs:
+                r["requests"] = reqs
+            return r
         return {"ok": False, "waiting": len(self.waiters)}
 
     def _phase_end(self, now):
@@ -442,6 +506,7 @@ class Leases:
 
     def release(self, d):
         now = self.clock()
+        self.done_with(d.get("handled"), d.get("qid"))
         if "queue" in d:                           # what is left queued there, as it lets go
             self.queue(d)
         if self.holder and self.holder["ticket"] == d["ticket"]:
@@ -641,11 +706,24 @@ def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
             if self.path == "/event":              # a job's record from a dispatcher
                 if not isinstance(d.get("type"), str):
                     return self.reply({"error": "bad request"}, 400)
-                log(d)
+                with cond:
+                    seen = d.get("type") == "job" and d.get("id") in leases.jobs_logged
+                    if d.get("type") == "job" and d.get("id"):
+                        leases.jobs_logged[d["id"]] = time.monotonic()
+                        if len(leases.jobs_logged) > 5000:
+                            for k in sorted(leases.jobs_logged, key=leases.jobs_logged.get)[:1000]:
+                                del leases.jobs_logged[k]
+                if not seen:                       # a retry of one already logged: once is enough
+                    log(d)
                 return self.reply({"ok": True})
             if self.path == "/queue":              # a workstation's queued jobs, from add or cancel
                 with cond:
                     r = leases.queue(d)
+                return self.reply(r, 200 if r["ok"] else 400)
+            if self.path == "/request":            # cancel or stop jobs, wherever they are
+                with cond:
+                    r = leases.request(d)
+                    cond.notify_all()              # a waiter whose job it is hears at once
                 return self.reply(r, 200 if r["ok"] else 400)
             op = {"/acquire": leases.acquire, "/renew": leases.renew, "/release": leases.release}.get(self.path)
             try:
@@ -657,9 +735,9 @@ def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
                 return self.reply({"error": "not found"}, 404)
             with cond:
                 r = op(d)
-                if op == leases.acquire:           # a long poll: answer once granted, or after wait
+                if op == leases.acquire:           # a long poll: answer once granted, a cancel, or after wait
                     end = time.monotonic() + wait
-                    while not r["granted"] and time.monotonic() < end:
+                    while not r["granted"] and not r.get("requests") and time.monotonic() < end:
                         cond.wait(min(1.0, end - time.monotonic()))   # 1 s: expiry is by time
                         r = op(d)
                 else:
@@ -815,6 +893,7 @@ class Turn:
         self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name, "qid": queue_id()}
         self.job_id, self.stop, self.released_ago = job_id, None, None
         self.wii = "hbc"                           # what the Wii was doing at the release
+        self.empty = False                         # all its jobs were cancelled before it got the Wii
 
     def rename(self, name):
         """The job this turn is for now (the one it was for was cancelled): told at once."""
@@ -869,12 +948,22 @@ class Turn:
             return self
         import threading
         said = None
+        handled = []
         while True:
             t = time.monotonic()
             try:
-                r = lease_call("/acquire", dict(self.info, wait=LONG_POLL, **queue_payload()), timeout=LONG_POLL + 10)
+                r = lease_call("/acquire", dict(self.info, wait=LONG_POLL, handled=handled, **queue_payload()),
+                               timeout=LONG_POLL + 10)
             except OSError as e:
                 r = {"granted": False, "error": str(e)}
+            handled = apply_requests(r.get("requests"))
+            if handled and not jobs(PENDING):      # everything it waited with was cancelled
+                try:
+                    lease_call("/release", dict(self.info, handled=handled, **queue_payload()))
+                except OSError:
+                    pass
+                self.empty = True
+                return self
             if r["granted"]:
                 break
             msg = (f"lease server {lease_server()} unreachable: {r['error']}" if "error" in r else
@@ -891,9 +980,12 @@ class Turn:
         self.stop = threading.Event()
 
         def renew():
-            while not self.stop.wait(TTL / 4):
+            handled = []
+            while not self.stop.wait(min(TTL / 4, 5)):   # every 5 s: a stop is heard soon
                 try:
-                    if not lease_call("/renew", dict(self.info, **queue_payload()))["ok"]:
+                    r = lease_call("/renew", dict(self.info, handled=handled, **queue_payload()))
+                    handled = apply_requests(r.get("requests"))
+                    if not r["ok"]:
                         say("lease lost: another workstation may have the Wii")
                 except OSError:
                     pass                           # retried; the server keeps it for TTL
@@ -947,6 +1039,34 @@ def cmd_setup(a):
     print("Jobs that use the network log need inbound TCP 4300 open on this machine.")
 
 
+INTERPRETERS = ("python", "python3", "py", "pythonw", "bash", "sh", "zsh", "env", "cmd", "powershell", "pwsh", "node")
+
+
+def default_name(cmd):
+    """A job's name when add gets no --name: its script and first argument, not the interpreter.
+    "python.exe" named every one of WiiStation's jobs on 2026-10-12, and its agent could not tell
+    them for its own."""
+    words, inline = [], False
+    for w in cmd:
+        base = pathlib.Path(w).name
+        stem = base.lower().removesuffix(".exe")
+        if not words:
+            if w == "-c":                          # python -c CODE: the code is the name
+                inline = True
+                continue
+            if inline:
+                return ("python -c " + " ".join(w.split()))[:80]
+            if stem in INTERPRETERS or stem.startswith("python") or ("=" in w and not w.startswith("-")) or w.startswith("-"):
+                continue                           # the interpreter, env VAR=..., its options
+            words.append(base)
+        else:                                      # the script's first argument, unless options start
+            if not w.startswith("-"):
+                words.append(w)
+            break
+    name = " ".join(words) or pathlib.Path(cmd[0]).name
+    return name[:80]
+
+
 def job_agent(given=None):
     """Who queued the job, so the same agent's back-to-back jobs can run as one chain:
     --agent, else $WII_BENCH_AGENT, else the Claude Code session, else nobody (no chain)."""
@@ -974,9 +1094,61 @@ def queue_payload():
             continue
         t0 = _parse_local(j.get("added")) or now
         out.append({"id": j["id"], "name": j.get("name"), "agent": (j.get("agent") or "")[:12],
-                    "age_s": round(now - t0)})
+                    "folder": pathlib.Path(j.get("cwd") or ".").name, "age_s": round(now - t0)})
     return {"qid": queue_id(), "host": socket.gethostname(), "queue": out, "total": len(q),
             "queue_at": time.time()}
+
+
+def cancel_here(ids, why="cancelled"):
+    """Cancel pending jobs of this workstation: each leaves a record in done/ with exit
+    "cancelled", so an agent waiting on it hears so instead of "no job". Returns those cancelled."""
+    out = []
+    for i in ids:
+        p = PENDING / f"{i}.json"
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            continue
+        j.update(exit="cancelled", secs=0, finished=time.strftime("%Y-%m-%d %H:%M:%S"), cancelled=why)
+        DONE.mkdir(parents=True, exist_ok=True)
+        try:
+            fs_retry(p.unlink)
+        except OSError:
+            continue                               # started meanwhile, or another cancel had it
+        (DONE / f"{i}.json").write_text(json.dumps(j, indent=1))
+        (DONE / f"{i}.log").write_text(f"{why}\n")
+        out.append(i)
+    return out
+
+
+def stop_here(ids):
+    """Ask this workstation's dispatcher to stop running jobs: a stop file it looks for every
+    second (the job then ends like a timeout, "stopped")."""
+    out = []
+    try:
+        recovering = json.loads(RECOVERING.read_text()).get("id")
+    except (OSError, ValueError):
+        recovering = None
+    for i in ids:
+        if (RUNNING / f"{i}.json").exists():
+            (RUNNING / f"{i}.stop").write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+            out.append(i)
+        elif i == recovering:                      # waiting for a frozen Wii to come back: give up
+            (HOME / "recovering.giveup").write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+            out.append(i)
+    return out
+
+
+def apply_requests(reqs):
+    """Cancels and stops relayed by the lease server for this workstation's jobs."""
+    if not reqs:
+        return []
+    done = cancel_here(reqs.get("cancel") or [], "cancelled through the lease server")
+    done += stop_here(reqs.get("stop") or [])
+    gone = [i for i in reqs.get("cancel") or [] if not (PENDING / f"{i}.json").exists()]
+    if done:
+        say(f"by request: {', '.join(done)}")
+    return sorted(set(done) | set(gone) | set(i for i in reqs.get("stop") or [] if not (RUNNING / f"{i}.json").exists()))
 
 
 def send_queue():
@@ -994,7 +1166,7 @@ def cmd_add(a):
     if not a.cmd:
         sys.exit("add: give the command after --")
     job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
-    job = {"id": job_id, "name": a.name or pathlib.Path(a.cmd[0]).name, "cwd": str(pathlib.Path(a.cwd).resolve()),
+    job = {"id": job_id, "name": a.name or default_name(a.cmd), "cwd": str(pathlib.Path(a.cwd).resolve()),
            "cmd": a.cmd, "timeout": a.timeout, "added": time.strftime("%Y-%m-%d %H:%M:%S"),
            "agent": job_agent(a.agent)}
     if a.collect:
@@ -1038,11 +1210,21 @@ def run_job(p, started=None):
             proc = subprocess.Popen(job["cmd"], cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, env=env,
                                     **(job_window() if WINDOWS else {"start_new_session": True}))
-            try:
-                job["exit"] = proc.wait(timeout=job.get("timeout") or TIMEOUT)
-            except subprocess.TimeoutExpired:
-                kill_tree(proc)
-                job["exit"] = "timeout"
+            limit, stop = time.monotonic() + (job.get("timeout") or TIMEOUT), RUNNING / f"{job['id']}.stop"
+            while True:                            # its timeout, or a stop (the manage page, `stop`)
+                try:
+                    job["exit"] = proc.wait(timeout=1)
+                    break
+                except subprocess.TimeoutExpired:
+                    if stop.exists():
+                        kill_tree(proc)
+                        job["exit"] = "stopped"
+                        out.write(f"\nstopped on request ({stop.read_text().strip()})\n")
+                        break
+                    if time.monotonic() > limit:
+                        kill_tree(proc)
+                        job["exit"] = "timeout"
+                        break
         except OSError as e:
             out.write(f"could not start: {e}\n")
             job["exit"] = "not started"
@@ -1051,6 +1233,7 @@ def run_job(p, started=None):
     (DONE / f"{job['id']}.json").write_text(json.dumps(job, indent=1))
     fs_retry(log.rename, DONE / log.name)
     fs_retry(r.unlink)
+    (RUNNING / f"{job['id']}.stop").unlink(missing_ok=True)
     print(f"{job['finished']} done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s", flush=True)
     return job
 
@@ -1065,6 +1248,85 @@ def _tree_size(path):
             except OSError:
                 pass
     return files, size
+
+
+def hbc_cmd(*args, timeout=60):
+    """hbc.py against the bench Wii, outside any job (the queue's own requests between jobs)."""
+    env = dict(os.environ, HBC_PORT=str(PORT))
+    env.pop("WII_BENCH_JOB", None)
+    return subprocess.run([sys.executable, str(HBC_PY), "--wii", WII, *args], env=env, capture_output=True,
+                          timeout=timeout)
+
+
+def save_wii_state(job, folder, what):
+    """What the Wii can still tell about a job that did not end in HBC, into the job's run folder
+    (runs/ID/freeze/FOLDER): status, a picture of the screen, the app's log so far or the one HBC
+    kept, and HBC's crash report. Each that answers is a file; the rest are noted. Returns the
+    files saved."""
+    out = pathlib.Path(job["out"]) / "freeze" / folder
+    out.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for name, args in (("status.json", ("--json", "status")), ("lastlog.txt", ("lastlog",)),
+                       ("crash.txt", ("crash",)), ("screen.png", ("screen", str(out / "screen.png")))):
+        if name not in what:
+            continue
+        try:
+            r = hbc_cmd(*args)
+            if name != "screen.png":
+                (out / name).write_bytes(r.stdout + (b"\n" + r.stderr if r.returncode and r.stderr else b""))
+            if r.returncode == 0 or name != "screen.png":
+                saved.append(f"freeze/{folder}/{name}")
+        except (OSError, subprocess.SubprocessError) as e:
+            (out / (name + ".error")).write_text(str(e))
+    return saved
+
+
+RECOVERING = HOME / "recovering.json"              # the job whose data waits for the Wii to come back
+
+
+def recover_and_collect(job, turn):
+    """A job left the Wii with nothing answering: frozen hard, or off. The data still on its SD
+    card (whatever the app flushed) and what HBC kept (a reset keeps MEM2; a power cut does not)
+    can only be fetched once HBC runs again, after someone resets or power-cycles the Wii, and
+    before another job can overwrite them. So this turn keeps the Wii and waits, then saves
+    HBC's kept log and crash report and collects the job's Wii paths, and only then lets the
+    next job go. `stop ID` (or the monitor's manage page) gives up the wait."""
+    giveup = HOME / "recovering.giveup"
+    giveup.unlink(missing_ok=True)
+    RECOVERING.write_text(json.dumps({"id": job["id"], "name": job.get("name"), "since": time.time()}))
+    turn.set_phase(f"{WAITING_FOR_HBC}: to save the data of {job.get('name')} after a freeze (reset or power-cycle the Wii)")
+    report(job["id"], "waiting for the Wii to be reset, to save this job's data")
+    say(f"{job['id']}: nothing answers; waiting for HBC to save its data (stop {job['id']} gives up)")
+    t0 = time.monotonic()
+    try:
+        while True:
+            if giveup.exists():
+                job["freeze"]["recovered"] = "given up"
+                say(f"{job['id']}: gave up waiting for the Wii")
+                return False
+            state, _ = wii_state()
+            if state == "hbc":
+                break
+            for _ in range(int(BUSY_STEP)):        # look for a give-up every second, probe every BUSY_STEP
+                time.sleep(1)
+                if giveup.exists():
+                    break
+        job["freeze"]["recovered_after_s"] = round(time.monotonic() - t0)
+        job["freeze"]["after"] = save_wii_state(job, "after", ("status.json", "lastlog.txt", "crash.txt"))
+        late = [c for c in job.get("collected") or [] if c.get("error") and c["src"].split(":", 1)[0].lower()
+                in ("sd", "usb", "usb1", "usb2")]
+        if late:
+            redo = collect_job(dict(job, collect=[c["src"] for c in late]), True)
+            for c in redo:
+                c["after_recovery"] = True
+            keep = [c for c in job.get("collected") or [] if c not in late]
+            job["collected"] = keep + redo
+        turn.wii = "hbc"
+        say(f"{job['id']}: HBC is back after {job['freeze']['recovered_after_s']} s; its data is saved")
+        return True
+    finally:
+        RECOVERING.unlink(missing_ok=True)
+        giveup.unlink(missing_ok=True)
 
 
 def collect_job(job, wii_ok):
@@ -1349,9 +1611,10 @@ def cmd_rollover(a):
           f"the archive at most {ARCHIVE_MAX_GB:g} GB ({ARCHIVE})")
 
 
-def finish_job(job, turn):
+def finish_job(job, turn, again=False):
     """After the HBC check: the job's record gets it, and the job goes into the history,
-    the lease server's (every workstation's) and this workstation's own."""
+    the lease server's (every workstation's) and this workstation's own. `again`: the record
+    after a frozen Wii came back (or was given up), as an event of its own."""
     p = DONE / f"{job['id']}.json"
     tmp = DONE / f"{job['id']}.json.tmp"
     tmp.write_text(json.dumps(job, indent=1))
@@ -1360,9 +1623,9 @@ def finish_job(job, turn):
     except OSError as e:                           # the record without the check, not a crash
         say(f"could not update {p.name}: {e}")
         tmp.unlink(missing_ok=True)
-    ev = {"type": "job", "host": socket.gethostname(), **{k: job.get(k) for k in (
+    ev = {"type": "recovery" if again else "job", "host": socket.gethostname(), **{k: job.get(k) for k in (
         "id", "name", "agent", "added", "started", "finished", "secs", "exit", "timeout",
-        "hbc_back_s", "hbc_version", "wii_left", "chained")},
+        "hbc_back_s", "hbc_version", "wii_left", "chained", "freeze")},
           "collected": [{k: c.get(k) for k in ("src", "files", "bytes", "error")} for c in job.get("collected") or []]}
     try:
         History(HOME / "history").write(ev)
@@ -1544,6 +1807,8 @@ def cmd_run(a):
             except (OSError, ValueError):          # cancelled meanwhile
                 continue
             with Turn(head["name"], head["id"]) as turn:   # other workstations' jobs go first if first in line
+                if turn.empty:                     # cancelled while it waited for the Wii
+                    continue
                 ago = turn.released_ago
                 recent = ((last_end is not None and time.monotonic() - last_end < RECENT)
                           or (ago is not None and ago < RECENT))
@@ -1556,7 +1821,11 @@ def cmd_run(a):
                     try:
                         pj = load(p)
                         agent = pj.get("agent")
-                        job = run_job(p, lambda: turn.set_phase(f"running: {pj.get('name')}"))
+                        def started(pj=pj):
+                            turn.info["job"] = pj["id"]
+                            turn.set_phase(f"running: {pj.get('name')}")
+                        job = run_job(p, started)
+                        turn.info.pop("job", None)
                     except (FileNotFoundError, ValueError):   # cancelled just before it started
                         break
                     last_end = time.monotonic()
@@ -1564,14 +1833,25 @@ def cmd_run(a):
                     turn.set_phase("checking HBC after the job")
                     back_s, turn.wii, hbc_version = hbc_back()
                     job.update(hbc_back_s=back_s, hbc_version=hbc_version, chained=chained)
+                    answers = "hbc" if back_s is not None else ("agent" if turn.wii.startswith("busy: ") else "nothing")
                     if back_s is None:
                         job["wii_left"] = turn.wii
                         say(f"the Wii did not come back to HBC within {RETURN_WAIT} s: {turn.wii}")
+                        job["freeze"] = {"answered_by": answers}
+                        if answers == "agent":     # the app is stuck but its agent answers: ask it now
+                            turn.set_phase("saving what the stuck app can tell")
+                            job["freeze"]["saved"] = save_wii_state(job, "agent", ("status.json", "lastlog.txt", "screen.png"))
                     # Its data, before anything else gets the Wii: the next run cannot overwrite it.
+                    # A stuck app's agent serves files too; with nothing answering, see below.
                     if job.get("collect"):
                         turn.set_phase("collecting the job's data")
-                        job["collected"] = collect_job(job, back_s is not None)
+                        job["collected"] = collect_job(job, answers != "nothing")
                     finish_job(job, turn)
+                    if answers == "nothing":       # a hard freeze: keep the Wii until it is back
+                        recover_and_collect(job, turn)
+                        finish_job(job, turn, again=True)
+                        rollover()
+                        break
                     rollover()
                     if back_s is None:
                         break
@@ -1677,7 +1957,8 @@ def cmd_wait(a):
             j = load(p)
             lines = (DONE / f"{a.id}.log").read_text(encoding="utf-8", errors="replace").splitlines()
             print("\n".join(lines[-a.tail:]))
-            print(f"job {a.id} {j['name']}: exit {j['exit']} in {j['secs']} s")
+            print(f"job {a.id} {j['name']}: " + (f"{j.get('cancelled', 'cancelled')}" if j["exit"] == "cancelled" else
+                                                  f"exit {j['exit']} in {j.get('secs', 0)} s"))
             sys.exit(j["exit"] if isinstance(j["exit"], int) else 1)
         if d == PENDING and not dispatcher_pid():
             start_dispatcher()
@@ -2018,10 +2299,22 @@ def dispatcher_log_problems(since, lines=None):
 
 
 def job_problem(j):
-    """(severity, kind, detail) for a finished job that went wrong, else None."""
+    """(severity, kind, detail) for a finished job that went wrong, else None. A cancelled job
+    did not go wrong: someone did not want it."""
     ex = j.get("exit")
+    if ex == "cancelled":
+        return None
     if j.get("hbc_back_s") is None and j.get("wii_left"):
-        return "err", "Wii left", f"HBC not back after the job: {j['wii_left']}"
+        f, more = j.get("freeze") or {}, ""
+        if f.get("answered_by") == "agent":
+            more = f"; its agent answered, {len(f.get('saved') or [])} file(s) saved in freeze/agent"
+        elif f.get("recovered_after_s") is not None:
+            more = f"; nothing answered, HBC was back {_age(f['recovered_after_s'])} later and its data was saved then"
+        elif f.get("recovered") == "given up":
+            more = "; nothing answered, and the wait for a reset was given up"
+        elif f.get("answered_by") == "nothing":
+            more = "; nothing answers: reset or power-cycle the Wii, its data is saved when HBC is back"
+        return "err", "Wii left", f"HBC not back after the job: {j['wii_left']}{more}"
     if ex == "timeout":
         return "err", "timeout", f"stopped after {j.get('secs')} s (--timeout {j.get('timeout')})"
     if ex == "not started":
@@ -2072,7 +2365,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             continue
         t0 = _parse_local(j.get("added")) or now
         local_q.append({"id": j["id"], "name": j.get("name"), "agent": (j.get("agent") or "")[:12],
-                        "age_s": int(now - t0)})
+                        "folder": pathlib.Path(j.get("cwd") or ".").name, "age_s": int(now - t0)})
     kv["running_n"], kv["pending_n"] = len(rows.get("running", [])), len(local_q)
     # dispatcher.state names the last job it worked for; once that job is done it is history.
     live = {r["id"] for r in rows.get("running", [])} | {j["id"] for j in local_q}
@@ -2121,16 +2414,17 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             exit=j.get("exit"), secs=j.get("secs"), secs_s=j.get("secs") or 0,
             hbc=hbc_word(j),
             chained="yes" if j.get("chained") else "no")
-    if recent and recent[0][1].get("hbc_version") == "stock HBC":
+    ran = [r for r in recent if r[1].get("exit") != "cancelled"]     # a cancelled job never had the Wii
+    if ran and ran[0][1].get("hbc_version") == "stock HBC":
         # HBC answered, but not hbc-reborn: an app exited to the original HBC (2026-10-08). Jobs
         # that use hbc-reborn's requests (hbc.py) fail there until it is back.
-        tf, j = recent[0]
+        tf, j = ran[0]
         problems.append(dict(t=tf, severity="warn", kind="stock HBC", host=socket.gethostname(), job=j.get("name"),
                              id=j["id"], detail="the Wii came back to a stock HBC, not hbc-reborn: "
                                                 "jobs that use hbc.py will fail until hbc-reborn runs again"))
-    if recent:
+    if ran:
         try:
-            tf, j = recent[0]
+            tf, j = ran[0]
             back = j.get("hbc_back_s")
             ago = _age(now - tf)
             kv["wii_last"] = (f"{j.get('name')} left it {j.get('wii_left')} ({ago} ago)" if back is None and j.get("wii_left") else
@@ -2248,6 +2542,24 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             agent=j.get("agent") or "-", age=_age(j["age_s"]) if j.get("age_s") is not None else "?",
             age_s=j.get("age_s") or 0)
     kv["queued_n"] = len(order)
+    # The manage page: what is running (here, or the lease holder's) and everything queued.
+    for r in rows.get("running", []):
+        row("manage", state="running", turn="-", host=socket.gethostname(), id=r["id"], name=r["name"],
+            agent=r.get("agent") or "-", folder=r.get("folder") or "-", age=r["elapsed"], age_s=r["elapsed_s"])
+    h = (s or {}).get("holder") or {}
+    if h and h.get("host") != socket.gethostname():
+        row("manage", state="running" if str(h.get("phase", "")).startswith("running") else "waiting",
+            turn="-", host=h.get("host"), id=h.get("job") or "-", name=h.get("name"), agent="-", folder="-",
+            age=_age(h.get("held_s", 0)), age_s=h.get("held_s", 0))
+    for i, j in enumerate(order, 1):
+        row("manage", state="queued", turn=i, host=j.get("host"), id=j.get("id") or "-", name=j.get("name"),
+            agent=j.get("agent") or "-", folder=j.get("folder") or "-",
+            age=_age(j["age_s"]) if j.get("age_s") is not None else "?", age_s=j.get("age_s") or 0)
+    try:
+        rec = json.loads(RECOVERING.read_text())
+        kv.update(recovering_id=rec["id"], recovering_name=rec.get("name"), recovering_for=_age(time.time() - rec["since"]))
+    except (OSError, ValueError, KeyError):
+        pass
     kv["queued_more"] = sum(max(0, q.get("total", 0) - len(q.get("jobs", []))) for q in (queues or []))
 
     rank = {"err": 0, "warn": 1, "note": 2}
@@ -2321,6 +2633,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
 SNAPSHOT_FIELDS = {
     "running": ("id", "name", "agent", "started", "elapsed", "timeout", "left"),
     "pending": ("turn", "host", "id", "name", "agent", "age"),
+    "manage": ("state", "turn", "host", "id", "name", "agent", "folder", "age"),
     "waiting": ("place", "host", "name", "since", "waited"),
     "done": ("finished", "id", "name", "exit", "secs", "hbc", "chained"),
     "errors": ("when", "severity", "kind", "host", "job", "id", "detail"),
@@ -2372,12 +2685,59 @@ def cmd_snapshot(a):
 
 
 def cmd_cancel(a):
-    d, p = find(a.id)
-    if d != PENDING:
-        sys.exit(f"{a.id}: {'not found' if d is None else 'already ' + d.name}")
-    fs_retry(p.unlink)
-    print(f"cancelled {a.id}")
+    """Cancel queued jobs: by id (here, or on another workstation through the lease server), or
+    every queued job of an agent (--agent), a workstation (--host) or everyone (--all)."""
+    if not (a.ids or a.agent or a.host or a.all):
+        sys.exit("cancel: give job ids, or --agent A, --host H or --all")
+    here = []
+    for p in jobs(PENDING) if PENDING.exists() else []:
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            continue
+        if (j["id"] in a.ids or a.all or (a.host and a.host == socket.gethostname())
+                or (a.agent and j.get("agent") and j["agent"].startswith(a.agent))):
+            here.append(j["id"])
+    done = cancel_here(here, "cancelled with `wiibench.py cancel`")
+    for i in done:
+        print(f"cancelled {i}")
+    rest = [i for i in a.ids if i not in done]
+    for i in rest:
+        d, _ = find(i)
+        if d is not None:                          # here, but running or done already
+            print(f"{i}: already {d.name}" + (" (stop stops a running job)" if d == RUNNING else ""))
+    rest = [i for i in rest if find(i)[0] is None]
+    if lease_server() and (rest or a.agent or a.host or a.all):
+        try:
+            r = lease_call("/request", {"action": "cancel", "ids": rest, "agent": a.agent, "host": a.host,
+                                        "all": a.all, "by": job_agent(), "by_host": socket.gethostname()})
+            for i in r.get("ids", []):
+                if i not in done:
+                    print(f"cancel sent for {i} (its workstation's dispatcher cancels it)")
+        except OSError as e:
+            print(f"the lease server did not take the cancel: {e}")
+    elif rest:
+        for i in rest:
+            print(f"{i}: not found")
     send_queue()
+    if not done and not lease_server() and not a.agent and not a.all:
+        sys.exit(1)
+
+
+def cmd_stop(a):
+    """Stop running jobs (here, or on another workstation through the lease server): the job is
+    ended like a timeout ("stopped"), then the Wii's HBC is checked and its data collected."""
+    for i in a.ids:
+        if stop_here([i]):
+            print(f"stopping {i}")
+        elif lease_server():
+            try:
+                lease_call("/request", {"action": "stop", "ids": [i], "by": job_agent(), "by_host": socket.gethostname()})
+                print(f"stop sent for {i} (its workstation's dispatcher stops it within a few seconds)")
+            except OSError as e:
+                print(f"{i}: the lease server did not take the stop: {e}")
+        else:
+            print(f"{i}: not running here")
 
 
 def main():
@@ -2393,7 +2753,11 @@ def main():
     s = sub.add_parser("status"); s.add_argument("--last", type=int, default=5)
     s = sub.add_parser("wait"); s.add_argument("id"); s.add_argument("--tail", type=int, default=25)
     s.add_argument("--every", type=float, default=60, help="seconds between progress lines (stderr)")
-    s = sub.add_parser("cancel"); s.add_argument("id")
+    s = sub.add_parser("cancel", help="cancel queued jobs, here or anywhere (through the lease server)")
+    s.add_argument("ids", nargs="*"); s.add_argument("--agent"); s.add_argument("--host")
+    s.add_argument("--all", action="store_true", help="every queued job, on every workstation")
+    s = sub.add_parser("stop", help="stop running jobs, here or anywhere")
+    s.add_argument("ids", nargs="+")
     s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=4310); s.add_argument("--ttl", type=float, default=TTL)
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--history", help="keep the history (events, rotated and archived) in this directory")
@@ -2421,7 +2785,7 @@ def main():
     a = ap.parse_args()
     if a.op == "add" and a.cmd[:1] == ["--"]:
         a.cmd = a.cmd[1:]
-    {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel,
+    {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel, "stop": cmd_stop,
      "serve": cmd_serve, "setup": cmd_setup, "report": cmd_report,
      "snapshot": cmd_snapshot, "runs": cmd_runs, "results": cmd_results, "rollover": cmd_rollover}[a.op](a)
 
