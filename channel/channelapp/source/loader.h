@@ -38,10 +38,14 @@ void loader_init (void);
 void loader_deinit (void);
 
 void loader_tcp_init (void);
+// Shuts the network down and starts it again, on the next frame.
+void loader_tcp_restart (void);
 void loader_signal_threads (void);
 bool loader_gecko_initialized (void);
 bool loader_tcp_initializing (void);
 bool loader_tcp_initialized (void);
+// Times the network came up since HBC started.
+u32 loader_net_starts (void);
 u32 loader_tcp_stack_used (void);
 bool loader_handshaked (void);
 

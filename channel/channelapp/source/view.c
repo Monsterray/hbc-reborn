@@ -10,6 +10,7 @@
 #include "devfile.h"
 #include "i18n.h"
 #include "font.h"
+#include <ogc/lwp_watchdog.h>
 #include "theme.h"
 #include "cursors.h"
 #include "widgets.h"
@@ -162,36 +163,158 @@ static void view_push_view (const view *v, u32 subview_alpha) {
 	gfx_frame_push (&v->qe_coords_pop, 1);
 }
 
+// A name too wide for the transfer line: each HBC start picks one way,
+// at random, to show it (HBCS "transfer_style").
+enum { NAME_SCROLL, NAME_BOUNCE, NAME_TRUNCATE };
+static int name_style = -1;
+static const char *name_styles[] = { "scroll", "bounce", "truncate" };
+
+const char *view_transfer_style(void) {
+	return name_style < 0 ? "none" : name_styles[name_style];
+}
+
+bool view_force_transfer_style(const char *style) {
+	int i;
+
+	for (i = 0; i < 3; ++i)
+		if (!strcmp(style, name_styles[i])) {
+			name_style = i;
+			return true;
+		}
+	return false;
+}
+
+#define LINE_W 360
+#define NAME_STEP_MS 133   // per character the name moves
+#define NAME_HOLD_MS 1000  // at the start of each name, and at a bounce's ends
+
+static bool line_fits(const char *s) {
+	return font_get_char_count(FONT_LABEL, s, LINE_W) == font_get_char_count(FONT_LABEL, s, 0xffff);
+}
+
+// Bytes of s that start a character, so a window never splits UTF-8.
+static int char_start(const char *s, int i) {
+	while (i > 0 && (s[i] & 0xc0) == 0x80)
+		--i;
+	return i;
+}
+
+// The part of name to show ms after it first showed, at most room bytes,
+// into out. A bounce travels span characters: to where the rest of the
+// name fits, so it ends on the name's last letter, and its path stays the
+// same when room narrows for wide letters on the way.
+static void name_window(char *out, int size, const char *name, int span, int room, u32 ms) {
+	int len = strlen(name), off = 0;
+	u32 move;
+	char ring[2 * 48 + 4];
+
+	if (name_style == NAME_TRUNCATE) {
+		snprintf(out, size, "%.*s...", char_start(name, room > 3 ? room - 3 : 0), name);
+		return;
+	}
+	if (name_style == NAME_SCROLL) {
+		// A second at the start, then round and round, three spaces between
+		// the end and the start again.
+		snprintf(ring, sizeof(ring), "%s   %s", name, name);
+		move = ms < NAME_HOLD_MS ? 0 : (ms - NAME_HOLD_MS) / NAME_STEP_MS;
+		off = char_start(ring, move % (len + 3));
+		snprintf(out, size, "%.*s", char_start(ring + off, room), ring + off);
+		return;
+	}
+	// Bounce: a second at the start, to the end, a second there, and back.
+	move = span * NAME_STEP_MS;
+	ms %= 2 * (NAME_HOLD_MS + move);
+	off = ms < NAME_HOLD_MS ? 0 :
+		  ms < NAME_HOLD_MS + move ? (ms - NAME_HOLD_MS) / NAME_STEP_MS :
+		  ms < 2 * NAME_HOLD_MS + move ? span :
+		  span - (ms - 2 * NAME_HOLD_MS - move) / NAME_STEP_MS;
+	off = char_start(name, off);
+	snprintf(out, size, "%.*s", char_start(name + off, room), name + off);
+}
+
 // What hbc.py is moving, at the bottom right of every screen, so a transfer
 // in the background shows: "Receiving boot.dol 42%", "Sending save.dat".
 static void transfer_line(void) {
-	static gfx_queue_entry glyphs[64];
-	static char shown[80];
-	static int count;
-	char line[80] = "";
-	const char *name;
+	static gfx_queue_entry glyphs[64], pct_glyphs[8];
+	static char shown[112], fitted[52];   // the direction and name room is for
+	static int count, pct_count, room, span;
+	static u64 since;   // when this name first showed
+	char line[96] = "", part[64], pct[8] = "", key[112];
+	bool split = false;   // a long name: the percentage drawn on its own
+	const char *name, *verb;
 	u32 done, total;
 	char dir = devfile_progress(&name, &done, &total);
 
-	if (dir)
-		snprintf(line, sizeof(line), total ? "%s %s  %u%%" : "%s %s",
-				 dir == 'p' ? _("Receiving") : _("Sending"), name,
-				 total ? (unsigned) ((u64) done * 100 / total) : 0);
-	if (strcmp(line, shown)) {
-		strcpy(shown, line);
-		count = line[0] ? font_get_char_count(FONT_LABEL, line, 360) : 0;
+	if (name_style < 0)
+		name_style = (u32) gettime() % 3;   // this start's pick
+	if (dir) {
+		verb = dir == 'p' ? _("Receiving") : _("Sending");
+		if (total)
+			snprintf(pct, sizeof(pct), "  %u%%", (unsigned) ((u64) done * 100 / total));
+		// How much of a new name fits beside the verb and "  100%".
+		snprintf(part, sizeof(part), "%c%s", dir, name);
+		if (strcmp(part, fitted)) {
+			strcpy(fitted, part);
+			since = gettime();   // each new name starts still
+			for (room = strlen(name); room > 1; --room) {
+				snprintf(line, sizeof(line), "%s %.*s  100%%", verb, room, name);
+				if (line_fits(line))
+					break;
+			}
+			// And how much of its end fits: where a bounce turns back.
+			for (span = 0; span < (int) strlen(name) - 1; ++span) {
+				if ((name[span] & 0xc0) == 0x80)
+					continue;   // inside a UTF-8 character
+				snprintf(line, sizeof(line), "%s %s  100%%", verb, name + span);
+				if (line_fits(line))
+					break;
+			}
+		}
+		if (room >= (int) strlen(name)) {
+			snprintf(line, sizeof(line), "%s %s%s", verb, name, pct);
+		} else {
+			// The word stays at the left edge and the percentage at the
+			// right; the name moves between them. Letters differ in width:
+			// a window further along the name may not fit where its start
+			// did, so narrow it until it does beside "  100%".
+			int r = room;
+
+			split = true;
+			do {
+				name_window(part, sizeof(part), name, span, r,
+							ticks_to_millisecs(diff_ticks(since, gettime())));
+				snprintf(line, sizeof(line), "%s %s  100%%", verb, part);
+			} while (!line_fits(line) && --r > 1);
+			snprintf(line, sizeof(line), "%s %s", verb, part);
+		}
+	} else {
+		fitted[0] = 0;
+	}
+	snprintf(key, sizeof(key), "%d%s|%s", split, line, pct);
+	if (strcmp(key, shown)) {
+		// Left of the USB Gecko and network icons (browser.c), on their line.
+		u16 x = view_width - 40 - theme_gfx[THEME_GECKO_ACTIVE]->w -
+				theme_gfx[THEME_LAN_ACTIVE]->w - LINE_W;
+		u16 y = 412 + theme_gfx[THEME_LAN_ACTIVE]->h / 2;
+
+		strcpy(shown, key);
+		count = line[0] ? font_get_char_count(FONT_LABEL, line, LINE_W) : 0;
 		if (count > 64)
 			count = 64;
-		// Left of the USB Gecko and network icons (browser.c), on their line.
 		if (count)
-			font_plot_string(glyphs, count, FONT_LABEL, line,
-							 view_width - 40 - theme_gfx[THEME_GECKO_ACTIVE]->w -
-							 theme_gfx[THEME_LAN_ACTIVE]->w - 360,
-							 412 + theme_gfx[THEME_LAN_ACTIVE]->h / 2, 0, 360,
+			font_plot_string(glyphs, count, FONT_LABEL, line, x, y, 0, LINE_W,
+							 split ? FA_LEFT : FA_RIGHT, FA_EM_CENTERED);
+		pct_count = split && pct[0] ? font_get_char_count(FONT_LABEL, pct, LINE_W) : 0;
+		if (pct_count > 8)
+			pct_count = 8;
+		if (pct_count)
+			font_plot_string(pct_glyphs, pct_count, FONT_LABEL, pct, x, y, 0, LINE_W,
 							 FA_RIGHT, FA_EM_CENTERED);
 	}
 	if (count)
 		gfx_frame_push(glyphs, count);
+	if (pct_count)
+		gfx_frame_push(pct_glyphs, pct_count);
 }
 
 void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {

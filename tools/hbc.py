@@ -9,6 +9,7 @@ import argparse
 import errno
 import json
 import os
+import select
 import re
 import shutil
 import socket
@@ -82,9 +83,9 @@ def check_status(status, what="Wii returned"):
         raise HBCError(f"{what} {wii_error(-status)}", -status)
 
 
-def recv_reply(conn):
+def recv_reply(conn, what="Wii returned"):
     status, length = struct.unpack(">iI", recv_exact(conn, 8))
-    check_status(status)
+    check_status(status, what)
     return recv_exact(conn, length)
 
 
@@ -309,6 +310,14 @@ def status(wii):
 INFO_PAGES = ["System", "Video", "Storage", "USB", "Network"]
 
 
+def set_transfer_style(wii, style):
+    """Force HBC's long-name style: scroll, bounce or truncate (HBCT)."""
+    name = style.encode()
+    if style not in ("scroll", "bounce", "truncate"):
+        raise HBCError(f"transfer styles are scroll, bounce and truncate, not {style!r}")
+    request(wii, b"HBCT" + name + bytes(12 - len(name)))
+
+
 def hardware(wii, pages=None):
     """DEV > Info's pages (HBCH): {"System": {"Console": "...", ...}, ...};
     pages, a list of their names, for only those."""
@@ -342,7 +351,7 @@ def file_request(wii, op, remote, size=0, payload=b""):
     """A protocol 1 file request: raw payload in, raw reply body out."""
     with connect(wii) as conn:
         conn.sendall(file_header(op, remote, size) + payload)
-        return recv_reply(conn)
+        return recv_reply(conn, f"{remote}: Wii returned")
 
 
 FRAME = 64 * 1024
@@ -382,6 +391,11 @@ def put_file(wii, remote, data, level=6, progress=None):
             conn.sendall(file_header("p", remote, len(data)))
             sent = 0
             for frame in frames(data, level):
+                # An answer before the end is a refusal (no room, a bad
+                # path): read it now, before the Wii closes and the reset
+                # drops it.
+                if select.select([conn], [], [], 0)[0]:
+                    break
                 conn.sendall(frame)
                 sent += struct.unpack(">I", frame[:4])[0]
                 if progress:
@@ -389,14 +403,14 @@ def put_file(wii, remote, data, level=6, progress=None):
         except OSError:
             # The Wii may refuse early and close; prefer its status to the reset.
             try:
-                recv_reply(conn)
+                recv_reply(conn, f"{remote}: Wii returned")
             except HBCError as exc:
                 if exc.code:
                     raise exc from None
             except OSError:
                 pass
             raise
-        return recv_reply(conn)
+        return recv_reply(conn, f"{remote}: Wii returned")
 
 
 def get_file(wii, remote, compress=True, progress=None):
@@ -410,7 +424,7 @@ def get_file(wii, remote, compress=True, progress=None):
     with connect(wii) as conn:
         conn.sendall(file_header("g", remote, flags=FLAG_COMPRESS if compress else 0))
         status, size = struct.unpack(">iI", recv_exact(conn, 8))
-        check_status(status)
+        check_status(status, f"{remote}: Wii returned")
         out = bytearray()
         while True:
             raw_len, wire_len, crc = struct.unpack(">III", recv_exact(conn, 12))
@@ -970,6 +984,7 @@ Commands
   The Wii
     status              what is running: version, IOS, memory, SD card, network
     hw                  the Wii's hardware and settings, as DEV > Info shows them
+    transfer-style [S]  how HBC shows a long name it is moving (for testing)
     version             just the version (ends in " agent" for an app, below)
     wait [SECONDS]      wait until HBC answers, after a reboot (default 90)
   Running apps
@@ -1141,6 +1156,14 @@ needs devkitPPC's powerpc-eabi-addr2line). --clear forgets the report.
 Besides exceptions, an app can stop itself with hbc_agent_fatal() (its own
 code and a reason), and the agent's watchdog reports a hang. The last lines
 of the app's output follow the report.""",
+    "transfer-style": """\
+hbc.py transfer-style [scroll|bounce|truncate]
+
+While hbc.py moves a file, HBC shows it at the bottom of the screen. A name
+too long for that line scrolls round, bounces from end to end, or is cut
+short with "...": HBC picks one at random each time it starts. This sets
+the one to use until HBC restarts, for testing; with no name it prints the
+current one (HBCS transfer_style). HBC 1.10.4 on.""",
     "hw": """\
 hbc.py hw [--json] [PAGE ...]
 
@@ -1305,6 +1328,10 @@ def main(argv=None):
                         print(f"    {line}")
             else:
                 print("no crash reported")
+        elif cmd == "transfer-style":
+            if args:
+                set_transfer_style(wii, args[0])
+            print(status(wii).get("transfer_style", "unknown"))
         elif cmd == "hw":
             want = [p for p in INFO_PAGES for a in args if a.lower() == p.lower()]
             if len(want) != len(args):
@@ -1433,6 +1460,10 @@ def main(argv=None):
         else:
             print_help(cmd)
             raise SystemExit(2)
+    except FileNotFoundError as exc:
+        if exc.filename:   # a local path; the Wii's errors are HBCError
+            raise SystemExit(f"hbc.py: {exc.filename}: no such file or folder on this PC")
+        raise SystemExit(f"hbc.py: {exc}")
     except (OSError, HBCError) as exc:
         raise SystemExit(f"hbc.py: {exc}")
     except KeyboardInterrupt:

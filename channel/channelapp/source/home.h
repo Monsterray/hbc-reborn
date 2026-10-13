@@ -8,6 +8,7 @@ typedef enum {
 	HOME_NONE,          // closed with B or HOME: back to the app list
 	HOME_ABOUT,
 	HOME_BOOTMII,
+	HOME_NETWORK,
 	HOME_SYSTEM_MENU,
 	HOME_RESTART,
 	HOME_SHUTDOWN

@@ -161,6 +161,51 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.4: Restart network, and file errors that say what happened
+
+- HOME > HBC > Restart network: the loader's TCP thread closes its
+  listening socket, `net_deinit()`s and starts the network again, as at
+  start-up. The menu sets a flag that `loader_signal_threads()` hands to
+  the thread on the next frame it is free (it holds its lock while it
+  works). HBCS now carries `overlay_ui` from HBC too, so
+  `tests/wii_net_restart.py` checks the focus before every A, and
+  `net_starts` (times the network came up), which the test waits on: a
+  restart can be over between two polls, so a gap in answers proved
+  nothing (one run saw none).
+- Uploads too big for the card's free space are refused with `ENOSPC`
+  before any data is read (`statvfs`), and a framed upload stops receiving
+  as soon as its write worker fails, instead of taking the whole transfer
+  first. `hbc.py` checks for the Wii's answer before each frame, since the
+  Wii closes after refusing and the reset would drop the reply. Errors from
+  the Wii name the remote path, and a missing local path says it is one.
+  `tests/wii_file_errors.py` on the bench Wii (SD 0.2 GB free): a 400 MB
+  `.img` refused in about 0.5 s, from HBC and from an app's agent, nothing
+  left behind; a missing folder and a missing local file reported as such.
+- The on-screen transfer line with a name too long for it: each start picks
+  scroll (round, with a gap), bounce (end to end, resting at each) or
+  truncate ("...") at random, HBCS `transfer_style`. The name's room is
+  measured once, then narrowed per frame while the line does not fit (wide
+  letters further along the name), so the percentage always shows; windows
+  move by whole UTF-8 characters. The word stays at the left and the
+  percentage at the right (drawn on their own); the name moves between.
+  Time-based: a second still at the start of each name (both moving
+  styles), a second at each end of a bounce, a step each 133 ms. A bounce
+  travels to where the name's end fits, measured once: the first version
+  took its travel from the narrowed window, so the way back jumped, and
+  then stopped short of the last letters (".i" for ".img"). `HBCT` /
+  `hbc.py transfer-style` forces a style for tests (the packed DOL's
+  argv goes to its stub, so a launch argument could not). Checked in
+  Dolphin per style: a strip every 8 frames through a 120 MB upload with
+  a 46-character name.
+- Open: a Wiiload upload that arrives while HBC's HOME overlay is open is
+  accepted by the TCP thread, which then waits for the app list to load it;
+  until someone closes the overlay, HBC answers nothing (not even the
+  `hbc.py key h` that would close it). Seen when a failed bench test sent
+  agent_app with the overlay still open; the bench Wii needed a person.
+  Trigger to fix: any unattended use that can upload while HOME is open.
+  The likely fix: refuse the upload (or close the overlay) when it
+  handshakes while the overlay runs.
+
 ### 1.10.3: transfers on screen, volatile interrupt flags, a steadier list reload
 
 - An audit of state shared between threads, callbacks and interrupts:

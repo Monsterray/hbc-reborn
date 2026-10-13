@@ -591,6 +591,13 @@ class HBCToolTest(unittest.TestCase):
         self.assertEqual(self.fake.requests[start:], [])
         self.assertFalse(hbc.protected("sd:/apps/myapp"))
 
+    def test_errors_name_the_path(self):
+        with self.assertRaisesRegex(SystemExit, "sd:/nosuch: Wii returned ENOENT"):
+            self.cli("ls", "sd:/nosuch")
+        missing = str(self.tmp / "nosuch.bin")
+        with self.assertRaisesRegex(SystemExit, "nosuch.bin: no such file or folder on this PC"):
+            self.cli("put", missing, "sd:/x.bin")
+
     def test_order_sets_and_shows_sort_ids(self):
         meta = b'<?xml version="1.0"?>\n<app version="1">\n\t<name>Beta</name>\n</app>\n'
         hbc.put_file(WII, "sd:/ordertest/beta/meta.xml", meta)

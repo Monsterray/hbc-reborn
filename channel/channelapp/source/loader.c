@@ -170,6 +170,13 @@ typedef struct {
 	cond_t cond;
 } ld_tcp_arg;
 
+// Times the network came up (HBCS "net_starts": a restart adds one).
+static volatile u32 net_starts;
+
+u32 loader_net_starts (void) {
+	return net_starts;
+}
+
 static void * ld_tcp_func (void *arg) {
 	ld_tcp_arg *ta = (ld_tcp_arg *) arg;
 	int s = -1, sn;
@@ -203,8 +210,12 @@ static void * ld_tcp_func (void *arg) {
 			ta->cmd = LDTCPCMD_IDLE;
 
 			if (ta->state == LDTCPS_INITIALIZED) {
+				// A restart: IOS drops the connection and joins the network
+				// again (DHCP, Wi-Fi), as at start-up.
 				gprintf ("reinit net\n");
+				hlog("Network: restarting\n");
 				net_close (s);
+				net_deinit ();
 			}
 
 			retries = 32;
@@ -253,6 +264,7 @@ static void * ld_tcp_func (void *arg) {
 
 				hlog("Network: up at %s\n", inet_ntoa(ip));
 			}
+			net_starts++;
 
 			mask = net_gethostip () & 0xffff0000;
 
@@ -513,6 +525,14 @@ void loader_tcp_init (void) {
 	LWP_MutexUnlock(ta_tcp.cmutex);
 }
 
+// HOME > HBC > Restart network; carried out by loader_signal_threads() on
+// the next frame the TCP thread is free (it holds its lock while it works).
+static volatile bool tcp_restart;
+
+void loader_tcp_restart (void) {
+	tcp_restart = true;
+}
+
 void loader_signal_threads (void) {
 	if (LWP_MutexTryLock(ta_gecko.cmutex) == 0) {
 		if (loader_gecko_initialized () && !ta_gecko.handshaked) {
@@ -523,7 +543,11 @@ void loader_signal_threads (void) {
 	}
 
 	if (LWP_MutexTryLock(ta_tcp.cmutex) == 0) {
-		if (loader_tcp_initialized () && !ta_tcp.handshaked) {
+		if (tcp_restart && ta_tcp.running && ta_tcp.state != LDTCPS_INITIALIZING) {
+			tcp_restart = false;
+			ta_tcp.cmd = LDTCPCMD_INIT;
+			LWP_CondBroadcast(ta_tcp.cond);
+		} else if (loader_tcp_initialized () && !ta_tcp.handshaked) {
 			ta_tcp.cmd = LDTCPCMD_ACCEPT;
 			LWP_CondBroadcast(ta_tcp.cond);
 		}

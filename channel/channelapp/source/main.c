@@ -524,6 +524,10 @@ void main_real(void) {
 				shutdown = true;
 				break;
 
+			case HOME_NETWORK:
+				loader_tcp_restart ();
+				break;
+
 			case HOME_NONE:
 				break;
 			}

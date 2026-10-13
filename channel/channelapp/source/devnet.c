@@ -26,6 +26,7 @@
 #include "tcp.h"
 #include "zmem.h"
 #include "usbmsd.h"
+#include "view.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../../../sdk/hbc_netlog.h"
@@ -158,6 +159,8 @@ static s32 crash_json(char *buf, size_t size) {
 
 // What the HOME overlay (home.c, via sdk/hbc_agent) cost the last time.
 int agent_overlay_cost_json(char *buf, int size);
+// The open HOME overlay's menu and focus, for scripted key presses.
+int agent_overlay_state(char *buf, int size);
 // Each Wii Remote's command queue, as the overlay sees it.
 int agent_remote_diag(char *buf, int size);
 
@@ -176,14 +179,14 @@ static s32 status_json(char *buf, size_t size) {
 			"\"ahbprot\":%s,\"mem1_free\":%u,\"mem2_free\":%u,"
 			"\"heap_free\":%u,\"tcp_stack_used\":%u,"
 			"\"tcp_stack_size\":%u,\"init_ms\":%u,\"scan_ms\":%u,"
-			"\"ip\":\"%u.%u.%u.%u\",\"apps\":%u,\"device\":",
+			"\"ip\":\"%u.%u.%u.%u\",\"net_starts\":%u,\"apps\":%u,\"device\":",
 			CHANNEL_VERSION_STR, DEVNET_PROTO, IOS_GetVersion(), IOS_GetRevision(),
 			read32(0x0d800064) == 0xffffffff ? "true" : "false",
 			SYS_GetArena1Size(), SYS_GetArena2Size(),
 			heap.fordblks, loader_tcp_stack_used(),
 			LD_THREAD_STACKSIZE, init_ms, app_entry_scan_ms,
 			ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff,
-			entry_count);
+			(unsigned) loader_net_starts(), entry_count);
 	if (active >= 0 && active < DEVICE_COUNT)
 		n += snprintf(buf + n, size - n, "\"%s\"", device_names[active]);
 	else
@@ -241,6 +244,8 @@ static s32 status_json(char *buf, size_t size) {
 	else
 		n += snprintf(buf + n, size - n, ",\"lastlog\":null");
 	n += agent_overlay_cost_json(buf + n, size - n);
+	n += agent_overlay_state(buf + n, size - n);
+	n += snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style());
 	_CPU_ISR_Disable(level);
 	n += snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
 				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",
@@ -381,6 +386,16 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	if (!memcmp(hdr, "HBCS", 4)) {
 		s32 n = status_json(json, sizeof(json));
 		devfile_reply(s, 0, json, n);
+		return true;
+	}
+
+	// HBCT: header bytes 4-15, a transfer line style name, for tests.
+	if (!memcmp(hdr, "HBCT", 4)) {
+		char style[13];
+
+		memcpy(style, hdr + 4, 12);
+		style[12] = 0;
+		devfile_reply(s, view_force_transfer_style(style) ? 0 : -EINVAL, NULL, 0);
 		return true;
 	}
 

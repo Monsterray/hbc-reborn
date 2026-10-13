@@ -73,7 +73,11 @@ Network and SD overlap in framed transfers, so their sum can exceed `ms`.
 `heap_free` is newlib's free heap (its "used" figure would count the gap
 between MEM1 and MEM2), `tcp_stack_used` is the loader thread's stack
 high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
-`scan_ms` is the last full app scan. `startup` lists the startup steps as
+`scan_ms` is the last full app scan. `net_starts` counts the times the network came up since HBC started
+(HOME > HBC > Restart network adds one). `transfer_style` is how this
+start shows a file name too long for the on-screen transfer line:
+`scroll`, `bounce` or `truncate`, picked at random; `HBCT` with the name in
+header bytes 4-15 forces one until HBC restarts (`hbc.py transfer-style`). `startup` lists the startup steps as
 `"name":ms`, the time since `main()` at the end of each, in the order they
 finished; `playtime_cleared` (or `playtime_failed`) is the background write that
 clears the Wii Menu's play record. `zlib_mem` says where the zlib arena landed
@@ -139,7 +143,12 @@ character, and paths of 256 bytes or more.
 | `D` | delete a file or an empty directory | none |
 | `M` | create a directory and its parents | none |
 
-A put to a path ending in `/` is refused with `EISDIR`. After a put or delete
+A put to a path ending in `/` is refused with `EISDIR`, and one larger than
+the device's free space (plus a cluster: the upload is written beside the
+file it replaces) with `ENOSPC`, both before any data is read; a write that
+fails partway stops the receive at once. The reply then comes while the
+client may still be sending: `hbc.py` checks for it before each frame, so
+it reports the Wii's error rather than the reset that follows. After a put or delete
 under `<device>:/apps/<name>/` on the mounted device, HBC reloads that app's
 menu entry, so an uploaded app appears (and a deleted one disappears) at once.
 

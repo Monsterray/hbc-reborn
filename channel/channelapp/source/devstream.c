@@ -69,7 +69,7 @@ static struct {
 	FILE *f;
 	u32 size;
 	bool compress;
-	s32 result;
+	volatile s32 result;   // the worker's, read by the receive loop
 	devstream_stats *stats;
 } job;
 
@@ -220,6 +220,8 @@ s32 devstream_put(s32 s, const char *path, const char *part, u32 size,
 
 		if (devfile_aborted()) {
 			err = -EINTR;
+		} else if (job.result) {
+			err = job.result;   // the card failed (full): stop receiving
 		} else if (!tcp_read(s, hdr, FRAME_HDR, NULL, NULL)) {
 			err = -EIO;
 		} else {

@@ -62,6 +62,7 @@ static hbc_agent_item hbc_items[] = {
 	{ "Launch BootMii", NULL, pick, (void *) HOME_BOOTMII, HBC_AGENT_ITEM_CLOSE },
 	{ "Exit to System Menu", NULL, pick, (void *) HOME_SYSTEM_MENU, HBC_AGENT_ITEM_CLOSE },
 	{ "Shutdown", NULL, pick, (void *) HOME_SHUTDOWN, HBC_AGENT_ITEM_CLOSE },
+	{ "Restart network", NULL, pick, (void *) HOME_NETWORK, HBC_AGENT_ITEM_CLOSE },
 };
 #define BOOTMII_ITEM 4
 
