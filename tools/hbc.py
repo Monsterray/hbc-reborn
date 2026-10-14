@@ -6,6 +6,7 @@ details of one command. docs/devnet.md describes the protocol underneath.
 """
 
 import argparse
+import datetime
 import errno
 import json
 import os
@@ -516,19 +517,57 @@ def refuse_protected(remote, what):
         raise HBCError(f"refusing to {what} {remote}: a device root or its apps directory")
 
 
-def list_dir(wii, remote):
-    """Return ([(type, size, name)], truncated) for one remote directory."""
-    text = file_request(wii, "L", remote).decode("utf-8", "replace")
+LIST_VERSION = "#list 2"
+
+
+def parse_entry(line):
+    """One "<d|f> <size> <mtime> <flags> <name>" line (op L, S) as a dict:
+    type, size, mtime (seconds by the Wii's clock, see wii_clock_offset),
+    readonly, name."""
+    kind, size, mtime, flags, name = line.split(" ", 4)
+    return {"type": kind, "size": int(size), "mtime": int(mtime),
+            "readonly": flags == "r", "name": name}
+
+
+def list_entries(wii, remote):
+    """Return ([entry dict, see parse_entry], truncated) for a remote folder."""
+    lines = file_request(wii, "L", remote).decode("utf-8", "replace").splitlines()
+    if not lines or lines[0] != LIST_VERSION:
+        raise HBCError(f"{remote}: this HBC or app agent lists folders the old way "
+                       "(no file times); update it to HBC 1.10.6 or later")
     entries, truncated = [], False
-    for line in text.splitlines():
+    for line in lines[1:]:
         if line == "! truncated":
             truncated = True
-        elif line.startswith("d "):
-            entries.append(("d", 0, line[2:]))
-        elif line.startswith("f "):
-            size, _, name = line[2:].partition(" ")
-            entries.append(("f", int(size), name))
+        elif line:
+            entries.append(parse_entry(line))
     return entries, truncated
+
+
+def list_dir(wii, remote):
+    """Return ([(type, size, name)], truncated) for one remote directory
+    (list_entries without the times and flags)."""
+    entries, truncated = list_entries(wii, remote)
+    return [(e["type"], e["size"], e["name"]) for e in entries], truncated
+
+
+def stat_remote(wii, remote):
+    """One remote path's entry dict (op S)."""
+    return parse_entry(file_request(wii, "S", remote).decode("utf-8", "replace").strip())
+
+
+def wii_clock_offset(wii):
+    """Seconds to add to the Wii's file times for PC time, or None when the
+    Wii does not say its clock (HBCS "time"). FAT keeps local time with no
+    zone, and the Wii's clock is read the same way, so this lines them up
+    whatever the zone, give or take a daylight saving change since."""
+    st = status(wii)
+    return time.time() - st["time"] if "time" in st else None
+
+
+def wii_time_text(mtime):
+    """A Wii file time as the Wii shows it (it keeps local time)."""
+    return datetime.datetime.fromtimestamp(mtime, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 # ---- App order (meta.xml <sort_id>) ------------------------------------------
@@ -614,22 +653,23 @@ def clear_order(wii, apps_dir, out=print):
 
 def remote_tree(wii, top):
     """List a whole remote tree before anything acts on it. Returns
-    (dirs, parents first; {file: size}), paths relative to top joined by "/"."""
+    (dirs, parents first; {file: (size, mtime)}), paths relative to top
+    joined by "/"."""
     dirs, files, pending = [], {}, [""]
     while pending:
         rel = pending.pop()
         path = remote_join(top, rel)
-        entries, truncated = list_dir(wii, path)
+        entries, truncated = list_entries(wii, path)
         if truncated:
             raise HBCError(f"the Wii truncated the listing of {path} (256 KiB limit); "
                            "refusing to act on a partial listing")
-        for kind, size, name in entries:
-            sub = f"{rel}/{name}" if rel else name
-            if kind == "d":
+        for e in entries:
+            sub = f"{rel}/{e['name']}" if rel else e["name"]
+            if e["type"] == "d":
                 dirs.append(sub)
                 pending.append(sub)
             else:
-                files[sub] = size
+                files[sub] = (e["size"], e["mtime"])
     return dirs, files
 
 
@@ -735,9 +775,16 @@ def remove_tree(wii, remote, out=print):
     return count
 
 
-def sync(wii, local, remote, delete=False, out=print):
-    """Make remote mirror local: upload new or changed files (size, then
-    CRC-32), create missing directories and, with delete, remove the rest."""
+# FAT keeps file times in 2 s steps.
+FAT_TIME_STEP = 2
+
+
+def sync(wii, local, remote, delete=False, out=print, checksum_all=False):
+    """Make remote mirror local: upload new or changed files, create missing
+    directories and, with delete, remove the rest. A file of the same size
+    that the Wii wrote after the local one last changed is taken as the
+    same without reading it; otherwise (or with checksum_all) the CRC-32s
+    decide."""
     if not os.path.isdir(local):
         raise HBCError(f"{local} is not a directory")
     if delete:
@@ -758,6 +805,7 @@ def sync(wii, local, remote, delete=False, out=print):
                        "directory on the other; use --delete to replace it")
     uploaded = skipped = deleted = nbytes = 0
     failed = []
+    offset = None if checksum_all else wii_clock_offset(wii)
     if delete:
         for rel in sorted(f for f in rfiles if f not in lfiles):
             file_request(wii, "D", remote_join(remote, rel))
@@ -777,8 +825,12 @@ def sync(wii, local, remote, delete=False, out=print):
         # One file that fails (a timeout, a full card) does not stop the rest.
         try:
             size = os.path.getsize(path)
-            if rfiles.get(rel) == size and \
-                    checksum(wii, target, size) == (size, file_crc(path)):
+            rsize, rtime = rfiles.get(rel, (None, 0))
+            if rsize == size and offset is not None and \
+                    rtime + offset >= os.path.getmtime(path) + FAT_TIME_STEP:
+                skipped += 1   # the Wii's copy is newer: no need to read it
+                continue
+            if rsize == size and checksum(wii, target, size) == (size, file_crc(path)):
                 skipped += 1
                 continue
             data = read_file(path)
@@ -1017,7 +1069,8 @@ Commands
     send FILE [ARGS...] send it without waiting for output
     log                 print what apps started on the Wii print, until Ctrl+C
   Files (sd:/..., usb:/...)
-    ls PATH             list a folder
+    ls PATH             list a folder (sizes, dates)
+    stat PATH           one file or folder: size, date, read-only
     get PATH [LOCAL]    download (-r for a folder)
     put LOCAL PATH      upload (-r for a folder; missing folders are made)
     sync LOCAL PATH     upload only what changed (--delete removes extras)
@@ -1102,8 +1155,16 @@ HBC remembers the PC for later apps too, until log exits.""",
     "ls": """\
 hbc.py ls PATH
 
-Lists a folder: "d NAME" for folders, "f SIZE NAME" for files. Paths look
-like sd:/apps or usb:/data (devices: sd, usb, usb2, carda, cardb).""",
+Lists a folder: "d DATE TIME NAME" for folders, "f SIZE DATE TIME NAME" for
+files, the modification time as the Wii's clock had it, and "r" after it
+for a read-only one. --json gives each entry's type, size, mtime (seconds,
+by the Wii's clock), readonly and name. Paths look like sd:/apps or
+usb:/data (devices: sd, usb, usb2, carda, cardb).""",
+    "stat": """\
+hbc.py stat PATH
+
+One file or folder on the Wii: its size, when it was last changed (by the
+Wii's clock) and whether it is read-only. --json for scripts.""",
     "get": """\
 hbc.py get [-r] PATH [LOCAL]
 
@@ -1121,12 +1182,16 @@ made. A PATH ending in "/" means "into this folder": put app.dol
 sd:/apps/myapp/ writes sd:/apps/myapp/app.dol. A broken transfer leaves no
 half-written file. An app put under sd:/apps shows in HBC's list at once.""",
     "sync": """\
-hbc.py sync [--delete] LOCAL PATH
+hbc.py sync [--delete] [--checksum] LOCAL PATH
 
-Makes the folder PATH on the Wii match LOCAL: uploads files whose size or
-CRC-32 differ and makes missing folders. With --delete it also removes what
-LOCAL does not have. It refuses to delete from a device root or from
-<device>:/apps itself.
+Makes the folder PATH on the Wii match LOCAL: uploads files that differ and
+makes missing folders. A file of the same size that the Wii wrote after the
+local copy last changed is taken as the same without reading it (a disc
+image is not read again); otherwise the CRC-32s decide. --checksum compares
+every same-size file by CRC-32, for when the Wii's copy may have been
+changed on the Wii since. With --delete it also removes what LOCAL does not
+have. It refuses to delete from a device root or from <device>:/apps
+itself. A file that fails is reported and the rest still sync.
 
     hbc.py sync dist/myapp sd:/apps/myapp""",
     "rm": """\
@@ -1222,6 +1287,7 @@ GLOBAL_FLAGS = {"--wii": ("wii", True), "--log-port": ("log_port", True),
 COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--recursive": ("recursive", ("get", "put", "rm")),
                  "--delete": ("delete", ("sync",)),
+                 "--checksum": ("checksum", ("sync",)),
                  "--clear": ("clear", ("crash", "order")),
                  "--yes": ("yes", ("send", "run"))}
 VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
@@ -1416,16 +1482,27 @@ def main(argv=None):
                 raise SystemExit(3)
         elif cmd == "ls":
             need(1, "REMOTE")
-            entries, truncated = list_dir(wii, args[0])
+            entries, truncated = list_entries(wii, args[0])
             if opts.json:
-                print(json.dumps([{"name": name, "type": kind, "size": size}
-                                  for kind, size, name in entries]))
+                print(json.dumps(entries))
             else:
-                for kind, size, name in entries:
-                    print(f"d {name}" if kind == "d" else f"f {size} {name}")
+                for e in entries:
+                    when = wii_time_text(e["mtime"]) + (" r" if e["readonly"] else "")
+                    print(f"d {when} {e['name']}" if e["type"] == "d" else
+                          f"f {e['size']} {when} {e['name']}")
             if truncated:
                 print("hbc.py: warning: the Wii truncated this listing (256 KiB limit)",
                       file=sys.stderr)
+        elif cmd == "stat":
+            need(1, "REMOTE")
+            e = stat_remote(wii, args[0])
+            if opts.json:
+                print(json.dumps(e))
+            else:
+                print(f"{'folder' if e['type'] == 'd' else 'file'} {args[0]}: "
+                      + (f"{e['size']} bytes, " if e["type"] == "f" else "")
+                      + f"modified {wii_time_text(e['mtime'])} (the Wii's clock)"
+                      + (", read-only" if e["readonly"] else ""))
         elif cmd == "get":
             need(1, "[-r] REMOTE [LOCAL]")
             base = remote_base(args[0]) or "root"
@@ -1481,7 +1558,8 @@ def main(argv=None):
                     print(f"{shown:>5} {folder}" + (f"  ({name})" if name else ""))
         elif cmd == "sync":
             need(2, "[--delete] LOCALDIR REMOTEDIR")
-            sync(wii, args[0], args[1], delete=flags.get("delete", False))
+            sync(wii, args[0], args[1], delete=flags.get("delete", False),
+                 checksum_all=flags.get("checksum", False))
         else:
             print_help(cmd)
             raise SystemExit(2)

@@ -236,6 +236,31 @@ static void file_get_raw(s32 s, const char *path) {
 	fclose(f);
 }
 
+// One entry of a listing or a stat: "<d|f> <size> <mtime> <flags> <name>".
+// mtime is seconds since 1970 by the Wii's clock (FAT keeps local time
+// without a zone; HBCS "time" reads the same clock, so a client can line
+// them up); flags is "r" for read-only, else "-". A directory's size is 0.
+static int entry_line(char *out, size_t size, const struct stat *st, const char *name) {
+	bool dir = S_ISDIR(st->st_mode);
+
+	return snprintf(out, size, "%c %lld %lld %s %s\n", dir ? 'd' : 'f',
+					dir ? 0LL : (long long) st->st_size, (long long) st->st_mtime,
+					st->st_mode & S_IWUSR ? "-" : "r", name);
+}
+
+// Op S: the entry line for one path.
+static void file_stat(s32 s, const char *path) {
+	char line[DEVFILE_PATH_MAX + 64];
+	const char *base = strrchr(path, '/');
+	struct stat st;
+
+	if (stat(path, &st)) {
+		devfile_reply(s, -errno, NULL, 0);
+		return;
+	}
+	devfile_reply(s, 0, line, entry_line(line, sizeof(line), &st, base ? base + 1 : path));
+}
+
 static void file_list(s32 s, const char *path) {
 	char full[DEVFILE_PATH_MAX * 2];
 	struct dirent *de;
@@ -257,12 +282,13 @@ static void file_list(s32 s, const char *path) {
 		return;
 	}
 
-	// One entry per line: "d <name>" or "f <size> <name>". A listing that
-	// reaches the buffer limit ends with "! truncated".
+	// "#list 2", then one entry_line() per entry. A listing that reaches the
+	// buffer limit ends with "! truncated".
+	n = snprintf(buf, DEVFILE_LIST_MAX, "#list 2\n");
 	while ((de = readdir(d))) {
 		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
 			continue;
-		if (n >= DEVFILE_LIST_MAX - DEVFILE_PATH_MAX - 32) {
+		if (n >= DEVFILE_LIST_MAX - DEVFILE_PATH_MAX - 64) {
 			n += snprintf(buf + n, DEVFILE_LIST_MAX - n, "! truncated\n");
 			break;
 		}
@@ -270,11 +296,7 @@ static void file_list(s32 s, const char *path) {
 		if (snprintf(full, sizeof(full), "%s/%s", path, de->d_name) >= (int) sizeof(full) ||
 				stat(full, &st))
 			continue;
-		if (S_ISDIR(st.st_mode))
-			n += snprintf(buf + n, DEVFILE_LIST_MAX - n, "d %s\n", de->d_name);
-		else
-			n += snprintf(buf + n, DEVFILE_LIST_MAX - n, "f %lld %s\n",
-					(long long) st.st_size, de->d_name);
+		n += entry_line(buf + n, DEVFILE_LIST_MAX - n, &st, de->d_name);
 	}
 	closedir(d);
 
@@ -392,6 +414,9 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 		break;
 	case 'L':
 		file_list(s, path);
+		break;
+	case 'S':
+		file_stat(s, path);
 		break;
 	case 'D':
 		if (stat(path, &st))

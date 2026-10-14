@@ -246,6 +246,8 @@ static s32 status_json(char *buf, size_t size) {
 	n += agent_overlay_cost_json(buf + n, size - n);
 	n += agent_overlay_state(buf + n, size - n);
 	n += snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style());
+	// The Wii's clock, the one file times (op L, S) come from.
+	n += snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL));
 	_CPU_ISR_Disable(level);
 	n += snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
 				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",

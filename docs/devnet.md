@@ -138,10 +138,20 @@ character, and paths of 256 bytes or more.
 | `g` | framed download; flags bit 0 allows zlib frames | reply header with the file size, then frames |
 | `P` | protocol 1 upload of `size` raw bytes, as `p` without checks | none |
 | `G` | protocol 1 download | the file |
-| `L` | list a directory | lines of `d <name>` or `f <size> <name>`; a listing that reached 256 KiB ends with `! truncated` |
+| `L` | list a directory | `#list 2`, then a line per entry: `<d\|f> <size> <mtime> <flags> <name>` (below); a listing that reached 256 KiB ends with `! truncated` |
+| `S` | one file's or directory's entry | the same line, for that path |
 | `C` | checksum a file | u32 size, u32 CRC-32 |
 | `D` | delete a file or an empty directory | none |
 | `M` | create a directory and its parents | none |
+
+An entry line's `mtime` is the time the entry last changed, in seconds since
+1970 by the Wii's clock: FAT keeps local time with no zone, and HBCS `time`
+(the Wii's clock now) is read the same way, so a client lines the two up by
+their difference (`hbc.py` does). `flags` is `r` for a read-only entry, else
+`-`; a directory's size is 0. HBC before 1.10.6 listed only `d <name>` and
+`f <size> <name>`, with no version line; that format is gone. The FAT layers
+under HBC and the agent report these times (libogc 3's FatFs, libogc2's
+libfat) but none can set them, so an upload's time is when the Wii wrote it.
 
 A put to a path ending in `/` is refused with `EISDIR`, and one larger than
 the device's free space (plus a cluster: the upload is written beside the

@@ -161,6 +161,37 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.6: file times and flags, and a sync that need not read
+
+- The file requests are HBC-Reborn's own (1.2.0; upstream HBC has only
+  Wiiload), and every client is in projects maintained here, so the
+  listing changed in place: op `L` answers `#list 2` and then
+  `<d|f> <size> <mtime> <flags> <name>` per entry; op `S` gives one path's
+  line; HBC's and the agent's HBCS carry `time`, the Wii's clock. The old
+  format is gone: `hbc.py` says to update an HBC or agent that still sends
+  it. Its Python `list_dir()` still returns `(type, size, name)` for
+  scripts that unpack three (WiiStation's bench scripts); `list_entries()`
+  and `stat_remote()` give the rest.
+- What the FAT layers can do (from the libraries' symbols): libogc 3's
+  FatFs and libogc2's libfat fill `st_mtime` and the write bits (FAT's
+  read-only attribute); libogc 1.8.23 uses libogc2's libfat. None sets a
+  time through the devoptab (`utimes_r` is not filled in; FatFs has
+  `f_utime`, but behind dvm's volume, not a path). So an upload's time is
+  when the Wii wrote it, not the PC file's; hidden and system attributes
+  are not exposed by `stat`.
+- `hbc.py sync` uses it: a same-size file whose Wii time, lined up with the
+  PC's clock through HBCS `time` (FAT stores local time without a zone),
+  is at least 2 s (FAT's step) after the local file's change is taken as
+  the same without the Wii reading it; otherwise the CRC-32s decide, so a
+  wrong Wii clock only costs reading. `--checksum` compares every same-size
+  file, for a Wii copy changed on the Wii since at the same size (which the
+  date rule would keep). A daylight saving change between the upload and
+  the sync shifts the line-up by an hour.
+- `hbc.py ls` shows dates and read-only, `--json` every field; `hbc.py stat`.
+- `tests/wii_file_meta.py` on the bench Wii: a new file's time matched the
+  Wii's clock (+0 s) from HBC, the libogc 3 agent and the libogc2 agent;
+  a re-sync of a folder with a 50 MB file read nothing (0.1 s).
+
 ### 1.10.5: sync with big files, and the agent's stack figure
 
 - `hbc.py sync` timed out on a folder holding large files that were already
@@ -177,19 +208,7 @@ From the 1.3.6 review, each verified in the code first:
   dropped the `memset(stack, 0, AGENT_STACK)` that `stack_used()` depends on
   (it finds the lowest non-zero byte). Put back; the real use is about
   1.6 KB.
-- Future work, full directory and file metadata: the listing (op `L`)
-  carries only "d NAME" and "f SIZE NAME", and there is no stat op, so a
-  client cannot see dates or attributes, and sync cannot skip a big file by
-  size and date (it must have the Wii read it all). What it would take: a
-  listing with each entry's modification time (and attributes: read-only,
-  hidden), a stat op for one path, and, for sync to compare dates, setting
-  a file's time after an upload to the PC's, or sync comparing against the
-  time the Wii wrote it. Open questions before starting: whether each FAT
-  layer (libogc 3's FatFs/dvm, libogc2's and 1.8.23's libfat) fills
-  `st_mtime` and supports setting it (utime/f_utime); whether the Wii's
-  clock is right (the overlay's Sync clock exists for that); FAT's 2 s date
-  granularity and local time; and keeping the old listing for older
-  clients (a new op, or a flag in the request header).
+- Future work, full directory and file metadata: done in 1.10.6, below.
 
 ### 1.10.4: Restart network, and file errors that say what happened
 

@@ -35,6 +35,9 @@ class FakeHBC:
         self.sock.listen(8)
         self.port = self.sock.getsockname()[1]
         self.files = {}
+        self.mtimes = {}       # path -> the fake Wii's file time
+        self.clock = 0         # the fake Wii's clock minus the PC's (HBCS "time")
+        self.old_listing = False
         self.dirs = {"sd:/"}
         self.log = None
         self.log_ports = []
@@ -78,6 +81,10 @@ class FakeHBC:
     def reply(self, conn, status, payload=b""):
         conn.sendall(struct.pack(">iI", status, len(payload)) + payload)
 
+    def entry(self, kind, path):
+        size = len(self.files[path]) if kind == "f" else 0
+        return f"{kind} {size} {self.mtimes.get(path, 0)} - {path.rsplit('/', 1)[1]}\n"
+
     def make_dirs(self, path):
         while path not in self.dirs:
             self.dirs.add(path)
@@ -98,7 +105,8 @@ class FakeHBC:
         if magic == b"HBCV":
             conn.sendall(b"1.5.0 agent\0" if self.agent else b"1.2.0\0")
         elif magic == b"HBCS":
-            st = {"version": "1.2.0", "proto": 2, "log": self.log}
+            st = {"version": "1.2.0", "proto": 2, "log": self.log,
+                  "time": int(time.time()) + self.clock}
             if self.next_result is not None:
                 st.update(proto=6, upload=self.upload)
             if self.agent:
@@ -174,6 +182,7 @@ class FakeHBC:
             elif op == "P":
                 self.make_dirs(parent(path))
                 self.files[path] = self.recv(conn, size)
+                self.mtimes[path] = int(time.time()) + self.clock
                 self.reply(conn, 0)
             elif op in "GgC" and path not in self.files:
                 self.reply(conn, -(EISDIR if path in self.dirs and op == "C" else ENOENT))
@@ -195,6 +204,7 @@ class FakeHBC:
                     left -= raw_len
                 self.make_dirs(parent(path))
                 self.files[path] = bytes(data)
+                self.mtimes[path] = int(time.time()) + self.clock
                 self.reply(conn, 0)
             elif op == "g":
                 data = self.files[path]
@@ -206,12 +216,22 @@ class FakeHBC:
                 if path not in self.dirs:
                     self.reply(conn, -(ENOTDIR if path in self.files else ENOENT))
                     return
-                lines = "".join(f"d {p.rsplit('/', 1)[1]}\n" if kind == "d" else
-                                f"f {len(self.files[p])} {p.rsplit('/', 1)[1]}\n"
-                                for kind, p in self.children(path))
+                if self.old_listing:   # HBC 1.10.5 and older
+                    lines = "".join(f"d {p.rsplit('/', 1)[1]}\n" if kind == "d" else
+                                    f"f {len(self.files[p])} {p.rsplit('/', 1)[1]}\n"
+                                    for kind, p in self.children(path))
+                else:
+                    lines = "#list 2\n" + "".join(self.entry(kind, p)
+                                                   for kind, p in self.children(path))
                 if self.truncate:
                     lines += "! truncated\n"
                 self.reply(conn, 0, lines.encode())
+            elif op == "S":
+                if path in self.files or path in self.dirs:
+                    kind = "f" if path in self.files else "d"
+                    self.reply(conn, 0, self.entry(kind, path).encode())
+                else:
+                    self.reply(conn, -ENOENT)
             elif op == "D":
                 if path in self.files:
                     del self.files[path]
@@ -431,7 +451,7 @@ class HBCToolTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             hbc.main(["help", "sync"])
-        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] LOCAL PATH"))
+        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] [--checksum] LOCAL PATH"))
         for name in ("status", "run", "get", "put", "key", "screen", "crash"):
             self.assertIn(name, hbc.COMMAND_HELP)
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exc:
@@ -447,7 +467,11 @@ class HBCToolTest(unittest.TestCase):
         hbc.file_request(WII, "P", "sd:/apps/x/data.bin", len(data), data)
         self.assertEqual(hbc.file_request(WII, "G", "sd:/apps/x/data.bin"), data)
         listing = hbc.file_request(WII, "L", "sd:/apps/x").decode()
-        self.assertIn(f"f {len(data)} data.bin", listing)
+        self.assertTrue(listing.startswith("#list 2\n"))
+        self.assertRegex(listing, rf"\nf {len(data)} \d+ - data.bin\n")
+        e = hbc.stat_remote(WII, "sd:/apps/x/data.bin")
+        self.assertEqual((e["type"], e["size"], e["readonly"], e["name"]),
+                         ("f", len(data), False, "data.bin"))
         self.assertEqual(hbc.checksum(WII, "sd:/apps/x/data.bin"), (len(data), zlib.crc32(data)))
         hbc.file_request(WII, "D", "sd:/apps/x/data.bin")
         with self.assertRaisesRegex(hbc.HBCError, "ENOENT"):
@@ -617,6 +641,39 @@ class HBCToolTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.cli("order", "sd:/ordertest", "nosuch")
 
+    def test_sync_by_date_reads_nothing(self):
+        src = self.tmp / "dated"
+        self.make_tree(src, {"big.img": b"x" * 5000, "small.txt": b"hi"})
+        quiet = lambda _: None  # noqa: E731
+        old = time.time() - 3600
+        for f in src.iterdir():
+            os.utime(f, (old, old))   # changed an hour ago, before the upload
+        self.fake.clock = -7200   # a Wii two hours behind (another zone): no matter
+        try:
+            hbc.sync(WII, str(src), "sd:/apps/dated", out=quiet)
+            start = len(self.fake.requests)
+            self.assertEqual(hbc.sync(WII, str(src), "sd:/apps/dated", out=quiet), (0, 2, 0, 0))
+            self.assertNotIn("C", {op for op, _ in self.fake.requests[start:]})
+            # Changed here since (same size): the Wii's copy is older, so the
+            # CRCs decide, and it goes up.
+            (src / "small.txt").write_bytes(b"HI")
+            self.assertEqual(hbc.sync(WII, str(src), "sd:/apps/dated", out=quiet)[:2], (1, 1))
+            # --checksum reads every same-size file.
+            start = len(self.fake.requests)
+            hbc.sync(WII, str(src), "sd:/apps/dated", out=quiet, checksum_all=True)
+            self.assertEqual(sum(op == "C" for op, _ in self.fake.requests[start:]), 2)
+        finally:
+            self.fake.clock = 0
+
+    def test_old_listing_says_update(self):
+        hbc.put_file(WII, "sd:/apps/old/a.bin", b"a")
+        self.fake.old_listing = True
+        try:
+            with self.assertRaisesRegex(hbc.HBCError, "lists folders the old way"):
+                hbc.list_dir(WII, "sd:/apps/old")
+        finally:
+            self.fake.old_listing = False
+
     def test_sync_goes_on_past_a_failed_file(self):
         src = self.tmp / "src2"
         self.make_tree(src, {"a.bin": b"a" * 10, "b.bin": b"b" * 20, "c.bin": b"c" * 30})
@@ -681,7 +738,7 @@ class HBCToolTest(unittest.TestCase):
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):
             hbc.main(["--wii", WII, "ls", "sd:/apps/trunc"])
-        self.assertEqual(out.getvalue(), "f 1 a.bin\n")
+        self.assertRegex(out.getvalue(), r"^f 1 \d{4}-\d\d-\d\d \d\d:\d\d a.bin\n$")
         self.assertIn("warning", err.getvalue())
 
     def test_json_output(self):
@@ -691,9 +748,11 @@ class HBCToolTest(unittest.TestCase):
         text = self.cli("status", "--json")
         self.assertEqual(json.loads(text)["proto"], 2)
         self.assertNotIn(" ", text.strip())
-        self.assertEqual(json.loads(self.cli("--json", "ls", "sd:/apps/js")),
-                         [{"name": "sub", "type": "d", "size": 0},
-                          {"name": "f.bin", "type": "f", "size": 5}])
+        listing = json.loads(self.cli("--json", "ls", "sd:/apps/js"))
+        self.assertEqual([{k: e[k] for k in ("name", "type", "size", "readonly")} for e in listing],
+                         [{"name": "sub", "type": "d", "size": 0, "readonly": False},
+                          {"name": "f.bin", "type": "f", "size": 5, "readonly": False}])
+        self.assertTrue(all(isinstance(e["mtime"], int) for e in listing))
 
 
 if __name__ == "__main__":
