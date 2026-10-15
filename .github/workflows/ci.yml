@@ -24,7 +24,12 @@ jobs:
           retry() { for i in 1 2 3; do "$@" && return 0; echo "retry $i: $*"; sleep 20; done; return 1; }
           retry apt-get update
           retry apt-get install -y --no-install-recommends build-essential zlib1g-dev xxd gettext python3 python3-venv
-          retry dkp-pacman -Sy --needed --noconfirm --disable-download-timeout ppc-zlib ppc-libpng ppc-mxml ppc-freetype ppc-bzip2 ppc-brotli
+          # The devkitppc image already has these; pkg.devkitpro.org sometimes answers
+          # GitHub's runners 403, so fetch only what is missing.
+          missing=$(dkp-pacman -T ppc-zlib ppc-libpng ppc-mxml ppc-freetype ppc-bzip2 ppc-brotli || true)
+          if [ -n "$missing" ]; then
+            retry dkp-pacman -Sy --needed --noconfirm --disable-download-timeout $missing
+          fi
           dkp-pacman -Q | grep -E 'devkitPPC|libogc|ppc-' || true
           python3 -m venv .venv
           .venv/bin/python -m pip install -r requirements.txt

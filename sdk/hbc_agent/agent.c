@@ -159,6 +159,10 @@ static void lastlog_write(u32 why) {
 	u32 n = log_len < HBC_LASTLOG_SIZE ? log_len : HBC_LASTLOG_SIZE;
 	u32 start = (log_head + LOG_SIZE - n) % LOG_SIZE, i;
 
+	// The log target reaches HBC's MEM2 copy only now: while the app runs,
+	// that MEM2 is the app's (hbc_netlog.h). Every way out comes here.
+	memcpy((void *) HBC_NETLOG_KEEP_ADDR, (void *) HBC_NETLOG_ADDR, sizeof(hbc_netlog_block));
+	DCFlushRange((void *) HBC_NETLOG_KEEP_ADDR, sizeof(hbc_netlog_block));
 	if (lastlog_done)
 		return;
 	lastlog_done = true;
@@ -339,6 +343,7 @@ static void send_screen(s32 s) {
 }
 
 static u16 get_u16(const u8 *p);
+static int lasting_json(char *buf, size_t size);
 
 bool hbc_agent_handle(s32 s, const u8 *hdr) {
 	if (!memcmp(hdr, "HBCK", 4)) {
@@ -425,7 +430,7 @@ static s32 status_json(char *buf, size_t size) {
 	n = snprintf(buf, size,
 			"{\"agent\":true,\"version\":\"%s\",\"proto\":%d,\"app\":\"%s\","
 			"\"app_version\":\"%s\",\"uptime_ms\":%u,\"ios\":%d,\"ios_revision\":%d,"
-			"\"ahbprot\":%s,\"mem1_free\":%u,\"mem2_free\":%u,\"heap_free\":%u,\"heap_arena\":%u,"
+			"\"ahbprot\":%s,\"arena1_free\":%u,\"arena2_free\":%u,\"heap_free\":%u,\"heap_arena\":%u,"
 			"\"agent_stack_used\":%u,\"agent_stack_size\":%u,"
 			"\"ip\":\"%u.%u.%u.%u\",\"exit_requested\":%s,\"inserted\":[",
 			CHANNEL_VERSION_STR, AGENT_PROTO, name, version, uptime_ms(),
@@ -487,6 +492,7 @@ static s32 status_json(char *buf, size_t size) {
 	if (agent_overlay_state)
 		n += agent_overlay_state(buf + n, size - n);
 	n += safety_json(buf + n, size - n);
+	n += lasting_json(buf + n, size - n);
 	// The Wii's clock, the one file times (op L, S) come from.
 	n += snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL));
 	n += snprintf(buf + n, size - n, ",\"tcp_last_failure\":\"%s\"}", tcp_last_failure());
@@ -505,11 +511,12 @@ static void write_block(hbc_netlog_block *block, u32 ip, u16 port) {
 	DCFlushRange(block, sizeof(*block));
 }
 
-// HBCN: the log target for the apps after this one, in the same blocks HBC
-// uses: low memory and the MEM2 copy HBC restores after its title launch.
+// HBCN: the log target for the apps after this one, in low memory, where
+// HBC reads it. Its MEM2 copy, which HBC restores after its title launch, is
+// written as the app stops (lastlog_write): nothing of the agent's touches
+// the app's MEM2 while it runs.
 static void set_log_target(u32 ip, u16 port) {
 	write_block((hbc_netlog_block *) HBC_NETLOG_ADDR, ip, port);
-	write_block((hbc_netlog_block *) HBC_NETLOG_KEEP_ADDR, ip, port);
 }
 
 // Leaves the app for HBC, through the reload stub like any other exit().
@@ -856,6 +863,68 @@ void hbc_agent_fatal_now(u32 code, const char *fmt, ...) {
 
 #define WATCHDOG_STACK (4 * 1024)
 
+// ---- Lasting memory, from the top of MEM2 -----------------------------------
+//
+// What the agent keeps for the app's whole run (its two threads' stacks, and
+// safety.c's copy of the reload stub) comes from the top of the MEM2 arena,
+// taken once, the way libogc takes its WPAD and network buffers: an app that
+// builds its heap from the arena keeps it in one piece, and leaves room at
+// the top for these as it does for libogc's. When the arena has no room (the
+// app took it all), the heap gives it instead. Never given back: a stop and
+// a new hbc_agent_init() reuse it.
+
+static const u32 lasting_size[AGENT_MEM_SLOTS] = { AGENT_STACK, WATCHDOG_STACK,
+												   AGENT_STUB_COPY };
+static u8 *lasting;
+static bool lasting_arena, lasting_lost[AGENT_MEM_SLOTS];
+
+static u32 lasting_total(void) {
+	u32 i, total = 0;
+
+	for (i = 0; i < AGENT_MEM_SLOTS; ++i)
+		total += lasting_size[i];
+	return total;
+}
+
+void *agent_lasting(int slot) {
+	u32 level, total = lasting_total(), off = 0;
+	int i;
+
+	if (slot < 0 || slot >= AGENT_MEM_SLOTS)
+		return NULL;
+	// ponytail: a slice whose thread a stop abandoned (blocked in IOS) may
+	// still be in use: that slot comes from the heap from then on.
+	if (lasting_lost[slot])
+		return memalign(32, lasting_size[slot]);
+	if (!lasting) {
+		_CPU_ISR_Disable(level);
+		u32 hi = (u32) SYS_GetArena2Hi(), lo = (u32) SYS_GetArena2Lo();
+
+		if (hi >= lo + total + 32) {
+			lasting = (u8 *) ((hi - total) & ~31u);
+			SYS_SetArena2Hi(lasting);
+			lasting_arena = true;
+		}
+		_CPU_ISR_Restore(level);
+		if (!lasting && !(lasting = memalign(32, total)))
+			return NULL;
+	}
+	for (i = 0; i < slot; ++i)
+		off += lasting_size[i];
+	return lasting + off;
+}
+
+static void lasting_lose(int slot) {
+	lasting_lost[slot] = true;
+}
+
+// HBCS: ,"agent_mem":{...}, where the lasting block is.
+static int lasting_json(char *buf, size_t size) {
+	return snprintf(buf, size, ",\"agent_mem\":{\"addr\":\"%08x\",\"bytes\":%u,\"from\":\"%s\"}",
+					(unsigned) (u32) lasting, (unsigned) lasting_total(),
+					!lasting ? "none" : lasting_arena ? "arena2_top" : "heap");
+}
+
 volatile bool agent_overlay_open;
 static volatile u64 alive_at;
 static volatile s32 hold_count;
@@ -930,7 +999,7 @@ static void *watchdog(void *arg) {
 u32 agent_monitor_start(void) {
 	if (state == AGENT_STOPPED || wd_thread != LWP_THREAD_NULL || wd_stack)
 		return 0;
-	wd_stack = memalign(32, WATCHDOG_STACK);
+	wd_stack = agent_lasting(AGENT_MEM_WATCHDOG);
 	if (!wd_stack || LWP_CreateThread(&wd_thread, watchdog, (void *) gen, wd_stack,
 									  WATCHDOG_STACK, LWP_PRIO_HIGHEST) < 0) {
 		wd_thread = LWP_THREAD_NULL;  // no monitor; wd_stack stops a retry
@@ -1110,7 +1179,7 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 	if (net_get_status() < 0 && net_get_status() != -EBUSY)
 		net_init_async(NULL, NULL);
 
-	stack = memalign(32, AGENT_STACK);
+	stack = agent_lasting(AGENT_MEM_STACK);
 	if (stack)
 		memset(stack, 0, AGENT_STACK);   // stack_used() finds the lowest non-zero byte
 	res = stack ? LWP_CreateThread(&thread, agent_thread, (void *) gen, stack, AGENT_STACK,
@@ -1126,7 +1195,7 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 // Waits up to deadline for a thread of generation `old` to end, then joins
 // it and frees its stack. False if it did not end (blocked in IOS): it is
 // left to end by itself, its stack with it.
-static bool end_thread(lwp_t *t, u8 **stk, volatile u32 *ended, u32 old, u64 start) {
+static bool end_thread(lwp_t *t, u8 **stk, int slot, volatile u32 *ended, u32 old, u64 start) {
 	bool done;
 
 	if (*t == LWP_THREAD_NULL)
@@ -1139,8 +1208,8 @@ static bool end_thread(lwp_t *t, u8 **stk, volatile u32 *ended, u32 old, u64 sta
 			LWP_JoinThread(*t, NULL);
 		*t = LWP_THREAD_NULL;
 	}
-	if (done)
-		free(*stk);   // ponytail: a stuck thread's stack is leaked, 12 or 4 KiB
+	if (!done)
+		lasting_lose(slot);   // its stack may still be in use
 	*stk = NULL;
 	return done;
 }
@@ -1161,14 +1230,14 @@ s32 hbc_agent_stop(void) {
 	agent_listen_enabled = false;
 	devfile_abort();   // a transfer in progress ends; its client sees an error
 
-	if (!end_thread(&thread, &stack, &agent_ended, old, start)) {
+	if (!end_thread(&thread, &stack, AGENT_MEM_STACK, &agent_ended, old, start)) {
 		abandoned = old;
 		if (listen_sock >= 0)
 			net_close(listen_sock);   // so the app can bind the port
 		listen_sock = -1;
 		res = -ETIMEDOUT;
 	}
-	if (!end_thread(&wd_thread, &wd_stack, &monitor_ended, old, start))
+	if (!end_thread(&wd_thread, &wd_stack, AGENT_MEM_WATCHDOG, &monitor_ended, old, start))
 		res = -ETIMEDOUT;
 	alive_thread = NULL;
 	hold_count = 0;

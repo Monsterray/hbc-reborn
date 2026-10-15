@@ -161,6 +161,46 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.7: the agent leaves the app's MEM2 alone
+
+- From USB Loader GX's handoff (2026-10-14), checked against the code: of
+  HBC's MEM2 records at 0x91800000-0x91801140, the crash block and kept log
+  were already written only as an app stops, but `HBCN` (`hbc.py log`)
+  wrote the log target's 32-byte copy at 0x91800000 while it ran. Apps with
+  a MEM2 heap (GX, WiiXplorer) split it around the 4,416 bytes for that:
+  GX's largest free block fell from 46.6 MB to 28.4 MB. Now `HBCN` writes
+  only the low-memory block, and `lastlog_write()`, which every way out of
+  the app reaches (exit, exception, fatal, hang, abort, stack overflow,
+  power), copies it to MEM2 first. The records were not moved to the top
+  of MEM2: libogc's start-up takes that (the IPC heap) before HBC could
+  read them.
+- The agent's lasting memory (12 KiB and 4 KiB thread stacks, the 6 KiB
+  stub copy) comes from one block taken from the top of the MEM2 arena
+  (`agent_lasting()`), as libogc's WPAD and network buffers are, not from
+  malloc() in the middle of the app's heap; from the heap only when the
+  app took the whole arena. Kept for the run: a stop and a new init reuse
+  it, except a slice whose thread a stop abandoned. The transfer and
+  overlay buffers still come from malloc() and are freed after each use:
+  reserving their peak (560 KiB to 2.4 MB) would cost apps more than the
+  room they leave at the top.
+- `mem1_free`/`mem2_free` in HBCS were the SYS arena's unclaimed size, not
+  an app heap's free memory (GX read 1.7 MB with most of its heap free):
+  renamed `arena1_free`/`arena2_free`, in HBC and the agent. The handoff's
+  callback for an app heap's figures is left out until an app needs it.
+- CI had failed since 1.9.9, two ways. The devkitPPC job's install step
+  re-synced devkitPro's package lists (`dkp-pacman -Sy`) for libraries the
+  `devkitpro/devkitppc` image already has, and pkg.devkitpro.org sometimes
+  answers GitHub's runners 403; it now fetches only what `dkp-pacman -T`
+  says is missing. And `test_wiibench`'s monitor test failed every time
+  the tests ran: `monitor.sh` killed its snapshot coprocess on quit and on
+  restart without waiting for it, which in the CI container (whose first
+  process reaps nothing) left a zombie the test saw as alive. It now waits
+  for it (`snap_stop`).
+- `tests/wii_agent_mem2.py` on the bench Wii, libogc 3 and libogc2 builds:
+  the app's pattern over the records untouched while HBCN changed the
+  target, HBC had the target after the app stopped, the block at
+  0x933b1740 from the arena's top.
+
 ### 1.10.6: file times and flags, and a sync that need not read
 
 - The file requests are HBC-Reborn's own (1.2.0; upstream HBC has only

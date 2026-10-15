@@ -176,7 +176,7 @@ static s32 status_json(char *buf, size_t size) {
 
 	n = snprintf(buf, size,
 			"{\"version\":\"%s\",\"proto\":%d,\"ios\":%d,\"ios_revision\":%d,"
-			"\"ahbprot\":%s,\"mem1_free\":%u,\"mem2_free\":%u,"
+			"\"ahbprot\":%s,\"arena1_free\":%u,\"arena2_free\":%u,"
 			"\"heap_free\":%u,\"tcp_stack_used\":%u,"
 			"\"tcp_stack_size\":%u,\"init_ms\":%u,\"scan_ms\":%u,"
 			"\"ip\":\"%u.%u.%u.%u\",\"net_starts\":%u,\"apps\":%u,\"device\":",

@@ -55,7 +55,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 
 ```json
 {"version":"1.4.0","proto":2,"ios":58,"ios_revision":6175,"ahbprot":true,
- "mem1_free":4080,"mem2_free":50599776,"heap_free":116032,
+ "arena1_free":4080,"arena2_free":50599776,"heap_free":116032,
  "tcp_stack_used":2824,"tcp_stack_size":8192,"init_ms":968,"scan_ms":300,
  "ip":"192.168.8.213","apps":14,"device":"sd","inserted":["sd"],
  "log":"192.168.8.147:4405",
@@ -70,7 +70,11 @@ that file requests can use; `inserted` also lists devices that were present
 at the last device poll. `last` describes the most recent file transfer:
 bytes on the network, and time the Wii spent on Wi-Fi, SD, and zlib/CRC.
 Network and SD overlap in framed transfers, so their sum can exceed `ms`.
-`heap_free` is newlib's free heap (its "used" figure would count the gap
+`arena1_free` and `arena2_free` are the MEM1 and MEM2 that libogc's arena
+still has unclaimed (`SYS_GetArena1Size()`, `SYS_GetArena2Size()`), not
+free memory in an app's own heap: an app that built its heap from the
+arena shows little here with most of its heap free. They were
+`mem1_free` and `mem2_free` before 1.10.7. `heap_free` is newlib's free heap (its "used" figure would count the gap
 between MEM1 and MEM2), `tcp_stack_used` is the loader thread's stack
 high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
 `scan_ms` is the last full app scan. `net_starts` counts the times the network came up since HBC started
@@ -291,6 +295,20 @@ remotes and the PC's keys), `slow_loops` (passes over 1/30 s, which the user
 sees as a stutter), `bytes` borrowed, and `buffers` (`own`, `lent`, or
 `app's` when it drew over the app's framebuffer). Its animations move by
 time, not by frame, so a slow frame never slows them.
+
+### The agent and MEM2
+
+While an app runs the agent writes nothing into its MEM2. HBC's records at
+0x91800000-0x91801140 (the log target's copy, the crash block, the kept log)
+are written only as the app stops: an `HBCN` sets the log target in low
+memory, and the agent copies it to MEM2 on the way out, with the kept log.
+So an app may build its heap over all of MEM2 with no gap for them. The
+agent's lasting memory (its two threads' stacks, and the reload stub's copy
+with `guard_reload_stub`: 22 KiB) comes from the top of the MEM2 arena at
+`hbc_agent_init()`, as libogc takes WPAD's and the network's buffers, and
+the agent's `HBCS` says where: `"agent_mem":{"addr","bytes","from"}`, from
+`arena2_top`, or `heap` when the app had already taken the whole arena.
+`tests/wii_agent_mem2.py` checks both on a Wii.
 
 ### Stopping the agent, and lending the port
 

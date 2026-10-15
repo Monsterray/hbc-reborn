@@ -32,7 +32,9 @@
 /* The block sits just past the reload stub's return-title words, where the
  * next app HBC starts finds it. IOS clears low memory when it boots a title,
  * so HBC also keeps a copy in MEM2 to restore after an app returns to the
- * installed channel; an app that uses that memory only costs the copy. */
+ * installed channel. While an app runs that MEM2 is the app's: the agent
+ * (hbc_agent.h) writes the copy only as the app stops, and an app without
+ * the agent that uses that memory only costs the copy. */
 #define HBC_NETLOG_ADDR 0x80002f20
 #define HBC_NETLOG_KEEP_ADDR 0x91800000
 #define HBC_NETLOG_MAGIC 0x4842434e /* 'HBCN' */

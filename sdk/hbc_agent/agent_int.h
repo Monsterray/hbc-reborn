@@ -50,6 +50,11 @@ bool agent_paused(void);
  * running and returns the bytes that took (its stack), else 0. */
 u32 agent_monitor_start(void);
 bool agent_monitor_running(void);
+/* The agent's lasting memory, from the top of the MEM2 arena (agent.c):
+ * one slice per user, kept for the app's whole run. */
+enum { AGENT_MEM_STACK, AGENT_MEM_WATCHDOG, AGENT_MEM_STUB, AGENT_MEM_SLOTS };
+#define AGENT_STUB_COPY 0x1800   /* safety.c's copy of the reload stub */
+void *agent_lasting(int slot);
 /* hbc_agent_stop() ran (and no hbc_agent_init() since). */
 bool agent_stopped(void);
 /* overlay.c, if linked: its speaker, threads and sounds, for the stop. */

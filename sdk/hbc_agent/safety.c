@@ -112,6 +112,7 @@ static u32 fps, fps_flips, fps_retraces;
 
 #define STUB_ADDR 0x80001800
 #define STUB_SIZE 0x1800
+_Static_assert(STUB_SIZE == AGENT_STUB_COPY, "agent_lasting()'s slice for the stub copy");
 static u32 *stub_copy;
 static u32 stub_sum, stub_changed_ms;
 static bool stub_restored;
@@ -649,7 +650,7 @@ void safety_init(const hbc_agent_config *config) {
 	}
 	if (cfg->guard_reload_stub && *(u32 *) (STUB_ADDR + 4) == 0x53545542 &&
 			*(u32 *) (STUB_ADDR + 8) == 0x48415858) {   // "STUBHAXX"
-		stub_copy = memalign(32, STUB_SIZE);
+		stub_copy = agent_lasting(AGENT_MEM_STUB);   // lasting: not freed
 		if (stub_copy) {
 			memcpy(stub_copy, (void *) STUB_ADDR, STUB_SIZE);
 			stub_sum = sum_words(stub_copy, STUB_SIZE / 4);
@@ -691,8 +692,7 @@ void safety_stop(void) {
 	took_reset = took_power = false;
 	button = 0;
 	SYS_UnregisterResetFunc(&reset_info);
-	free(stub_copy);
-	stub_copy = NULL;
+	stub_copy = NULL;   // agent_lasting()'s, kept for a new init
 	stub_changed_ms = 0;
 	mem_on = false;
 	bytes_held = 0;

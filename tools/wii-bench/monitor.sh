@@ -143,8 +143,16 @@ declare -A KV ROWS NROWS
 # One `wiibench.py snapshot --serve` answers every refresh: no Python start per frame, the
 # lease server's name looked up once, and only what changed read again (see SnapCache).
 SNAP_PID=""
+# Stop the coprocess and reap it: killed and not waited for, it stays a zombie wherever
+# nothing reaps orphans (a container's first process often does not).
+snap_stop() {
+    [ -n "${SNAP_PID:-}" ] || return 0
+    kill "$SNAP_PID" 2>/dev/null
+    wait "$SNAP_PID" 2>/dev/null
+    SNAP_PID=""
+}
 snap_start() {
-    [ -n "${SNAP_PID:-}" ] && kill "$SNAP_PID" 2>/dev/null       # one that hung
+    snap_stop                                                    # one that hung
     coproc SNAP { exec "$PY" "$BENCH" snapshot --serve --hours "$HOURS" 2>"$ERRFILE"; }
 }
 
@@ -730,7 +738,7 @@ build_frame() {
 }
 
 cleanup() {
-    [ -n "${SNAP_PID:-}" ] && kill "$SNAP_PID" 2>/dev/null
+    snap_stop
     rm -f "$ERRFILE"
 }
 

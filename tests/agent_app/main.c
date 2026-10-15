@@ -31,6 +31,10 @@
 //   listen       hbc_agent_listen(false), its own server on TCP 4299 answering
 //                one 16-byte request with "MINE", hbc_agent_listen(true), then
 //                runs as with no mode
+//   mem2 N       fills HBC's records in MEM2 (0x91800000, 0x1140 bytes) as an
+//                app's heap there would, waits N s (tests/wii_agent_mem2.py
+//                sends HBCN meanwhile), says whether the agent wrote any of
+//                it, and exits
 //   optin        (anywhere after the mode) guard_reload_stub and track_memory
 //   nosafety=N   (anywhere after the mode) cfg.no_safety = N, HBC_AGENT_NO_* bits
 //
@@ -258,6 +262,29 @@ static void own_server(void) {
 		   (int) hbc_agent_listen(true));
 }
 
+// The agent writes nothing into HBC's MEM2 records while the app runs, so an
+// app's heap may cover them.
+static int records_untouched(int seconds) {
+	volatile u8 *rec = (volatile u8 *) 0x91800000;
+	u32 i, changed = 0, first = 0;
+
+	for (i = 0; i < 0x1140; ++i)
+		rec[i] = 0xa5;
+	DCFlushRange((void *) rec, 0x1140);
+	printf("agent_app: records filled; waiting %d s\n", seconds);
+	sleep(seconds);
+	DCInvalidateRange((void *) rec, 0x1140);
+	for (i = 0; i < 0x1140; ++i)
+		if (rec[i] != 0xa5 && !changed++)
+			first = i;
+	if (changed)
+		printf("agent_app: records changed: %u bytes, the first at 0x%08x\n",
+			   (unsigned) changed, (unsigned) (0x91800000 + first));
+	else
+		printf("agent_app: records untouched\n");
+	return 0;
+}
+
 int main(int argc, char **argv) {
 	hbc_agent_config cfg = { 0 };
 	const char *mode = argc > 1 ? argv[1] : AGENT_APP_MODE;
@@ -321,6 +348,8 @@ int main(int argc, char **argv) {
 	}
 	if (!strcmp(mode, "listen"))
 		own_server();
+	if (!strcmp(mode, "mem2"))
+		return records_untouched(argc > 2 ? atoi(argv[2]) : 20);
 
 	if (!strcmp(mode, "fatal")) {
 		sleep(1);

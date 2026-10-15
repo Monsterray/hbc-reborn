@@ -36,8 +36,19 @@
  *         return 0;                   // back to HBC
  *     }
  *
- * The agent costs one thread and about 20 KiB while idle. A file transfer
- * borrows up to about 560 KiB (less without zlib) and frees it at the end.
+ * The agent costs one thread and about 20 KiB while idle. Its lasting
+ * memory (its threads' stacks, and the reload stub's copy if
+ * guard_reload_stub is on: 22 KiB) comes from the top of the MEM2 arena at
+ * hbc_agent_init(), the way libogc takes WPAD's and the network's buffers,
+ * so an app that builds its heap from the arena keeps it in one piece; leave
+ * room for it at the top as for libogc's (HBCS agent_mem says where it went).
+ * A file transfer borrows up to about 560 KiB (less without zlib) through
+ * malloc() and frees it at the end; so does the HOME overlay while open.
+ *
+ * MEM2 is the app's: while it runs the agent writes nothing into it. HBC's
+ * records at 0x91800000-0x91801140 (the log target's copy, the crash block,
+ * the kept log) are written only as the app stops, so an app's heap may
+ * cover them.
  * The thread runs below the app's main thread, so it never takes frame time
  * from a thread that waits for the next frame; an app that never blocks
  * starves it, and the tools time out.
@@ -82,7 +93,9 @@
 
 /* The crash block sits in MEM2 next to hbc_netlog.h's kept copy: IOS clears
  * low memory when the reload stub boots the installed channel, and HBC reads
- * this before its own allocations could reach it. */
+ * this before its own allocations could reach it. It is written only as the
+ * app stops, like the kept log and the log target's copy: the app's MEM2 may
+ * cover these addresses while it runs. */
 #define HBC_CRASH_ADDR 0x91800020
 #define HBC_CRASH_MAGIC 0x48424343 /* 'HBCC' */
 #define HBC_CRASH_VERSION 2
