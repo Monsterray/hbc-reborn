@@ -4,6 +4,7 @@
 #include <gctypes.h>
 
 #include "devstream.h"
+#include "devfile_name.h"
 
 // HBCF header byte 5 for op 'g': the client accepts zlib frames.
 #define DEVNET_FLAG_COMPRESS 0x01
@@ -19,7 +20,8 @@ typedef struct {
 extern devfile_transfer devfile_last;
 
 // The file transfer in progress, for a menu to show: 'p' for one into the
-// Wii, 'g' for one out of it, with the file's name and its bytes moved of
+// Wii, 'g' for one out of it, with the app-relative path (or file name
+// outside apps/) and its bytes moved of
 // total (0 until known); 0 when there is none.
 char devfile_progress(const char **name, u32 *done, u32 *total);
 
