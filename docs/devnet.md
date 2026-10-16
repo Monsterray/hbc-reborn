@@ -148,6 +148,11 @@ character, and paths of 256 bytes or more.
 | `D` | delete a file or an empty directory | none |
 | `M` | create a directory and its parents | none |
 
+`hbc.py put` and `sync` read each uploaded file back through the mounted
+filesystem and compare its size and CRC-32 with the local data. A mismatch
+retries the upload up to two times. This catches transfer or readback
+mismatches; it does not remount the card to bypass filesystem caches.
+
 An entry line's `mtime` is the time the entry last changed, in seconds since
 1970 by the Wii's clock: FAT keeps local time with no zone, and HBCS `time`
 (the Wii's clock now) is read the same way, so a client lines the two up by
