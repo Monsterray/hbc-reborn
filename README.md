@@ -98,7 +98,9 @@ second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslas
 remove disappears. The menu reloads once the writes stop (a second of
 quiet), on the page it shows, so a whole folder's upload is one quiet reload.
 While a file moves, HBC shows it at the bottom right of the screen
-("Receiving boot.dol 42%", "Sending save.dat"). A name too long for the
+("Receiving ridgerac/boot.dol 42%", "Sending save.dat"). Files under a
+device's `apps/` directory show the app folder and any subfolders; other
+files show their filename. A name too long for the
 line scrolls round, bounces from end to end, or ends in "..." (each HBC
 start picks one at random; `hbc.py transfer-style bounce` forces one for
 testing). A moving name rests a second at its start, and a bouncing one at
