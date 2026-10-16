@@ -55,6 +55,7 @@ class FakeHBC:
         self.crash = None
         self.lastlog = None  # (why, uptime_ms, app, text) for HBCL
         self.exits = 0
+        self.refused = 0
         self.keys = b""
         self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
@@ -118,6 +119,12 @@ class FakeHBC:
                           if self.lastlog else None)
             self.reply(conn, 0, json.dumps(st).encode())
         elif magic == b"HBCX" and self.agent:
+            # protocol 5: only for this app's name (11 bytes) or with the force flag
+            name = hdr[5:16].rstrip(b"\0").decode()
+            if not hdr[4] & 1 and name != "otherapp"[:11]:
+                self.reply(conn, -16)  # EBUSY: the app keeps running
+                self.refused += 1
+                return
             self.reply(conn, 0)
             self.agent = False  # the app exits to HBC
             self.exits += 1
@@ -264,6 +271,7 @@ class HBCToolTest(unittest.TestCase):
         self.fake.crash = None
         self.fake.lastlog = None
         self.fake.exits = 0
+        self.fake.refused = 0
         self.fake.next_result = None
         self.fake.upload = None
         tmp = tempfile.TemporaryDirectory()
@@ -289,11 +297,44 @@ class HBCToolTest(unittest.TestCase):
         self.assertEqual(hbc.version(WII), "1.2.0")
         self.assertEqual(hbc.status(WII)["version"], "1.2.0")
 
+    def test_send_leaves_a_running_agent_app_it_is_not_told_to_stop(self):
+        # A shared Wii: the running app may be someone else's.
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(100))
+        self.fake.agent = True
+        uploads = len(self.fake.uploads)
+        with self.assertRaisesRegex(SystemExit, "Wii busy: otherapp is running.*--app otherapp"):
+            self.cli("send", str(app))
+        with self.assertRaisesRegex(SystemExit, "Wii busy: otherapp is running, not mine"):
+            self.cli("send", "--app", "mine", str(app))
+        self.assertEqual(self.fake.exits, 0)
+        self.assertTrue(self.fake.agent)
+        self.assertEqual(len(self.fake.uploads), uploads)
+
+    def test_send_force_exits_whatever_runs(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(100))
+        self.fake.agent = True
+        self.cli("send", "--force", str(app))
+        self.assertEqual(self.fake.exits, 1)
+
+    def test_the_agent_refuses_an_exit_naming_another_app(self):
+        self.fake.agent = True
+        with self.assertRaises(hbc.HBCError) as cm:
+            hbc.request(WII, hbc.exit_request("someone"))
+        self.assertEqual(cm.exception.code, 16)
+        with self.assertRaises(hbc.HBCError):
+            hbc.request(WII, b"HBCX")  # an older client's request names no app
+        self.assertEqual(self.fake.refused, 2)
+        self.assertTrue(self.fake.agent)
+        hbc.request(WII, hbc.exit_request("someone", force=True))
+        self.assertFalse(self.fake.agent)
+
     def test_send_exits_a_running_agent_app_first(self):
         app = self.tmp / "app.dol"
         app.write_bytes(bytes(100))
         self.fake.agent = True
-        self.cli("send", str(app))
+        self.cli("send", "--app", "otherapp", str(app))
         self.assertEqual(self.fake.exits, 1)
         self.assertFalse(self.fake.agent)
         # send() returns once the data is sent; the fake records it after.
@@ -309,8 +350,8 @@ class HBCToolTest(unittest.TestCase):
         self.fake.agent = True
         self.fake.agent_uptime_ms = 600_000
         with mock.patch.dict(os.environ, WII_BENCH_JOB_START=str(time.time() - 30)):
-            with self.assertRaisesRegex(SystemExit, "Wii busy: otherapp is running"):
-                self.cli("send", str(app))
+            with self.assertRaisesRegex(SystemExit, "Wii busy: otherapp is running, started before"):
+                self.cli("send", "--force", str(app))
         self.assertEqual(self.fake.exits, 0)
         self.assertTrue(self.fake.agent)
 
@@ -320,14 +361,16 @@ class HBCToolTest(unittest.TestCase):
         self.fake.agent = True
         self.fake.agent_uptime_ms = 5_000
         with mock.patch.dict(os.environ, WII_BENCH_JOB_START=str(time.time() - 30)):
-            self.cli("send", str(app))
+            self.cli("send", "--app", "otherapp", str(app))
         self.assertEqual(self.fake.exits, 1)
 
     def test_exit_needs_an_agent_app(self):
         self.fake.agent = True
-        self.assertEqual(self.cli("exit").strip(), "1.2.0")
-        with self.assertRaisesRegex(SystemExit, "no agent app"):
+        with self.assertRaisesRegex(SystemExit, "Wii busy: otherapp is running"):
             self.cli("exit")
+        self.assertEqual(self.cli("exit", "--app", "otherapp").strip(), "1.2.0")
+        with self.assertRaisesRegex(SystemExit, "no agent app"):
+            self.cli("exit", "--force")
 
     def test_crash_report_and_clear(self):
         self.fake.crash = {"app": "demo", "exception": 3, "name": "DSI", "pc": "80004cac",

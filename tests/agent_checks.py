@@ -163,16 +163,31 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         print(f"agent exit to HBC: PASS ({time.monotonic() - start:.1f} s until HBC answered)")
         back(wii)
 
-        # 3. A plain Wiiload upload to a running agent app ends up in HBC, so
-        # a retry works (hbc.py send/run do that exit first themselves).
+        # 3. A plain Wiiload upload, or an HBCX naming no app (an older
+        # client), leaves a running agent app running: on a shared Wii it may
+        # be someone else's. hbc.py send/run ask it to exit by name first.
         hbc.send(wii, str(APP), ["stay", "180"])
         wait_agent(wii)
         try:
             hbc.send(wii, str(APP), ["exit"])
-        except OSError:
-            pass  # the agent resets the connection
+        except (OSError, hbc.HBCError):
+            pass  # the agent closes the connection
+        time.sleep(2)
+        assert hbc.is_agent(hbc.version(wii)), "a Wiiload upload stopped the running app"
+        try:
+            hbc.request(wii, b"HBCX")
+            raise AssertionError("an HBCX naming no app stopped the running app")
+        except hbc.HBCError as exc:
+            assert exc.code == 16, exc  # EBUSY
+        try:
+            hbc.request(wii, hbc.exit_request("someone"))
+            raise AssertionError("an HBCX naming another app stopped the running app")
+        except hbc.HBCError as exc:
+            assert exc.code == 16, exc
+        assert hbc.is_agent(hbc.version(wii))
+        assert hbc.exit_app(wii)
         back(wii)
-        print("agent Wiiload upload returns to HBC: PASS")
+        print("agent ignores uploads and exits for others: PASS")
 
         # 4. A crash: libogc's screen, then back to HBC with a report.
         # The app lives about a second, too short to poll for reliably; its

@@ -12,6 +12,7 @@ import json
 import os
 import select
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -151,19 +152,66 @@ def foreign_app_check(wii):
                        f"bench job; not exiting it")
 
 
-def exit_app(wii, seconds=90):
-    """Ask a running agent app to exit, then wait for HBC. Returns whether an
-    app was running."""
+HBCX_FORCE = 0x01
+HBCX_NAME_MAX = 11   # bytes of the app's name an HBCX carries (protocol 5 agents)
+
+
+def exit_request(name=None, force=False):
+    """An HBCX header: flags, then the name of the app meant (agents from
+    protocol 5 exit only for their own name, or when forced)."""
+    target = (name or "").encode("utf-8", "replace")[:HBCX_NAME_MAX]
+    return b"HBCX" + bytes((HBCX_FORCE if force else 0,)) + target.ljust(HBCX_NAME_MAX, b"\0")
+
+
+def running_app(wii):
+    """The name of the agent app running, or None when HBC itself answers
+    (or nothing does)."""
     try:
-        running = is_agent(version(wii))
+        if not is_agent(version(wii)):
+            return None
     except (OSError, HBCError):
+        return None
+    try:
+        return status(wii).get("app") or "app"
+    except (OSError, HBCError, ValueError):
+        return "app"
+
+
+def exit_app(wii, seconds=90, app=None, force=False):
+    """Ask the running agent app to exit, then wait for HBC. Returns whether an
+    app was running. app: the name of the app the caller means to stop; when
+    another is running, refuse (HBCError) and leave it. None stops whatever
+    runs (for callers that own the Wii, such as the tests). force: the agent
+    exits even if the name it is sent is not its own."""
+    name = running_app(wii)
+    if name is None:
         return False
-    if not running:
-        return False
+    if app is not None and app != name:
+        raise HBCError(f"Wii busy: {name} is running, not {app}; not exiting it")
     foreign_app_check(wii)
-    request(wii, b"HBCX")
+    try:
+        request(wii, exit_request(name, force))
+    except HBCError as exc:
+        if exc.code == 16:  # EBUSY: the app has another name now
+            raise HBCError(f"Wii busy: the running app is not {name}; not exiting it") from None
+        raise
     hbc_wait(wii, seconds)
     return True
+
+
+def cli_exit_app(wii, flags, what):
+    """exit_app for the command line: a running agent app is stopped only when
+    named (--app NAME) or forced (--force), so a shared Wii's other users keep
+    their runs. what: the command, for the message."""
+    name = running_app(wii)
+    if name is None:
+        return False
+    if not flags.get("force") and flags.get("app") is None:
+        raise HBCError(f"Wii busy: {name} is running (perhaps someone else's); {what} stops it "
+                       f"only with --app {shlex.quote(name)} or --force")
+    if flags.get("force"):
+        return exit_app(wii, force=True)
+    return exit_app(wii, app=flags["app"])
 
 
 def devkit_tool(name):
@@ -1078,7 +1126,7 @@ Commands
     mkdir PATH          make a folder
     order DIR [APP...]  HBC's Custom app order: show it, or set it (meta.xml)
   Apps built with the in-app agent (sdk/hbc_agent.h)
-    exit                ask the running app to go back to HBC
+    exit --app NAME     ask the running app to go back to HBC (--force: any app)
     key KEYS            press buttons on it: h (HOME), u d l r, a, b, 1, 2, w
     screen FILE.png     save a picture of what the TV shows
     crash [--elf ELF]   show the last crash: where, and why
@@ -1113,7 +1161,7 @@ hbc.py wait [SECONDS]
 Waits until HBC answers (default 90 s) and prints its version. Use it after
 rebooting the Wii or after an app returns to HBC.""",
     "run": """\
-hbc.py run [--name NAME] [--yes] FILE [ARGS...]
+hbc.py run [--name NAME] [--yes] [--app RUNNING | --force] FILE [ARGS...]
 
 Sends FILE (a .dol, .elf or .zip) to the Wii, starts it, and prints what it
 prints until it exits (or --timeout seconds pass). Arguments after FILE go
@@ -1129,19 +1177,23 @@ The app's output reaches the PC if it uses sdk/hbc_netlog.h. The PC must
 accept incoming connections on --log-port (4405 by default): allow it once
 in your firewall.
 
-If an agent app is already running, run asks it to exit to HBC first, so
-each run replaces the last. If an agent app crashes, run prints the crash
-report and exits with status 3.
+If an agent app is already running, run stops only when it is named: with
+--app NAME (the name status shows) run asks that app to exit to HBC first,
+so each run replaces the last; --force stops whatever runs. Without either,
+run says which app is running and leaves it: on a shared Wii it may be
+someone else's. If an agent app crashes, run prints the crash report and
+exits with status 3.
 
     hbc.py run build/myapp.dol level2
     hbc.py run build/myapp.dol -- --verbose""",
     "send": """\
-hbc.py send [--name NAME] [--yes] FILE [ARGS...]
+hbc.py send [--name NAME] [--yes] [--app RUNNING | --force] FILE [ARGS...]
 
 Sends FILE to the Wii and starts it, without waiting for output: Wiiload,
 like the devkitPro wiiload tool. A .zip is installed to the SD card after
 you confirm on the Wii, or at once with --yes. --name is the play log's
-name for it (see run).
+name for it (see run). A running agent app is replaced only with --app NAME
+or --force, as for run.
 
 send waits for HBC's verdict: if the Wii cannot load it (not a Wii app, a
 broken transfer, a ZIP declined or not answered within HBC's 10 s), send
@@ -1217,9 +1269,14 @@ updates once the writes stop.
     hbc.py order sd:/apps
     hbc.py order sd:/apps wiixplorer usbloader_gx nintendont""",
     "exit": """\
-hbc.py exit
+hbc.py exit --app NAME
+hbc.py exit --force
 
-Asks the running agent app to exit to HBC, and waits until HBC answers.""",
+Asks the running agent app to exit to HBC, and waits until HBC answers.
+NAME is the app's own name, as status shows it ("app"): if another app is
+running, exit leaves it and says which. A Wii is often shared, so exit stops
+whatever runs only with --force. Agents from protocol 5 check the name
+themselves too, and keep running for a request that names another app.""",
     "key": """\
 hbc.py key KEYS
 
@@ -1289,9 +1346,11 @@ COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--delete": ("delete", ("sync",)),
                  "--checksum": ("checksum", ("sync",)),
                  "--clear": ("clear", ("crash", "order")),
-                 "--yes": ("yes", ("send", "run"))}
+                 "--yes": ("yes", ("send", "run")),
+                 "--force": ("force", ("send", "run", "exit"))}
 VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
-               "--name": ("name", ("send", "run"))}
+               "--name": ("name", ("send", "run")),
+               "--app": ("app", ("send", "run", "exit"))}
 
 
 def split_flags(cmd, args):
@@ -1378,7 +1437,7 @@ def main(argv=None):
             print(wait(wii, float(args[0]) if args else 90))
         elif cmd == "send":
             need(1, "FILE [ARG ...]")
-            if exit_app(wii):
+            if cli_exit_app(wii, flags, "send"):
                 print("hbc.py: the running app exited to HBC", file=sys.stderr)
             before = upload_seq(wii)
             send(wii, args[0], args[1:], flags.get("name"), flags.get("yes", False))
@@ -1387,7 +1446,7 @@ def main(argv=None):
                 if result != "launched":
                     print(f"hbc.py: {result}", file=sys.stderr)
         elif cmd == "exit":
-            if not exit_app(wii):
+            if not cli_exit_app(wii, flags, "exit"):
                 raise HBCError("no agent app is running (HBC answers itself)")
             print(hbc_wait(wii, 5))
         elif cmd == "key":
@@ -1448,7 +1507,7 @@ def main(argv=None):
         elif cmd in ("run", "log"):
             if cmd == "run":
                 need(1, "FILE [ARG ...]")
-                if exit_app(wii):
+                if cli_exit_app(wii, flags, "run"):
                     print("[hbc log] the running app exited to HBC", file=sys.stderr, flush=True)
                 if proto(wii) >= 3:
                     request(wii, b"HBCC")  # so a crash after this is this app's
