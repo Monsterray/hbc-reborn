@@ -48,7 +48,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
 | `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
-| `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
+| `HBCX` | flags (bit 0 force), then the app's name (11 bytes, NUL-padded) | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3). From agent protocol 5 only when the name is its own (the first 11 bytes of the name it gives itself) or bit 0 is set; otherwise `EBUSY` and the app keeps running |
 | `HBCH` | pages (u16 at 4: bit 0 System, 1 Video, 2 Storage, 3 USB, 4 Network; 0 for all) | none | JSON: the hardware and settings DEV > Info shows, `{"System":{"Console":"...",...},"Video":{...},"Storage":{...},"USB":{...},"Network":{...}}` (HBC 1.9.6 and its agent). In an app that never started libogc's USB, the USB page starts it and leaves it running. |
 
 ### Status
@@ -271,10 +271,10 @@ An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent.h) answers on port
 | `HBCS` | JSON status: `"agent":true`, `app`, `app_version`, `uptime_ms`, IOS, memory, `agent_stack_used`/`agent_stack_size`, `ip`, mounted devices (`inserted`, `device`), `log`, `last`, `exit_requested` |
 | `HBCF` | every file op above, on the devices the app mounted |
 | `HBCN` | sets the log target for the apps after this one |
-| `HBCX` | replies, then the app exits to HBC |
+| `HBCX` | protocol 5: when it names this app (or bit 0 of byte 4 forces), replies, then the app exits to HBC; otherwise `EBUSY`, and the app keeps running. Older agents exit for any `HBCX` |
 | `HBCK` | header bytes 4-5: a count (at most 64), then that many of `udlrabh12w`; queued as controller presses (`h` is HOME, `1` and `2` the remote's buttons, `w` Test's speaker.wav button, which apps check with `hbc_agent_home_pending()`) |
 | `HBCP` | reply header, then u32 width, u32 height, and the YUYV framebuffer the VI is showing |
-| `HAXX` | closes the connection without reading, then exits to HBC: the upload fails once, and the retry reaches HBC |
+| `HAXX` | closes the connection without reading; the app keeps running (protocol 5: an upload names no app, and on a shared Wii it may be meant for HBC after someone else's app). Ask the app to exit with a named `HBCX` first, as `tools/hbc.py` send and run do |
 
 The agent is HBC's own `devfile.c`, `devstream.c` and `tcp.c` built into a
 library, with two transfer slots instead of four and a 16 KiB worker stack.

@@ -48,7 +48,13 @@
 #include "../hbc_agent.h"
 
 #define AGENT_STACK (12 * 1024)
-#define AGENT_PROTO 4
+#define AGENT_PROTO 5
+// HBCX (protocol 5): byte 4 is flags, bytes 5-15 the name of the app to stop
+// (the first 11 bytes of the name it gives itself, NUL-padded). The agent
+// exits only when the name is its own or the force flag is set, so a client
+// meaning another app on a shared Wii cannot stop this one.
+#define HBCX_FORCE 0x01
+#define HBCX_NAME_MAX 11
 #define AGENT_DEFAULT_PRIO 40
 // Transfers run a little above the agent's idle priority, still below the
 // app's main thread.
@@ -151,6 +157,22 @@ static volatile bool lastlog_done;
 // The app's name for a record, unless the app's crash took the pointer.
 static const char *record_name(void) {
 	return cfg.name && agent_ram((u32) cfg.name, 1) ? cfg.name : "app";
+}
+
+// Whether an HBCX names this app (or forces): see HBCX_FORCE.
+static bool exit_meant_for_us(const u8 *hdr) {
+	const char *name = record_name();
+	char target[HBCX_NAME_MAX + 1];
+
+	if (hdr[4] & HBCX_FORCE)
+		return true;
+	memcpy(target, hdr + 5, HBCX_NAME_MAX);
+	target[HBCX_NAME_MAX] = 0;
+	if (!target[0])
+		return false;	// an unnamed request (a client older than protocol 5)
+	if (strlen(target) < HBCX_NAME_MAX)
+		return !strcmp(name, target);
+	return !strncmp(name, target, HBCX_NAME_MAX);
 }
 
 // Runs wherever the app stops, in an exception too (FP off): integer only.
@@ -584,17 +606,21 @@ static void handle(s32 s, const u8 *hdr, u32 client_ip) {
 		devfile_reply(s, 0, reply, n + len);
 	} else if (hbc_agent_handle(s, hdr)) {
 	} else if (!memcmp(hdr, "HBCX", 4)) {
-		devfile_reply(s, 0, NULL, 0);
-		tcp_close(s);
-		if (state == AGENT_RUNNING)
-			agent_exit();
-		return;
+		if (!exit_meant_for_us(hdr)) {
+			devfile_reply(s, -EBUSY, NULL, 0);
+		} else {
+			devfile_reply(s, 0, NULL, 0);
+			tcp_close(s);
+			if (state == AGENT_RUNNING)
+				agent_exit();
+			return;
+		}
 	} else if (!memcmp(hdr, "HAXX", 4)) {
 		// Uploads need HBC's loader. Close without reading, so the client
-		// sees the upload fail, and go back to HBC for the retry.
+		// sees the upload fail. The app keeps running: an upload names no
+		// app, and on a shared Wii it may be meant for HBC after someone
+		// else's app. Clients ask with a named HBCX first (tools/hbc.py).
 		net_close(s);
-		if (state == AGENT_RUNNING)
-			agent_exit();
 		return;
 	} else {
 		devfile_reply(s, -ENOSYS, NULL, 0);

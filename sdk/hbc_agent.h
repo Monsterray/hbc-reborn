@@ -8,8 +8,12 @@
  *
  *   hbc.py status              the app's name, uptime and memory
  *   hbc.py ls/get/put/rm/sync  files on any device the app has mounted
- *   hbc.py run new.dol         asks the app to exit to HBC, then sends new.dol
- *   hbc.py exit                asks the app to exit to HBC
+ *   hbc.py run --app NAME new.dol  asks the app to exit to HBC, then sends new.dol
+ *   hbc.py exit --app NAME     asks the app to exit to HBC
+ *
+ * NAME is the config's name. The agent exits only for a request naming it (or
+ * one forced with --force), so on a shared Wii nobody else's run stops it; an
+ * upload sent straight to the running app is refused, and the app runs on.
  *   hbc.py crash               after a crash: exception, registers, backtrace
  *   hbc.py key / screen        drive the HOME overlay, grab the TV picture
  *

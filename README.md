@@ -265,11 +265,15 @@ measures what they cost.
 Then:
 
 ```sh
-python3 tools/hbc.py run myapp.dol        # again and again: each run replaces the last
+python3 tools/hbc.py run --app myapp myapp.dol   # again and again: each run replaces the last
 python3 tools/hbc.py status               # the app's name, uptime, memory, agent stack
 python3 tools/hbc.py get sd:/apps/myapp/save.dat   # while the app runs
 python3 tools/hbc.py crash --elf myapp.elf         # after a crash: where it happened
 ```
+
+`--app` names the app the agent says it is (`status` shows it). A Wii is often
+shared: `run`, `send` and `exit` leave a running agent app alone unless it is
+named, or `--force` is given, and the agent itself exits only for its own name.
 
 #### The HOME overlay
 
