@@ -32,6 +32,7 @@ POLL_TIMEOUT = 2
 # The Wii reads and CRCs a whole file before it answers a checksum request
 # (op C): allow for this rate on top of TIMEOUT, below a slow SD card's.
 CHECKSUM_BYTES_PER_S = 1 << 20
+PUT_ATTEMPTS = 3
 
 # newlib errno values the client acts on
 ENOENT, EISDIR = 2, 21
@@ -718,9 +719,25 @@ def read_file(path):
 
 def upload(wii, local, remote, out=print):
     data = read_file(local)
-    put_file(wii, remote, data, progress=Progress(remote))
-    out(f"{local} -> {remote} ({len(data)} bytes)")
+    put_verified(wii, remote, data, out=out)
+    out(f"{local} -> {remote} ({len(data)} bytes, CRC verified)")
     return len(data)
+
+
+def put_verified(wii, remote, data, out=print):
+    """Upload, then check the Wii's file size and CRC; retry mismatches."""
+    expected = (len(data), zlib.crc32(data) & 0xffffffff)
+    for attempt in range(PUT_ATTEMPTS):
+        put_file(wii, remote, data, progress=Progress(remote))
+        actual = checksum(wii, remote, len(data))
+        if actual == expected:
+            return
+        if attempt + 1 < PUT_ATTEMPTS:
+            out(f"{remote}: read-back mismatch; retrying "
+                f"({attempt + 1}/{PUT_ATTEMPTS - 1})")
+    raise HBCError(f"{remote}: read-back mismatch after {PUT_ATTEMPTS} uploads "
+                   f"(expected {expected[0]} bytes, CRC-32 {expected[1]:08x}; "
+                   f"got {actual[0]} bytes, CRC-32 {actual[1]:08x})")
 
 
 def download(wii, remote, local, out=print):
@@ -834,12 +851,12 @@ def sync(wii, local, remote, delete=False, out=print, checksum_all=False):
                 skipped += 1
                 continue
             data = read_file(path)
-            put_file(wii, target, data, progress=Progress(target))
+            put_verified(wii, target, data, out=out)
         except (OSError, HBCError) as exc:
             out(f"{target}: failed: {exc}")
             failed.append(target)
             continue
-        out(f"{path} -> {target} ({len(data)} bytes)")
+        out(f"{path} -> {target} ({len(data)} bytes, CRC verified)")
         uploaded += 1
         nbytes += len(data)
     out(f"sync: {uploaded} uploaded ({nbytes} bytes), {skipped} unchanged, {deleted} deleted"
@@ -1180,7 +1197,9 @@ hbc.py put [-r] LOCAL PATH
 Uploads a file, or with -r a whole folder. Missing folders on the Wii are
 made. A PATH ending in "/" means "into this folder": put app.dol
 sd:/apps/myapp/ writes sd:/apps/myapp/app.dol. A broken transfer leaves no
-half-written file. An app put under sd:/apps shows in HBC's list at once.""",
+half-written file. After upload, the Wii reads back and checks the file's size
+and CRC-32; a mismatch retries up to two times. An app put under sd:/apps
+shows in HBC's list at once.""",
     "sync": """\
 hbc.py sync [--delete] [--checksum] LOCAL PATH
 
@@ -1191,7 +1210,8 @@ image is not read again); otherwise the CRC-32s decide. --checksum compares
 every same-size file by CRC-32, for when the Wii's copy may have been
 changed on the Wii since. With --delete it also removes what LOCAL does not
 have. It refuses to delete from a device root or from <device>:/apps
-itself. A file that fails is reported and the rest still sync.
+itself. Uploaded files are read back and verified, with up to two retries on a
+mismatch. A file that fails is reported and the rest still sync.
 
     hbc.py sync dist/myapp sd:/apps/myapp""",
     "rm": """\

@@ -74,8 +74,8 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `ls REMOTE` | List a directory, e.g. `sd:/apps`. Lines are `d DATE TIME name` or `f size DATE TIME name` (when it last changed, by the Wii's clock; `r` after it for read-only). |
 | `stat REMOTE` | One file or directory: size, when it last changed, read-only or not. |
 | `get [-r] REMOTE [LOCAL]` | Download a file, or with `-r` a directory tree. |
-| `put [-r] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. |
-| `sync [--delete] [--checksum] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
+| `put [-r] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. Uploads are read back and checked by size and CRC-32, with up to two retries on a mismatch. |
+| `sync [--delete] [--checksum] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). Uploaded files are read back and verified; `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
 | `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |
