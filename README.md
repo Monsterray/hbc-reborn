@@ -310,7 +310,14 @@ while a menu is open switches straight to that menu. The overlay turns on
 IR for every connected remote while it is open and gives each back its
 previous mode when it closes. The D-pad moves the highlight when no remote
 points at the screen, A chooses, B goes back one level, and HOME closes
-everything. Controller settings last until the app exits; nothing is
+everything. In the app list and HOME menu, holding the Wii Remote sideways
+with the D-pad at the left maps its directions to their physical positions:
+Up becomes Left, Right becomes Up, Down becomes Right, and Left becomes Down.
+Tilt the buttons towards you to let the accelerometer detect the orientation;
+lying face up keeps the last detected orientation. Classic and GameCube
+controller directions stay unchanged.
+
+Controller settings last until the app exits; nothing is
 written to the Wii's own settings, except that Connect remote may save the
 new remote in the Wii's pairing list as the Sync button would. Link the
 overlay with `-lwiiuse -lbte` (which WPAD apps already use); while open it

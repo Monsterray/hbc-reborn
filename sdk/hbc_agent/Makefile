@@ -35,7 +35,7 @@ CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall $(EXTRA_CFLAGS) \
 
 SRC = agent.c safety.c alloc_wrap.c info.c ogc_exc.S overlay.c ov_ui.c ov_draw.c ../wiispk/wiispk.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/zmem.c
 OBJ = $(addprefix $(BUILD)/,$(notdir $(patsubst %.S,%.o,$(SRC:.c=.o))))
-HDR = ../hbc_agent.h ../hbc_netlog.h $(wildcard $(HBC_SRC)/*.h) ../../channel/channelapp/config.h
+HDR = ../hbc_agent.h ../hbc_netlog.h ../wpad_menu.h $(wildcard $(HBC_SRC)/*.h) ../../channel/channelapp/config.h
 
 $(OUT): $(OBJ)
 	mkdir -p $(dir $@)
