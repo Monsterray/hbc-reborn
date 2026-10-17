@@ -405,6 +405,7 @@ bool settings_load(void) {
 	settings.device = -1;
 	settings.sort_order = 0;
 	settings.browse_mode = 0;
+	settings.edge_paging = 0;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
 
 	memcpy(&_loaded_settings, &settings, sizeof(settings_t));
@@ -459,6 +460,7 @@ bool settings_load(void) {
 	settings.device = _get_elem_int(node, "device", -1);
 	settings.sort_order = _get_elem_int(node, "sort_order", 0);
 	settings.browse_mode = _get_elem_int(node, "browse_mode", 0);
+	settings.edge_paging = _get_elem_int(node, "edge_paging", 0) == 1;
 	s = _get_elem_cdata(node, "app_sel");
 	if (s) {
 		strncpy(settings.app_sel, s, sizeof(settings.app_sel));
@@ -511,6 +513,9 @@ bool settings_save(void) {
 
 	node = mxmlNewElement(data, "browse_mode");
 	mxmlNewInteger(node, settings.browse_mode);
+
+	node = mxmlNewElement(data, "edge_paging");
+	mxmlNewInteger(node, settings.edge_paging);
 
 	if (strlen(settings.app_sel) > 0) {
 		node = mxmlNewElement(data, "app_sel");

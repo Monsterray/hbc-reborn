@@ -486,6 +486,8 @@ void main_real(void) {
 		// show (the app list signals below, once it knows nothing loads).
 		if (v_current != v_browser)
 			loader_signal_threads ();
+		if (v_current != v_browser)
+			browser_reset_repeat();
 
 		frame++;
 		if (v_last != v_current) {
@@ -496,6 +498,7 @@ void main_real(void) {
 		// HOME opens the agent's overlay (home.c), which runs its own frame
 		// loop until the user closes it, then says what they picked.
 		if (v_current == v_browser && home_requested (bd)) {
+			browser_reset_repeat();
 			switch (home_show ()) {
 			case HOME_ABOUT:
 				v_about = dialog_about (v_browser);
@@ -574,9 +577,11 @@ void main_real(void) {
 #endif
 			if (bd & PADS_1) {
 				dialog_options_result options;
+				browser_reset_repeat();
 				options = show_options_dialog(v_current);
 
 				if (options.confirmed) {
+					settings.edge_paging = options.edge_paging;
 					app_entry_set_sort(options.sort);
 					app_entry_set_device(options.device);
 					app_entry_set_prefered(options.device);
@@ -586,12 +591,12 @@ void main_real(void) {
 			}
 
 			if (bd & PADS_2) {
+				browser_reset_repeat();
 				browser_switch_mode();
 				continue;
 			}
 
-			if (bd & PADS_DPAD) {
-				browser_set_focus(bd);
+			if (browser_set_focus(bd, bh)) {
 				continue;
 			}
 
