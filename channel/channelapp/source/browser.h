@@ -21,7 +21,8 @@ void browser_deinit(void);
 void browser_theme_reinit(void);
 
 void browser_gen_view(browser_action action, const app_entry *app);
-void browser_set_focus(u32 bd);
+bool browser_set_focus(u32 bd, u32 bh);
+void browser_reset_repeat(void);
 app_entry *browser_sel(void);
 void browser_switch_mode(void);
 

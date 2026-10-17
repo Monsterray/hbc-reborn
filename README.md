@@ -163,6 +163,14 @@ To install an app permanently, `sync` or `put -r` its folder (with
 `run` and `log` clear HBC's log target when they exit, so a stale target
 never stalls later apps.
 
+### App picker navigation
+
+Hold a D-pad direction to repeat movement in the app picker. In Options
+(1), **Grid edges: Turn page** makes Left and Right at an edge switch
+pages, keeping the same row where possible. **Wrap rows** keeps the original
+movement between rows. Clickable page arrows remain available for pointer
+users. The choice is saved with the channel's settings.
+
 ### Your own app order
 
 Options > Sort applications by: **Custom** lists apps by the `<sort_id>`

@@ -37,6 +37,7 @@ typedef struct {
 	int device;
 	int sort_order;
 	int browse_mode;
+	int edge_paging;
 	char app_sel[64];
 } settings_t;
 

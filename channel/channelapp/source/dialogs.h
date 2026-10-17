@@ -23,6 +23,7 @@ typedef struct {
 	bool confirmed;
 	int device;
 	app_sort sort;
+	bool edge_paging;
 } dialog_options_result;
 
 extern u16 width_dialog, height_dialog;

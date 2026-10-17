@@ -13,6 +13,7 @@
 #include "i18n.h"
 
 #include "browser.h"
+#include "browser_nav.h"
 #include "devnet.h"
 
 #define AE_OFFSET 4
@@ -29,6 +30,7 @@ static int columns_current = 1;
 static int columns_new = 1;
 
 static bool inited_widgets = false;
+static browser_repeat nav_repeat;
 
 view * browser_init(void) {
 	v_browser = view_new (AE_OFFSET + (MAX_COLUMNS * ROWS * 2), NULL,
@@ -278,41 +280,74 @@ void browser_gen_view(browser_action action, const app_entry *app) {
 		devnet_note_app_list(action == BA_RELOAD);
 }
 
-void browser_set_focus(u32 bd) {
+void browser_reset_repeat(void) {
+	nav_repeat.held = 0;
+}
+
+static unsigned browser_directions(u32 buttons) {
+	return (buttons & PADS_UP ? BN_UP : 0) |
+		(buttons & PADS_RIGHT ? BN_RIGHT : 0) |
+		(buttons & PADS_DOWN ? BN_DOWN : 0) |
+		(buttons & PADS_LEFT ? BN_LEFT : 0);
+}
+
+bool browser_set_focus(u32 bd, u32 bh) {
+	unsigned key = browser_repeat_step(&nav_repeat, browser_directions(bd),
+			browser_directions(bh), ticks_to_millisecs(gettime()));
+	if (!key)
+		return false;
+
+	if (settings.edge_paging && (key == BN_LEFT || key == BN_RIGHT)) {
+		int base = AE_OFFSET + (first_set ? 0 : MAX_COLUMNS * ROWS);
+		int local = v_browser->focus - base;
+		if (local >= 0 && local < columns_current * ROWS &&
+				(unsigned) (top_offset + local) < entry_count) {
+			int target = browser_edge_step(top_offset + local, entry_count,
+					columns_current, ROWS, key);
+			if (target < top_offset)
+				browser_gen_view(BA_PREV, entries[target]);
+			else if (target >= top_offset + columns_current * ROWS)
+				browser_gen_view(BA_NEXT, entries[target]);
+			else
+				view_set_focus(v_browser, base + target - top_offset);
+			return true;
+		}
+	}
+
 	if (columns_current == 1) {
-		if (bd & PADS_UP) {
+		if (key == BN_UP) {
 			view_set_focus_prev(v_browser);
-			return;
+			return true;
 		}
 
-		if (bd & PADS_DOWN) {
+		if (key == BN_DOWN) {
 			view_set_focus_next(v_browser);
-			return;
+			return true;
 		}
 
-		return;
+		return true;
 	} else {
-		if (bd & PADS_LEFT) {
+		if (key == BN_LEFT) {
 			view_set_focus_prev(v_browser);
-			return;
+			return true;
 		}
 
-		if (bd & PADS_RIGHT) {
+		if (key == BN_RIGHT) {
 			view_set_focus_next(v_browser);
-			return;
+			return true;
 		}
 
-		if (bd & PADS_UP) {
+		if (key == BN_UP) {
 			view_move_focus(v_browser, -columns_current);
-			return;
+			return true;
 		}
 
-		if (bd & PADS_DOWN) {
+		if (key == BN_DOWN) {
 			view_move_focus(v_browser, columns_current);
-			return;
+			return true;
 		}
 
-		return;
+		return true;
 	}
 }
 

@@ -517,11 +517,12 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // the two SDGecko slots on the second, in the theme's tiny buttons. Widget
 // DLG_DEV_FIRST + n is the n-th button here; dlg_devices[n] is its device
 // (appentry.c's order, which settings.xml stores).
-#define DLG_DEV_FIRST 4
+#define DLG_DEV_FIRST 5
 // The sort buttons, DLG_SORT_FIRST + an app_sort, in tiny buttons as well.
 #define DLG_SORT_FIRST (DLG_DEV_FIRST + DEVICE_COUNT)
 #define DLG_SORTS 3
-#define DLG_OK (DLG_SORT_FIRST + DLG_SORTS)
+#define DLG_EDGE_FIRST (DLG_SORT_FIRST + DLG_SORTS)
+#define DLG_OK (DLG_EDGE_FIRST + 2)
 #define DLG_BACK (DLG_OK + 1)
 #define DLG_WIDGETS (DLG_BACK + 1)
 
@@ -532,6 +533,7 @@ static const int dlg_rows[][3] = {
 	{ DLG_DEV_FIRST, DLG_DEV_FIRST + 1, DLG_DEV_FIRST + 2 },
 	{ DLG_DEV_FIRST + 3, DLG_DEV_FIRST + 4, -1 },
 	{ DLG_SORT_FIRST, DLG_SORT_FIRST + 1, DLG_SORT_FIRST + 2 },
+	{ DLG_EDGE_FIRST, DLG_EDGE_FIRST + 1, -1 },
 	{ DLG_OK, DLG_BACK, -1 },
 };
 #define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
@@ -578,6 +580,13 @@ static void dlg_sort_captions(view *v, app_sort sort) {
 									*captions[i]);
 }
 
+static void dlg_edge_captions(view *v, bool paging) {
+	widget_button_set_caption(&v->widgets[DLG_EDGE_FIRST],
+			paging ? FONT_BUTTON_DESEL : FONT_BUTTON, _("Wrap rows"));
+	widget_button_set_caption(&v->widgets[DLG_EDGE_FIRST + 1],
+			paging ? FONT_BUTTON : FONT_BUTTON_DESEL, _("Turn page"));
+}
+
 dialog_options_result show_options_dialog(const view *sub_view) {
 	u32 frame = 0;
 	view *v;
@@ -589,7 +598,8 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	u16 dw = theme_gfx[THEME_DIALOG]->w, dh = theme_gfx[THEME_DIALOG]->h;
 	u16 tw = theme_gfx[THEME_BUTTON_TINY]->w, th = theme_gfx[THEME_BUTTON_TINY]->h;
 	u16 sw = theme_gfx[THEME_BUTTON_SMALL]->w, sh = theme_gfx[THEME_BUTTON_SMALL]->h;
-	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, sort_y = row2 + th + 28;
+	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 4, sort_y = row2 + th + 16;
+	u16 edge_y = sort_y + th + 8;
 
 	app_entry_poll_status(true);
 
@@ -605,6 +615,8 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
 	widget_label (&v->widgets[3], 32, sort_y - 4, 1, caption_sort_by,
 					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
+	widget_label (&v->widgets[4], 32, edge_y + 12, 1, _("Grid edges:"),
+					gap + tw - 32, FA_LEFT, FA_ASCENDER, FONT_LABEL);
 
 	for (i = 0; i < 3; ++i)
 		widget_button (&v->widgets[DLG_DEV_FIRST + i], gap + i * (gap + tw), 64, 1,
@@ -616,6 +628,9 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	for (i = 0; i < DLG_SORTS; ++i)
 		widget_button (&v->widgets[DLG_SORT_FIRST + i], gap + i * (gap + tw), sort_y, 1,
 						BTN_TINY, NULL);
+	for (i = 0; i < 2; ++i)
+		widget_button (&v->widgets[DLG_EDGE_FIRST + i], gap + (i + 1) * (gap + tw),
+						edge_y, 1, BTN_TINY, NULL);
 
 	widget_button (&v->widgets[DLG_OK], 32, dh - sh - 16, 1, BTN_SMALL, caption_ok);
 	widget_button (&v->widgets[DLG_BACK], dw - sw - 32, dh - sh - 16, 1, BTN_SMALL,
@@ -627,6 +642,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	ret.confirmed = false;
 	ret.device = device;
 	ret.sort = sort;
+	ret.edge_paging = settings.edge_paging;
 
 	for (i = 0; i < DEVICE_COUNT; ++i) {
 		widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
@@ -636,6 +652,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	}
 
 	dlg_sort_captions(v, ret.sort);
+	dlg_edge_captions(v, ret.edge_paging);
 
 	view_set_focus (v, DLG_BACK);
 
@@ -683,6 +700,9 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					(v->focus < DLG_SORT_FIRST + DLG_SORTS)) {
 				ret.sort = (app_sort) (v->focus - DLG_SORT_FIRST);
 				dlg_sort_captions(v, ret.sort);
+			} else if (v->focus == DLG_EDGE_FIRST || v->focus == DLG_EDGE_FIRST + 1) {
+				ret.edge_paging = v->focus == DLG_EDGE_FIRST + 1;
+				dlg_edge_captions(v, ret.edge_paging);
 			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}
