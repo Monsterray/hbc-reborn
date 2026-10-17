@@ -249,14 +249,15 @@ view * dialog_app (const app_entry *entry, const view *sub_view) {
 	return v;
 }
 
-view * dialog_progress (const view *sub_view, const char *caption, u32 max) {
+view * dialog_progress (const view *sub_view, const char *caption,
+						const char *note, u32 max) {
 	view *v;
 
 	v = view_new (1, sub_view, (view_width - theme_gfx[THEME_PROGRESS]->w) / 2,
 					(view_height - theme_gfx[THEME_PROGRESS]->h) / 2,
 					TEX_LAYER_DIALOGS, 0);
 
-	widget_progress (&v->widgets[0], 0, 0, 0, caption, max);
+	widget_progress (&v->widgets[0], 0, 0, 0, caption, note, max);
 	widget_set_progress (&v->widgets[0], 0);
 
 	return v;

@@ -863,6 +863,16 @@ def upload_name(path):
     return base
 
 
+def upload_file(path):
+    """What HBC's receive dialog shows for an upload: an apps/<name>/boot.dol
+    (or .elf) with its folder, as "<name>/boot.dol", else the file's name."""
+    base = os.path.basename(path)
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    if os.path.splitext(base)[0].lower() == "boot" and parent:
+        return f"{parent}/{base}"
+    return base
+
+
 UPLOAD_YES = 1  # HBCA flag: install a ZIP without asking
 
 
@@ -883,6 +893,11 @@ def send(wii, path, args, name=None, yes=False):
     argv += b"\0"
     header = b"HAXX" + bytes((0, 5)) + struct.pack(">HII", len(argv), len(packed), unpacked_len)
     label = (name or upload_name(path)).encode("utf-8")[:63]
+    # The file follows a NUL, for the receive dialog, when both fit in 63
+    # bytes; an HBC before it reads the name alone.
+    shown = upload_file(path).encode("utf-8")
+    if label and len(label) + 1 + len(shown) <= 63:
+        label += b"\0" + shown
     flags = UPLOAD_YES if yes else 0
     if label or flags:
         try:

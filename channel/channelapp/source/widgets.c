@@ -463,7 +463,7 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 }
 
 void widget_progress (widget *w, s16 x, s16 y, s16 z, const char *caption,
-					  u32 max) {
+					  const char *note, u32 max) {
 	widget_layer *l;
 
 	widget_init (w, WT_PROGRESS, false, x, y, z, 0, 0, 3);
@@ -486,15 +486,22 @@ void widget_progress (widget *w, s16 x, s16 y, s16 z, const char *caption,
 
 	int chars = font_get_char_count(FONT_LABEL, caption,
 									theme_gfx[THEME_PROGRESS]->w - 64);
+	// The note sits lower left, clear of the percentage on the right.
+	u16 note_w = theme_gfx[THEME_PROGRESS]->w - 64 - 64;
+	int note_chars = note ? font_get_char_count(FONT_LABEL, note, note_w) : 0;
 
 	l = &w->layers[2];
 	l->flags = 0;
 	l->flags_invert = 0;
-	l->gfx_entry_count = 4 + chars;
+	l->gfx_entry_count = 4 + chars + note_chars;
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
 	font_plot_string (&l->gfx_entries[4], chars, FONT_LABEL, caption, 38, 19, 2,
 						theme_gfx[THEME_PROGRESS]->w - 64, FA_LEFT, FA_EM_CENTERED);
+	if (note_chars)
+		font_plot_string (&l->gfx_entries[4 + chars], note_chars, FONT_LABEL, note,
+							38, theme_gfx[THEME_PROGRESS]->h - 20, 2, note_w,
+							FA_LEFT, FA_EM_CENTERED);
 
 	w->progress.max = max;
 	w->progress.gradient = (gfx_entity *) pmalloc (sizeof (gfx_entity));

@@ -519,7 +519,7 @@ bool manage_run(view *sub_view, const char *dirname,
 	if (data) {
 		text = _("Extracting");
 		sprintf(caption, "%s '%s'...", text, dirname);
-		v = dialog_progress(sub_view, caption, bytes);
+		v = dialog_progress(sub_view, caption, NULL, bytes);
 		dialog_fade(v, true);
 	} else {
 		v = sub_view;

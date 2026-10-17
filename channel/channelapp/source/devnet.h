@@ -29,6 +29,10 @@ const char *devnet_lastlog_app(void);
 // The name a sender gave the next Wiiload upload (HBCA) in the last two
 // minutes: copied to out and forgotten. False when there is none.
 bool devnet_take_upload_name(char *out, size_t size);
+// What the receive dialog calls the next Wiiload upload, kept for the play
+// log: the file HBCA sent after the name and a NUL (hbc.py's "app/boot.dol"),
+// else the name. False when there is neither.
+bool devnet_upload_caption(char *out, size_t size);
 // HBCA's flags for the next upload, while its name would be kept.
 #define DEVNET_UPLOAD_YES 1 // install a ZIP without asking
 u32 devnet_upload_flags(void);
