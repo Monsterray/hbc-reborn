@@ -161,6 +161,20 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.8: Z+START, and Reconnect in player order
+
+- GameCube controller: HBC opens HOME with Z and START together (either
+  first), leaving START alone to apps; the overlay still closes on START.
+- WiiMote > Controller settings > Reconnect in player order, as the Wii
+  Menu's Reconnect: libogc 3's `WPAD_Search()` drops every remote and clears
+  the active list, so each remote joins in the next free slot as it is
+  pressed (1+2, or any button if paired); libogc saves the order to
+  SYSCONF. Stops at Done, a fourth remote (once a slot was seen empty: the
+  drop is not instant), or as the overlay closes. libogc2 and 1.x have no
+  search call: the button is greyed out there.
+- Checked on the PC (overlay walk, preview render) only: both need a person
+  with a GameCube controller or remotes on a real Wii.
+
 ### 1.10.7: the agent leaves the app's MEM2 alone
 
 - From USB Loader GX's handoff (2026-10-14), checked against the code: of

@@ -220,8 +220,10 @@ typedef struct {
 	   connection and Log to PC switches; hand HBCK and HBCP requests to
 	   hbc_agent_handle() to keep `hbc.py key` and `screen` working. */
 	bool no_network;
-	/* Also read GameCube controllers in the overlay (START is HOME). Set it
-	   only if the app called PAD_Init(). */
+	/* Also read GameCube controllers in the overlay (START closes it, as
+	   HOME does). Set it only if the app called PAD_Init(). On a GameCube
+	   controller HBC opens HOME with Z and START together, leaving START
+	   alone to the app; an app can do the same, see hbc_agent_home(). */
 	bool gc_pads;
 	/* Exit's choices, HBC_AGENT_EXIT_*. hide_exit_choices is a mask of
 	   (1 << choice) to leave out. on_exit_choice, if set, runs in the app's
@@ -359,7 +361,10 @@ void hbc_agent_hold(bool hold);
  * returns 0, or a negative error when there is no memory for it (it borrows
  * three framebuffers, about 1.8 MB at 640x480, while open). It reads the
  * Wii Remotes itself, so the app needs WPAD_Init(). rmode may be NULL for
- * the preferred video mode. Exit's choices leave the app from inside. */
+ * the preferred video mode. Exit's choices leave the app from inside.
+ * On a GameCube controller, open it with Z and START together, as HBC
+ * does, so START alone stays the app's:
+ *   (PAD_ButtonsDown(0) & PAD_BUTTON_START) && (PAD_ButtonsHeld(0) & PAD_TRIGGER_Z) */
 struct _gx_rmodeobj;
 s32 hbc_agent_home(const struct _gx_rmodeobj *rmode);
 

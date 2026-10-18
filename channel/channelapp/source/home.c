@@ -157,7 +157,7 @@ void home_init(void) {
 	cfg.no_safety = HBC_AGENT_NO_STACK_GUARD | HBC_AGENT_NO_BUTTONS | HBC_AGENT_NO_FLUSH |
 					HBC_AGENT_NO_FRAMES | HBC_AGENT_NO_THREADS;
 	// HBC reads GameCube controllers too (controls.c calls PAD_Init), and
-	// START on one opens this menu, so the overlay must read them as well.
+	// Z+START on one opens this menu, so the overlay must read them as well.
 	cfg.gc_pads = true;
 	// "Exit to The Homebrew Channel" from inside HBC would only restart it.
 	cfg.hide_exit_choices = 1 << HBC_AGENT_EXIT_HBC;
@@ -179,10 +179,13 @@ void home_init(void) {
 							sizeof(hbc_items) / sizeof(hbc_items[0]));
 }
 
-bool home_requested(u32 buttons_down) {
+bool home_requested(u32 buttons_down, u32 buttons_held) {
 	// hbc_agent_home_pending() is true once after `hbc.py key h`, so the
 	// menu can be opened (and tested) from the PC.
-	return (buttons_down & PADS_HOME) || hbc_agent_home_pending();
+	return (buttons_down & PADS_HOME) ||
+		   ((buttons_down & PADS_GC_HOME) &&
+			((buttons_down | buttons_held) & PADS_GC_HOME) == PADS_GC_HOME) ||
+		   hbc_agent_home_pending();
 }
 
 // ---- Showing it -------------------------------------------------------------

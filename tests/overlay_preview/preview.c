@@ -41,6 +41,7 @@ static void act(int action, int arg, void *user) {
 	case OVA_SENSOR_ABOVE: ext.sensor_above = arg; break;
 	case OVA_IR_SENS: ext.ir_sens = arg; break;
 	case OVA_RUMBLE_ALL: ext.rumble_all = arg; break;
+	case OVA_RECONNECT: ext.reconnecting = arg; break;
 	case OVA_CAL_START: ext.cal_progress = 100; break;
 	case OVA_SHOT: snprintf(ext.toast, sizeof(ext.toast), "Saved sd:/screenshots/agent_app-001.bmp"); break;
 	}
@@ -152,6 +153,7 @@ int main(int argc, char **argv) {
 	ext.remote[0] = (ov_remote) { true, 3, 75, "Nunchuk", true, true, false, 5 };
 	ext.remote[1] = (ov_remote) { true, 1, 25, "Classic Controller", false, false, false, 7 };
 	ext.log_pc = ext.hbcpy = ext.rumble_all = ext.has_save = ext.can_leds = true;
+	ext.can_reconnect = true;
 	ext.ir_sens = 3;
 	snprintf(ext.auto_off, sizeof(ext.auto_off), "5 min");
 	snprintf(ext.slot[1], sizeof(ext.slot[1]), "Shot");
@@ -226,6 +228,9 @@ int main(int argc, char **argv) {
 	capture(&ui, "11-calibrate");
 	keys(&ui, "bb" "d" "a");
 	capture(&ui, "12-settings");
+	keys(&ui, "da");
+	capture(&ui, "12b-reconnecting");
+	keys(&ui, "a");
 	keys(&ui, "bb" "l" "a");
 	capture(&ui, "13-shot-toast");
 	ext.toast[0] = 0;

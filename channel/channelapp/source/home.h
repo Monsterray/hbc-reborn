@@ -17,7 +17,7 @@ typedef enum {
 // Sets up the agent's overlay for HBC; call once, after the video is up.
 void home_init(void);
 // Whether this frame's buttons (or `hbc.py key h`) ask for the HOME menu.
-bool home_requested(u32 buttons_down);
+bool home_requested(u32 buttons_down, u32 buttons_held);
 // Shows the HOME overlay until the user closes it.
 home_action home_show(void);
 

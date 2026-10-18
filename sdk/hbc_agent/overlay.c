@@ -1050,6 +1050,29 @@ static void button_names(u32 b, char *out, size_t size) {
 		snprintf(out, size, "none held");
 }
 
+// WiiMote > Settings > Reconnect, as the Wii Menu's: WPAD_Search() drops
+// every remote and forgets which player each was, then each remote joins in
+// the next free slot as 1 and 2 (or, if paired, any button) are pressed on
+// it. It stops at Done, with four remotes in, or as the overlay closes.
+static bool reconnecting, reconnect_emptied;
+
+static void reconnect(bool on) {
+#if AGENT_TUXEDO
+	if (on == reconnecting)
+		return;
+	reconnecting = on;
+	reconnect_emptied = false;
+	if (on) {
+		WPAD_Search();
+		toast("Press 1 and 2 on each remote, player 1 first");
+	} else {
+		WPAD_StopSearch();
+	}
+#else
+	(void) on;   // libogc2's and libogc 1.x's WPAD have no search call
+#endif
+}
+
 static void poll(ov_run *r) {
 	ov_ext *e = &r->ext;
 	const hbc_agent_config *cfg = agent_cfg();
@@ -1106,6 +1129,16 @@ static void poll(ov_run *r) {
 	e->has_save = cfg->on_save != NULL;
 	e->has_restart = cfg->on_restart != NULL;
 	e->can_leds = have_handles();
+	e->can_reconnect = AGENT_TUXEDO;
+	// All four back in: nothing left to wait for. The drop is not instant,
+	// so first wait until a slot is seen empty.
+	for (chan = 0; chan < OV_REMOTES && e->remote[chan].connected; ++chan)
+		;
+	if (chan < OV_REMOTES)
+		reconnect_emptied = reconnecting;
+	else if (reconnect_emptied)
+		reconnect(false);
+	e->reconnecting = reconnecting;
 	e->sensor_above = ses.sensor_above < 0 ?
 		CONF_GetSensorBarPosition() == CONF_SENSORBAR_TOP : ses.sensor_above;
 	e->ir_sens = ses.ir_sens ? ses.ir_sens : CONF_GetIRSensitivity();
@@ -1296,6 +1329,9 @@ static void act(int action, int arg, void *user) {
 		break;
 	case OVA_DISCONNECT_ALL:
 		set_all(disconnect);
+		break;
+	case OVA_RECONNECT:
+		reconnect(arg);
 		break;
 	case OVA_SENSOR_ABOVE:
 		ses.sensor_above = arg;
@@ -1629,6 +1665,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	VIDEO_SetNextFramebuffer(app_fb);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
+	reconnect(false);
 	fx_stop_all();
 	ir_restore();
 	if (sd != LWP_THREAD_NULL)

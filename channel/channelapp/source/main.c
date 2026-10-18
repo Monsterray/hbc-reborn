@@ -495,7 +495,7 @@ void main_real(void) {
 
 		// HOME opens the agent's overlay (home.c), which runs its own frame
 		// loop until the user closes it, then says what they picked.
-		if (v_current == v_browser && home_requested (bd)) {
+		if (v_current == v_browser && home_requested (bd, bh)) {
 			switch (home_show ()) {
 			case HOME_ABOUT:
 				v_about = dialog_about (v_browser);

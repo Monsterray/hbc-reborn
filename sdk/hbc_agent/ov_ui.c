@@ -38,7 +38,7 @@ enum {
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
 	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS, ID_SND_ADPCM, ID_SND_PCM, ID_SND_WAV,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
-	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL,
+	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL, ID_RECONNECT,
 	ID_SLOT_ITEM = 200    // + slot * 16 + item
 };
 
@@ -422,6 +422,12 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 		button(ui, ID_CONNECT, 0, y, CW, e->searching ? "Press 1+2..." : "Connect remote",
 			   e->searching ? F_ON : 0);
 		button(ui, ID_DISC_ALL, CW + 10, y, CW, "Disconnect all", 0);
+		y += BH + GAP;
+		// The Wii Menu's Reconnect: every remote drops, and each takes the
+		// next player number as 1 and 2 are pressed on it.
+		button(ui, ID_RECONNECT, 0, y, IW, e->reconnecting ? "Done reconnecting" :
+			   "Reconnect in player order", (e->reconnecting ? F_ON : 0) |
+			   (e->can_reconnect ? 0 : F_DIS));
 		y += BH + 12;
 		choice(ui, ID_BAR_BELOW, ID_BAR_ABOVE, y, "Sensor bar", "Below", "Above", !e->sensor_above,
 			   e->can_leds ? 0 : F_DIS);
@@ -838,6 +844,7 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 		break;
 	case ID_CONNECT: act(OVA_CONNECT, 0, user); break;
 	case ID_DISC_ALL: act(OVA_DISCONNECT_ALL, 0, user); break;
+	case ID_RECONNECT: act(OVA_RECONNECT, !e->reconnecting, user); break;
 	case ID_BAR_BELOW: act(OVA_SENSOR_ABOVE, 0, user); break;
 	case ID_BAR_ABOVE: act(OVA_SENSOR_ABOVE, 1, user); break;
 	case ID_IR_MINUS: act(OVA_IR_SENS, e->ir_sens > 1 ? e->ir_sens - 1 : 1, user); break;

@@ -72,6 +72,8 @@ typedef struct {
 	char auto_off[12];    /* "5 min", "Never" */
 	bool rumble_all;
 	bool searching;       /* Connect remote in progress */
+	bool reconnecting;    /* Reconnect: remotes take players 1-4 in the order they join */
+	bool can_reconnect;   /* libogc 3 only (WPAD_Search) */
 	bool can_leds;        /* remote handles found: LEDs, IR and sensor bar work */
 
 	char slot[2][16];     /* app slots beside Exit; "" is blank */
@@ -119,7 +121,8 @@ enum {
 	OVA_RESET_REMOTES,
 	OVA_SOUND_TEST,       /* arg: remote | 16 for PCM, | 32 for speaker.wav (else ADPCM) */
 	OVA_SYNC_CLOCK,       /* DEV: set the Wii's clock from NTP */
-	OVA_INFO              /* DEV > Info: a page opened (arg); gather them all */
+	OVA_INFO,             /* DEV > Info: a page opened (arg); gather them all */
+	OVA_RECONNECT         /* arg: 1 start, 0 done */
 };
 
 typedef void (*ov_act_fn)(int action, int arg, void *user);

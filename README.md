@@ -282,6 +282,11 @@ if ((WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME) || hbc_agent_home_pending())
     hbc_agent_home(rmode);            // returns when the user closes it
 ```
 
+On a GameCube controller, HBC opens HOME with Z and START together, so
+START alone stays a game's pause button; do the same with
+`(PAD_ButtonsDown(0) & PAD_BUTTON_START) && (PAD_ButtonsHeld(0) & PAD_TRIGGER_Z)`
+and set `gc_pads` so the overlay reads the controller too.
+
 A status strip shows the app, the clock, and the four remotes' player LEDs
 and batteries, over five buttons:
 
@@ -312,7 +317,12 @@ previous mode when it closes. The D-pad moves the highlight when no remote
 points at the screen, A chooses, B goes back one level, and HOME closes
 everything. Controller settings last until the app exits; nothing is
 written to the Wii's own settings, except that Connect remote may save the
-new remote in the Wii's pairing list as the Sync button would. Link the
+new remote in the Wii's pairing list as the Sync button would, and Reconnect
+in player order saves the new order. Reconnect works like the Wii Menu's:
+every remote disconnects, then each one you press 1 and 2 on (any button, for
+a paired one) becomes the next player, 1 to 4; Done, a fourth remote, or
+closing the overlay ends it (libogc 3 builds only). A GameCube controller's
+START closes the overlay, like HOME. Link the
 overlay with `-lwiiuse -lbte` (which WPAD apps already use); while open it
 borrows three framebuffers, about 1.8 MB at 640x480. Set `on_save` and
 `on_restart` in `hbc_agent_config` to enable Save and Restart app.
