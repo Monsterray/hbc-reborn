@@ -175,6 +175,52 @@ From the 1.3.6 review, each verified in the code first:
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
 
+#### The bench queue's week of 10-12 to 10-19
+
+Tool work in 1.10.8, no version of its own.
+
+- **The history:** 968 events, 317 jobs (247 ok), 216 turns. No job records logged twice,
+  and no job named `python.exe`.
+  - **A hard freeze recovered:** the MacBook's "Save Manager source--wii" (10-17 16:04) left
+    nothing answering. Its dispatcher kept the Wii until someone reset it 408 s later, then
+    saved its data.
+  - **A stuck app's agent answered:** a Wii64 job (10-18 15:19) got its status, log and
+    screen saved.
+  - 14 hand-overs, median 1 ms.
+- **Found and fixed:**
+  - **A lease expired under a running job** (10-17 14:29). This PC took it at 12:57, waited
+    43 min for HBC, then ran a 49-minute job. The server saw no renewal for over 60 s
+    somewhere in the job, so another workstation could have been given the Wii mid-run.
+    The renew thread caught only network errors, silently; any other exception ended it.
+    - It now catches everything and logs a failing streak past 20 s.
+    - The job's record keeps the longest gap (`lease_gap_s`, `lease_lost`).
+    - The errors page and `report` flag a gap over 30 s.
+  - **The Wii was used outside the queue.** 3 of the 4 waits for HBC over 5 min (41, 13 and
+    7 min) came right after a queue job had left the Wii in HBC. A turn that finds the Wii
+    busy anyway logs an `outside` event, with what it found and who last left the Wii in HBC
+    (`released_by`, from the server). The errors page and `report` show it.
+    - HBC doesn't record who sends an app. Adding the sender's address to `HBCS` would name
+      them: a channel change, for when it's wanted.
+  - **The turn named its first job.** In a stacked turn, the server and monitor said "held
+    for" the turn's first job while another ran. The running job's name and id
+    (`holder.job`) now go with each renew.
+  - **Commands that weren't there:** three jobs failed in under 6 s (exit 9009, 127). `add`
+    now refuses a program it can't find (`--no-check` to override).
+  - **A slow return after a busy spell:** once HBC answered again, `wait_idle` kept probing
+    at the busy pace (15 s), so the quiet period took 30 s instead of 20. While testing that,
+    a crash in the new busy-time accounting was caught before it shipped.
+- **Not the queue's to fix:**
+  - No job used `--collect` all week. The agents that need it work in other repositories and
+    read their own instructions.
+  - 59 failures were the agents' own tests (the MacBook's Save Manager check alone failed
+    15 times).
+  - Two timeouts, one at the 1,800 s default: a job that long should set `--timeout`.
+- **Checked:**
+  - Tests for: the renew thread surviving errors other than network errors; outside use on
+    a real dispatcher; the turn named after its running job; `add` refusing a missing
+    command; both warnings on the errors page and in `report`.
+  - 103 tests on Windows and 67 on Linux pass.
+
 ### 1.10.7: the agent leaves the app's MEM2 alone
 
 - From USB Loader GX's handoff (2026-10-14), checked against the code: of

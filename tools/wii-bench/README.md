@@ -105,6 +105,9 @@ frozen Wii.
   "cancelled ..." and exit 1, not a job that vanished. It is not counted as a failure.
 - A stopped job ends like a timeout (`stopped`). Then HBC is checked and the job's data is
   collected as after any job.
+- `add` refuses a command whose program is not there (not on PATH, or a path that does not
+  exist from `--cwd`): it would only fail at once on the Wii's time. `--no-check` queues it
+  anyway, for a program a build makes before the job runs.
 - A job given no `--name` is named after its script and first argument (`wii_lab.py fmt_hw`),
   not its interpreter. Until 1.10.4 that was `python.exe`, and an agent could not tell its own
   jobs. Name them anyway, and the manage page also shows each job's agent and project folder.
@@ -121,7 +124,17 @@ on what still answers:
 | Nothing: a hard freeze, or the Wii is off | keeps the Wii and waits. When someone resets or power-cycles the Wii and HBC runs again, it saves `freeze/after/` (HBC's kept log and crash report, which a RESET keeps and a power cut loses), and collects the job's Wii paths. Only then does the next job go |
 
 The monitor shows such a wait in red on the manage page, and the errors page says what
-happened. `stop ID`, or `g` on the manage page, gives the wait up. After a hard freeze only
+happened.
+
+Two more things the errors page (and `report`) flags:
+
+- **Outside the queue:** a turn found the Wii out of HBC, although the last queue job left it
+  there. Someone used the Wii without the queue: a person, or an agent's `hbc.py run` straight
+  to the Wii. The entry names the job that last left the Wii in HBC. HBC does not record who
+  sent an app, so that is as close as the queue can get. Queue everything that uses the Wii.
+- **Lease gap:** the dispatcher could not renew its lease for over 30 s during a job (the
+  job's record says how long). Past 60 s the server lets the lease go, and another workstation
+  could get the Wii mid-run. `dispatcher.log` says why the renewals failed. `stop ID`, or `g` on the manage page, gives the wait up. After a hard freeze only
 what is already on the PC, or written to the SD card and flushed, survives. So an app that
 may freeze should:
 

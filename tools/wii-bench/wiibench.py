@@ -304,6 +304,7 @@ class Leases:
         self.grace_until = clock() + ttl
         self.released_at = None                    # the last holder's clean release
         self.left = None                           # the last holder left the Wii out of HBC
+        self.released_by = None                    # who let go last, with the Wii in HBC: host, job
         self.queues = {}                           # qid -> a workstation's queued jobs (QUEUE_MAX)
         # Receive order: every job gets a number when the server first hears of it (add tells it
         # at once), and the Wii goes to the earliest-received job, whichever workstation has it.
@@ -461,7 +462,7 @@ class Leases:
             # skip most of its idle wait.
             ago = None if self.released_at is None else round(now - self.released_at, 1)
             self._event("grant", w, waited_s=round(now - w["joined"], 1), released_ago=ago)
-            r = {"granted": True, "released_ago": ago}
+            r = {"granted": True, "released_ago": ago, "released_by": self.released_by}
             if reqs:                               # cancels for the jobs it got the Wii with
                 r["requests"] = reqs
             return r
@@ -486,6 +487,7 @@ class Leases:
             self.holder["seen"] = now
             if d.get("name"):                      # the job the turn is for now (the first was cancelled)
                 self.holder["name"] = d["name"]
+            self.holder["job"] = d.get("job")      # the job running now, if one is
             if d.get("phase") is not None and d["phase"] != self.holder.get("phase"):
                 self._phase_end(now)
                 self.holder["phase"], self.holder["phase_at"] = d["phase"], now
@@ -517,6 +519,7 @@ class Leases:
                         **more)
             if wii == "hbc":
                 self.released_at, self.left = now, None
+                self.released_by = {"host": self.holder.get("host"), "name": self.holder.get("name")}
             else:
                 self.released_at = None
                 self.left = {"host": self.holder.get("host"), "name": self.holder.get("name"), "wii": wii,
@@ -891,9 +894,10 @@ class Turn:
 
     def __init__(self, name, job_id=None):
         self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name, "qid": queue_id()}
-        self.job_id, self.stop, self.released_ago = job_id, None, None
+        self.job_id, self.stop, self.released_ago, self.released_by = job_id, None, None, None
         self.wii = "hbc"                           # what the Wii was doing at the release
         self.empty = False                         # all its jobs were cancelled before it got the Wii
+        self.gap_max, self.lost = 0.0, False       # the longest time without a renewal, during a job
 
     def rename(self, name):
         """The job this turn is for now (the one it was for was cancelled): told at once."""
@@ -976,19 +980,37 @@ class Turn:
             if time.monotonic() - t < 1:           # an error, or a server without the long poll
                 time.sleep(5)
         self.released_ago = r.get("released_ago")
+        self.released_by = r.get("released_by")
         say(f"lease taken for {self.info['name']}")
         self.stop = threading.Event()
 
         def renew():
-            handled = []
+            # Never let this thread die: a turn whose renewals stop loses its lease after TTL,
+            # under a running job, and the Wii can be granted to another workstation mid-run.
+            # On 2026-10-17 a lease expired 92 min into a turn (a 49-minute job); nothing said
+            # why, because only network errors were caught, and silently.
+            handled, failing, told = [], None, False
             while not self.stop.wait(min(TTL / 4, 5)):   # every 5 s: a stop is heard soon
                 try:
                     r = lease_call("/renew", dict(self.info, handled=handled, **queue_payload()))
                     handled = apply_requests(r.get("requests"))
                     if not r["ok"]:
+                        self.lost = True
                         say("lease lost: another workstation may have the Wii")
-                except OSError:
-                    pass                           # retried; the server keeps it for TTL
+                    if failing is not None:
+                        gap = time.monotonic() - failing
+                        self.gap_max = max(self.gap_max, gap)
+                        if told:
+                            say(f"renewing works again after {gap:.0f} s")
+                    failing, told = None, False
+                except Exception as e:             # anything: log it, keep trying
+                    if failing is None:
+                        failing = time.monotonic() - min(TTL / 4, 5)
+                    gap = time.monotonic() - failing
+                    self.gap_max = max(self.gap_max, gap)
+                    if gap > 20 and not told:
+                        say(f"renewing the lease has failed for {gap:.0f} s: {type(e).__name__}: {e}")
+                        told = True
         threading.Thread(target=renew, daemon=True).start()
         return self
 
@@ -1065,6 +1087,24 @@ def default_name(cmd):
             break
     name = " ".join(words) or pathlib.Path(cmd[0]).name
     return name[:80]
+
+
+def command_missing(cmd, cwd):
+    """Why the command cannot start, or None. Its program is looked up as the job would: a path
+    relative to the job's folder, else on PATH (with PATHEXT on Windows). In 2026-10-12..19 three
+    jobs failed in under 6 s on a program that was not there."""
+    import shutil
+    prog = cmd[0]
+    if os.sep in prog or (os.altsep and os.altsep in prog):
+        path = pathlib.Path(prog)
+        if not path.is_absolute():
+            path = pathlib.Path(cwd) / path
+        if path.exists() or (WINDOWS and path.with_suffix(".exe").exists()):
+            return None
+        return f"{prog} does not exist (looked in {path.parent})"
+    if shutil.which(prog):
+        return None
+    return f"{prog} is not on PATH here"
 
 
 def job_agent(given=None):
@@ -1171,6 +1211,11 @@ def cmd_add(a):
            "agent": job_agent(a.agent)}
     if a.collect:
         job["collect"] = a.collect
+    if not a.no_check:
+        missing = command_missing(a.cmd, job["cwd"])
+        if missing:
+            sys.exit(f"add: {missing}; the job would fail at once (exit 127, or 9009 on Windows). "
+                     "Fix the command, or --no-check if it only exists by the time the job runs")
     tmp = PENDING / f"{job_id}.tmp"
     tmp.write_text(json.dumps(job, indent=1))
     fs_retry(tmp.rename, PENDING / f"{job_id}.json")
@@ -1625,7 +1670,7 @@ def finish_job(job, turn, again=False):
         tmp.unlink(missing_ok=True)
     ev = {"type": "recovery" if again else "job", "host": socket.gethostname(), **{k: job.get(k) for k in (
         "id", "name", "agent", "added", "started", "finished", "secs", "exit", "timeout",
-        "hbc_back_s", "hbc_version", "wii_left", "chained", "freeze")},
+        "hbc_back_s", "hbc_version", "wii_left", "chained", "freeze", "lease_gap_s", "lease_lost")},
           "collected": [{k: c.get(k) for k in ("src", "files", "bytes", "error")} for c in job.get("collected") or []]}
     try:
         History(HOME / "history").write(ev)
@@ -1636,6 +1681,9 @@ def finish_job(job, turn, again=False):
             lease_call("/event", ev)
         except OSError as e:
             say(f"history: the lease server did not take the job record: {e}")
+
+
+LAST_WAIT = {}        # the last wait_idle: busy_s (how long the Wii was not in HBC), what answered
 
 
 def wait_idle(full, need, job_id=None, turn=None):
@@ -1655,6 +1703,7 @@ def wait_idle(full, need, job_id=None, turn=None):
     ok_since = busy_since = None
     said, busy_what = None, None
     head = [job_id]
+    LAST_WAIT.clear()
 
     def follow():
         """False when nothing is queued any more; else the turn follows the head of the queue."""
@@ -1679,6 +1728,10 @@ def wait_idle(full, need, job_id=None, turn=None):
         state, text = wii_state()
         if state == "hbc":
             ok_since = t if ok_since is None else ok_since
+            step = min(step, 5.0)                  # HBC is back: the quiet period at 5 s, not BUSY_STEP
+            if busy_since is not None:             # back after a busy spell: how long, and what it was
+                LAST_WAIT["busy_s"] = round(t - LAST_WAIT["first_busy"])
+                LAST_WAIT["what"] = busy_what.split(": ", 1)[1] if busy_what else "busy"
             busy_since, busy_what = None, None
             if t - ok_since >= need:
                 return True
@@ -1686,6 +1739,7 @@ def wait_idle(full, need, job_id=None, turn=None):
         else:
             ok_since, need, step = None, full, BUSY_STEP
             busy_since = t if busy_since is None else busy_since
+            LAST_WAIT["first_busy"] = LAST_WAIT.get("first_busy", busy_since)
             mins = int((t - busy_since) // 60)
             if busy_what is None or not busy_what.startswith(state):
                 busy_what = f"{state}: busy: {agent_app()} is running" if state == "agent" else f"{state}: busy or off"
@@ -1704,6 +1758,23 @@ def wait_idle(full, need, job_id=None, turn=None):
             if head[0] != job_id:                  # a new head: say so under its id
                 job_id, said = head[0], None
                 report(job_id, msg)
+
+
+def outside_use(turn, wait, ago):
+    by = turn.released_by or {}
+    ev = {"type": "outside", "host": socket.gethostname(), "busy_s": wait["busy_s"], "what": wait.get("what"),
+          "after": by.get("name"), "after_host": by.get("host"), "since_release_s": ago}
+    say(f"the Wii was used outside the queue: {wait.get('what')} for {wait['busy_s']} s"
+        + (f", after {by.get('host')}'s {by.get('name')} left it in HBC" if by else ""))
+    try:
+        History(HOME / "history").write(ev)
+    except OSError:
+        pass
+    if turn.stop:
+        try:
+            lease_call("/event", ev)
+        except OSError:
+            pass
 
 
 def hbc_back(limit=RETURN_WAIT):
@@ -1814,6 +1885,11 @@ def cmd_run(a):
                           or (ago is not None and ago < RECENT))
                 if not wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"], turn):
                     continue                       # all cancelled while it waited: give the turn up
+                if LAST_WAIT.get("busy_s") and (ago is not None or last_end is not None):
+                    # The last queue job left the Wii in HBC, yet it was not: someone used it
+                    # outside the queue (a person, or an agent's hbc.py run that skipped it).
+                    # 3 of 4 long waits for HBC in 2026-10-12..19 were this.
+                    outside_use(turn, LAST_WAIT, ago)
                 p = jobs(PENDING)[:1]
                 p = p[0] if p else None            # a cancel may have emptied it meanwhile
                 chained = False
@@ -1823,9 +1899,14 @@ def cmd_run(a):
                         agent = pj.get("agent")
                         def started(pj=pj):
                             turn.info["job"] = pj["id"]
+                            turn.info["name"] = pj.get("name")      # a stacked turn: this job, not the first
+                            turn.gap_max, turn.lost = 0.0, False
                             turn.set_phase(f"running: {pj.get('name')}")
                         job = run_job(p, started)
                         turn.info.pop("job", None)
+                        if turn.gap_max > 30 or turn.lost:
+                            job["lease_gap_s"] = round(turn.gap_max)
+                            job["lease_lost"] = turn.lost
                     except (FileNotFoundError, ValueError):   # cancelled just before it started
                         break
                     last_end = time.monotonic()
@@ -1869,6 +1950,9 @@ def cmd_run(a):
                         say(f"chained: {p.stem}" + (" from the same agent" if same else " (received next)"))
                         if not wait_idle(a.idle, 0 if same else min(QUICK, a.idle), p.stem, turn):
                             break
+                        if LAST_WAIT.get("busy_s"):  # between two jobs of this turn: outside the queue
+                            turn.released_by = {"host": socket.gethostname(), "name": job.get("name")}
+                            outside_use(turn, LAST_WAIT, 0)
             empty_since = time.monotonic()
     finally:
         if dispatcher_pid() == os.getpid():
@@ -2033,6 +2117,10 @@ def cmd_report(a):
     turns = {h: sum(1 for e in grants if e.get("host") == h) for h in hosts}
     trouble = ([f"{loc(e['t'])} {e.get('host')}'s {e.get('name')}: {job_problem(e)[1]}"
                 for e in jobs_ if job_problem(e) and e.get("exit") != "timeout"]
+               + [f"{loc(e['t'])} {e.get('host')} found the Wii used outside the queue for {e.get('busy_s')} s "
+                  f"({e.get('what')}), after {e.get('after_host')}'s {e.get('after')}" for e in evs if e["type"] == "outside"]
+               + [f"{loc(e['t'])} {e.get('host')}'s {e.get('name')}: no lease renewal for {e['lease_gap_s']} s"
+                  + (" and the lease was lost" if e.get("lease_lost") else "") for e in jobs_ if e.get("lease_gap_s")]
                + [f"{loc(e['t'])} {e.get('host')} held the lease {e['hbc_wait_s'] / 60:.0f} min waiting for HBC "
                   f"before {e.get('name')}" for e in evs if e["type"] == "release" and e.get("hbc_wait_s", 0) > 600]
                + [f"{h}: {turns[h]} turn(s) and no job records: its wiibench.py predates 1.9.1 (git pull)"
@@ -2507,7 +2595,17 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                 problems.append(dict(t=t, severity=sev, kind=kind, host=host, job=e.get("name"), id=e.get("id"),
                                      detail=detail or "see the job's log on its workstation"))
                 seen_ids.add(e.get("id"))
-        elif typ == "release" and e.get("hbc_wait_s", 0) > 600:
+        elif typ == "outside":
+            problems.append(dict(t=t, severity="warn", kind="outside the queue", host=host, job=e.get("after") or "-", id="-",
+                                 detail=f"the Wii was not in HBC for {_age(e.get('busy_s', 0))} ({e.get('what')}) "
+                                        f"although the last queue job" + (f", {e.get('after_host')}'s," if e.get("after_host") else "")
+                                        + " left it there: queue everything that uses the Wii"))
+        if typ == "job" and e.get("lease_gap_s"):
+            problems.append(dict(t=t, severity="err" if e.get("lease_lost") else "warn", kind="lease gap", host=host,
+                                 job=e.get("name"), id=e.get("id") or "-",
+                                 detail=f"no renewal for {e['lease_gap_s']} s during the job" +
+                                        (", and the lease was lost: another workstation may have had the Wii" if e.get("lease_lost") else "")))
+        if typ == "release" and e.get("hbc_wait_s", 0) > 600:
             problems.append(dict(t=t, severity="warn", kind="Wii not in HBC", host=host, job=e.get("name"), id="-",
                                  detail=f"held the lease {_age(e['hbc_wait_s'])} waiting for HBC before its job"))
         if typ == "release" and e.get("wii", "hbc") != "hbc":
@@ -2745,6 +2843,7 @@ def main():
     sub = ap.add_subparsers(dest="op", required=True)
     s = sub.add_parser("add"); s.add_argument("--name"); s.add_argument("--cwd", default=".")
     s.add_argument("--timeout", type=int, default=TIMEOUT); s.add_argument("--agent")
+    s.add_argument("--no-check", action="store_true", help="queue it even if its program is not found now")
     s.add_argument("--collect", action="append", metavar="PATH",
                    help="after the job, before the next one: copy PATH into the job's run folder "
                         "(sd:/... or usb:/... from the Wii, else a path here, relative to --cwd)")

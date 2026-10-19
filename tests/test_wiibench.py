@@ -210,9 +210,12 @@ class LeaseTest(unittest.TestCase):
         self.assertEqual((r["next"], r["next_is_mine"]), ("b", False))   # b's turn is next (it joined, no list)
         self.leases.release({"ticket": "a"})
         self.now += 3
-        self.assertEqual(self.acq("b"), {"granted": True, "released_ago": 3.0})
+        r = self.acq("b")
+        self.assertEqual((r["granted"], r["released_ago"]), (True, 3.0))
+        self.assertEqual(r["released_by"], {"host": "a", "name": "job"})   # who left the Wii in HBC
         self.now += 100                            # b dies without a release: no clean hand-over
-        self.assertEqual(self.acq("c"), {"granted": True, "released_ago": 103.0})
+        r = self.acq("c")
+        self.assertEqual((r["granted"], r["released_ago"]), (True, 103.0))
 
     def test_long_poll_answers_on_release(self):
         import threading
@@ -388,7 +391,8 @@ class LeaseEventsTest(unittest.TestCase):
         self.now += 10
         self.leases.release({"ticket": "a", "wii": "busy: otherapp is running"})
         self.assertEqual(self.leases.status()["left"]["wii"], "busy: otherapp is running")
-        self.assertEqual(self.acq("b"), {"granted": True, "released_ago": None})   # no short wait
+        r = self.acq("b")
+        self.assertEqual((r["granted"], r["released_ago"], r["released_by"]), (True, None, None))   # no short wait
         self.leases.release({"ticket": "b"})       # a client before 1.9.1: counts as clean
         self.assertIsNone(self.leases.status()["left"])
         self.assertEqual(self.acq("c")["released_ago"], 0.0)
@@ -603,6 +607,75 @@ class ManageTest(unittest.TestCase):
             threading.Timer(1.5, lambda: self.wb.stop_here(["j2"])).start()
             self.assertFalse(self.wb.recover_and_collect(job2, turn))
         self.assertEqual(job2["freeze"]["recovered"], "given up")
+
+
+class WeekTest(unittest.TestCase):
+    """From the logs of 2026-10-12..19: a renew thread that must not die, a command that is
+    not there, a lease gap on the errors page."""
+
+    def setUp(self):
+        self.wb = import_wiibench()
+
+    def test_the_renew_thread_survives_anything(self):
+        import threading
+        import time
+        from unittest import mock
+        empty = tempfile.TemporaryDirectory()
+        self.addCleanup(empty.cleanup)
+        srv = self.wb.make_server(0, ttl=30, host="127.0.0.1")
+        srv.leases.grace_until = 0
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        os.environ["WII_BENCH_SERVER"] = f"http://127.0.0.1:{srv.server_address[1]}"
+        self.addCleanup(os.environ.pop, "WII_BENCH_SERVER")
+        real, renews, bad = self.wb.lease_call, [], [4]
+        def flaky(path, body=None, timeout=10):
+            if path == "/renew" and threading.current_thread() is not threading.main_thread():
+                renews.append(time.monotonic())
+                if bad[0] > 0:                     # not a network error: the old thread died on this
+                    bad[0] -= 1
+                    raise ValueError("Expecting value: line 1 column 1 (char 0)")
+            return real(path, body, timeout)
+        with mock.patch.object(self.wb, "PENDING", pathlib.Path(empty.name)), mock.patch.object(self.wb, "TTL", 0.4), \
+             mock.patch.object(self.wb, "lease_call", flaky):
+            with self.wb.Turn("j") as t:
+                time.sleep(1.5)
+                self.assertGreater(len(renews), 6)  # it kept going after the four errors
+                self.assertGreater(t.gap_max, 0.3)
+                self.assertEqual(srv.leases.holder["name"], "j")
+
+    def test_add_refuses_a_command_that_is_not_there(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = dict(os.environ, WII_BENCH_HOME=tmp.name, WII_BENCH_NO_DISPATCH="1", WII_BENCH_SERVER="")
+        add = lambda *a: subprocess.run([sys.executable, str(BENCH), "add", *a], env=env, capture_output=True, text=True, timeout=30)
+        r = add("--", "no-such-program-here", "x")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not on PATH", r.stderr)
+        r = add("--", "scripts/missing.py")
+        self.assertIn("does not exist", r.stderr)
+        self.assertEqual(add("--no-check", "--", "no-such-program-here").returncode, 0)
+        self.assertEqual(add("--", sys.executable, "-c", "0").returncode, 0)
+        self.assertEqual(len(list((pathlib.Path(tmp.name) / "queue/pending").glob("*.json"))), 2)
+
+    def test_lease_gaps_and_outside_use_on_the_errors_page(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        h = self.wb.History(pathlib.Path(tmp.name) / "history")
+        h.write({"type": "job", "id": "j1", "host": "pc", "name": "long one", "exit": 0, "secs": 3000,
+                 "hbc_back_s": 0.1, "lease_gap_s": 75, "lease_lost": False})
+        h.write({"type": "outside", "host": "pc", "busy_s": 600, "what": "busy or off", "after": "check", "after_host": "mac"})
+        env = dict(os.environ, WII_BENCH_HOME=tmp.name, WII_BENCH_SERVER="", WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9")
+        s = json.loads(subprocess.run([sys.executable, str(BENCH), "snapshot", "--json"], env=env,
+                                      capture_output=True, timeout=60).stdout)
+        kinds = {e["kind"]: e for e in s["rows"]["errors"]}
+        self.assertIn("no renewal for 75 s", kinds["lease gap"]["detail"])
+        self.assertIn("left it there", kinds["outside the queue"]["detail"])
+        out = subprocess.run([sys.executable, str(BENCH), "report", "--hours", "1"], env=env,
+                             capture_output=True, text=True, timeout=60).stdout
+        self.assertIn("used outside the queue for 600 s", out)
+        self.assertIn("no lease renewal for 75 s", out)
 
 
 class PhaseTest(unittest.TestCase):
@@ -977,6 +1050,33 @@ class LeaseDispatcherTest(unittest.TestCase):
         self.assertTrue((self.home / "runs" / n1 / "freeze/agent/status.json").exists())
         self.assertEqual((self.home / "runs" / n1 / "wii/lab.log").read_bytes(), b"the app wrote this")
         self.assertIn("its agent answered", self.wb.job_problem(j)[2])
+
+    def test_outside_use_between_queue_jobs(self):
+        # a1 leaves the Wii in HBC; an app takes it outside the queue; a2's wait finds it busy.
+        import threading
+        a1 = self.add("first", "A", secs=0.3)
+        self.dispatch()
+        self.until(lambda: (self.home / "queue/done" / f"{a1}.json").exists() and
+                   "hbc_back_s" in (self.home / "queue/done" / f"{a1}.json").read_text(), 30)
+        self.fake.agent = True                     # someone's app, sent without the queue
+        self.addCleanup(setattr, self.fake, "agent", False)
+        a2 = self.add("second", "A", secs=0.3)
+        threading.Timer(4, setattr, (self.fake, "agent", False)).start()
+        rec = self.home / "queue/done" / f"{a2}.json"
+        self.until(lambda: rec.exists(), 60)
+        out = [e for e in self.history() if e["type"] == "outside"]
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["after"], "first")
+        self.assertGreaterEqual(out[0]["busy_s"], 1)
+
+    def test_the_turn_names_the_running_job(self):
+        a1, a2 = self.add("first", "A", secs=0.3), self.add("second", "A", secs=3)
+        self.dispatch()
+        holder = lambda: self.wb.lease_call("/status").get("holder") or {}
+        self.until(lambda: holder().get("phase") == "running: second", 30)
+        self.assertEqual(holder()["name"], "second")   # not the turn's first job
+        self.assertEqual(holder()["job"], a2)
+        self.until(lambda: (self.home / "queue/done" / f"{a2}.json").exists(), 30)   # done before the cleanup
 
     def test_a_cancel_while_waiting_for_hbc(self):
         # 2026-10-08: a turn's job was cancelled while the Wii was out of HBC; the turn kept the
