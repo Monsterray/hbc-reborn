@@ -102,6 +102,50 @@ ARCHIVE_MAX_GB = _env_num("WII_BENCH_ARCHIVE_MAX_GB", 100)   # archived months p
 COLLECT_TIMEOUT = 600                              # s for one --collect from the Wii
 WII = os.environ.get("WII_BENCH_IP", "192.168.8.213")
 PORT = int(os.environ.get("WII_BENCH_PORT", "4299"))  # another port only for tests
+LOG_PORT_BASE = 4300  # the first Wii's jobs get TCP 4300 for the network log, the next 4301, ...
+
+
+def parse_pool(spec):
+    """'name=ip[:port],name=ip[:port]' (or one per line) -> the Wiis, in order: the first is the
+    one dispatchers before 1.10.8 use, and gets log port LOG_PORT_BASE."""
+    pool = []
+    for item in spec.replace("\n", ",").split(","):
+        item = item.strip()
+        if not item or item.startswith("#"):
+            continue
+        name, _, addr = item.partition("=")
+        if not addr:
+            name, addr = f"wii{len(pool) + 1}", name
+        ip, _, port = addr.strip().partition(":")
+        pool.append({"name": name.strip(), "ip": ip, "port": int(port or 4299)})
+    for i, w in enumerate(pool):
+        w["log_port"] = LOG_PORT_BASE + i
+    return pool
+
+
+def default_pool(ip=WII):
+    """The Wiis: $WII_BENCH_WIIS, else the file HOME/wiis, else the one Wii at `ip`, named
+    "bench". A lease server with no pool set passes ip None: each workstation then uses its own
+    $WII_BENCH_IP, as before 1.10.8."""
+    spec = os.environ.get("WII_BENCH_WIIS")
+    if spec is None:
+        try:
+            spec = read_setting(HOME / "wiis")
+        except (OSError, UnicodeDecodeError):
+            spec = ""
+    return parse_pool(spec) or [{"name": "bench", "ip": ip, "port": PORT if ip else None, "log_port": LOG_PORT_BASE}]
+
+
+def bench_wii(wii=None):
+    """The Wii to talk to: one from the pool (a lease grant's), else the one at $WII_BENCH_IP."""
+    if not wii:
+        return {"name": "bench", "ip": WII, "port": PORT, "log_port": LOG_PORT_BASE}
+    return dict(wii, ip=wii.get("ip") or WII, port=wii.get("port") or PORT)
+
+
+def may_use(job, slot):
+    """True if the job may run on the Wii named `slot` (add --wii pins it to one)."""
+    return (job.get("want_wii") or "any") in ("any", slot)
 TIMEOUT = 1800        # s a job may run by default: the slowest 1% took 2,111 s and set --timeout
 QUICK = 2             # s of HBC idle after a queue job (ours, or the last lease holder's)
 RECENT = 60           # s after a queue job ended that QUICK applies
@@ -137,7 +181,7 @@ def dispatcher_pid():
     return pid if pid_alive(pid) else 0
 
 
-def wii_state():
+def wii_state(wii=None):
     """What answers on TCP 4299: ("hbc", version) for HBC in its menu, ("agent", version) for
     an app running hbc-reborn's in-app agent, or ("off", None) for nothing.
 
@@ -151,8 +195,9 @@ def wii_state():
     retried on EOF until TCP_BLOCK_RECV_TIMEOUT; hbc-reborn 1.4.1 fixed this), and its
     listen backlog is 3; probing every 5 s that way filled the backlog and HBC stopped
     answering (2026-09-28)."""
+    w = bench_wii(wii)
     try:
-        with socket.create_connection((WII, PORT), timeout=2) as s:
+        with socket.create_connection((w["ip"], w["port"]), timeout=2) as s:
             s.settimeout(2)
             s.sendall(b"HBCV" + bytes(12))
             reply = b""
@@ -167,15 +212,16 @@ def wii_state():
     return ("agent" if text.endswith(" agent") else "hbc"), text
 
 
-def hbc_idle():
+def hbc_idle(wii=None):
     """True only for HBC in its menu: an agent app answering on 4299 is busy."""
-    return wii_state()[0] == "hbc"
+    return wii_state(wii)[0] == "hbc"
 
 
-def agent_app():
+def agent_app(wii=None):
     """The running agent app's name, from its status reply (HBCS), or "an app"."""
+    w = bench_wii(wii)
     try:
-        with socket.create_connection((WII, PORT), timeout=2) as s:
+        with socket.create_connection((w["ip"], w["port"]), timeout=2) as s:
             s.settimeout(2)
             s.sendall(b"HBCS" + bytes(12))
             head = b""
@@ -196,12 +242,12 @@ def agent_app():
         return "an app"
 
 
-def wii_line():
-    state, text = wii_state()
+def wii_line(wii=None):
+    state, text = wii_state(wii)
     if state == "hbc":
         return f"in HBC {text} (free)" if text else "in HBC (free)"
     if state == "agent":
-        return f"busy: {agent_app()} is running (agent {text.removesuffix(' agent')})"
+        return f"busy: {agent_app(wii)} is running (agent {text.removesuffix(' agent')})"
     return "busy or off"
 
 
@@ -287,41 +333,69 @@ RESERVE = 10          # s the Wii waits for the workstation with the earliest jo
 
 
 class Leases:
-    """The server's state. One holder; waiters in arrival order. Every client call refreshes
-    its entry; one not heard from for ttl seconds is dropped, so a dead workstation frees the
-    Wii by itself. After a restart nothing is granted for one ttl: a holder still running its
-    job renews within that time and gets its lease back. `log` gets each event (the history).
+    """The server's state: a pool of Wiis, each with its own lease. Every client call refreshes
+    its entry; one not heard from for ttl seconds is dropped, so a dead workstation frees its Wii
+    by itself. After a restart nothing is granted for one ttl: a holder still running its job
+    renews within that time and gets its lease back. `log` gets each event (the history).
 
-    A release says what the Wii was doing when the holder let go ("hbc", or what answered
-    instead). Only a release with the Wii back in HBC counts as clean for the next holder's
-    short idle wait; any other is kept as `left` and shown until a clean release."""
+    Each waiter waits with one job: the Wii it wants ("any", or a Wii's name) and when that job
+    was received. A free Wii goes to the earliest-received job that may use it. A dispatcher
+    before 1.10.8 says nothing of Wiis: it only ever talks to the first Wii in the pool, so that
+    is the only one it is given.
+
+    A release says what its Wii was doing when the holder let go ("hbc", or what answered
+    instead). Only a release with the Wii back in HBC counts as clean for the next holder's short
+    idle wait; any other is kept as that Wii's `left` and shown until a clean release."""
 
     PRIVATE = ("seen", "ticket", "joined", "granted_at", "phase_at", "hbc_wait")   # seq_join is shown: the order
 
-    def __init__(self, ttl=TTL, clock=time.monotonic, log=None):
+    def __init__(self, ttl=TTL, clock=time.monotonic, log=None, pool=None):
         self.ttl, self.clock, self.log = ttl, clock, log or (lambda ev: None)
-        self.holder, self.waiters = None, {}
+        self.pool = pool or default_pool()
+        self.names = [w["name"] for w in self.pool]
+        self.default = self.names[0]
+        self.slots = {n: {"holder": None, "released_at": None, "left": None, "released_by": None} for n in self.names}
+        self.waiters = {}
         self.grace_until = clock() + ttl
-        self.released_at = None                    # the last holder's clean release
-        self.left = None                           # the last holder left the Wii out of HBC
-        self.released_by = None                    # who let go last, with the Wii in HBC: host, job
         self.queues = {}                           # qid -> a workstation's queued jobs (QUEUE_MAX)
         # Receive order: every job gets a number when the server first hears of it (add tells it
-        # at once), and the Wii goes to the earliest-received job, whichever workstation has it.
+        # at once), and a Wii goes to the earliest-received job, whichever workstation has it.
         self.seq, self.received = 0, {}
         # Cancels and stops for jobs on other workstations (from the monitor's manage page or
         # `cancel`/`stop` there), handed to the workstation's dispatcher with its next acquire or
-        # renew: job id -> ("cancel"|"stop", when). Kept REQUEST_TTL s.
+        # renew: job id -> ("cancel"|"stop", when, owner qid). Kept REQUEST_TTL s.
         self.requests = {}
         self.jobs_logged = {}                      # job id -> when its record was logged (no twice)
 
+    # The first Wii's lease, as one-Wii code and tests know it.
+    @property
+    def holder(self):
+        return self.slots[self.default]["holder"]
+
+    @holder.setter
+    def holder(self, value):
+        self.slots[self.default]["holder"] = value
+
+    def wii_info(self, name):
+        w = next(x for x in self.pool if x["name"] == name)
+        return {"slot": name, "ip": w["ip"], "port": w["port"], "log_port": w.get("log_port", LOG_PORT_BASE)}
+
+    def _want(self, d):
+        """The Wii a waiter or a queued job may use: "any", a Wii's name, or (said nothing:
+        a client before 1.10.8) the first Wii, the one it knows."""
+        return d.get("want") or self.default
+
+    def _eligible(self, want, slot):
+        return want == "any" or want == slot
+
+    def _held_by(self, ticket):
+        return next((n for n, s in self.slots.items() if s["holder"] and s["holder"]["ticket"] == ticket), None)
+
     def queue(self, d):
-        """A workstation's queued jobs, from /queue or with an acquire or renew. A dispatcher
-        asks for the lease for its next job only, so without this a workstation with eight jobs
-        queued looked like one waiter. `qid` is the workstation and its state folder (two
-        queues on one host stay apart); `queue_at` is the sender's clock, compared only with
-        the same sender's, so a list sent before a newer one (a long poll started 20 s ago)
-        cannot replace it."""
+        """A workstation's queued jobs, from /queue or with an acquire, renew or release. `qid` is
+        the workstation and its state folder (two queues on one host stay apart); `queue_at` is
+        the sender's clock, compared only with the same sender's, so a list sent before a newer
+        one (a long poll started 20 s ago) cannot replace it."""
         now = self.clock()
         q, jobs_ = d.get("qid"), d.get("queue")
         if not q or not isinstance(jobs_, list):
@@ -338,7 +412,7 @@ class Leases:
             if j["id"] not in self.received:
                 self.seq += 1
                 self.received[j["id"]] = self.seq
-            listed.append(dict(j, seq=self.received[j["id"]]))
+            listed.append(dict(j, seq=self.received[j["id"]], want=self._want(j)))
         self.queues[q] = {"qid": q, "host": d.get("host"), "jobs": listed, "total": d.get("total", len(jobs_)),
                           "queue_at": d.get("queue_at", 0), "seen": now}
         return {"ok": True}
@@ -356,10 +430,11 @@ class Leases:
                     if (d.get("all") or (d.get("host") and q["host"] == d["host"])
                             or (d.get("agent") and j.get("agent") and str(d["agent"]).startswith(j["agent"]))):
                         ids.add(j["id"])
-        for i in ids:                              # whose job it is: the list that has it, or the holder
+        for i in ids:                              # whose job it is: the list that has it, or a holder
             owner = next((q["qid"] for q in self.queues.values() if any(j["id"] == i for j in q["jobs"])), None)
-            if owner is None and self.holder and self.holder.get("job") == i:
-                owner = self.holder.get("qid")
+            if owner is None:
+                owner = next((s["holder"].get("qid") for s in self.slots.values()
+                              if s["holder"] and s["holder"].get("job") == i), None)
             self.requests[i] = (action, now, owner)
         if action == "cancel":                     # off every list now, so monitors stop showing them
             for q in self.queues.values():
@@ -387,43 +462,56 @@ class Leases:
                 del self.requests[i]
 
     def _head_seq(self, w):
-        """When the job a waiter waits with was received: its queue's first job, or (a
-        dispatcher before 1.10.2 sends no queue) when it joined the line."""
+        """When the job a waiter waits with was received: that job (from 1.10.8), else its
+        queue's first job, else (a dispatcher before 1.10.2 sends no queue) when it joined."""
+        if w.get("head") in self.received:
+            return self.received[w["head"]]
         q = self.queues.get(w.get("qid"))
         return q["jobs"][0]["seq"] if q and q["jobs"] else w["seq_join"]
 
-    def _reserved(self, w, now):
-        """True while the earliest-received job of all belongs to a workstation not in line yet
-        whose queue came in less than RESERVE s ago: its dispatcher is starting, or about to
-        ask, and the Wii waits for it rather than go to a job received later. A workstation
-        that went quiet holds nobody up for longer."""
+    def _line(self, slot):
+        """The waiters that may use this Wii, in the order it serves them."""
+        ws = [w for w in self.waiters.values() if self._eligible(w["want"], slot)]
+        return sorted(ws, key=lambda w: (self._head_seq(w), w["seq_join"]))
+
+    def _reserved(self, slot, w, now):
+        """True while a job received before w's, that may use this Wii, belongs to a workstation
+        not in line yet whose queue came in less than RESERVE s ago: its dispatcher is starting,
+        or about to ask, and the Wii waits for it rather than go to a job received later."""
         mine = self._head_seq(w)
         for q in self.queues.values():
-            if (q["jobs"] and q["jobs"][0]["seq"] < mine and now - q["seen"] < RESERVE
-                    and q["qid"] != w.get("qid") and not any(x.get("qid") == q["qid"] for x in self.waiters.values())):
+            if q["qid"] == w.get("qid") or now - q["seen"] >= RESERVE:
+                continue
+            if any(x.get("qid") == q["qid"] for x in self.waiters.values()):
+                continue
+            if any(j["seq"] < mine and self._eligible(j["want"], slot) for j in q["jobs"]):
                 return True
         return False
 
-    def next_up(self):
-        """The qid (or a waiter's ticket) with the earliest-received job of all."""
+    def next_up(self, slot=None):
+        """For a Wii: the owner (qid, or an old waiter's ticket) and id of the earliest-received
+        job that may use it, or None."""
+        slot = slot or self.default
         best = None
         for q in self.queues.values():
-            if q["jobs"] and (best is None or q["jobs"][0]["seq"] < best[0]):
-                best = (q["jobs"][0]["seq"], q["qid"])
+            for j in q["jobs"]:
+                if self._eligible(j["want"], slot) and (best is None or j["seq"] < best[0]):
+                    best = (j["seq"], q["qid"], j["id"])
         for t, w in self.waiters.items():
-            if not (w.get("qid") in self.queues and self.queues[w["qid"]]["jobs"]):
+            if not (w.get("qid") in self.queues and self.queues[w["qid"]]["jobs"]) and self._eligible(w["want"], slot):
                 if best is None or w["seq_join"] < best[0]:
-                    best = (w["seq_join"], t)
-        return best and best[1]
+                    best = (w["seq_join"], t, None)
+        return best and (best[1], best[2])
 
     def _event(self, kind, e, **more):
         self.log(dict({"type": kind, "host": e.get("host"), "name": e.get("name")}, **more))
 
     def _expire(self, now):
-        if self.holder and now - self.holder["seen"] > self.ttl:
-            self._event("expired", self.holder, role="holder",
-                        held_s=round(now - self.holder.get("granted_at", now), 1))
-            self.holder = None
+        for name, s in self.slots.items():
+            h = s["holder"]
+            if h and now - h["seen"] > self.ttl:
+                self._event("expired", h, role="holder", slot=name, held_s=round(now - h.get("granted_at", now), 1))
+                s["holder"] = None
         for t in [t for t, w in self.waiters.items() if now - w["seen"] > self.ttl]:
             self._event("expired", self.waiters[t], role="waiter", waited_s=round(now - self.waiters[t]["joined"], 1))
             del self.waiters[t]
@@ -431,42 +519,58 @@ class Leases:
             del self.queues[q]                     # a workstation gone quiet, or with nothing queued
         if len(self.received) > 4 * QUEUE_MAX:     # forget numbers of jobs no list has any more
             listed = {j["id"] for v in self.queues.values() for j in v["jobs"]}
+            listed |= {w.get("head") for w in self.waiters.values()}
             self.received = {k: v for k, v in self.received.items() if k in listed}
+
+    def _strip(self, d):
+        if "queue" in d:
+            self.queue(d)
+        return {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total", "handled", "wait")}
 
     def acquire(self, d):
         now = self.clock()
         self.done_with(d.get("handled"), d.get("qid"))
-        if "queue" in d:
-            self.queue(d)
-            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total", "handled")}
+        d = self._strip(d)
         self._expire(now)
         t = d["ticket"]
         reqs = self.requests_for(d.get("qid"), now) if d.get("qid") else None
-        if self.holder and self.holder["ticket"] == t:
-            self.holder["seen"] = now
-            return {"granted": True}
+        held = self._held_by(t)
+        if held:
+            self.slots[held]["holder"]["seen"] = now
+            return dict({"granted": True}, **self.wii_info(held))
         if t not in self.waiters:
-            d = {k: v for k, v in d.items() if k != "wait"}
             self.seq += 1
-            self.waiters[t] = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), joined=now, seq_join=self.seq)
-            self._event("join", d, place=len(self.waiters),
-                        holder=self.holder and self.holder.get("host"))
+            self.waiters[t] = dict(d, want=self._want(d), since=time.strftime("%Y-%m-%d %H:%M:%S"), joined=now,
+                                   seq_join=self.seq)
+            self._event("join", d, place=len(self.waiters), want=self._want(d))
         w = self.waiters[t]
         w["seen"] = now
-        line = sorted(self.waiters, key=lambda k: (self._head_seq(self.waiters[k]), self.waiters[k]["seq_join"]))
-        if self.holder is None and now >= self.grace_until and line[0] == t and not self._reserved(w, now):
-            self.holder = self.waiters.pop(t)
-            self.holder.update(granted=time.strftime("%Y-%m-%d %H:%M:%S"), granted_at=now)
-            # How long ago a queued job last let go with the Wii back in HBC: the Wii came
-            # back from a queue job, not from someone outside the queue, so the client can
-            # skip most of its idle wait.
-            ago = None if self.released_at is None else round(now - self.released_at, 1)
-            self._event("grant", w, waited_s=round(now - w["joined"], 1), released_ago=ago)
-            r = {"granted": True, "released_ago": ago, "released_by": self.released_by}
-            if reqs:                               # cancels for the jobs it got the Wii with
-                r["requests"] = reqs
-            return r
-        r = {"granted": False, "position": line.index(t) + 1, "holder": self._show(self.holder, now)}
+        if "head" in d:                            # its job was cancelled: it waits with the next
+            w.update(head=d["head"], want=self._want(d), name=d.get("name", w.get("name")))
+        if now >= self.grace_until:
+            for slot in self.names:                # a free Wii it may use, whose next job is its
+                s = self.slots[slot]
+                if s["holder"] is not None or not self._eligible(w["want"], slot):
+                    continue
+                line = self._line(slot)
+                if line and line[0] is w and not self._reserved(slot, w, now):
+                    s["holder"] = self.waiters.pop(t)
+                    s["holder"].update(granted=time.strftime("%Y-%m-%d %H:%M:%S"), granted_at=now, slot=slot)
+                    # How long ago a queued job last let go of this Wii with it in HBC: it came back
+                    # from a queue job, not from someone outside the queue, so the client can skip
+                    # most of its idle wait.
+                    ago = None if s["released_at"] is None else round(now - s["released_at"], 1)
+                    self._event("grant", w, slot=slot, waited_s=round(now - w["joined"], 1), released_ago=ago)
+                    r = dict({"granted": True, "released_ago": ago, "released_by": s["released_by"]}, **self.wii_info(slot))
+                    if reqs:                       # cancels for the jobs it got the Wii with
+                        r["requests"] = reqs
+                    return r
+        mine = [n for n in self.names if self._eligible(w["want"], n)]
+        place = min((next((i for i, x in enumerate(self._line(n)) if x is w), 0) for n in mine), default=0)
+        busy = next((self.slots[n]["holder"] for n in mine if self.slots[n]["holder"]), None)
+        r = {"granted": False, "position": place + 1, "holder": self._show(busy, now)}
+        if w["want"] != "any" and w["want"] not in self.names:
+            r["error_want"] = f"no Wii named {w['want']} here: {', '.join(self.names)}"
         if reqs:
             r["requests"] = reqs
         return r
@@ -474,35 +578,40 @@ class Leases:
     def renew(self, d):
         now = self.clock()
         self.done_with(d.get("handled"), d.get("qid"))
-        if "queue" in d:
-            self.queue(d)
-            d = {k: v for k, v in d.items() if k not in ("queue", "queue_at", "total", "handled")}
+        d = self._strip(d)
         self._expire(now)
-        if self.holder is None and d["ticket"] not in self.waiters:   # after a restart: reclaim
-            self.holder = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed", granted_at=now)
-            if d.get("phase") is not None:         # its phase began no later than now (it was 0 s for ever)
-                self.holder["phase_at"] = now
-            self._event("reclaim", d)
-        if self.holder and self.holder["ticket"] == d["ticket"]:
-            self.holder["seen"] = now
-            if d.get("name"):                      # the job the turn is for now (the first was cancelled)
-                self.holder["name"] = d["name"]
-            self.holder["job"] = d.get("job")      # the job running now, if one is
-            if d.get("phase") is not None and d["phase"] != self.holder.get("phase"):
-                self._phase_end(now)
-                self.holder["phase"], self.holder["phase_at"] = d["phase"], now
-            nxt = self.next_up()
-            r = {"ok": True, "waiting": len(self.waiters), "next": nxt,
-                 "next_is_mine": nxt is not None and nxt == self.holder.get("qid")}
-            reqs = self.requests_for(self.holder.get("qid"), now) if self.holder.get("qid") else None
-            if reqs:
-                r["requests"] = reqs
-            return r
-        return {"ok": False, "waiting": len(self.waiters)}
+        t = d["ticket"]
+        slot = self._held_by(t)
+        if slot is None and t not in self.waiters:   # after a restart: reclaim the Wii it had
+            want = d.get("slot") if d.get("slot") in self.names else self.default
+            if self.slots[want]["holder"] is None:
+                slot = want
+                h = dict(d, since=time.strftime("%Y-%m-%d %H:%M:%S"), granted="reclaimed", granted_at=now,
+                         slot=slot, want=self._want(d))
+                if d.get("phase") is not None:     # its phase began no later than now (it was 0 s for ever)
+                    h["phase_at"] = now
+                self.slots[slot]["holder"] = h
+                self._event("reclaim", d, slot=slot)
+        if slot is None:
+            return {"ok": False, "waiting": len(self.waiters)}
+        h = self.slots[slot]["holder"]
+        h["seen"] = now
+        if d.get("name"):                          # the job the turn is for now (the first was cancelled)
+            h["name"] = d["name"]
+        h["job"] = d.get("job")                    # the job running now, if one is
+        if d.get("phase") is not None and d["phase"] != h.get("phase"):
+            self._phase_end(h, now)
+            h["phase"], h["phase_at"] = d["phase"], now
+        nxt = self.next_up(slot)
+        r = dict({"ok": True, "waiting": len(self._line(slot)), "next": nxt and nxt[0], "next_job": nxt and nxt[1],
+                  "next_is_mine": nxt is not None and nxt[0] == h.get("qid")}, **self.wii_info(slot))
+        reqs = self.requests_for(h.get("qid"), now) if h.get("qid") else None
+        if reqs:
+            r["requests"] = reqs
+        return r
 
-    def _phase_end(self, now):
-        """The holder's phase ends: time spent waiting for HBC adds up for the release event."""
-        h = self.holder
+    def _phase_end(self, h, now):
+        """A holder's phase ends: time spent waiting for HBC adds up for the release event."""
         if h.get("phase", "").startswith(WAITING_FOR_HBC) and "phase_at" in h:
             h["hbc_wait"] = h.get("hbc_wait", 0.0) + now - h["phase_at"]
 
@@ -511,20 +620,21 @@ class Leases:
         self.done_with(d.get("handled"), d.get("qid"))
         if "queue" in d:                           # what is left queued there, as it lets go
             self.queue(d)
-        if self.holder and self.holder["ticket"] == d["ticket"]:
+        slot = self._held_by(d["ticket"])
+        if slot:
+            s, h = self.slots[slot], self.slots[slot]["holder"]
             wii = d.get("wii", "hbc")              # a client before 1.9.1 does not say
-            self._phase_end(now)
-            more = {"hbc_wait_s": round(self.holder["hbc_wait"], 1)} if self.holder.get("hbc_wait") else {}
-            self._event("release", self.holder, held_s=round(now - self.holder.get("granted_at", now), 1), wii=wii,
-                        **more)
+            self._phase_end(h, now)
+            more = {"hbc_wait_s": round(h["hbc_wait"], 1)} if h.get("hbc_wait") else {}
+            self._event("release", h, slot=slot, held_s=round(now - h.get("granted_at", now), 1), wii=wii, **more)
             if wii == "hbc":
-                self.released_at, self.left = now, None
-                self.released_by = {"host": self.holder.get("host"), "name": self.holder.get("name")}
+                s["released_at"], s["left"] = now, None
+                s["released_by"] = {"host": h.get("host"), "name": h.get("name")}
             else:
-                self.released_at = None
-                self.left = {"host": self.holder.get("host"), "name": self.holder.get("name"), "wii": wii,
+                s["released_at"] = None
+                s["left"] = {"host": h.get("host"), "name": h.get("name"), "wii": wii,
                              "since": time.strftime("%Y-%m-%d %H:%M:%S"), "at": now}
-            self.holder = None
+            s["holder"] = None
         if d["ticket"] in self.waiters:
             w = self.waiters.pop(d["ticket"])
             self._event("leave", w, waited_s=round(now - w["joined"], 1))
@@ -544,15 +654,21 @@ class Leases:
             more["waited_s"] = int(now - e["joined"])
         return {k: v for k, v in dict(e, **more).items() if k not in self.PRIVATE}
 
+    def _left(self, s, now):
+        return s["left"] and {k: v for k, v in dict(s["left"], ago_s=int(now - s["left"]["at"])).items() if k != "at"}
+
     def status(self):
         now = self.clock()
         self._expire(now)
-        left = self.left and {k: v for k, v in dict(self.left, ago_s=int(now - self.left["at"])).items() if k != "at"}
         queues = [{"qid": v["qid"], "host": v["host"], "jobs": v["jobs"], "total": v["total"],
                    "age_s": round(now - v["seen"], 1)} for v in self.queues.values()]
         line = sorted(self.waiters.values(), key=lambda w: (self._head_seq(w), w["seq_join"]))   # the order served
-        return {"holder": self._show(self.holder, now), "waiters": [self._show(w, now) for w in line],
-                "left": left, "queues": queues}
+        wiis = [dict(self.wii_info(n), name=n, holder=self._show(s["holder"], now), left=self._left(s, now),
+                     released_ago=None if s["released_at"] is None else round(now - s["released_at"], 1))
+                for n, s in self.slots.items()]
+        d = self.slots[self.default]
+        return {"holder": self._show(d["holder"], now), "waiters": [self._show(w, now) for w in line],
+                "left": self._left(d, now), "queues": queues, "wiis": wiis}
 
 
 # --- the history: every grant, release and job, kept for good -----------------------------
@@ -654,7 +770,7 @@ class History:
         return out
 
 
-def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
+def make_server(port, ttl=TTL, host="0.0.0.0", history=None, pool=None):
     import http.server
     import threading
     import urllib.parse
@@ -667,7 +783,7 @@ def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
             except OSError as e:
                 print(f"history: {e}", flush=True)
 
-    leases, cond = Leases(ttl, log=log), threading.Condition()
+    leases, cond = Leases(ttl, log=log, pool=pool or default_pool(None)), threading.Condition()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"            # keep-alive: a client reuses its connection
@@ -768,10 +884,13 @@ def make_server(port, ttl=TTL, host="0.0.0.0", history=None):
 def cmd_serve(a):
     if a.history:
         History(a.history, a.keep_months).maintain()
-    srv = make_server(a.port, a.ttl, a.host, a.history)
+    pool = parse_pool(",".join(a.wii)) if a.wii else default_pool(None)
+    srv = make_server(a.port, a.ttl, a.host, a.history, pool)
     if srv.history:
         srv.history.keep = a.keep_months
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # PID 1 in Docker ignores it otherwise
+    print("Wiis: " + ", ".join(f"{w['name']} {w['ip'] or '(each workstation its own WII_BENCH_IP)'}" for w in pool),
+          flush=True)
     print(f"wii-bench lease server on {a.host or '*'}:{a.port}, ttl {a.ttl} s, history "
           + (f"in {a.history} (archives kept {f'{a.keep_months} months' if a.keep_months else 'forever'})"
              if a.history else "off"), flush=True)
@@ -869,44 +988,164 @@ def lease_call(path, body=None, timeout=10):
 LONG_POLL = 25                                     # s the server holds an /acquire open
 
 
+class LocalLeases:
+    """The lease server's logic inside the dispatcher, for a workstation without a server: the
+    same pool of Wiis and receive order, for this workstation's queue alone. It answers like
+    lease_call."""
+
+    def __init__(self, pool):
+        self.leases = Leases(TTL, pool=pool)
+        self.leases.grace_until = 0                # no holder from before: this process is all there is
+        self.cond = threading.Condition()
+
+    def __call__(self, path, body=None, timeout=10):
+        d = dict(body or {})
+        with self.cond:
+            if path == "/status":
+                return self.leases.status()
+            if path == "/queue":
+                return self.leases.queue(d)
+            if path in ("/event", "/request"):    # the local history has it; nobody else to ask
+                return {"ok": True}
+            op = {"/acquire": self.leases.acquire, "/renew": self.leases.renew, "/release": self.leases.release}[path]
+            r = op(d)
+            if op == self.leases.acquire:
+                end = time.monotonic() + min(float(d.get("wait", 0)), 30.0)
+                while not r["granted"] and time.monotonic() < end:
+                    self.cond.wait(min(1.0, end - time.monotonic()))
+                    r = op(d)
+            else:
+                self.cond.notify_all()
+            return r
+
+
+class Claims:
+    """Which pending jobs this dispatcher's turns have: each turn waits for a Wii with a job of its
+    own, so two turns never run the same one."""
+
+    def __init__(self):
+        self.lock, self.owner = threading.Lock(), {}
+
+    def take(self, job_id, who):
+        with self.lock:
+            if self.owner.get(job_id, who) is not who:
+                return False
+            self.owner[job_id] = who
+            return True
+
+    def move(self, old, new):
+        """Everything `old` has goes to `new` at once: no other turn can take it in between."""
+        with self.lock:
+            for k, v in self.owner.items():
+                if v is old:
+                    self.owner[k] = new
+
+    def drop(self, who, job_id=None):
+        with self.lock:
+            for k in [k for k, v in self.owner.items() if v is who and job_id in (None, k)]:
+                del self.owner[k]
+
+    def free(self, slot=None):
+        """The pending jobs no turn has, in receive order, that may use `slot` (None: any Wii)."""
+        out = []
+        for p in jobs(PENDING) if PENDING.exists() else []:
+            if p.stem in self.owner:
+                continue
+            try:
+                j = load(p)
+            except (OSError, ValueError):
+                continue                           # cancelled meanwhile
+            if slot is None or may_use(j, slot):
+                out.append((p, j))
+        return out
+
+    def next(self, who, slot=None, only=None):
+        """Take the earliest free job that may use `slot` (or just `only`): its path, or None."""
+        for p, _ in self.free(slot):
+            if only and p.stem != only:
+                continue
+            if self.take(p.stem, who):
+                return p
+        return None
+
+
+CLAIMS = Claims()
+
+
+_SAY = threading.Lock()
+
+
 def say(msg):
-    print(time.strftime("%Y-%m-%d %H:%M:%S ") + msg, flush=True)
+    """A line in dispatcher.log; with more than one Wii, each turn's lines say which Wii."""
+    tag = getattr(_LOCAL, "tag", "")
+    with _SAY:
+        print(time.strftime("%Y-%m-%d %H:%M:%S ") + (f"[{tag}] " if tag else "") + msg, flush=True)
 
 
 STATE = HOME / "dispatcher.state"
+_STATE, _STATE_LOCK = {}, threading.Lock()
 
 
-def report(job_id, detail):
-    """What the dispatcher is doing for the job at the head of the queue, for `wait`."""
+def report(job_id, detail, wii=None):
+    """What the dispatcher is doing for each job it has a turn for, for `wait` and the monitor:
+    {"jobs": {id: {detail, since, wii}}}, and the latest one as job/detail/since (before 1.10.8
+    that was all there was, one turn at a time)."""
     if job_id is None:
         return
+    with _STATE_LOCK:
+        now = time.time()
+        _STATE[job_id] = {"detail": detail, "since": now, "wii": wii}
+        for k in list(_STATE):                     # jobs done or cancelled are history
+            if k != job_id and not (PENDING / f"{k}.json").exists() and not (RUNNING / f"{k}.json").exists():
+                del _STATE[k]
+        try:
+            tmp = HOME / f"dispatcher.state.{os.getpid()}"
+            tmp.write_text(json.dumps({"job": job_id, "detail": detail, "since": now, "jobs": _STATE}))
+            fs_retry(os.replace, tmp, STATE)
+        except OSError:
+            pass
+
+
+def read_state():
+    """dispatcher.state as {job id: {detail, since, wii}}, from any version's file."""
     try:
-        tmp = HOME / f"dispatcher.state.{os.getpid()}"
-        tmp.write_text(json.dumps({"job": job_id, "detail": detail, "since": time.time()}))
-        os.replace(tmp, STATE)
-    except OSError:
-        pass
+        st = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+    if "jobs" in st:
+        return st["jobs"]
+    return {st["job"]: {"detail": st.get("detail"), "since": st.get("since")}} if st.get("job") else {}
 
 
 class Turn:
-    """This dispatcher's turn at the Wii: waits in line for the lease, then keeps it renewed
-    until released. Without a lease server it is a no-op (a single workstation)."""
+    """A turn at one Wii: waits in line for a lease, with the job it has (`job_id`, claimed), then
+    keeps it renewed until released. `call` is the lease server (lease_call) or the dispatcher's
+    LocalLeases; with neither (no server, outside a dispatcher) it is a no-op on the one Wii.
+    `target` is the Wii it got: name, ip, port, log_port."""
 
-    def __init__(self, name, job_id=None):
-        self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name, "qid": queue_id()}
+    def __init__(self, name, job_id=None, want="any", call=None):
+        self.info = {"ticket": uuid.uuid4().hex, "host": socket.gethostname(), "name": name, "qid": queue_id(),
+                     "head": job_id, "want": want}
+        self.call = call or (lease_call if lease_server() else None)
+        self.server = call is None and self.call is not None   # every workstation's: send it the history
+        self.target, self.slot, self.next_id, self.last_wait = bench_wii(), None, None, {}
         self.job_id, self.stop, self.released_ago, self.released_by = job_id, None, None, None
         self.wii = "hbc"                           # what the Wii was doing at the release
         self.empty = False                         # all its jobs were cancelled before it got the Wii
         self.gap_max, self.lost = 0.0, False       # the longest time without a renewal, during a job
 
-    def rename(self, name):
+    def rename(self, name, job_id=None, want=None):
         """The job this turn is for now (the one it was for was cancelled): told at once."""
+        if job_id:
+            self.job_id = self.info["head"] = job_id
+        if want:
+            self.info["want"] = want
         if self.info.get("name") == name:
             return
         self.info["name"] = name
         if self.stop:
             try:
-                lease_call("/renew", dict(self.info, **queue_payload()))
+                self.call("/renew", dict(self.info, **queue_payload()))
             except OSError:
                 pass                               # the next renew carries it
 
@@ -918,7 +1157,7 @@ class Turn:
         self.info["phase"] = phase
         if self.stop:
             try:
-                lease_call("/renew", dict(self.info, **queue_payload()))   # the queue changed too
+                self.call("/renew", dict(self.info, **queue_payload()))   # the queue changed too
             except OSError:
                 pass                               # the next renew carries it
 
@@ -929,11 +1168,12 @@ class Turn:
         if not self.stop:                          # no server: this workstation's queue is all
             return True if jobs(PENDING) else None
         try:
-            r = lease_call("/renew", dict(self.info, **queue_payload()))
+            r = self.call("/renew", dict(self.info, **queue_payload()))
         except OSError:
             return None
         if "next_is_mine" not in r:
             return "old"
+        self.next_id = r.get("next_job")
         if r["next_is_mine"]:
             return True
         return False if r.get("next") else None
@@ -943,27 +1183,41 @@ class Turn:
         if not self.stop:
             return 0
         try:
-            return lease_call("/renew", self.info).get("waiting", 0)
+            return self.call("/renew", self.info).get("waiting", 0)
         except OSError:
             return 0
 
+    def _refill(self):
+        """The job it waited with is gone (cancelled): take the next free one, or False."""
+        if self.job_id is None or (PENDING / f"{self.job_id}.json").exists():
+            return True
+        CLAIMS.drop(self, self.job_id)
+        p = CLAIMS.next(self, self.slot)
+        if p is None:
+            return False
+        try:
+            j = load(p)
+        except (OSError, ValueError):
+            return self._refill()
+        self.rename(j.get("name"), j["id"], j.get("want_wii") or "any")
+        return True
+
     def __enter__(self):
-        if not lease_server():
+        if self.call is None:
             return self
-        import threading
         said = None
         handled = []
         while True:
             t = time.monotonic()
             try:
-                r = lease_call("/acquire", dict(self.info, wait=LONG_POLL, handled=handled, **queue_payload()),
-                               timeout=LONG_POLL + 10)
+                r = self.call("/acquire", dict(self.info, wait=LONG_POLL, handled=handled, **queue_payload()),
+                              timeout=LONG_POLL + 10)
             except OSError as e:
                 r = {"granted": False, "error": str(e)}
             handled = apply_requests(r.get("requests"))
-            if handled and not jobs(PENDING):      # everything it waited with was cancelled
+            if not self._refill():                 # everything it could wait with was cancelled
                 try:
-                    lease_call("/release", dict(self.info, handled=handled, **queue_payload()))
+                    self.call("/release", dict(self.info, handled=handled, **queue_payload()))
                 except OSError:
                     pass
                 self.empty = True
@@ -971,7 +1225,8 @@ class Turn:
             if r["granted"]:
                 break
             msg = (f"lease server {lease_server()} unreachable: {r['error']}" if "error" in r else
-                   f"waiting for the lease: place {r['position']} in line"
+                   r["error_want"] if r.get("error_want") else
+                   f"waiting for a Wii: place {r['position']} in line"
                    + (f", held by {r['holder']['host']} for {r['holder']['name']}" if r.get("holder") else ""))
             if msg != said:
                 say(msg)
@@ -981,7 +1236,13 @@ class Turn:
                 time.sleep(5)
         self.released_ago = r.get("released_ago")
         self.released_by = r.get("released_by")
-        say(f"lease taken for {self.info['name']}")
+        # The Wii it got. A server before 1.10.8, or one with no pool set, names no address:
+        # this workstation's own WII_BENCH_IP, as before.
+        self.slot = r.get("slot") or "bench"
+        self.target = bench_wii({"name": self.slot, "ip": r.get("ip"), "port": r.get("port"),
+                                 "log_port": r.get("log_port") or LOG_PORT_BASE})
+        self.info["slot"] = self.slot              # a restarted server gives the same Wii back
+        say(f"lease taken for {self.info['name']}" + (f" on {self.slot} ({self.target['ip']})" if r.get("slot") else ""))
         self.stop = threading.Event()
 
         def renew():
@@ -992,7 +1253,7 @@ class Turn:
             handled, failing, told = [], None, False
             while not self.stop.wait(min(TTL / 4, 5)):   # every 5 s: a stop is heard soon
                 try:
-                    r = lease_call("/renew", dict(self.info, handled=handled, **queue_payload()))
+                    r = self.call("/renew", dict(self.info, handled=handled, **queue_payload()))
                     handled = apply_requests(r.get("requests"))
                     if not r["ok"]:
                         self.lost = True
@@ -1015,10 +1276,11 @@ class Turn:
         return self
 
     def __exit__(self, *exc):
+        CLAIMS.drop(self)
         if self.stop:
             self.stop.set()
             try:
-                lease_call("/release", dict(self.info, wii=self.wii, **queue_payload()))
+                self.call("/release", dict(self.info, wii=self.wii, **queue_payload()))
             except OSError:
                 pass                               # it expires after TTL
 
@@ -1057,7 +1319,8 @@ def cmd_setup(a):
         except OSError as e:
             err = e
             print(f"        unreachable: {e}")
-    print(f"Wii    {WII}: {wii_now(s, err)}")
+    for w, h in (the_wiis(s) if not err else [(bench_wii(), None)]):
+        print(f"Wii    {w['name']} {w['ip']}: {wii_now({'holder': h} if s else None, err, w)}")
     print("Jobs that use the network log need inbound TCP 4300 open on this machine.")
 
 
@@ -1134,7 +1397,8 @@ def queue_payload():
             continue
         t0 = _parse_local(j.get("added")) or now
         out.append({"id": j["id"], "name": j.get("name"), "agent": (j.get("agent") or "")[:12],
-                    "folder": pathlib.Path(j.get("cwd") or ".").name, "age_s": round(now - t0)})
+                    "folder": pathlib.Path(j.get("cwd") or ".").name, "age_s": round(now - t0),
+                    "want": j.get("want_wii") or "any"})
     return {"qid": queue_id(), "host": socket.gethostname(), "queue": out, "total": len(q),
             "queue_at": time.time()}
 
@@ -1165,16 +1429,12 @@ def stop_here(ids):
     """Ask this workstation's dispatcher to stop running jobs: a stop file it looks for every
     second (the job then ends like a timeout, "stopped")."""
     out = []
-    try:
-        recovering = json.loads(RECOVERING.read_text()).get("id")
-    except (OSError, ValueError):
-        recovering = None
     for i in ids:
         if (RUNNING / f"{i}.json").exists():
             (RUNNING / f"{i}.stop").write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
             out.append(i)
-        elif i == recovering:                      # waiting for a frozen Wii to come back: give up
-            (HOME / "recovering.giveup").write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+        elif (RECOVERING / f"{i}.json").exists():  # waiting for a frozen Wii to come back: give up
+            (RECOVERING / f"{i}.giveup").write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
             out.append(i)
     return out
 
@@ -1211,6 +1471,11 @@ def cmd_add(a):
            "agent": job_agent(a.agent)}
     if a.collect:
         job["collect"] = a.collect
+    if a.wii and a.wii != "any":
+        names = pool_names(timeout=3)
+        if names is not None and a.wii not in names:
+            sys.exit(f"add: no Wii named {a.wii}; the Wiis are {', '.join(names)}")
+        job["want_wii"] = a.wii
     if not a.no_check:
         missing = command_missing(a.cmd, job["cwd"])
         if missing:
@@ -1224,6 +1489,18 @@ def cmd_add(a):
     send_queue()
 
 
+def pool_names(timeout=10):
+    """The Wiis' names: the lease server's (one, "bench", for a server before 1.10.8), else this
+    workstation's pool. None when the server does not answer."""
+    if not lease_server():
+        return [w["name"] for w in default_pool()]
+    try:
+        s = lease_call("/status", timeout=timeout)
+    except OSError:
+        return None
+    return [w["name"] for w in s.get("wiis") or []] or ["bench"]
+
+
 def job_window():
     """Windows: the dispatcher has no console, so each console job (python.exe) gets a
     window of its own. Show it minimized and without taking the focus."""
@@ -1233,14 +1510,16 @@ def job_window():
     return {"startupinfo": si}
 
 
-def run_job(p, started=None):
+def run_job(p, started=None, wii=None):
+    w = bench_wii(wii)
     job = load(p)
     r = RUNNING / p.name
     fs_retry(p.rename, r)                          # claims it: a rename is atomic
     if started:
         started()                                  # out of the queue: tell the lease server
-    report(job["id"], "running")
+    report(job["id"], "running", w["name"])
     job["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    job["wii"], job["wii_ip"] = w["name"], w["ip"]
     r.write_text(json.dumps(job, indent=1))
     log = RUNNING / f"{job['id']}.log"
     out_dir = RUNS / job["id"]                     # this job's own: no other run writes here
@@ -1248,8 +1527,12 @@ def run_job(p, started=None):
     job["out"] = str(out_dir)
     r.write_text(json.dumps(job, indent=1))
     t0 = time.monotonic()
-    env = dict(os.environ, WII_BENCH_IP=WII, WII_BENCH_JOB=job["id"], WII_BENCH_OUT=str(out_dir),
-               WII_BENCH_JOB_START=f"{time.time():.3f}")
+    # Its Wii, for the job and the hbc.py it runs (HBC_WII, HBC_PORT): with more than one Wii,
+    # whichever is free runs the job. WII_BENCH_LOG_PORT is a TCP port for the app's network log
+    # that no job on another Wii of this workstation uses at the same time.
+    env = dict(os.environ, WII_BENCH_IP=w["ip"], WII_BENCH_PORT=str(w["port"]), HBC_WII=w["ip"],
+               HBC_PORT=str(w["port"]), WII_BENCH_WII=w["name"], WII_BENCH_LOG_PORT=str(w.get("log_port") or LOG_PORT_BASE),
+               WII_BENCH_JOB=job["id"], WII_BENCH_OUT=str(out_dir), WII_BENCH_JOB_START=f"{time.time():.3f}")
     with open(log, "w") as out:
         try:
             proc = subprocess.Popen(job["cmd"], cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
@@ -1279,7 +1562,7 @@ def run_job(p, started=None):
     fs_retry(log.rename, DONE / log.name)
     fs_retry(r.unlink)
     (RUNNING / f"{job['id']}.stop").unlink(missing_ok=True)
-    print(f"{job['finished']} done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s", flush=True)
+    say(f"done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s")
     return job
 
 
@@ -1295,15 +1578,16 @@ def _tree_size(path):
     return files, size
 
 
-def hbc_cmd(*args, timeout=60):
-    """hbc.py against the bench Wii, outside any job (the queue's own requests between jobs)."""
-    env = dict(os.environ, HBC_PORT=str(PORT))
+def hbc_cmd(*args, timeout=60, wii=None):
+    """hbc.py against a bench Wii, outside any job (the queue's own requests between jobs)."""
+    w = bench_wii(wii)
+    env = dict(os.environ, HBC_PORT=str(w["port"]))
     env.pop("WII_BENCH_JOB", None)
-    return subprocess.run([sys.executable, str(HBC_PY), "--wii", WII, *args], env=env, capture_output=True,
+    return subprocess.run([sys.executable, str(HBC_PY), "--wii", w["ip"], *args], env=env, capture_output=True,
                           timeout=timeout)
 
 
-def save_wii_state(job, folder, what):
+def save_wii_state(job, folder, what, wii=None):
     """What the Wii can still tell about a job that did not end in HBC, into the job's run folder
     (runs/ID/freeze/FOLDER): status, a picture of the screen, the app's log so far or the one HBC
     kept, and HBC's crash report. Each that answers is a file; the rest are noted. Returns the
@@ -1316,7 +1600,7 @@ def save_wii_state(job, folder, what):
         if name not in what:
             continue
         try:
-            r = hbc_cmd(*args)
+            r = hbc_cmd(*args, wii=wii)
             if name != "screen.png":
                 (out / name).write_bytes(r.stdout + (b"\n" + r.stderr if r.returncode and r.stderr else b""))
             if r.returncode == 0 or name != "screen.png":
@@ -1326,7 +1610,7 @@ def save_wii_state(job, folder, what):
     return saved
 
 
-RECOVERING = HOME / "recovering.json"              # the job whose data waits for the Wii to come back
+RECOVERING = HOME / "recovering"                   # ID.json: a job whose data waits for its Wii to come back
 
 
 def recover_and_collect(job, turn):
@@ -1336,9 +1620,12 @@ def recover_and_collect(job, turn):
     before another job can overwrite them. So this turn keeps the Wii and waits, then saves
     HBC's kept log and crash report and collects the job's Wii paths, and only then lets the
     next job go. `stop ID` (or the monitor's manage page) gives up the wait."""
-    giveup = HOME / "recovering.giveup"
+    wii = getattr(turn, "target", None)
+    RECOVERING.mkdir(parents=True, exist_ok=True)
+    rec, giveup = RECOVERING / f"{job['id']}.json", RECOVERING / f"{job['id']}.giveup"
     giveup.unlink(missing_ok=True)
-    RECOVERING.write_text(json.dumps({"id": job["id"], "name": job.get("name"), "since": time.time()}))
+    rec.write_text(json.dumps({"id": job["id"], "name": job.get("name"), "since": time.time(),
+                               "wii": (wii or {}).get("name")}))
     turn.set_phase(f"{WAITING_FOR_HBC}: to save the data of {job.get('name')} after a freeze (reset or power-cycle the Wii)")
     report(job["id"], "waiting for the Wii to be reset, to save this job's data")
     say(f"{job['id']}: nothing answers; waiting for HBC to save its data (stop {job['id']} gives up)")
@@ -1349,7 +1636,7 @@ def recover_and_collect(job, turn):
                 job["freeze"]["recovered"] = "given up"
                 say(f"{job['id']}: gave up waiting for the Wii")
                 return False
-            state, _ = wii_state()
+            state, _ = wii_state(wii)
             if state == "hbc":
                 break
             for _ in range(int(BUSY_STEP)):        # look for a give-up every second, probe every BUSY_STEP
@@ -1357,11 +1644,11 @@ def recover_and_collect(job, turn):
                 if giveup.exists():
                     break
         job["freeze"]["recovered_after_s"] = round(time.monotonic() - t0)
-        job["freeze"]["after"] = save_wii_state(job, "after", ("status.json", "lastlog.txt", "crash.txt"))
+        job["freeze"]["after"] = save_wii_state(job, "after", ("status.json", "lastlog.txt", "crash.txt"), wii)
         late = [c for c in job.get("collected") or [] if c.get("error") and c["src"].split(":", 1)[0].lower()
                 in ("sd", "usb", "usb1", "usb2")]
         if late:
-            redo = collect_job(dict(job, collect=[c["src"] for c in late]), True)
+            redo = collect_job(dict(job, collect=[c["src"] for c in late]), True, wii)
             for c in redo:
                 c["after_recovery"] = True
             keep = [c for c in job.get("collected") or [] if c not in late]
@@ -1370,11 +1657,11 @@ def recover_and_collect(job, turn):
         say(f"{job['id']}: HBC is back after {job['freeze']['recovered_after_s']} s; its data is saved")
         return True
     finally:
-        RECOVERING.unlink(missing_ok=True)
+        rec.unlink(missing_ok=True)
         giveup.unlink(missing_ok=True)
 
 
-def collect_job(job, wii_ok):
+def collect_job(job, wii_ok, wii=None):
     """The job's --collect paths, into its run folder, after the job and before anything else
     gets the Wii, so the next run cannot overwrite them (a fixed output folder, a log at a fixed
     place on the SD card). A Wii path needs HBC back; a local one is copied either way.
@@ -1392,9 +1679,10 @@ def collect_job(job, wii_ok):
                 if not wii_ok:
                     raise OSError("HBC did not come back after the job, so nothing could be fetched")
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                env = dict(os.environ, HBC_PORT=str(PORT))
+                w = bench_wii(wii)
+                env = dict(os.environ, HBC_PORT=str(w["port"]))
                 env.pop("WII_BENCH_JOB", None)
-                base = [sys.executable, str(HBC_PY), "--wii", WII, "get"]
+                base = [sys.executable, str(HBC_PY), "--wii", w["ip"], "get"]
                 r = subprocess.run(base + [src, str(dest)], env=env, capture_output=True, text=True,
                                    timeout=COLLECT_TIMEOUT)
                 if r.returncode and "use get -r" in (r.stdout + r.stderr):   # a folder
@@ -1669,21 +1957,27 @@ def finish_job(job, turn, again=False):
         say(f"could not update {p.name}: {e}")
         tmp.unlink(missing_ok=True)
     ev = {"type": "recovery" if again else "job", "host": socket.gethostname(), **{k: job.get(k) for k in (
-        "id", "name", "agent", "added", "started", "finished", "secs", "exit", "timeout",
+        "id", "name", "agent", "added", "started", "finished", "secs", "exit", "timeout", "wii",
         "hbc_back_s", "hbc_version", "wii_left", "chained", "freeze", "lease_gap_s", "lease_lost")},
           "collected": [{k: c.get(k) for k in ("src", "files", "bytes", "error")} for c in job.get("collected") or []]}
-    try:
-        History(HOME / "history").write(ev)
-    except OSError as e:
-        say(f"history: {e}")
-    if turn.stop:                                  # holding a lease from a server
+    local_history(ev)
+    if turn.server:                                # every workstation's history
         try:
             lease_call("/event", ev)
         except OSError as e:
             say(f"history: the lease server did not take the job record: {e}")
 
 
-LAST_WAIT = {}        # the last wait_idle: busy_s (how long the Wii was not in HBC), what answered
+_HISTORY = threading.Lock()
+
+
+def local_history(ev):
+    """An event into this workstation's history: one turn at a time, as turns on other Wiis run."""
+    try:
+        with _HISTORY:
+            History(HOME / "history").write(ev)
+    except OSError as e:
+        say(f"history: {e}")
 
 
 def wait_idle(full, need, job_id=None, turn=None):
@@ -1703,21 +1997,19 @@ def wait_idle(full, need, job_id=None, turn=None):
     ok_since = busy_since = None
     said, busy_what = None, None
     head = [job_id]
-    LAST_WAIT.clear()
+    wii = turn.target if turn is not None else None
+    busy_log = {}        # busy_s (how long the Wii was not in HBC), what answered: turn.last_wait
+    if turn is not None:
+        turn.last_wait = busy_log
 
     def follow():
-        """False when nothing is queued any more; else the turn follows the head of the queue."""
+        """False when the turn has no job any more; else it follows its job (the next free one
+        for its Wii when that was cancelled)."""
         if turn is None:
             return True
-        q = jobs(PENDING)
-        if not q:
+        if not turn._refill():
             return False
-        if q[0].stem != head[0]:
-            try:
-                turn.rename(load(q[0]).get("name"))
-                head[0] = q[0].stem
-            except (OSError, ValueError):
-                pass                               # cancelled meanwhile: the next look sees it
+        head[0] = turn.job_id
         return True
 
     while True:
@@ -1725,13 +2017,13 @@ def wait_idle(full, need, job_id=None, turn=None):
         if not follow():
             return False
         job_id = head[0]
-        state, text = wii_state()
+        state, text = wii_state(wii)
         if state == "hbc":
             ok_since = t if ok_since is None else ok_since
             step = min(step, 5.0)                  # HBC is back: the quiet period at 5 s, not BUSY_STEP
             if busy_since is not None:             # back after a busy spell: how long, and what it was
-                LAST_WAIT["busy_s"] = round(t - LAST_WAIT["first_busy"])
-                LAST_WAIT["what"] = busy_what.split(": ", 1)[1] if busy_what else "busy"
+                busy_log["busy_s"] = round(t - busy_log["first_busy"])
+                busy_log["what"] = busy_what.split(": ", 1)[1] if busy_what else "busy"
             busy_since, busy_what = None, None
             if t - ok_since >= need:
                 return True
@@ -1739,13 +2031,13 @@ def wait_idle(full, need, job_id=None, turn=None):
         else:
             ok_since, need, step = None, full, BUSY_STEP
             busy_since = t if busy_since is None else busy_since
-            LAST_WAIT["first_busy"] = LAST_WAIT.get("first_busy", busy_since)
+            busy_log["first_busy"] = busy_log.get("first_busy", busy_since)
             mins = int((t - busy_since) // 60)
             if busy_what is None or not busy_what.startswith(state):
-                busy_what = f"{state}: busy: {agent_app()} is running" if state == "agent" else f"{state}: busy or off"
+                busy_what = f"{state}: busy: {agent_app(wii)} is running" if state == "agent" else f"{state}: busy or off"
             msg = f"Wii {busy_what.split(': ', 1)[1]}" + (f" for {mins} min" if mins else "")
         if msg != said:
-            report(job_id, msg)
+            report(job_id, msg, (wii or {}).get("name"))
             said = msg
         if turn is not None:                       # without the minutes: the server counts them
             turn.set_phase(WAITING_FOR_HBC + (f": Wii {busy_what.split(': ', 1)[1]}" if busy_what else ""))
@@ -1757,27 +2049,24 @@ def wait_idle(full, need, job_id=None, turn=None):
                 return False
             if head[0] != job_id:                  # a new head: say so under its id
                 job_id, said = head[0], None
-                report(job_id, msg)
+                report(job_id, msg, (wii or {}).get("name"))
 
 
 def outside_use(turn, wait, ago):
     by = turn.released_by or {}
     ev = {"type": "outside", "host": socket.gethostname(), "busy_s": wait["busy_s"], "what": wait.get("what"),
-          "after": by.get("name"), "after_host": by.get("host"), "since_release_s": ago}
+          "after": by.get("name"), "after_host": by.get("host"), "since_release_s": ago, "wii": turn.slot}
     say(f"the Wii was used outside the queue: {wait.get('what')} for {wait['busy_s']} s"
         + (f", after {by.get('host')}'s {by.get('name')} left it in HBC" if by else ""))
-    try:
-        History(HOME / "history").write(ev)
-    except OSError:
-        pass
-    if turn.stop:
+    local_history(ev)
+    if turn.server:
         try:
             lease_call("/event", ev)
         except OSError:
             pass
 
 
-def hbc_back(limit=RETURN_WAIT):
+def hbc_back(limit=RETURN_WAIT, wii=None):
     """After a job, while this dispatcher still holds the Wii: (seconds until HBC's menu
     answered, "hbc", its version), or (None, what answers instead, None). Probes only once the
     job's process is gone, so never during a run.
@@ -1788,55 +2077,55 @@ def hbc_back(limit=RETURN_WAIT):
     t0 = time.monotonic()
     while True:
         t = time.monotonic()
-        state, text = wii_state()
+        state, text = wii_state(wii)
         if state == "hbc":
             return round(time.monotonic() - t0, 2), "hbc", text or "stock HBC"
         if time.monotonic() - t0 >= limit:
-            return None, (f"busy: {agent_app()} is running" if state == "agent" else "busy or off"), None
+            return None, (f"busy: {agent_app(wii)} is running" if state == "agent" else "busy or off"), None
         time.sleep(max(0.0, 1 - (time.monotonic() - t)))
 
 
 def next_in_turn(turn, agent):
-    """The next job this turn runs, or None: the turn ends. Receive order decides (see
-    Turn.next_is_mine); a server before 1.10.2 cannot say, and the rule before it applies
-    (the same agent's next job, while nobody else waits)."""
+    """The next job this turn runs on its Wii (claimed), or None: the turn ends. Receive order
+    decides (see Turn.next_is_mine); a server before 1.10.2 cannot say, and the rule before it
+    applies (the same agent's next job, while nobody else waits)."""
     mine = turn.next_is_mine()
     if mine == "old":
         if turn.others_waiting() or not agent:
             return None
-        return next_job(agent, CHAIN_GRACE, turn.others_waiting)
+        return next_job(turn, agent, CHAIN_GRACE, turn.others_waiting)
     if mine:
-        q = jobs(PENDING)
-        return q[0] if q else None
+        if turn.next_id:                           # that very job, unless another turn here has it
+            return CLAIMS.next(turn, turn.slot, only=turn.next_id)
+        return CLAIMS.next(turn, turn.slot)
     if mine is False:                              # another workstation's job came in first
         return None
     # Nothing queued anywhere: hold the turn a moment for this workstation's next add, and let
     # go as soon as another workstation's job arrives first.
     end = time.monotonic() + CHAIN_GRACE
     while time.monotonic() < end:
-        q = jobs(PENDING)
-        if q:
-            return q[0] if turn.next_is_mine() in (True, None) else None
+        if CLAIMS.free(turn.slot):
+            m = turn.next_is_mine()
+            if m in (True, None):
+                return CLAIMS.next(turn, turn.slot, only=turn.next_id if m else None)
+            return None
         if turn.next_is_mine() is False:
             return None
         time.sleep(1)
     return None
 
 
-def next_job(agent, grace, waiting=lambda: 0):
-    """The next pending job if it is this agent's, waiting up to `grace` s for it to be
-    added (an agent that waits for one job and then adds the next). Another agent's job at
-    the head of the queue, or another workstation joining the line (`waiting`, asked about
-    once a second), ends the chain at once."""
+def next_job(turn, agent, grace, waiting=lambda: 0):
+    """The next free job for the turn's Wii if it is this agent's, waiting up to `grace` s for
+    it to be added (an agent that waits for one job and then adds the next). Another agent's
+    job first, or another workstation joining the line (`waiting`, asked about once a second),
+    ends the chain at once."""
     end, asked = time.monotonic() + grace, time.monotonic()
     while True:
-        q = jobs(PENDING)
+        q = CLAIMS.free(turn.slot)
         if q:
-            try:
-                j = load(q[0])
-            except (OSError, ValueError):          # cancelled meanwhile
-                continue
-            return q[0] if j.get("agent") == agent else None
+            p, j = q[0]
+            return CLAIMS.next(turn, turn.slot, only=p.stem) if j.get("agent") == agent else None
         if time.monotonic() >= end:
             return None
         if time.monotonic() - asked >= 1:
@@ -1846,7 +2135,134 @@ def next_job(agent, grace, waiting=lambda: 0):
         time.sleep(0.25)
 
 
+_ROLL = threading.Lock()
+
+
+def rollover_quietly():
+    """rollover() after a job, unless another turn is at it already."""
+    if _ROLL.acquire(blocking=False):
+        try:
+            rollover()
+        finally:
+            _ROLL.release()
+
+
+def run_turn(a, p, shared, worker):
+    """One turn: wait for a Wii with the job at `p` (claimed for `worker`), run it and the jobs
+    that follow it on that Wii in receive order, and let the Wii go."""
+    try:
+        head = load(p)
+    except (OSError, ValueError):                  # cancelled meanwhile
+        CLAIMS.drop(worker)
+        return
+    turn = Turn(head["name"], head["id"], head.get("want_wii") or "any", shared.call)
+    CLAIMS.move(worker, turn)                      # the turn has it now, and drops it when it ends
+    worker.turn = turn
+    with turn:
+        if turn.empty:                             # cancelled while it waited for a Wii
+            return
+        worker.slot = turn.slot
+        _LOCAL.tag = turn.slot if shared.many else ""
+        last_end = shared.last_end.get(turn.slot)  # monotonic time our last job on this Wii ended
+        ago = turn.released_ago
+        recent = ((last_end is not None and time.monotonic() - last_end < RECENT)
+                  or (ago is not None and ago < RECENT))
+        if not wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, turn.job_id, turn):
+            return                                 # all cancelled while it waited: give the turn up
+        if turn.last_wait.get("busy_s") and (ago is not None or last_end is not None):
+            # The last queue job left the Wii in HBC, yet it was not: someone used it
+            # outside the queue (a person, or an agent's hbc.py run that skipped it).
+            # 3 of 4 long waits for HBC in 2026-10-12..19 were this.
+            outside_use(turn, turn.last_wait, ago)
+        p = PENDING / f"{turn.job_id}.json"
+        chained = False
+        while p:
+            try:
+                pj = load(p)
+                agent = pj.get("agent")
+                def started(pj=pj):
+                    turn.info["job"] = pj["id"]
+                    turn.info["name"] = pj.get("name")      # a stacked turn: this job, not the first
+                    turn.gap_max, turn.lost = 0.0, False
+                    turn.set_phase(f"running: {pj.get('name')}")
+                job = run_job(p, started, turn.target)
+                turn.info.pop("job", None)
+                if turn.gap_max > 30 or turn.lost:
+                    job["lease_gap_s"] = round(turn.gap_max)
+                    job["lease_lost"] = turn.lost
+            except (FileNotFoundError, ValueError):   # cancelled just before it started
+                break
+            finally:
+                CLAIMS.drop(turn, p.stem)
+            last_end = shared.last_end[turn.slot] = time.monotonic()
+            # The Wii is still ours: see that HBC came back, and say so if it did not.
+            turn.set_phase("checking HBC after the job")
+            back_s, turn.wii, hbc_version = hbc_back(wii=turn.target)
+            job.update(hbc_back_s=back_s, hbc_version=hbc_version, chained=chained)
+            answers = "hbc" if back_s is not None else ("agent" if turn.wii.startswith("busy: ") else "nothing")
+            if back_s is None:
+                job["wii_left"] = turn.wii
+                say(f"the Wii did not come back to HBC within {RETURN_WAIT} s: {turn.wii}")
+                job["freeze"] = {"answered_by": answers}
+                if answers == "agent":             # the app is stuck but its agent answers: ask it now
+                    turn.set_phase("saving what the stuck app can tell")
+                    job["freeze"]["saved"] = save_wii_state(job, "agent", ("status.json", "lastlog.txt", "screen.png"),
+                                                            turn.target)
+            # Its data, before anything else gets the Wii: the next run cannot overwrite it.
+            # A stuck app's agent serves files too; with nothing answering, see below.
+            if job.get("collect"):
+                turn.set_phase("collecting the job's data")
+                job["collected"] = collect_job(job, answers != "nothing", turn.target)
+            finish_job(job, turn)
+            if answers == "nothing":               # a hard freeze: keep the Wii until it is back
+                recover_and_collect(job, turn)
+                finish_job(job, turn, again=True)
+                rollover_quietly()
+                break
+            rollover_quietly()
+            if back_s is None:
+                break
+            # Receive order: the turn goes on while the earliest-received job of all that may
+            # use this Wii is this workstation's (jobs received one after the other stack up);
+            # when another workstation's came in first, it goes. With nothing queued anywhere,
+            # the lease is held CHAIN_GRACE s for this workstation's next add.
+            p = next_in_turn(turn, agent)
+            if p:
+                try:
+                    nj = load(p)
+                    same = agent and nj.get("agent") == agent
+                    turn.rename(nj.get("name"), nj["id"], nj.get("want_wii") or "any")
+                except (OSError, ValueError):
+                    same = False
+                chained = True
+                say(f"chained: {p.stem}" + (" from the same agent" if same else " (received next)"))
+                if not wait_idle(a.idle, 0 if same else min(QUICK, a.idle), p.stem, turn):
+                    break
+                p = PENDING / f"{turn.job_id}.json"   # its job, or the next free one if that was cancelled
+                if turn.last_wait.get("busy_s"):   # between two jobs of this turn: outside the queue
+                    turn.released_by = {"host": socket.gethostname(), "name": job.get("name")}
+                    outside_use(turn, turn.last_wait, 0)
+
+
+def startable(j, workers, names):
+    """True if a new turn for job j could get a Wii this dispatcher's turns are not already on or
+    waiting for: one turn per Wii, so a job pinned to a free Wii starts while another Wii's jobs wait."""
+    want = j.get("want_wii") or "any"
+    mine = set(names) if want == "any" else {want} & set(names)
+    if not mine:
+        return False
+    busy = 0
+    for w in workers:
+        if w.slot:
+            busy += w.slot in mine
+        else:
+            want_w = getattr(w.turn, "info", {}).get("want") if w.turn else w.want
+            busy += bool((set(names) if want_w in (None, "any") else {want_w}) & mine)
+    return busy < len(mine)
+
+
 def cmd_run(a):
+    import types
     for d in (PENDING, RUNNING, DONE):
         d.mkdir(parents=True, exist_ok=True)
     while True:                                    # the lock: created atomically, or stale
@@ -1864,117 +2280,75 @@ def cmd_run(a):
     try:
         for p in jobs(RUNNING):                    # a dispatcher that died mid-job: requeue it
             fs_retry(p.rename, PENDING / p.name)
+        # One turn per Wii at a time: each waits for a Wii with a job of its own, and runs it and
+        # the jobs that follow on that Wii. Without a lease server, the same lease logic runs here.
+        shared = types.SimpleNamespace(call=None if lease_server() else LocalLeases(default_pool()),
+                                       last_end={}, many=False)
+        workers, names, names_at = [], ["bench"], None
         empty_since = time.monotonic()
-        last_end = None                            # monotonic time our last job ended
-        while True:
-            q = jobs(PENDING)
-            if not q:
-                if time.monotonic() - empty_since > 600:
-                    return
-                time.sleep(1)
-                continue
+
+        def work(p, worker):
             try:
-                head = load(q[0])
-            except (OSError, ValueError):          # cancelled meanwhile
-                continue
-            with Turn(head["name"], head["id"]) as turn:   # other workstations' jobs go first if first in line
-                if turn.empty:                     # cancelled while it waited for the Wii
+                run_turn(a, p, shared, worker)
+            except Exception:                      # one turn's bug must not stop the others
+                import traceback
+                say("a turn failed:\n" + traceback.format_exc())
+            finally:
+                CLAIMS.drop(worker)
+
+        while True:
+            workers = [w for w in workers if w.thread.is_alive()]
+            if names_at is None or time.monotonic() - names_at > 60:
+                names = pool_names() or names      # the Wiis: the server can add one while we run
+                shared.many, names_at = len(names) > 1, time.monotonic()
+            free = CLAIMS.free()
+            if workers or free:
+                empty_since = time.monotonic()
+            elif time.monotonic() - empty_since > 600:
+                return
+            for p, j in free:
+                if not startable(j, workers, names):
                     continue
-                ago = turn.released_ago
-                recent = ((last_end is not None and time.monotonic() - last_end < RECENT)
-                          or (ago is not None and ago < RECENT))
-                if not wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, head["id"], turn):
-                    continue                       # all cancelled while it waited: give the turn up
-                if LAST_WAIT.get("busy_s") and (ago is not None or last_end is not None):
-                    # The last queue job left the Wii in HBC, yet it was not: someone used it
-                    # outside the queue (a person, or an agent's hbc.py run that skipped it).
-                    # 3 of 4 long waits for HBC in 2026-10-12..19 were this.
-                    outside_use(turn, LAST_WAIT, ago)
-                p = jobs(PENDING)[:1]
-                p = p[0] if p else None            # a cancel may have emptied it meanwhile
-                chained = False
-                while p:
-                    try:
-                        pj = load(p)
-                        agent = pj.get("agent")
-                        def started(pj=pj):
-                            turn.info["job"] = pj["id"]
-                            turn.info["name"] = pj.get("name")      # a stacked turn: this job, not the first
-                            turn.gap_max, turn.lost = 0.0, False
-                            turn.set_phase(f"running: {pj.get('name')}")
-                        job = run_job(p, started)
-                        turn.info.pop("job", None)
-                        if turn.gap_max > 30 or turn.lost:
-                            job["lease_gap_s"] = round(turn.gap_max)
-                            job["lease_lost"] = turn.lost
-                    except (FileNotFoundError, ValueError):   # cancelled just before it started
-                        break
-                    last_end = time.monotonic()
-                    # The Wii is still ours: see that HBC came back, and say so if it did not.
-                    turn.set_phase("checking HBC after the job")
-                    back_s, turn.wii, hbc_version = hbc_back()
-                    job.update(hbc_back_s=back_s, hbc_version=hbc_version, chained=chained)
-                    answers = "hbc" if back_s is not None else ("agent" if turn.wii.startswith("busy: ") else "nothing")
-                    if back_s is None:
-                        job["wii_left"] = turn.wii
-                        say(f"the Wii did not come back to HBC within {RETURN_WAIT} s: {turn.wii}")
-                        job["freeze"] = {"answered_by": answers}
-                        if answers == "agent":     # the app is stuck but its agent answers: ask it now
-                            turn.set_phase("saving what the stuck app can tell")
-                            job["freeze"]["saved"] = save_wii_state(job, "agent", ("status.json", "lastlog.txt", "screen.png"))
-                    # Its data, before anything else gets the Wii: the next run cannot overwrite it.
-                    # A stuck app's agent serves files too; with nothing answering, see below.
-                    if job.get("collect"):
-                        turn.set_phase("collecting the job's data")
-                        job["collected"] = collect_job(job, answers != "nothing")
-                    finish_job(job, turn)
-                    if answers == "nothing":       # a hard freeze: keep the Wii until it is back
-                        recover_and_collect(job, turn)
-                        finish_job(job, turn, again=True)
-                        rollover()
-                        break
-                    rollover()
-                    if back_s is None:
-                        break
-                    # Receive order: the turn goes on while the earliest-received job of all is
-                    # this workstation's (jobs received one after the other stack up); when
-                    # another workstation's came in first, it goes. With nothing queued anywhere,
-                    # the lease is held CHAIN_GRACE s for this workstation's next add.
-                    p = next_in_turn(turn, agent)
-                    if p:
-                        try:
-                            same = agent and load(p).get("agent") == agent
-                        except (OSError, ValueError):
-                            same = False
-                        chained = True
-                        say(f"chained: {p.stem}" + (" from the same agent" if same else " (received next)"))
-                        if not wait_idle(a.idle, 0 if same else min(QUICK, a.idle), p.stem, turn):
-                            break
-                        if LAST_WAIT.get("busy_s"):  # between two jobs of this turn: outside the queue
-                            turn.released_by = {"host": socket.gethostname(), "name": job.get("name")}
-                            outside_use(turn, LAST_WAIT, 0)
-            empty_since = time.monotonic()
+                worker = types.SimpleNamespace(slot=None, turn=None, want=j.get("want_wii") or "any")
+                if not CLAIMS.take(p.stem, worker):
+                    continue
+                worker.thread = threading.Thread(target=work, args=(p, worker), daemon=True)
+                worker.thread.start()
+                workers.append(worker)
+            time.sleep(0.5)
     finally:
         if dispatcher_pid() == os.getpid():
             LOCK.unlink(missing_ok=True)
 
 
-def wii_now(lease=None, lease_error=None):
-    """The Wii's line for status and setup. It is probed only when no run can be going on:
-    nothing running here, and the lease free (or no server). Otherwise it says who has the
-    Wii, and leaves it alone: the queue never reaches into a run."""
-    running = jobs(RUNNING) if RUNNING.exists() else []
-    if running:
+def wii_now(lease=None, lease_error=None, wii=None):
+    """A Wii's line for status and setup. It is probed only when no run can be going on: no job
+    running here on it, and its lease free (or no server). Otherwise it says who has the Wii,
+    and leaves it alone: the queue never reaches into a run."""
+    w = bench_wii(wii)
+    for p in jobs(RUNNING) if RUNNING.exists() else []:
         try:
-            return f"in use by job {load(running[0])['name']} here (not probed)"
+            j = load(p)
         except (OSError, ValueError):
             return "in use by a job here (not probed)"
+        if j.get("wii", w["name"]) == w["name"] or not j.get("wii"):
+            return f"in use by job {j['name']} here (not probed)"
     if lease_error:
         return "not probed: the lease server cannot say whether a run is going on"
     h = (lease or {}).get("holder")
     if h:
         return f"in use: {h['host']} has it for {h['name']} (not probed)"
-    return wii_line()
+    return wii_line(w)
+
+
+def the_wiis(s=None):
+    """[(wii, its holder or None)] from a server's status (one Wii, its holder, from a server
+    before 1.10.8), else this workstation's pool."""
+    if s and s.get("wiis"):
+        return [(bench_wii(w), w.get("holder")) for w in s["wiis"]]
+    if s is not None:
+        return [(bench_wii(), s.get("holder"))]
+    return [(bench_wii(w), None) for w in default_pool()]
 
 
 def cmd_status(a):
@@ -1985,18 +2359,24 @@ def cmd_status(a):
             s = lease_call("/status")
         except OSError as e:
             err = e
-    print(f"Wii {WII}: {wii_now(s, err)}; dispatcher: {f'pid {pid}' if pid else 'not running'}")
+    wiis = the_wiis(s) if not err else [(w, None) for w in [bench_wii()]]
+    for w, h in wiis:
+        print(f"Wii {w['name']} {w['ip']}: {wii_now({'holder': h} if s else None, err, w)}")
+    print(f"dispatcher: {f'pid {pid}' if pid else 'not running'}")
     if lease_server():
         if err:
             print(f"lease {lease_server()}: unreachable ({err})")
         else:
-            h = s["holder"]
-            print(f"lease {lease_server()}: " + (f"held by {h['host']} for {h['name']} (since {h['granted']})" if h else "free"))
-            for w in s["waiters"]:
-                print(f"  waiting  {w['host']}  {w['name']}  (since {w['since']})")
-            if s.get("left"):
-                l = s["left"]
-                print(f"  left     {l['host']}'s {l['name']} left the Wii {l['wii']} (since {l['since']})")
+            for w in s.get("wiis") or [dict(name="bench", holder=s["holder"], left=s.get("left"))]:
+                h = w.get("holder")
+                print(f"lease {lease_server()} {w['name']}: "
+                      + (f"held by {h['host']} for {h['name']} (since {h['granted']})" if h else "free"))
+                if w.get("left"):
+                    l = w["left"]
+                    print(f"  left     {l['host']}'s {l['name']} left the Wii {l['wii']} (since {l['since']})")
+            for x in s["waiters"]:
+                want = x.get("want")
+                print(f"  waiting  {x['host']}  {x['name']}  (since {x['since']})" + (f"  for {want}" if want and want != "any" else ""))
             for q in s.get("queues") or []:
                 if q.get("qid") != queue_id():     # this workstation's own are listed below
                     print(f"  queued on {q['host']}: {q.get('total', len(q['jobs']))} job(s)")
@@ -2005,10 +2385,12 @@ def cmd_status(a):
     for d, label in ((RUNNING, "running"), (PENDING, "pending")):
         for p in jobs(d):
             j = load(p)
-            print(f"  {label:8} {j['id']}  {j['name']}  (added {j['added']})")
+            on = f"  on {j['wii']}" if j.get("wii") else f"  for {j['want_wii']}" if j.get("want_wii") else ""
+            print(f"  {label:8} {j['id']}  {j['name']}  (added {j['added']}){on}")
     for p in jobs(DONE)[-a.last:]:
         j = load(p)
-        print(f"  done     {j['id']}  {j['name']}  exit {j['exit']}, {j['secs']} s, {j['finished']}")
+        print(f"  done     {j['id']}  {j['name']}  exit {j['exit']}, {j['secs']} s, {j['finished']}"
+              + (f", on {j['wii']}" if j.get("wii") else ""))
 
 
 def progress(job_id, d, started):
@@ -2019,14 +2401,11 @@ def progress(job_id, d, started):
     ahead = [p.stem for p in jobs(PENDING)]
     place = ahead.index(job_id) if job_id in ahead else 0
     why = "queued"
-    try:
-        s = json.loads(STATE.read_text())
-        if s.get("job") == job_id:
-            why = s["detail"]
-        elif place == 0 and s.get("detail") == "running":
-            why = "the job before it is still running"
-    except (OSError, ValueError, KeyError):
-        pass
+    st = read_state()
+    if job_id in st:
+        why = st[job_id].get("detail") or why
+    elif place == 0 and any(v.get("detail") == "running" for v in st.values()):
+        why = "the job before it is still running"
     return (f"job {job_id}: pending, {place} ahead on this workstation" if place else
             f"job {job_id}: next here; {why}") + f" ({mins} min)"
 
@@ -2063,6 +2442,18 @@ def report_since(a):
     return time.time() - (a.days * 86400 if a.days else a.hours * 3600)
 
 
+def handovers(evs):
+    """Seconds from each release to a grant of the same Wii to someone already waiting then."""
+    rel, gaps = {}, []
+    for e in evs:
+        w = e.get("slot")                          # none before 1.10.8: the one Wii
+        if e.get("type") == "release":
+            rel[w] = e
+        elif e.get("type") == "grant" and rel.get(w) and e.get("waited_s", 0) > e["t"] - rel[w]["t"]:
+            gaps.append(e["t"] - rel.pop(w)["t"])
+    return gaps
+
+
 def cmd_report(a):
     """The queue over a window, from the lease server's history (every workstation), or this
     workstation's own with --local or without a server."""
@@ -2097,14 +2488,15 @@ def cmd_report(a):
         med = f"{st.median(hw) / 60:.1f} m" if hw else "-"
         mx = f"{max(hw) / 60:.1f} m" if hw else "-"
         print(f"{h[:24]:24} {len(hj):5} {failed:6} {sum(e.get('secs') or 0 for e in hj) / 60:8.0f} {len(hw):5} {med:>8} {mx:>8}")
-    # Hand-overs: a grant to someone already waiting when the previous holder let go.
-    rel, gaps = None, []
-    for e in evs:
-        if e["type"] == "release":
-            rel = e
-        elif e["type"] == "grant" and rel and e.get("waited_s", 0) > e["t"] - rel["t"]:
-            gaps.append(e["t"] - rel["t"])
-            rel = None
+    wiis = sorted({e.get("wii") for e in jobs_ if e.get("wii")})
+    if len(wiis) > 1:                              # several Wiis: how much each one did
+        print(f"\n{'Wii':24} {'jobs':>5} {'failed':>6} {'Wii min':>8} {'busy':>5}")
+        for w in wiis:
+            wj = [e for e in jobs_ if e.get("wii") == w]
+            secs = sum(e.get("secs") or 0 for e in wj)
+            print(f"{w[:24]:24} {len(wj):5} {sum(1 for e in wj if e.get('exit') != 0):6} {secs / 60:8.0f} "
+                  f"{100 * secs / span:4.0f}%")
+    gaps = handovers(evs)
     if gaps:
         print(f"\nhand-overs to a waiting workstation: {len(gaps)}, median {1000 * st.median(gaps):.0f} ms, "
               f"longest {1000 * max(gaps):.0f} ms")
@@ -2426,10 +2818,10 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
               wii_ip=WII, window_h=f"{hours:g}")
     pid = dispatcher_pid()
     kv["dispatcher_pid"] = pid or "-"
-    try:
-        st = json.loads(STATE.read_text())
-    except (OSError, ValueError):
-        st = {}
+    states = read_state()
+    # The line shows one turn: one waiting for its Wii first, as that is the one to explain.
+    pick = sorted(states.items(), key=lambda kvp: (kvp[1].get("detail") == "running", -(kvp[1].get("since") or 0)))
+    st = dict(pick[0][1], job=pick[0][0]) if pick else {}
     kv["dispatcher_job"], kv["dispatcher_detail"] = st.get("job"), st.get("detail")
     kv["dispatcher_since"] = _age(now - st["since"]) if st.get("since") else None
 
@@ -2444,7 +2836,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         to = j.get("timeout") or TIMEOUT
         row("running", id=j["id"], name=j.get("name"), agent=(j.get("agent") or "")[:12], started=_when(t0, now),
             elapsed=_age(now - t0), elapsed_s=int(now - t0), timeout=_age(to), left=_age(max(0, to - (now - t0))),
-            left_s=int(max(0, to - (now - t0))))
+            left_s=int(max(0, to - (now - t0))), wii=j.get("wii") or "-")
     local_q = []
     for p in pending:
         try:
@@ -2453,10 +2845,12 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             continue
         t0 = _parse_local(j.get("added")) or now
         local_q.append({"id": j["id"], "name": j.get("name"), "agent": (j.get("agent") or "")[:12],
-                        "folder": pathlib.Path(j.get("cwd") or ".").name, "age_s": int(now - t0)})
+                        "folder": pathlib.Path(j.get("cwd") or ".").name, "age_s": int(now - t0),
+                        "want": j.get("want_wii") or "any"})
     kv["running_n"], kv["pending_n"] = len(rows.get("running", [])), len(local_q)
     # dispatcher.state names the last job it worked for; once that job is done it is history.
     live = {r["id"] for r in rows.get("running", [])} | {j["id"] for j in local_q}
+    kv["dispatcher_turns"] = sum(1 for k in states if k in live)
     if kv["dispatcher_job"] not in live and (not pid or kv["dispatcher_detail"] in (None, "running")):
         kv["dispatcher_job"] = None
         kv["dispatcher_detail"] = "idle" if pid else None
@@ -2501,7 +2895,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         row("done", finished=_when(tf, now), finished_s=int(tf), id=j["id"], name=j.get("name"),
             exit=j.get("exit"), secs=j.get("secs"), secs_s=j.get("secs") or 0,
             hbc=hbc_word(j),
-            chained="yes" if j.get("chained") else "no")
+            chained="yes" if j.get("chained") else "no", wii=j.get("wii") or "-")
     ran = [r for r in recent if r[1].get("exit") != "cancelled"]     # a cancelled job never had the Wii
     if ran and ran[0][1].get("hbc_version") == "stock HBC":
         # HBC answered, but not hbc-reborn: an app exited to the original HBC (2026-10-08). Jobs
@@ -2510,17 +2904,19 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         problems.append(dict(t=tf, severity="warn", kind="stock HBC", host=socket.gethostname(), job=j.get("name"),
                              id=j["id"], detail="the Wii came back to a stock HBC, not hbc-reborn: "
                                                 "jobs that use hbc.py will fail until hbc-reborn runs again"))
+    last_on = {}                                   # each Wii's last job here: the "last:" note
+    for tf, j in ran:
+        last_on.setdefault(j.get("wii") or "", (tf, j))
+
+    def last_note(tf, j):
+        back = j.get("hbc_back_s")
+        ago = _age(now - tf)
+        return (f"{j.get('name')} left it {j.get('wii_left')} ({ago} ago)" if back is None and j.get("wii_left") else
+                f"HBC answered as {j.get('name')} ended ({ago} ago)" if back is not None and back <= HBC_AT_ONCE else
+                f"HBC came back {back:.0f} s after {j.get('name')} ({ago} ago)" if back is not None else
+                f"{j.get('name')} ended {ago} ago, before the queue checked HBC")
     if ran:
-        try:
-            tf, j = ran[0]
-            back = j.get("hbc_back_s")
-            ago = _age(now - tf)
-            kv["wii_last"] = (f"{j.get('name')} left it {j.get('wii_left')} ({ago} ago)" if back is None and j.get("wii_left") else
-                              f"HBC answered as {j.get('name')} ended ({ago} ago)" if back is not None and back <= HBC_AT_ONCE else
-                              f"HBC came back {back:.0f} s after {j.get('name')} ({ago} ago)" if back is not None else
-                              f"{j.get('name')} ended {ago} ago, before the queue checked HBC")
-        except (OSError, ValueError):
-            pass
+        kv["wii_last"] = last_note(*ran[0])
 
     # The lease server: who has the Wii, who waits, and every workstation's history.
     url = lease_server()
@@ -2536,17 +2932,21 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         try:
             s = lease_call("/status", timeout=SERVER_TIMEOUT)
             kv["server_ok"] = "yes"
-            h = s.get("holder")
-            # Durations from the server (1.9.1); an older one gives only its own clock's times.
-            if h and h.get("phase"):
-                kv.update(holder_phase=h["phase"], holder_phase_for=_age(h["phase_s"]) if "phase_s" in h else None)
-                if h["phase"].startswith(WAITING_FOR_HBC) and h.get("phase_s", 0) > 300:
+            many = len(s.get("wiis") or []) > 1
+            for wi in s.get("wiis") or [{"name": "bench", "holder": s.get("holder")}]:
+                h = wi.get("holder")
+                # Durations from the server (1.9.1); an older one gives only its own clock's times.
+                if h and h.get("phase") and h["phase"].startswith(WAITING_FOR_HBC) and h.get("phase_s", 0) > 300:
                     problems.append(dict(t=now - h["phase_s"], severity="warn", kind="Wii not in HBC",
                                          host=h.get("host"), job=h.get("name"), id="-",
-                                         detail=f"has the lease and has been {h['phase']} for {_age(h['phase_s'])}: "
-                                                "every job waits until someone brings the Wii back to HBC "
+                                         detail=(f"{wi['name']}: " if many else "") +
+                                                f"has the lease and has been {h['phase']} for {_age(h['phase_s'])}: "
+                                                "every job for this Wii waits until someone brings it back to HBC "
                                                 "(an app, a crash screen, the Wii Menu after a power cycle, or another HBC: an app "
                                                 "that exits to the original HBC leaves hbc-reborn)"))
+            h = s.get("holder")
+            if h and h.get("phase"):
+                kv.update(holder_phase=h["phase"], holder_phase_for=_age(h["phase_s"]) if "phase_s" in h else None)
             if h:
                 kv.update(holder_host=h.get("host"), holder_name=h.get("name"),
                           holder_for=_age(h["held_s"]) if "held_s" in h else f"since {str(h.get('granted'))[-8:]} server time")
@@ -2556,12 +2956,16 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                     since=_when(now - ws, now) if ws is not None else "-",
                     waited=_age(ws) if ws is not None else "?", waited_s=ws or 0)
             queues = s.get("queues")
-            left = s.get("left")
-            if left:
+            for wi in s.get("wiis") or [{"name": "bench", "left": s.get("left")}]:
+                left = wi.get("left")
+                if not left:
+                    continue
                 ago = f"{_age(left['ago_s'])} ago" if "ago_s" in left else f"since {str(left.get('since'))[-8:]} server time"
-                kv.update(left_host=left.get("host"), left_name=left.get("name"), left_wii=left.get("wii"), left_ago=ago)
+                if left is s.get("left") or left == s.get("left"):
+                    kv.update(left_host=left.get("host"), left_name=left.get("name"), left_wii=left.get("wii"), left_ago=ago)
                 problems.append(dict(t=now - left.get("ago_s", 0), severity="err", kind="Wii left", host=left.get("host"),
-                                     job=left.get("name"), id="-", detail=f"still: {left.get('wii')} ({ago})"))
+                                     job=left.get("name"), id="-",
+                                     detail=(f"{wi['name']}: " if many else "") + f"still: {left.get('wii')} ({ago})"))
         except OSError as e:
             kv["server_ok"], kv["server_err"] = "no", str(e)[:120]
             if cache is not None:
@@ -2584,6 +2988,36 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             evs = []
     else:
         kv["history_src"] = "lease server"
+
+    # Each Wii: who has it, or free. The server's pool, else this workstation's.
+    me = socket.gethostname()
+    if s.get("wiis"):
+        pool = [(w["name"], w.get("ip") or WII, w.get("holder"), w.get("left")) for w in s["wiis"]]
+    elif s:
+        pool = [("bench", WII, s.get("holder"), s.get("left"))]
+    else:
+        pool = [(w["name"], w["ip"], None, None) for w in default_pool()]
+    here = {r.get("wii"): r for r in rows.get("running", [])}
+    for name, ip, h, left in pool:
+        if left:
+            ago = f"{_age(left['ago_s'])} ago" if "ago_s" in left else f"since {str(left.get('since'))[-8:]}"
+            state, text = "left", f"LEFT OUT OF HBC by {left.get('host')}'s {left.get('name')}: {left.get('wii')} ({ago})"
+        elif h:
+            for_ = _age(h["held_s"]) if "held_s" in h else "?"
+            text = f"{'this workstation' if h.get('host') == me else h.get('host')} has it for {h.get('name')} ({for_})"
+            if str(h.get("phase", "")).startswith(WAITING_FOR_HBC):
+                text += f": {h['phase']}" + (f" for {_age(h['phase_s'])}" if "phase_s" in h else "")
+            state = "mine" if h.get("host") == me else "other"
+        elif url and kv.get("server_ok") != "yes":
+            state, text = "unknown", "the lease server does not answer"
+        elif not url and (name in here or (len(pool) == 1 and here)):
+            r = here.get(name) or next(iter(here.values()))
+            state, text = "mine", f"in use by {r['name']} here ({r['elapsed']})"
+        else:
+            state, text = "free", "free"
+        last = last_on.get(name) or (last_on.get("") if len(pool) == 1 else None)
+        row("wiis", name=name, ip=ip, state=state, line=text, last=last_note(*last) if last else "")
+    kv["wiis_n"] = len(pool)
 
     # Problems in the history (every workstation's when the server keeps it).
     for e in evs:
@@ -2638,26 +3072,29 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     for i, j in enumerate(order, 1):
         row("pending", turn=i, turn_s=i, host=j.get("host"), id=j.get("id") or "-", name=j.get("name"),
             agent=j.get("agent") or "-", age=_age(j["age_s"]) if j.get("age_s") is not None else "?",
-            age_s=j.get("age_s") or 0)
+            age_s=j.get("age_s") or 0, wii=j.get("want") or "any")
     kv["queued_n"] = len(order)
     # The manage page: what is running (here, or the lease holder's) and everything queued.
     for r in rows.get("running", []):
         row("manage", state="running", turn="-", host=socket.gethostname(), id=r["id"], name=r["name"],
             agent=r.get("agent") or "-", folder=r.get("folder") or "-", age=r["elapsed"], age_s=r["elapsed_s"])
-    h = (s or {}).get("holder") or {}
-    if h and h.get("host") != socket.gethostname():
-        row("manage", state="running" if str(h.get("phase", "")).startswith("running") else "waiting",
-            turn="-", host=h.get("host"), id=h.get("job") or "-", name=h.get("name"), agent="-", folder="-",
-            age=_age(h.get("held_s", 0)), age_s=h.get("held_s", 0))
+    for _, _, h, _ in pool:                    # every Wii's holder elsewhere
+        if h and h.get("host") != socket.gethostname():
+            row("manage", state="running" if str(h.get("phase", "")).startswith("running") else "waiting",
+                turn="-", host=h.get("host"), id=h.get("job") or "-", name=h.get("name"), agent="-", folder="-",
+                age=_age(h.get("held_s", 0)), age_s=h.get("held_s", 0))
     for i, j in enumerate(order, 1):
         row("manage", state="queued", turn=i, host=j.get("host"), id=j.get("id") or "-", name=j.get("name"),
             agent=j.get("agent") or "-", folder=j.get("folder") or "-",
             age=_age(j["age_s"]) if j.get("age_s") is not None else "?", age_s=j.get("age_s") or 0)
-    try:
-        rec = json.loads(RECOVERING.read_text())
-        kv.update(recovering_id=rec["id"], recovering_name=rec.get("name"), recovering_for=_age(time.time() - rec["since"]))
-    except (OSError, ValueError, KeyError):
-        pass
+    for f in sorted(RECOVERING.glob("*.json")) if RECOVERING.is_dir() else []:
+        try:
+            rec = json.loads(f.read_text())
+            kv.update(recovering_id=rec["id"], recovering_name=rec.get("name"), recovering_for=_age(time.time() - rec["since"]),
+                      recovering_wii=rec.get("wii") or "")
+            break                                  # the manage page gives up one at a time
+        except (OSError, ValueError, KeyError):
+            pass
     kv["queued_more"] = sum(max(0, q.get("total", 0) - len(q.get("jobs", []))) for q in (queues or []))
 
     rank = {"err": 0, "warn": 1, "note": 2}
@@ -2691,13 +3128,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     for p in problems_late:
         row("errors", when=_when(p["t"], now), when_s=int(p["t"]), severity=p["severity"], kind=p["kind"],
             host=p["host"], job=p["job"], id=p["id"], detail=p["detail"])
-    rel, gaps = None, []
-    for e in evs:
-        if e.get("type") == "release":
-            rel = e
-        elif e.get("type") == "grant" and rel and e.get("waited_s", 0) > e["t"] - rel["t"]:
-            gaps.append(e["t"] - rel["t"])
-            rel = None
+    gaps = handovers(evs)
     if gaps:
         kv["handover"] = (f"{len(gaps)} hand-over(s) to a waiting workstation, median "
                           f"{1000 * st_.median(gaps):.0f} ms, longest {1000 * max(gaps):.0f} ms")
@@ -2729,11 +3160,12 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
 
 
 SNAPSHOT_FIELDS = {
-    "running": ("id", "name", "agent", "started", "elapsed", "timeout", "left"),
-    "pending": ("turn", "host", "id", "name", "agent", "age"),
+    "wiis": ("name", "ip", "state", "line", "last"),
+    "running": ("id", "name", "agent", "started", "elapsed", "timeout", "left", "wii"),
+    "pending": ("turn", "host", "id", "name", "agent", "age", "wii"),
     "manage": ("state", "turn", "host", "id", "name", "agent", "folder", "age"),
     "waiting": ("place", "host", "name", "since", "waited"),
-    "done": ("finished", "id", "name", "exit", "secs", "hbc", "chained"),
+    "done": ("finished", "id", "name", "exit", "secs", "hbc", "chained", "wii"),
     "errors": ("when", "severity", "kind", "host", "job", "id", "detail"),
     "hosts": ("host", "jobs", "failed", "wii_min", "turns", "wait_med", "wait_max"),
     "waits": ("when", "waited", "host", "name"),
@@ -2844,6 +3276,7 @@ def main():
     s = sub.add_parser("add"); s.add_argument("--name"); s.add_argument("--cwd", default=".")
     s.add_argument("--timeout", type=int, default=TIMEOUT); s.add_argument("--agent")
     s.add_argument("--no-check", action="store_true", help="queue it even if its program is not found now")
+    s.add_argument("--wii", metavar="NAME", help="run it on this Wii only (default: whichever is free)")
     s.add_argument("--collect", action="append", metavar="PATH",
                    help="after the job, before the next one: copy PATH into the job's run folder "
                         "(sd:/... or usb:/... from the Wii, else a path here, relative to --cwd)")
@@ -2861,6 +3294,8 @@ def main():
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--history", help="keep the history (events, rotated and archived) in this directory")
     s.add_argument("--keep-months", type=int, default=0, help="months of archives to keep (0: forever)")
+    s.add_argument("--wii", action="append", metavar="NAME=IP[:PORT]",
+                   help="a Wii in the pool (again for each; default: $WII_BENCH_WIIS)")
     s = sub.add_parser("runs", help="jobs here, newest first, with their data (live and archived)")
     s.add_argument("--agent"); s.add_argument("--mine", action="store_true", help="this agent's (as add would tag it)")
     s.add_argument("--name", help="only names containing this"); s.add_argument("--last", type=int, default=30)

@@ -63,10 +63,11 @@ OPTIONS
                     ignoring case).
 
 SECTIONS AND FIELDS
-  running   id name agent started elapsed timeout left
+  wiis      name ip state line last
+  running   id name agent started elapsed timeout left wii
   waiting   place host name since waited
-  pending   turn host id name agent age
-  done      finished id name exit secs hbc chained
+  pending   turn host id name agent age wii
+  done      finished id name exit secs hbc chained wii
   errors    when severity kind host job id detail
   hosts     host jobs failed wii_min turns wait_med wait_max
   waits     when waited host name
@@ -341,13 +342,40 @@ header_line() {
     lines+=("$V")
 }
 
-# status_lines -- the two lines under the tab bar on every page: who has the Wii, and how
-# the lease server, this dispatcher and the window's problems stand.
+# many_wiis -- true with more than one Wii in the pool: the tables get a WII column
+many_wiis() { (( ${KV[wiis_n]:-1} > 1 )); }
+
+# wii_lines -- with more than one Wii, a line for each instead of the one "Wii:" line
+wii_lines() {
+    local i w plain color
+    for (( i = 0; i < ${NROWS[wiis]:-0}; i++ )); do
+        row_fields wiis "$i"
+        case "${F[2]}" in
+            left)    color="${c_bold}${c_red}" ;;
+            mine)    color="$c_cyan" ;;
+            other)   color="$c_yellow" ;;
+            unknown) color="$c_gray" ;;
+            *)       color="$c_green" ;;
+        esac
+        [ "${F[3]}" = "-" ] && F[3]="free"
+        fit "Wii ${F[0]} (${F[1]}): ${F[3]}" $(( COLS - 2 )); plain="$V"
+        w="${color}${plain}${c_reset}"
+        if [ -n "${F[4]:-}" ] && [ "${F[4]}" != "-" ] && (( COLS - ${#plain} - 9 >= 20 )); then
+            fit "${F[4]}" $(( COLS - ${#plain} - 9 )); w+="  ${c_gray}last: $V${c_reset}"
+        fi
+        lines+=("$w")
+    done
+}
+
+# status_lines -- the lines under the tab bar on every page: who has the Wii (each Wii, with
+# more than one), and how the lease server, this dispatcher and the window's problems stand.
 status_lines() {
     local w plain host holder e n room
     k host; host="$V"; k holder_host; holder="$V"
     k left_host
-    if [ -n "$V" ]; then
+    if many_wiis; then
+        wii_lines
+    elif [ -n "$V" ]; then
         plain="Wii LEFT OUT OF HBC by $V's "
         k left_name; plain+="$V: "; k left_wii; plain+="$V ("; k left_ago; plain+="$V)"
         w="${c_bold}${c_red}${plain}${c_reset}"
@@ -367,10 +395,12 @@ status_lines() {
     else
         plain="Wii: free"; w="${c_green}${plain}${c_reset}"
     fi
-    # "last:" gets what is left of the line, and goes when too little is
-    room=$(( COLS - ${#plain} - 9 ))
-    k wii_last; (( room >= 20 )) && [ -n "$V" ] && { fit "$V" "$room"; w+="  ${c_gray}last: $V${c_reset}"; }
-    lines+=("$w")
+    if ! many_wiis; then
+        # "last:" gets what is left of the line, and goes when too little is
+        room=$(( COLS - ${#plain} - 9 ))
+        k wii_last; (( room >= 20 )) && [ -n "$V" ] && { fit "$V" "$room"; w+="  ${c_gray}last: $V${c_reset}"; }
+        lines+=("$w")
+    fi
     case "${KV[server_ok]:-}" in
         yes) w="${c_green}lease server ok${c_reset}" ;;
         no)  w="${c_red}lease server unreachable${c_reset}" ;;
@@ -379,6 +409,7 @@ status_lines() {
     k dispatcher_pid
     if [ -n "$V" ]; then
         w+="  ·  dispatcher $V"
+        (( ${KV[dispatcher_turns]:-0} > 1 )) && w+=" (${KV[dispatcher_turns]} turns)"
         k dispatcher_detail; [ -n "$V" ] && { fit "$V" 60; w+=": $V"; }
     else
         w+="  ·  ${c_gray}no dispatcher${c_reset}"
@@ -401,13 +432,25 @@ render_queue() {
     if (( ${NROWS[running]:-0} == 0 )); then
         placeholder "nothing running here"
     else
-        name_width $(( 2 + 22 + 1 + 12 + 1 + 11 + 1 + 8 + 1 + 7 + 1 + 7 + 2 ))
-        printf -v fmt "  %%-22s %%-%ds %%-12s %%-11s %%8s %%7s %%7s" "$W"
-        table_header running "$fmt" id:ID name:NAME agent:AGENT started:STARTED elapsed:ELAPSED timeout:TIMEOUT left:LEFT
+        if many_wiis; then
+            name_width $(( 2 + 22 + 1 + 10 + 1 + 12 + 1 + 11 + 1 + 8 + 1 + 7 + 1 + 7 + 2 ))
+            printf -v fmt "  %%-22s %%-10s %%-%ds %%-12s %%-11s %%8s %%7s %%7s" "$W"
+            table_header running "$fmt" id:ID wii:WII name:NAME agent:AGENT started:STARTED elapsed:ELAPSED timeout:TIMEOUT left:LEFT
+        else
+            name_width $(( 2 + 22 + 1 + 12 + 1 + 11 + 1 + 8 + 1 + 7 + 1 + 7 + 2 ))
+            printf -v fmt "  %%-22s %%-%ds %%-12s %%-11s %%8s %%7s %%7s" "$W"
+            table_header running "$fmt" id:ID name:NAME agent:AGENT started:STARTED elapsed:ELAPSED timeout:TIMEOUT left:LEFT
+        fi
         for (( i = 0; i < ${NROWS[running]}; i++ )); do
             row_fields running "$i"; fit "${F[1]}" "$W"; nm="$V"
-            table_row "$fmt" "" id:"${F[0]}" name:"$nm" agent:"${F[2]}" started:"${F[3]}" \
-                elapsed:"${F[4]}" timeout:"${F[5]}" left:"${F[6]}"
+            if many_wiis; then
+                fit "${F[7]}" 10
+                table_row "$fmt" "" id:"${F[0]}" wii:"$V" name:"$nm" agent:"${F[2]}" started:"${F[3]}" \
+                    elapsed:"${F[4]}" timeout:"${F[5]}" left:"${F[6]}"
+            else
+                table_row "$fmt" "" id:"${F[0]}" name:"$nm" agent:"${F[2]}" started:"${F[3]}" \
+                    elapsed:"${F[4]}" timeout:"${F[5]}" left:"${F[6]}"
+            fi
             MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[1]}"
         done
     fi
@@ -415,7 +458,8 @@ render_queue() {
     # WAITING FOR THE WII (every workstation)
     heading "$c_cyan" "WAITING FOR THE WII" "every workstation, in order" waiting
     if [ "${KV[server]:-}" = "none" ]; then
-        placeholder "no lease server: this workstation has the Wii to itself"
+        if many_wiis; then placeholder "no lease server: this workstation has the Wiis to itself"
+        else placeholder "no lease server: this workstation has the Wii to itself"; fi
     elif (( ${NROWS[waiting]:-0} == 0 )); then
         placeholder "nobody waiting"
     else
@@ -439,9 +483,15 @@ render_queue() {
         placeholder "nothing queued"
     else
         local hostname; k host; hostname="$V"
-        name_width $(( 2 + 4 + 1 + 18 + 1 + 22 + 1 + 12 + 1 + 8 + 2 ))
-        printf -v fmt "  %%4s %%-18s %%-22s %%-%ds %%-12s %%8s" "$W"
-        table_header pending "$fmt" turn:TURN host:WORKSTATION id:ID name:NAME agent:AGENT age:WAITING
+        if many_wiis; then
+            name_width $(( 2 + 4 + 1 + 18 + 1 + 22 + 1 + 10 + 1 + 12 + 1 + 8 + 2 ))
+            printf -v fmt "  %%4s %%-18s %%-22s %%-10s %%-%ds %%-12s %%8s" "$W"
+            table_header pending "$fmt" turn:TURN host:WORKSTATION id:ID wii:FOR name:NAME agent:AGENT age:WAITING
+        else
+            name_width $(( 2 + 4 + 1 + 18 + 1 + 22 + 1 + 12 + 1 + 8 + 2 ))
+            printf -v fmt "  %%4s %%-18s %%-22s %%-%ds %%-12s %%8s" "$W"
+            table_header pending "$fmt" turn:TURN host:WORKSTATION id:ID name:NAME agent:AGENT age:WAITING
+        fi
         room=$(( ROWS_MAX - ${#lines[@]} - 8 ))
         for (( i = 0; i < ${NROWS[pending]}; i++ )); do
             if (( i >= room && i < ${NROWS[pending]} - 1 )); then
@@ -449,7 +499,12 @@ render_queue() {
             fi
             row_fields pending "$i"; fit "${F[1]}" 18; host="$V"; fit "${F[3]}" "$W"; nm="$V"
             local color=""; [ "${F[1]}" = "$hostname" ] && color="$c_cyan"     # this workstation's
-            table_row "$fmt" "$color" turn:"${F[0]}" host:"$host" id:"${F[2]}" name:"$nm" agent:"${F[4]}" age:"${F[5]}"
+            if many_wiis; then
+                fit "${F[6]}" 10
+                table_row "$fmt" "$color" turn:"${F[0]}" host:"$host" id:"${F[2]}" wii:"$V" name:"$nm" agent:"${F[4]}" age:"${F[5]}"
+            else
+                table_row "$fmt" "$color" turn:"${F[0]}" host:"$host" id:"${F[2]}" name:"$nm" agent:"${F[4]}" age:"${F[5]}"
+            fi
             MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[3]}"
             MONITOR_CELL_VALUES["$ROW_AT:host"]="${F[1]}"
         done
@@ -462,16 +517,28 @@ render_queue() {
         placeholder "no finished jobs yet"
         return
     fi
-    name_width $(( 2 + 11 + 1 + 22 + 1 + 9 + 1 + 6 + 1 + 6 + 1 + 7 + 2 ))
-    printf -v fmt "  %%-11s %%-22s %%-%ds %%9s %%6s %%6s %%-7s" "$W"
-    table_header done "$fmt" finished:FINISHED id:ID name:NAME exit:EXIT secs:SECS hbc:HBC chained:CHAINED
+    if many_wiis; then
+        name_width $(( 2 + 11 + 1 + 22 + 1 + 10 + 1 + 9 + 1 + 6 + 1 + 6 + 1 + 7 + 2 ))
+        printf -v fmt "  %%-11s %%-22s %%-10s %%-%ds %%9s %%6s %%6s %%-7s" "$W"
+        table_header done "$fmt" finished:FINISHED id:ID wii:WII name:NAME exit:EXIT secs:SECS hbc:HBC chained:CHAINED
+    else
+        name_width $(( 2 + 11 + 1 + 22 + 1 + 9 + 1 + 6 + 1 + 6 + 1 + 7 + 2 ))
+        printf -v fmt "  %%-11s %%-22s %%-%ds %%9s %%6s %%6s %%-7s" "$W"
+        table_header done "$fmt" finished:FINISHED id:ID name:NAME exit:EXIT secs:SECS hbc:HBC chained:CHAINED
+    fi
     room=$(( ROWS_MAX - ${#lines[@]} ))
     for (( i = 0; i < ${NROWS[done]} && i < room; i++ )); do
         row_fields done "$i"; fit "${F[2]}" "$W"; nm="$V"
         color=""
         if [ "${F[3]}" != "0" ] || [ "${F[5]}" = "LEFT" ]; then color="$c_red"; fi
-        table_row "$fmt" "$color" finished:"${F[0]}" id:"${F[1]}" name:"$nm" exit:"${F[3]}" \
-            secs:"${F[4]}" hbc:"${F[5]}" chained:"${F[6]}"
+        if many_wiis; then
+            local wii; fit "${F[7]}" 10; wii="$V"
+            table_row "$fmt" "$color" finished:"${F[0]}" id:"${F[1]}" wii:"$wii" name:"$nm" exit:"${F[3]}" \
+                secs:"${F[4]}" hbc:"${F[5]}" chained:"${F[6]}"
+        else
+            table_row "$fmt" "$color" finished:"${F[0]}" id:"${F[1]}" name:"$nm" exit:"${F[3]}" \
+                secs:"${F[4]}" hbc:"${F[5]}" chained:"${F[6]}"
+        fi
         MONITOR_CELL_VALUES["$ROW_AT:name"]="${F[2]}"
     done
 }
@@ -584,7 +651,8 @@ render_manage() {
         lines+=("")
     fi
     if [ -n "${KV[recovering_id]:-}" ]; then
-        lines+=("  ${c_red}This workstation keeps the Wii to save ${KV[recovering_name]}'s data after a freeze (${KV[recovering_for]}): reset or power-cycle the Wii, or g to give up.${c_reset}")
+        local which="the Wii"; many_wiis && [ -n "${KV[recovering_wii]:-}" ] && [ "${KV[recovering_wii]}" != "-" ] && which="Wii ${KV[recovering_wii]}"
+        lines+=("  ${c_red}This workstation keeps $which to save ${KV[recovering_name]}'s data after a freeze (${KV[recovering_for]}): reset or power-cycle it, or g to give up.${c_reset}")
     fi
     lines+=("")
     if (( n == 0 )); then

@@ -175,6 +175,47 @@ From the 1.3.6 review, each verified in the code first:
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
 
+#### The bench queue drives several Wiis
+
+Tool work in 1.10.8, no version of its own. See `tools/wii-bench/README.md`, "Several Wiis".
+
+- **The pool:** `WII_BENCH_WIIS="name=ip[:port],..."` on the lease server (`compose.yaml`, or
+  `serve --wii`), or on a workstation without one (or in its state folder's `wiis` file).
+  With none set, there is one Wii, `bench`, at each workstation's `WII_BENCH_IP`, as before.
+- **The server:** `Leases` keeps a lease per Wii. A free Wii goes to the earliest-received
+  job that may use it, so a job pinned to a busy Wii (`add --wii NAME`) doesn't hold up the
+  rest. A waiter says which job it waits with (`head`) and which Wii it wants (`want`). One
+  that says nothing (a dispatcher from before this change) only gets the first Wii, the only
+  one it knows how to reach. `status` gains `wiis`, and keeps `holder` and `left` for the
+  first Wii. Grant, release and expiry events carry `slot`.
+- **The dispatcher** runs one turn per Wii at once. Each turn claims its own pending job
+  (`Claims`), waits for a Wii, and stacks the jobs that follow on that Wii, as one turn did
+  before. The idle wait, the HBC check, `--collect`, the freeze bundle and the wait after a
+  hard freeze each work on the turn's own Wii. Without a server, the same lease logic runs
+  in-process (`LocalLeases`), so one code path serves both.
+- **What a job gets:** `WII_BENCH_IP`/`WII_BENCH_PORT`, plus `HBC_WII`/`HBC_PORT` so its
+  `hbc.py` goes to the right Wii unasked, `WII_BENCH_WII`, and `WII_BENCH_LOG_PORT` (4300 +
+  the Wii's place in the pool). Two jobs on one workstation never share a network-log port.
+- **Changed state files:** `dispatcher.state` is now per job (`jobs`), and still has the
+  latest job's `job`/`detail` for older readers. `recovering.json` became `recovering/ID.json`.
+- **Shown:**
+  - `status` and `setup` print a line per Wii.
+  - The monitor shows a line per Wii and a WII column when there's more than one.
+  - Job records and events carry `wii`.
+  - `report` gets a per-Wii table, and hand-overs pair by Wii.
+  - `dispatcher.log` tags each turn's lines with its Wii.
+- **Checked:**
+  - `MultiWiiTest`:
+    - the pool parser;
+    - a lease per Wii;
+    - a pinned job that doesn't block the other Wii;
+    - an old client held to the first Wii;
+    - two real jobs at once on two fake HBCs without a server, each with its own Wii's
+      `HBC_PORT` and log port;
+    - pinned jobs through a server, with history, `status` and `snapshot`.
+  - 70 tests pass on Windows and 70 on Linux (WSL).
+  - There is only one real Wii so far: nothing has run on two real Wiis.
+
 #### The bench queue's week of 10-12 to 10-19
 
 Tool work in 1.10.8, no version of its own.

@@ -322,6 +322,50 @@ server: `wiibench.py serve`, stdlib Python only, on TCP 4310.
 - Every workstation that uses the Wii must be set up with a server. One running an older
   `wiibench.py`, or none, is held off only by the HBC-idle check.
 
+## Several Wiis
+
+The queue can drive more than one Wii. Each Wii has its own lease, and a job runs on
+whichever Wii is free first, unless it names one.
+
+- **The pool** is a list of `name=ip[:port]`, separated by commas or newlines, in
+  `$WII_BENCH_WIIS`:
+
+  ```bash
+  WII_BENCH_WIIS="bench=192.168.8.213,second=192.168.8.214"
+  ```
+
+  - With a lease server, set it on the server (`WII_BENCH_WIIS` in `compose.yaml`, or
+    `serve --wii bench=192.168.8.213 --wii second=192.168.8.214`). Every workstation then
+    learns the pool from the server, and nothing changes on the workstations.
+  - Without a server, set it on the workstation, either in the environment or in a file
+    named `wiis` in the state folder, one Wii per line.
+  - With no pool set, there is one Wii, named `bench`, at each workstation's
+    `$WII_BENCH_IP`, just as before 1.10.8.
+- **Choosing a Wii:** `add --wii second` runs a job on that Wii only. `add` refuses a name
+  that isn't in the pool. Without `--wii`, the job runs on any free Wii.
+- **Order:** a free Wii goes to the earliest-received job that may use it. A job pinned to a
+  busy Wii doesn't hold up later jobs that can run on another one.
+- **Parallel jobs:** a dispatcher runs one turn per Wii at once. Each turn waits for a Wii
+  with a job of its own, runs it, and runs the jobs that follow on that Wii in receive order,
+  just as one turn did before. The idle wait, the HBC check, `--collect`, and the wait after
+  a freeze all apply to the turn's own Wii. A freeze on one Wii doesn't stop the others.
+- **What a job gets:**
+  - `WII_BENCH_WII`: the Wii's name.
+  - `WII_BENCH_IP` and `WII_BENCH_PORT`: the Wii's address.
+  - `HBC_WII` and `HBC_PORT`: the same address, so the job's `tools/hbc.py` calls go to that
+    Wii without being told.
+  - `WII_BENCH_LOG_PORT`: a TCP port for the network log. It is 4300 for the first Wii,
+    4301 for the second, and so on, so two jobs on one workstation never listen on the same
+    port. A job that hard-codes `--log-port 4300` should use this value instead. Open those
+    ports in the firewall as well.
+- **Showing it:**
+  - `status` and `setup` print a line per Wii, and each job says which Wii it is on.
+  - The monitor shows a line per Wii under the tabs, and a WII column for running, queued
+    and finished jobs. A job's record and its history event carry `wii`.
+  - `dispatcher.log` prefixes each turn's lines with its Wii, for example `[second]`.
+- **Older dispatchers:** a dispatcher before 1.10.8 sends no choice of Wii and doesn't know
+  about other addresses. The server only ever gives it the first Wii in the pool.
+
 ## Setting up the lease server: from clone to a running container
 
 These steps are for a Linux homeserver (Debian or Ubuntu commands; use your distribution's
@@ -501,7 +545,9 @@ The state directory is `~/.wii-bench`, and other projects call `~/.wii-bench/wii
 
 ## What a job must do
 
-- Send its program itself (Wiiload); the Wii's address is in `WII_BENCH_IP`.
+- Send its program itself (Wiiload); the Wii's address is in `WII_BENCH_IP` (and `HBC_WII`,
+  which `tools/hbc.py` reads). With [several Wiis](#several-wiis), that is the Wii the job
+  got, and its network log port is `WII_BENCH_LOG_PORT`.
 - Leave the Wii in HBC when it ends: exit through HBC's reload stub (`exit()` in libogc
   does it when the stub is there), not power-off or the system menu. Arm
   `__exception_setreload(10)` so a crash goes back to HBC too. A Wii left elsewhere stalls

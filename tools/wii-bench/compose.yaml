@@ -9,3 +9,6 @@ services:
       - ./history:/data          # events-*.jsonl, gzipped after 7 days, archive/YYYY-MM.tar
     environment:
       KEEP_MONTHS: "0"           # months of monthly archives to keep; 0 keeps them forever
+      # The Wiis, name=ip[:port], comma-separated. Empty: one Wii, at each workstation's
+      # WII_BENCH_IP. See README "Several Wiis".
+      WII_BENCH_WIIS: ""         # e.g. "bench=192.168.8.213,second=192.168.8.214"

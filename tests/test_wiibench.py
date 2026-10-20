@@ -250,13 +250,13 @@ class IdleWaitTest(unittest.TestCase):
         self.now, self.probes, self.answers = 0.0, 0, []
         def sleep(s):
             self.now += s
-        def state():
+        def state(*_):
             self.probes += 1
             return (self.answers.pop(0) if self.answers else "hbc"), "1.8.8"
         patches = [mock.patch.object(self.wb.time, "monotonic", lambda: self.now),
                    mock.patch.object(self.wb.time, "sleep", sleep),
                    mock.patch.object(self.wb, "wii_state", state),
-                   mock.patch.object(self.wb, "agent_app", lambda: "otherapp")]
+                   mock.patch.object(self.wb, "agent_app", lambda *_: "otherapp")]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -584,13 +584,13 @@ class ManageTest(unittest.TestCase):
                "freeze": {"answered_by": "nothing"}}
         saved = mock.Mock(return_value=["freeze/after/lastlog.txt"])
         redo = mock.Mock(return_value=[{"src": "sd:/lab/lab.log", "files": 1, "bytes": 9}])
-        with mock.patch.object(self.wb, "HOME", home), mock.patch.object(self.wb, "RECOVERING", home / "recovering.json"), \
+        with mock.patch.object(self.wb, "HOME", home), mock.patch.object(self.wb, "RECOVERING", home / "recovering"), \
              mock.patch.object(self.wb, "STATE", home / "dispatcher.state"), \
-             mock.patch.object(self.wb, "wii_state", lambda: (states.pop(0), "")), \
+             mock.patch.object(self.wb, "wii_state", lambda *_: (states.pop(0), "")), \
              mock.patch.object(self.wb, "BUSY_STEP", 1), mock.patch.object(self.wb, "save_wii_state", saved), \
              mock.patch.object(self.wb, "collect_job", redo):
             self.assertTrue(self.wb.recover_and_collect(job, turn))
-            self.assertFalse((home / "recovering.json").exists())
+            self.assertFalse((home / "recovering/j1.json").exists())
         self.assertIn("after a freeze", phases[0])
         self.assertEqual(turn.wii, "hbc")
         self.assertEqual(job["freeze"]["after"], ["freeze/after/lastlog.txt"])
@@ -600,10 +600,10 @@ class ManageTest(unittest.TestCase):
         # Given up: stop ID on the job being waited for.
         job2 = {"id": "j2", "name": "frozen 2", "out": str(home / "runs/j2"), "freeze": {"answered_by": "nothing"}}
         import threading
-        with mock.patch.object(self.wb, "HOME", home), mock.patch.object(self.wb, "RECOVERING", home / "recovering.json"), \
+        with mock.patch.object(self.wb, "HOME", home), mock.patch.object(self.wb, "RECOVERING", home / "recovering"), \
              mock.patch.object(self.wb, "STATE", home / "dispatcher.state"), \
              mock.patch.object(self.wb, "RUNNING", home / "running"), \
-             mock.patch.object(self.wb, "wii_state", lambda: ("off", "")), mock.patch.object(self.wb, "BUSY_STEP", 1):
+             mock.patch.object(self.wb, "wii_state", lambda *_: ("off", "")), mock.patch.object(self.wb, "BUSY_STEP", 1):
             threading.Timer(1.5, lambda: self.wb.stop_here(["j2"])).start()
             self.assertFalse(self.wb.recover_and_collect(job2, turn))
         self.assertEqual(job2["freeze"]["recovered"], "given up")
@@ -1165,6 +1165,152 @@ def bench_home_with_trouble(home):
     return home
 
 
+class MultiWiiTest(unittest.TestCase):
+    """A pool of Wiis: the lease logic, and real dispatchers against two fake HBCs."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(root / "tests"))
+        from test_hbc_tool import FakeHBC
+        cls.fakes = [FakeHBC(), FakeHBC()]
+
+    def setUp(self):
+        self.wb = import_wiibench()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = pathlib.Path(self.tmp.name)
+        self.spec = ",".join(f"{n}=127.0.0.1:{f.port}" for n, f in zip(("one", "two"), self.fakes))
+        for f in self.fakes:
+            f.agent = False
+        self.env = dict(os.environ, WII_BENCH_HOME=self.tmp.name, WII_BENCH_NO_DISPATCH="1", WII_BENCH_SERVER="",
+                        WII_BENCH_WIIS=self.spec, WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9",
+                        WII_BENCH_AGENT="", WII_BENCH_RETURN_WAIT="3")
+        self.env.pop("CLAUDE_CODE_SESSION_ID", None)
+
+    def leases(self):
+        now = [0.0]
+        leases = self.wb.Leases(ttl=60, clock=lambda: now[0], pool=self.wb.parse_pool(self.spec))
+        leases.grace_until = 0
+        return leases
+
+    def test_the_pool(self):
+        pool = self.wb.parse_pool("bench=192.168.8.213, second=192.168.8.214:4400\n# a note\n10.0.0.9")
+        self.assertEqual([(w["name"], w["ip"], w["port"], w["log_port"]) for w in pool],
+                         [("bench", "192.168.8.213", 4299, 4300), ("second", "192.168.8.214", 4400, 4301),
+                          ("wii3", "10.0.0.9", 4299, 4302)])
+
+    def test_each_wii_has_its_own_lease(self):
+        l = self.leases()
+        a = l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "any"})
+        b = l.acquire({"ticket": "b", "host": "h", "name": "jb", "want": "any"})
+        self.assertEqual((a["granted"], a["slot"], b["granted"], b["slot"]), (True, "one", True, "two"))
+        self.assertEqual(b["log_port"], 4301)
+        self.assertFalse(l.acquire({"ticket": "c", "host": "h", "name": "jc", "want": "any"})["granted"])
+        l.release({"ticket": "b", "wii": "hbc"})
+        r = l.acquire({"ticket": "c", "host": "h", "name": "jc", "want": "any"})
+        self.assertEqual((r["granted"], r["slot"]), (True, "two"))
+        st = l.status()
+        self.assertEqual([w["holder"]["name"] for w in st["wiis"]], ["ja", "jc"])
+        self.assertEqual(st["holder"]["name"], "ja")   # the first Wii's, as before
+
+    def test_a_pinned_job_waits_for_its_wii_and_does_not_block_the_other(self):
+        l = self.leases()
+        l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "two"})
+        # Received first, but for Wii two, which is taken: a later job for any Wii gets one.
+        l.queue({"qid": "q1", "host": "h1", "queue": [{"id": "p", "name": "pinned", "want": "two"}], "queue_at": 1})
+        self.assertFalse(l.acquire({"ticket": "p", "host": "h1", "qid": "q1", "name": "pinned", "head": "p",
+                                    "want": "two"})["granted"])
+        r = l.acquire({"ticket": "x", "host": "h2", "name": "free", "want": "any"})
+        self.assertEqual((r["granted"], r["slot"]), (True, "one"))
+        l.release({"ticket": "a", "wii": "hbc"})
+        r = l.acquire({"ticket": "p", "host": "h1", "qid": "q1", "name": "pinned", "head": "p", "want": "two"})
+        self.assertEqual((r["granted"], r["slot"]), (True, "two"))
+        r = l.acquire({"ticket": "z", "host": "h", "name": "nope", "want": "three"})
+        self.assertIn("no Wii named three", r["error_want"])
+
+    def test_a_dispatcher_before_the_pool_only_gets_the_first_wii(self):
+        l = self.leases()
+        l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "any"})        # has one
+        r = l.acquire({"ticket": "old", "host": "old-pc", "name": "j"})              # says nothing of Wiis
+        self.assertFalse(r["granted"])                # two is free, but it knows only the one Wii
+        l.release({"ticket": "a", "wii": "hbc"})
+        r = l.acquire({"ticket": "old", "host": "old-pc", "name": "j"})
+        self.assertEqual((r["granted"], r["slot"]), (True, "one"))
+
+    def add(self, name, secs=1.5, wii=None, env=None):
+        code = ("import os, time; print(time.time(), os.environ['WII_BENCH_WII'], os.environ['HBC_PORT'], "
+                f"os.environ['WII_BENCH_LOG_PORT']); time.sleep({secs})")
+        r = subprocess.run([sys.executable, str(BENCH), "add", "--name", name, *(["--wii", wii] if wii else []), "--",
+                            sys.executable, "-c", code], env=env or self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def dispatch(self, env=None):
+        d = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", "1"], env=env or self.env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(d.wait)
+        self.addCleanup(d.kill)
+        return d
+
+    def done(self, job_id, timeout=60):
+        import time
+        end = time.monotonic() + timeout
+        p = self.home / "queue/done" / f"{job_id}.log"
+        while not p.exists():
+            self.assertLess(time.monotonic(), end, f"{job_id} did not finish")
+            time.sleep(0.2)
+        time.sleep(0.2)
+        t, wii, port, log_port = p.read_text().split()[:4]
+        return float(t), wii, int(port), int(log_port), json.loads((self.home / "queue/done" / f"{job_id}.json").read_text())
+
+    def test_two_jobs_run_at_once_without_a_server(self):
+        a, b = self.add("a", 3), self.add("b", 3)
+        self.dispatch()
+        ta, wa, pa, la, ja = self.done(a)
+        tb, wb_, pb, lb, jb = self.done(b)
+        self.assertLess(abs(ta - tb), 2)              # side by side, not one after the other
+        self.assertEqual({wa, wb_}, {"one", "two"})
+        self.assertEqual({pa, pb}, {f.port for f in self.fakes})   # each job's hbc.py talks to its Wii
+        self.assertEqual({la, lb}, {4300, 4301})
+        self.assertEqual({ja["wii"], jb["wii"]}, {"one", "two"})
+        self.assertEqual(ja["hbc_version"], "1.2.0")  # the HBC check asked its own Wii
+
+    def test_pinned_jobs_through_a_server(self):
+        import threading
+        srv = self.wb.make_server(0, ttl=30, host="127.0.0.1", history=str(self.home / "srv"),
+                                  pool=self.wb.parse_pool(self.spec))
+        srv.leases.grace_until = 0
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        url = f"http://127.0.0.1:{srv.server_address[1]}"
+        env = dict(self.env, WII_BENCH_SERVER=url, WII_BENCH_WIIS="")   # the pool comes from the server
+        bad = subprocess.run([sys.executable, str(BENCH), "add", "--wii", "three", "--", sys.executable, "-c", "0"],
+                             env=env, capture_output=True, text=True, timeout=30)
+        self.assertIn("no Wii named three", bad.stderr)
+        p1, p2, free = self.add("p1", 1.5, "two", env), self.add("p2", 1.5, "two", env), self.add("free", 1.5, None, env)
+        self.dispatch(env)
+        t1, w1, *_ = self.done(p1)
+        t2, w2, *_ = self.done(p2)
+        tf, wf, *_ = self.done(free)
+        self.assertEqual((w1, w2, wf), ("two", "two", "one"))
+        self.assertGreater(t2 - t1, 1.4)              # one Wii: one after the other
+        self.assertLess(tf - t1, 1.4)                 # the free job ran on the other Wii meanwhile
+        os.environ["WII_BENCH_SERVER"] = url
+        self.addCleanup(os.environ.pop, "WII_BENCH_SERVER")
+        evs = self.wb.lease_call("/history?since=0")["events"]
+        self.assertEqual({e.get("slot") for e in evs if e["type"] == "grant"}, {"one", "two"})
+        self.assertEqual(sorted(e.get("wii") for e in evs if e["type"] == "job"), ["one", "two", "two"])
+        r = subprocess.run([sys.executable, str(BENCH), "status"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertIn("Wii one 127.0.0.1", r.stdout)
+        self.assertIn("Wii two 127.0.0.1", r.stdout)
+        r = subprocess.run([sys.executable, str(BENCH), "snapshot", "--json"], env=env, capture_output=True, text=True,
+                           timeout=30)
+        snap = json.loads(r.stdout)
+        self.assertEqual([w["name"] for w in snap["rows"]["wiis"]], ["one", "two"])
+        self.assertEqual(snap["kv"]["wiis_n"], 2)
+
+
 class SnapshotTest(unittest.TestCase):
     """wiibench.py snapshot, what monitor.sh draws: problems found, sorting, and no Wii contact."""
 
@@ -1396,7 +1542,7 @@ class ChecksTest(unittest.TestCase):
         from unittest import mock
         now = [0.0]
         answers = [("off", None), ("off", None), ("hbc", "1.9.4")]
-        def state():
+        def state(*_):
             now[0] += 0.4                          # each probe takes 0.4 s
             return answers.pop(0)
         with mock.patch.object(self.wb.time, "monotonic", lambda: now[0]), \
