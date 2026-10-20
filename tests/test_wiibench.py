@@ -1238,8 +1238,10 @@ class MultiWiiTest(unittest.TestCase):
         self.assertEqual((r["granted"], r["slot"]), (True, "one"))
 
     def add(self, name, secs=1.5, wii=None, env=None):
-        code = ("import os, time; print(time.time(), os.environ['WII_BENCH_WII'], os.environ['HBC_PORT'], "
-                f"os.environ['WII_BENCH_LOG_PORT']); time.sleep({secs})")
+        tools = str(root / "tools").replace("\\", "/")   # hbc.py: its default log port in a job
+        code = (f"import os, sys, time; sys.path.insert(0, {tools!r}); import hbc; "
+                "print(time.time(), os.environ['WII_BENCH_WII'], os.environ['HBC_PORT'], hbc.LOG_PORT); "
+                f"time.sleep({secs})")
         r = subprocess.run([sys.executable, str(BENCH), "add", "--name", name, *(["--wii", wii] if wii else []), "--",
                             sys.executable, "-c", code], env=env or self.env, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)

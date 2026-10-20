@@ -1321,7 +1321,8 @@ def cmd_setup(a):
             print(f"        unreachable: {e}")
     for w, h in (the_wiis(s) if not err else [(bench_wii(), None)]):
         print(f"Wii    {w['name']} {w['ip']}: {wii_now({'holder': h} if s else None, err, w)}")
-    print("Jobs that use the network log need inbound TCP 4300 open on this machine.")
+    print("Jobs that use the network log need inbound TCP 4300-4315 open on this machine "
+          "(4300 + the Wii's place in the pool).")
 
 
 INTERPRETERS = ("python", "python3", "py", "pythonw", "bash", "sh", "zsh", "env", "cmd", "powershell", "pwsh", "node")

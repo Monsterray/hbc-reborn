@@ -196,6 +196,10 @@ Tool work in 1.10.8, no version of its own. See `tools/wii-bench/README.md`, "Se
 - **What a job gets:** `WII_BENCH_IP`/`WII_BENCH_PORT`, plus `HBC_WII`/`HBC_PORT` so its
   `hbc.py` goes to the right Wii unasked, `WII_BENCH_WII`, and `WII_BENCH_LOG_PORT` (4300 +
   the Wii's place in the pool). Two jobs on one workstation never share a network-log port.
+  `tools/hbc.py` takes that port as its default inside a job (jobs run without a shell, so
+  `$WII_BENCH_LOG_PORT` can't go in the `add` command line). One firewall rule for
+  4300-4315 covers 16 Wiis. A single shared port would need a relay on each PC, plus a
+  change to every program that listens for the log; the range needs neither.
 - **Changed state files:** `dispatcher.state` is now per job (`jobs`), and still has the
   latest job's `job`/`detail` for older readers. `recovering.json` became `recovering/ID.json`.
 - **Shown:**

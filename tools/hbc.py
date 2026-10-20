@@ -22,7 +22,9 @@ import time
 import zlib
 
 PORT = int(os.environ.get("HBC_PORT", "4299"))   # another port only for tests (wiibench's fake Wii)
-LOG_PORT = 4405
+# In a wii-bench job, the port the bench gave its Wii (4300, 4301, ...): two jobs on one PC,
+# each on its own Wii, never listen on the same port.
+LOG_PORT = int(os.environ.get("WII_BENCH_LOG_PORT") or 4405)
 TIMEOUT = 15
 DEVICES = ("sd", "usb", "carda", "cardb", "usb2")
 PROGRESS_MIN = 256 * 1024
@@ -1087,7 +1089,8 @@ Commands
 Options (before or after the command)
     --wii ADDR          the Wii's address, if $HBC_WII is not set
     --json              machine-readable output (status, version, ls, crash)
-    --log-port PORT     the PC port apps send output to (default 4405)
+    --log-port PORT     the PC port apps send output to (default 4405; in a
+                        wii-bench job, $WII_BENCH_LOG_PORT)
     --timeout SECONDS   how long run waits for the app to finish (default 300)
 
 More: hbc.py help COMMAND    (for example: hbc.py help sync)

@@ -6,7 +6,7 @@ use it at a time, and several agents and projects want it, so every test goes th
 
 ```bash
 python tools/wii-bench/wiibench.py add --name "HBC devnet" --cwd . -- \
-    python tests/wii_devnet.py --log-port 4300
+    python tests/wii_devnet.py
 python tools/wii-bench/wiibench.py wait <id>     # blocks; prints the log tail; exits with the job's code
 python tools/wii-bench/wiibench.py status        # Wii free/busy, dispatcher, running, pending, last done
 python tools/wii-bench/wiibench.py cancel <id>   # only a job that has not started
@@ -356,8 +356,12 @@ whichever Wii is free first, unless it names one.
     Wii without being told.
   - `WII_BENCH_LOG_PORT`: a TCP port for the network log. It is 4300 for the first Wii,
     4301 for the second, and so on, so two jobs on one workstation never listen on the same
-    port. A job that hard-codes `--log-port 4300` should use this value instead. Open those
-    ports in the firewall as well.
+    port. `tools/hbc.py` (and the tests built on it) uses it by default inside a job, so leave
+    `--log-port` out of the command. A job that opens its own listener should read
+    `WII_BENCH_LOG_PORT` instead of a fixed 4300. Jobs run without a shell, so
+    `$WII_BENCH_LOG_PORT` in the `add` command line is not expanded. The firewall rule in
+    [Setting up each workstation](#setting-up-each-workstation) opens 4300-4315, enough for
+    16 Wiis.
 - **Showing it:**
   - `status` and `setup` print a line per Wii, and each job says which Wii it is on.
   - The monitor shows a line per Wii under the tabs, and a WII column for running, queued
@@ -444,7 +448,7 @@ listens, and `--keep-months N` limits the archives.
 ## Setting up each workstation
 
 Every workstation that queues bench jobs needs Python 3.8 or newer, Git, a clone of
-hbc-reborn, the Wii (192.168.8.213) on its LAN, and inbound TCP 4300 open for the network
+hbc-reborn, the Wii (192.168.8.213) on its LAN, and inbound TCP 4300-4315 open for the network
 log. The queue itself needs nothing else. hbc-reborn's own test jobs also need the toolchain;
 see "Building" in the main [README](../../README.md). Replace `homeserver` with the lease
 server's name or IP.
@@ -467,7 +471,9 @@ python tools\wii-bench\wiibench.py setup --server http://homeserver:4310
 In an administrator PowerShell, allow the network log in:
 
 ```powershell
-New-NetFirewallRule -DisplayName "wii-bench netlog" -Direction Inbound -Protocol TCP -LocalPort 4300 -Action Allow
+New-NetFirewallRule -DisplayName "wii-bench netlog" -Direction Inbound -Protocol TCP -LocalPort 4300-4315 -Action Allow
+# a rule from before 1.10.8 that opens only 4300: widen it instead
+# Set-NetFirewallRule -DisplayName "wii-bench netlog" -LocalPort 4300-4315
 ```
 
 Check:
@@ -492,9 +498,9 @@ python3 tools/wii-bench/wiibench.py setup --server http://homeserver:4310
 If a firewall is on, allow the network log in:
 
 ```bash
-sudo ufw allow 4300/tcp
+sudo ufw allow 4300:4315/tcp
 # or, with firewalld:
-sudo firewall-cmd --permanent --add-port=4300/tcp && sudo firewall-cmd --reload
+sudo firewall-cmd --permanent --add-port=4300-4315/tcp && sudo firewall-cmd --reload
 ```
 
 Check:
@@ -555,8 +561,9 @@ The state directory is `~/.wii-bench`, and other projects call `~/.wii-bench/wii
 - Put its data in `$WII_BENCH_OUT`, or name it with `add --collect`, rather than in a
   folder or SD path every run shares. See "Each job's data, kept".
 - Get its results back itself: hbc-reborn's jobs use the developer network log
-  (`tools/hbc.py`, `sdk/hbc_netlog.h`) on TCP 4300; WiiStation's `Gamecube/lab_net.c` does
-  the same. The Windows firewall rule "WiiStation bench Wii" allows inbound TCP 4300.
+  (`tools/hbc.py`, `sdk/hbc_netlog.h`) on `$WII_BENCH_LOG_PORT` (4300 for the first Wii);
+  WiiStation's `Gamecube/lab_net.c` does the same. The "wii-bench netlog" firewall rule
+  allows inbound TCP 4300-4315.
 
 ## The protocol HBC takes (wiiload 0.5)
 
