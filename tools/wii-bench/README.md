@@ -472,7 +472,8 @@ In an administrator PowerShell, allow the network log in:
 
 ```powershell
 New-NetFirewallRule -DisplayName "wii-bench netlog" -Direction Inbound -Protocol TCP -LocalPort 4300-4315 -Action Allow
-# a rule from before 1.10.8 that opens only 4300: widen it instead
+# a rule from before 1.10.8 that opens only 4300: widen it instead (an older setup
+# named it "WiiStation bench Wii"; Get-NetFirewallRule -DisplayName "*bench*" finds it)
 # Set-NetFirewallRule -DisplayName "wii-bench netlog" -LocalPort 4300-4315
 ```
 
