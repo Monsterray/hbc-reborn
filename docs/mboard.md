@@ -205,8 +205,8 @@ profile's), checked by tracing it in Dolphin:
     opened the board and went back to HBC. The Wii Menu had filed
     `/2026/09/22/11/50/HBLW_01/txt/326CB51F.000` (sender "WiiStation",
     "Played Final Fantasy VII\nfor 42 minutes.") and kept every file
-    `cdb.vff` had. The 4 WiiLink messages stayed in the receive box,
-    untouched.
+    `cdb.vff` had. The user saw the WiiStation message on the board. The 4
+    WiiLink messages stayed in the receive box, untouched.
   - The bench's KD time difference put UTC exactly a day behind the
     (correct) local clock. The first post's Date header said 21 Oct; the
     library now ignores KD values further from the local clock than any time
