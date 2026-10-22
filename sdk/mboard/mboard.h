@@ -11,6 +11,12 @@
  *       been set up has one); needs no WiiConnect24 service, no internet and
  *       no AHBPROT. The title is shown as the sender.
  *
+ *   mboard_post_msg(&msg);
+ *       The same, with what else a game's message can carry: a Mii as its
+ *       icon (mboard_mii() reads one from the Wii's Mii database), a photo,
+ *       board data (a button that opens a channel, stationery), a Reply
+ *       button, a delay, and the date it is filed under.
+ *
  *   mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);
  *       A line in today's "Today's Play History", ending now, the way the
  *       Wii Menu logs a disc. Written into the Wii Menu's own cdb.vff, so it
@@ -51,6 +57,8 @@ enum {
 	MBOARD_E_BUSY = -6,    /* WiiConnect24 is using its files now: try later */
 	MBOARD_E_NO_ID = -7,   /* this Wii has no Wii number (nwc24msg.cfg) */
 	MBOARD_E_DENIED = -8,  /* IOS refused a file (for cdb.vff: no AHBPROT) */
+	MBOARD_E_TOO_BIG = -9, /* a photo or board data over its limit, or the whole message */
+	MBOARD_E_NO_MII = -10, /* mboard_mii(): no Mii in that slot */
 };
 
 /* The longest sender name and text kept, in UTF-16 units; more is cut. */
@@ -59,6 +67,34 @@ enum {
 
 /* UTF-8. A '\n' in the body starts a new line. */
 int mboard_post(const char *title_utf8, const char *body_utf8);
+
+/* A Mii's RFLCharData, as the Wii's Mii database holds it. */
+#define MBOARD_FACE_SIZE 74
+/* The SDK's NWC24SetMsgAttached() limits. */
+#define MBOARD_BOARD_MAX 0x1E000u     /* board data */
+#define MBOARD_ATTACH_TOTAL 0x245B0u  /* photo and board data together: less than this */
+#define MBOARD_DELAY_MAX 240          /* hours */
+
+typedef struct {
+	const char *title;          /* UTF-8: the sender's name */
+	const char *body;           /* UTF-8; '\n' starts a new line */
+	const uint8_t *face;        /* a Mii, MBOARD_FACE_SIZE bytes, shown as the icon; or NULL */
+	const void *jpeg;           /* a photo, a JPEG (the Wii Menu converts it); or NULL */
+	uint32_t jpeg_size;
+	const void *board;          /* board data, a U8 archive (application/x-wii-msgboard):
+	                               chjump.bin in it is a button that opens a channel; or NULL */
+	uint32_t board_size;
+	int reply;                  /* nonzero: a Reply button (mboard_post has none) */
+	int delay_hours;            /* 0, or hold it back this long before it shows (1-240) */
+	uint16_t file_year;         /* 0, or the date it is filed under: 2000-2035, */
+	uint8_t file_month, file_day;  /* month 1-12 */
+} mboard_msg;
+
+int mboard_post_msg(const mboard_msg *msg);
+
+/* Slot 0-99 of the Wii's Mii database (/shared2/menu/FaceLib/RFL_DB.dat),
+ * for mboard_msg.face. MBOARD_E_NO_MII for an empty slot. */
+int mboard_mii(int slot, uint8_t face[MBOARD_FACE_SIZE]);
 
 /* name: UTF-8, up to 40 UTF-16 units kept. id: 1-6 ASCII letters or digits
  * that tell titles apart (a disc's game ID, a channel's four letters); lines
@@ -99,9 +135,9 @@ typedef struct {
 #define MBOARD_RECV_CTL_SIZE 0x8000u
 
 /* ctl: the whole wc24recv.ctl, updated in place (the caller writes it back
- * when the result is MBOARD_OK); mbx: wc24recv.mbx. Text in UTF-16. */
+ * when the result is MBOARD_OK); mbx: wc24recv.mbx. */
 int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
-					const uint16_t *title, int title_len, const uint16_t *body, int body_len);
+					const mboard_msg *msg);
 
 typedef struct {
 	uint16_t name[40];  /* UTF-16, NUL-terminated unless all 40 are used */

@@ -1,8 +1,9 @@
 // Host driver for sdk/mboard/mboard.c's cores (tests/test_mboard.py):
 //   mboard_host play IMAGE NAME ID START END NOW [WIIID-HEX]
 //     Times are local, YYYY-MM-DDTHH:MM:SS. Like tests/cdblog_host.
-//   mboard_host post CTL MBX WII-NUMBER DOMAIN APPID-HEX GROUP-HEX UTC LOCAL TITLE BODY
-//     UTC and LOCAL as above; TITLE and BODY as hex UTF-8.
+//   mboard_host post CTL MBX WII-NUMBER DOMAIN APPID-HEX GROUP-HEX UTC LOCAL TITLE BODY [OPT...]
+//     UTC and LOCAL as above; TITLE and BODY as hex UTF-8. OPT: face=FILE
+//     jpeg=FILE board=FILE reply=1 delay=HOURS date=YYYY-MM-DD (mboard_msg).
 //     CTL is written back only when the post succeeds, as mboard_post() does.
 // Prints the result code.
 
@@ -93,13 +94,34 @@ static int play(int argc, char **argv) {
 	return 0;
 }
 
+// A whole file, for an mboard_msg part.
+static void *slurp(const char *path, uint32_t *size) {
+	FILE *f = fopen(path, "rb");
+	void *p;
+	long n;
+
+	if (!f || fseek(f, 0, SEEK_END) || (n = ftell(f)) < 0 || fseek(f, 0, SEEK_SET)) {
+		perror(path);
+		exit(2);
+	}
+	p = malloc(n ? (size_t) n : 1);
+	if (!p || fread(p, 1, (size_t) n, f) != (size_t) n) {
+		perror(path);
+		exit(2);
+	}
+	fclose(f);
+	*size = (uint32_t) n;
+	return p;
+}
+
 static int post(int argc, char **argv) {
 	static uint8_t ctl[MBOARD_RECV_CTL_SIZE];
-	static uint16_t title[MBOARD_TITLE_MAX], body[MBOARD_BODY_MAX];
 	mboard_env env;
+	mboard_msg m;
 	mboard_io io;
 	FILE *fc, *fm;
-	int res, nt, nb;
+	uint32_t size;
+	int res, i, y, mo, d;
 
 	if (argc < 12) {
 		fprintf(stderr, "usage: mboard_host post CTL MBX WII-NUMBER DOMAIN APPID GROUP UTC LOCAL "
@@ -121,12 +143,37 @@ static int post(int argc, char **argv) {
 	env.local = ticks(argv[9]);
 	unhex(argv[10]);
 	unhex(argv[11]);
-	nt = mboard_utf16(title, MBOARD_TITLE_MAX, argv[10]);
-	nb = mboard_utf16(body, MBOARD_BODY_MAX, argv[11]);
+	memset(&m, 0, sizeof(m));
+	m.title = argv[10];
+	m.body = argv[11];
+	for (i = 12; i < argc; ++i) {
+		if (!strncmp(argv[i], "face=", 5)) {
+			m.face = slurp(argv[i] + 5, &size);
+			if (size != MBOARD_FACE_SIZE) {
+				fprintf(stderr, "a face is %d bytes\n", MBOARD_FACE_SIZE);
+				return 2;
+			}
+		} else if (!strncmp(argv[i], "jpeg=", 5)) {
+			m.jpeg = slurp(argv[i] + 5, &m.jpeg_size);
+		} else if (!strncmp(argv[i], "board=", 6)) {
+			m.board = slurp(argv[i] + 6, &m.board_size);
+		} else if (!strncmp(argv[i], "reply=", 6)) {
+			m.reply = atoi(argv[i] + 6);
+		} else if (!strncmp(argv[i], "delay=", 6)) {
+			m.delay_hours = atoi(argv[i] + 6);
+		} else if (sscanf(argv[i], "date=%d-%d-%d", &y, &mo, &d) == 3) {
+			m.file_year = (uint16_t) y;
+			m.file_month = (uint8_t) mo;
+			m.file_day = (uint8_t) d;
+		} else {
+			fprintf(stderr, "unknown option %s\n", argv[i]);
+			return 2;
+		}
+	}
 	io.ctx = fm;
 	io.read = file_read;
 	io.write = file_write;
-	res = mboard_post_box(ctl, &io, &env, title, nt, body, nb);
+	res = mboard_post_box(ctl, &io, &env, &m);
 	if (res == MBOARD_OK && (fseek(fc, 0, SEEK_SET) || fwrite(ctl, 1, sizeof(ctl), fc) != sizeof(ctl)))
 		res = MBOARD_E_IO;
 	fclose(fc);

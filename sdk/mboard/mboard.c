@@ -890,22 +890,82 @@ static int compare_id(uint32_t a, uint32_t b) {  /* CompareMsgId(): ids wrap at 
 	return a > b ? 1 : -1;
 }
 
+#define F_MULTIPART 0x10000u       /* attachments follow the text */
+#define F_DESIGNATED 0x1000000u    /* NWC24SetMsgDesignatedTime(): held until 0x2C */
+#define T_JPEG 0x00020000u
+#define T_MSGBOARD 0x00030001u
+#define ATTACH_MAX 2
+
 typedef struct {
-	uint32_t from, to, ctype, txenc, body, body_len;
+	uint32_t from, to, ctype, txenc, start, body, body_len;
+	uint32_t att[ATTACH_MAX], att_len[ATTACH_MAX];
 } offsets;
 
+/* What one post writes: the text in UTF-16, the rest as given. */
+typedef struct {
+	const uint16_t *title, *body;
+	int title_len, body_len;
+	const uint8_t *face;
+	int reply, delay_hours;
+	uint16_t reg_date;           /* the SDK's: (year - 2000) << 9 | month << 5 | day */
+	int n_att;
+	const uint8_t *att[ATTACH_MAX];
+	uint32_t att_size[ATTACH_MAX], att_type[ATTACH_MAX];
+} parts;
+
+/* A header of base64 lines, 42 bytes to a line: the alt name, the face. */
+static void put_b64_field(buf *b, const char *key, const uint8_t *p, uint32_t n) {
+	uint32_t at;
+
+	put_str(b, key);
+	for (at = 0; at < n; at += 42) {
+		put_str(b, " ");
+		put_base64(b, p + at, n - at < 42 ? n - at : 42);
+		put_str(b, "\r\n");
+	}
+}
+
+static void put_boundary(buf *b, uint32_t minutes, uint32_t msg_id, int end) {
+	put_str(b, "\r\n--Boundary-NWC24-");
+	put_hex(b, minutes, 8);
+	put_hex(b, msg_id, 5);
+	put_str(b, end ? "--\r\n" : "\r\n");
+}
+
+/* "a0000007.jpg": the part's letter, the message id, its type's suffix. */
+static void put_part_name(buf *b, int i, uint32_t msg_id, uint32_t type) {
+	char letter = (char) ('a' + i);
+
+	put_bytes(b, &letter, 1);
+	put_dec(b, msg_id, 7);
+	put_str(b, type == T_JPEG ? ".jpg" : ".wii");
+}
+
+/* An attachment's data, as WriteBase64Data() writes it: 57 bytes (76
+ * characters) to a line, then the rest and an empty line, even when the
+ * rest is nothing. */
+static void put_b64_body(buf *b, const uint8_t *p, uint32_t n) {
+	for (; n >= B64_STEP; p += B64_STEP, n -= B64_STEP) {
+		put_base64(b, p, B64_STEP);
+		put_str(b, "\r\n");
+	}
+	put_base64(b, p, n);
+	put_str(b, "\r\n\r\n");
+}
+
 /* The message, byte for byte as NWC24CommitMsg() writes it to the receive
- * box for a game's NWC24_MSGTYPE_WII_MENU message to itself with an alt
- * name, its text as UTF-16 in 8 bits, an LED pattern and no reply button
- * (Super Mario Galaxy's letters). No SMTP envelope: it is not sent. */
+ * box for a game's NWC24_MSGTYPE_WII_MENU message to itself: an alt name,
+ * its text as UTF-16 in 8 bits and an LED pattern (Super Mario Galaxy's
+ * letters), and what else the game set: a face, the board's Reply, filing
+ * date and delay, and attachments. No SMTP envelope: it is not sent. */
 static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint32_t msg_id,
-						uint32_t minutes, const uint16_t *title, int title_len,
-						const uint16_t *body, int body_len) {
+						uint32_t minutes, const parts *p) {
 	static const char *const months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
 										  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 	civil c = civil_from_secs((uint64_t) (env->utc - 946684800));
 	uint8_t alt[2 * (MBOARD_TITLE_MAX + 1)];
-	int i, line;
+	unsigned tl;
+	int i;
 
 	put_str(b, "Date: ");
 	put_dec(b, (uint32_t) c.d, 2);
@@ -947,33 +1007,70 @@ static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint32_t msg_
 	put_hex(b, LED_DEFAULT, 8);
 	put_str(b, "\r\n");
 
-	/* The alt name with its terminating NUL, base64 in 42-byte pieces. */
-	for (i = 0; i < title_len; ++i)
-		put16(alt + 2 * i, title[i]);
-	put16(alt + 2 * title_len, 0);
-	put_str(b, "X-Wii-AltName:");
-	for (line = 0; line < 2 * (title_len + 1); line += 42) {
-		uint32_t n = (uint32_t) (2 * (title_len + 1) - line);
-		put_str(b, " ");
-		put_base64(b, alt + line, n < 42 ? n : 42);
+	/* The alt name with its terminating NUL, then the face. */
+	tl = (unsigned) p->title_len < MBOARD_TITLE_MAX ? (unsigned) p->title_len : MBOARD_TITLE_MAX;
+	for (i = 0; i < (int) tl; ++i)
+		put16(alt + 2 * i, p->title[i]);
+	put16(alt + 2 * tl, 0);
+	put_b64_field(b, "X-Wii-AltName:", alt, (uint32_t) (2 * (tl + 1)));
+	if (p->face)
+		put_b64_field(b, "X-WiiFace:", p->face, MBOARD_FACE_SIZE);
+	if (!p->reply)
+		put_str(b, "X-Wii-MB-NoReply: -\r\n");
+	if (p->reg_date) {
+		put_str(b, "X-Wii-MB-RegDate: ");
+		put_hex(b, p->reg_date, 4);
 		put_str(b, "\r\n");
 	}
-	put_str(b, "X-Wii-MB-NoReply: -\r\n");
+	if (p->delay_hours) {
+		put_str(b, "X-Wii-MB-Delay: ");
+		put_hex(b, (uint32_t) p->delay_hours, 2);
+		put_str(b, "\r\n");
+	}
 
 	put_str(b, "MIME-Version: 1.0\r\n");
+	if (p->n_att) {
+		put_str(b, "Content-Type: multipart/mixed;\r\n boundary=\"Boundary-NWC24-");
+		put_hex(b, minutes, 8);
+		put_hex(b, msg_id, 5);
+		put_str(b, "\"\r\n");
+		o->start = b->n;
+		put_boundary(b, minutes, msg_id, 0);
+	}
 	put_str(b, "Content-Type: text/plain; charset=");
 	o->ctype = pack(b->n, 9);  /* "utf-16be" and its NUL */
 	put_str(b, "utf-16be\r\nContent-Transfer-Encoding: ");
 	o->txenc = pack(b->n, 5);  /* "8bit" */
 	put_str(b, "8bit\r\n\r\n");
+	if (!p->n_att)
+		o->start = b->n;
 
 	o->body = b->n;
-	for (i = 0; i < body_len; ++i) {
+	for (i = 0; i < p->body_len; ++i) {
 		uint8_t u[2];
-		put16(u, body[i]);
+		put16(u, p->body[i]);
 		put_bytes(b, u, 2);
 	}
 	o->body_len = b->n - o->body;
+
+	for (i = 0; i < p->n_att; ++i) {
+		const char *type = p->att_type[i] == T_JPEG ? "image/jpeg" : "application/x-wii-msgboard";
+
+		put_boundary(b, minutes, msg_id, 0);
+		put_str(b, "Content-Type: ");
+		put_str(b, type);
+		put_str(b, ";\r\n name=");
+		put_part_name(b, i, msg_id, p->att_type[i]);
+		put_str(b, "\r\nContent-Transfer-Encoding: base64\r\n"
+				   "Content-Disposition: attachment;\r\n filename=");
+		put_part_name(b, i, msg_id, p->att_type[i]);
+		put_str(b, "\r\n\r\n");
+		o->att[i] = b->n;
+		put_b64_body(b, p->att[i], p->att_size[i]);
+		o->att_len[i] = b->n - o->att[i];
+		if (i == p->n_att - 1)
+			put_boundary(b, minutes, msg_id, 1);
+	}
 	return b->n;
 }
 
@@ -1034,17 +1131,83 @@ static int box_file(vff *v, uint32_t msg_id, const uint8_t *data, uint32_t len, 
 	return write_file(v, off, data, len, st, 1);
 }
 
+static int leap(int y) {
+	return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+}
+
+/* The SDK's checks (NWC24SetMsg*), and the text in UTF-16. */
+static int check_msg(const mboard_msg *m, parts *p, uint16_t *title, uint16_t *body) {
+	static const uint8_t days[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	uint32_t total = 0;
+	int i;
+
+	memset(p, 0, sizeof(*p));
+	if (!m || !m->title || !m->body)
+		return MBOARD_E_ARG;
+	p->title = title;
+	p->body = body;
+	p->title_len = mboard_utf16(title, MBOARD_TITLE_MAX, m->title);
+	p->body_len = mboard_utf16(body, MBOARD_BODY_MAX, m->body);
+	if (!p->title_len || !p->body_len)
+		return MBOARD_E_ARG;
+	/* A Mii with no creation ID is no Mii: the Wii Menu would drop it. */
+	if (m->face) {
+		for (i = 0x18; i < 0x20 && !m->face[i]; ++i)
+			;
+		if (i == 0x20)
+			return MBOARD_E_ARG;
+		p->face = m->face;
+	}
+	p->reply = m->reply != 0;
+	if (m->delay_hours < 0 || m->delay_hours > MBOARD_DELAY_MAX)
+		return MBOARD_E_ARG;
+	p->delay_hours = m->delay_hours;
+	if (m->file_year) {
+		if (m->file_year < 2000 || m->file_year > 2035 || m->file_month < 1 ||
+				m->file_month > 12 || m->file_day < 1 ||
+				m->file_day > days[m->file_month - 1] + (m->file_month == 2 && leap(m->file_year)))
+			return MBOARD_E_ARG;
+		p->reg_date = (uint16_t) ((m->file_year - 2000) << 9 | m->file_month << 5 | m->file_day);
+	}
+	if (m->jpeg) {
+		const uint8_t *j = m->jpeg;
+		if (m->jpeg_size < 4 || j[0] != 0xff || j[1] != 0xd8 || j[2] != 0xff)
+			return MBOARD_E_ARG;
+		p->att[p->n_att] = j;
+		p->att_size[p->n_att] = m->jpeg_size;
+		p->att_type[p->n_att++] = T_JPEG;
+	}
+	if (m->board) {
+		const uint8_t *a = m->board;
+		if (m->board_size < 0x20 || get32(a) != 0x55aa382du)   /* a U8 archive */
+			return MBOARD_E_ARG;
+		if (m->board_size > MBOARD_BOARD_MAX)
+			return MBOARD_E_TOO_BIG;
+		p->att[p->n_att] = a;
+		p->att_size[p->n_att] = m->board_size;
+		p->att_type[p->n_att++] = T_MSGBOARD;
+	}
+	for (i = 0; i < p->n_att; ++i)
+		total += p->att_size[i];
+	if (total >= MBOARD_ATTACH_TOTAL)
+		return MBOARD_E_TOO_BIG;
+	return MBOARD_OK;
+}
+
 int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
-					const uint16_t *title, int title_len, const uint16_t *body, int body_len) {
+					const mboard_msg *m) {
+	static uint16_t title[MBOARD_TITLE_MAX], body[MBOARD_BODY_MAX];
 	uint32_t num, cap, next_id, free_at, next_free, free_space, msg_id, minutes, len, off, oldest;
+	uint32_t room, flags;
 	uint8_t *e, *msg;
 	offsets o;
+	parts p;
 	buf b;
 	vff v;
-	int res;
+	int res, i;
 
-	if (title_len < 1 || title_len > MBOARD_TITLE_MAX || body_len < 1 || body_len > MBOARD_BODY_MAX)
-		return MBOARD_E_ARG;
+	if ((res = check_msg(m, &p, title, body)) < 0)
+		return res;
 	if (!env->wii_number || env->wii_number > 9999999999999999ull || !env->domain ||
 			env->domain[0] != '@' || strlen(env->domain) > 63)
 		return MBOARD_E_NO_ID;
@@ -1072,24 +1235,33 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 		if (get32(ctl + off) == msg_id)
 			return MBOARD_E_FORMAT;  /* a message already has the next id */
 
+	/* CheckMsgBoxSpace(): the encoded attachments and the text, under the
+	 * box's largest message. */
+	room = (uint32_t) (2 * p.body_len);
+	for (i = 0; i < p.n_att; ++i)
+		room += (p.att_size[i] * 4 + 2) / 3 + p.att_size[i] / B64_STEP * 2 + 4;
+	if (room >= MSG_LIMIT)
+		return MBOARD_E_TOO_BIG;
+
 	minutes = (uint32_t) ((env->utc + 2208988800ll) / 60);
-	msg = malloc(MSG_MAX);
+	b.max = room + 2048 + (uint32_t) p.n_att * 512;   /* + the headers */
+	msg = malloc(b.max + 32);                          /* + the padding */
 	if (!msg)
 		return MBOARD_E_MEM;
 	b.p = msg;
 	b.n = 0;
-	b.max = MSG_MAX - 32;  /* room for the padding */
 	b.over = 0;
-	len = compose(&b, &o, env, msg_id, minutes, title, title_len, body, body_len);
+	memset(&o, 0, sizeof(o));
+	len = compose(&b, &o, env, msg_id, minutes, &p);
 	if (b.over) {
 		free(msg);
-		return MBOARD_E_ARG;
+		return MBOARD_E_TOO_BIG;
 	}
 	/* NWC24iMBoxCheck(): room for the message, the work area and 16 KiB.
 	 * The SDK deletes the oldest messages to make room; this never does. */
 	if (len >= MSG_LIMIT || free_space <= len + STRING_WORK + 0x4000) {
 		free(msg);
-		return MBOARD_E_FULL;
+		return len >= MSG_LIMIT ? MBOARD_E_TOO_BIG : MBOARD_E_FULL;
 	}
 
 	/* The file is zero-padded to 32 bytes, as the SDK's buffered VF writes
@@ -1109,16 +1281,25 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 		free_space = free_clusters(&v) * CL;
 
 		/* CopyMsgObjToMBCFmt(), then AddMBCEntry()'s header update. */
+		flags = F_FOR_RECIPIENT | F_FOR_MENU | F_TO_RECV | F_INITIALIZED | F_DELIVERING | F_21;
+		if (p.n_att)
+			flags |= F_MULTIPART;
+		if (p.delay_hours)
+			flags |= F_DESIGNATED;
 		memset(e, 0, BOX_ENTRY);
 		put32(e + 0x00, msg_id);
-		put32(e + 0x04, F_FOR_RECIPIENT | F_FOR_MENU | F_TO_RECV | F_INITIALIZED | F_DELIVERING | F_21);
+		put32(e + 0x04, flags);
 		put32(e + 0x08, len);
 		put32(e + 0x0c, env->app_id);
-		put32(e + 0x10, o.body);          /* where the text part starts */
+		put32(e + 0x10, o.start);         /* the first boundary, or the text */
 		put32(e + 0x18, LED_DEFAULT);
 		put64(e + 0x20, env->wii_number);  /* from */
 		put32(e + 0x28, minutes);
+		/* CorrectHeadersForMBDelay(): the time it may be shown, in minutes. */
+		if (p.delay_hours)
+			put32(e + 0x2c, minutes + (uint32_t) p.delay_hours * 60);
 		e[0x30] = 1;                        /* one recipient */
+		e[0x31] = (uint8_t) p.n_att;
 		put16(e + 0x32, env->group_id);
 		put32(e + 0x34, o.from);
 		put32(e + 0x38, o.to);
@@ -1126,8 +1307,12 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 		put32(e + 0x44, o.txenc);
 		put32(e + 0x48, o.body);
 		put32(e + 0x4c, o.body_len);
-		put32(e + 0x68, TXT_PLAIN);
-		put32(e + 0x6c, TXT_PLAIN);
+		for (i = 0; i < ATTACH_MAX; ++i) {
+			put32(e + 0x50 + 8 * i, i < p.n_att ? o.att[i] : 0);
+			put32(e + 0x54 + 8 * i, i < p.n_att ? o.att_len[i] : 0);
+			put32(e + 0x60 + 4 * i, i < p.n_att ? p.att_size[i] : 0);
+			put32(e + 0x68 + 4 * i, i < p.n_att ? p.att_type[i] : TXT_PLAIN);
+		}
 		put32(e + 0x70, o.body_len);        /* the text's size before encoding */
 		put32(e + 0x78, ICON_NEW_NONE);
 
@@ -1205,6 +1390,8 @@ const char *mboard_strerror(int result) {
 	case MBOARD_E_BUSY: return "WiiConnect24 busy, try again";
 	case MBOARD_E_NO_ID: return "no Wii number";
 	case MBOARD_E_DENIED: return "permission denied";
+	case MBOARD_E_TOO_BIG: return "photo, board data or message too big";
+	case MBOARD_E_NO_MII: return "no Mii in that slot";
 	default: return "unknown error";
 	}
 }
@@ -1352,20 +1539,22 @@ static void app_identity(u32 *app, u16 *group) {
 }
 
 int mboard_post(const char *title_utf8, const char *body_utf8) {
-	static u16 title[MBOARD_TITLE_MAX], body[MBOARD_BODY_MAX];
+	mboard_msg m;
+
+	memset(&m, 0, sizeof(m));
+	m.title = title_utf8;
+	m.body = body_utf8;
+	return mboard_post_msg(&m);
+}
+
+int mboard_post_msg(const mboard_msg *msg) {
 	static char domain[64];
 	u8 *ctl = NULL;
 	mboard_env env;
 	mboard_io io;
 	s32 kd, fd, r;
-	int res, nt, nb;
+	int res;
 
-	if (!title_utf8 || !body_utf8)
-		return MBOARD_E_ARG;
-	nt = mboard_utf16(title, MBOARD_TITLE_MAX, title_utf8);
-	nb = mboard_utf16(body, MBOARD_BODY_MAX, body_utf8);
-	if (!nt || !nb)
-		return MBOARD_E_ARG;
 	ISFS_Initialize();
 	memset(&env, 0, sizeof(env));
 	if ((res = read_config(&env.wii_number, domain)) < 0)
@@ -1400,7 +1589,7 @@ int mboard_post(const char *title_utf8, const char *body_utf8) {
 			io.ctx = (void *) box;
 			io.read = ios_read;
 			io.write = ios_write;
-			res = mboard_post_box(ctl, &io, &env, title, nt, body, nb);
+			res = mboard_post_box(ctl, &io, &env, msg);
 			IOS_Close(box);
 		}
 		/* The control entry last: it is what makes the message exist. */
@@ -1415,6 +1604,36 @@ int mboard_post(const char *title_utf8, const char *body_utf8) {
 	(void) r;
 	IOS_Close(kd);
 	return res;
+}
+
+/* The Mii database: "RNOD", then 100 Miis of 74 bytes (RFLCharData). Games
+ * read it through RFL; any title may. */
+static char rfl_path[] ATTRIBUTE_ALIGN(32) = "/shared2/menu/FaceLib/RFL_DB.dat";
+
+int mboard_mii(int slot, uint8_t face[MBOARD_FACE_SIZE]) {
+	static u8 head[4] ATTRIBUTE_ALIGN(32), mii[MBOARD_FACE_SIZE + 6] ATTRIBUTE_ALIGN(32);
+	s32 fd, got;
+	int i;
+
+	if (slot < 0 || slot >= 100 || !face)
+		return MBOARD_E_ARG;
+	ISFS_Initialize();
+	fd = IOS_Open(rfl_path, IPC_OPEN_READ);
+	if (fd < 0)
+		return nand_error(fd);
+	got = IOS_Read(fd, head, 4) == 4 && !memcmp(head, "RNOD", 4) &&
+		  IOS_Seek(fd, 4 + slot * MBOARD_FACE_SIZE, SEEK_SET) == 4 + slot * MBOARD_FACE_SIZE &&
+		  IOS_Read(fd, mii, MBOARD_FACE_SIZE) == MBOARD_FACE_SIZE;
+	IOS_Close(fd);
+	if (!got)
+		return MBOARD_E_FORMAT;
+	/* An empty slot has no creation ID. */
+	for (i = 0x18; i < 0x20 && !mii[i]; ++i)
+		;
+	if (i == 0x20)
+		return MBOARD_E_NO_MII;
+	memcpy(face, mii, MBOARD_FACE_SIZE);
+	return MBOARD_OK;
 }
 
 /* ---- IOS's NAND permission check -------------------------------------------

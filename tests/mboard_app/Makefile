@@ -21,7 +21,14 @@ dolphin: main.c ../../sdk/mboard/mboard.c ../../sdk/mboard/mboard.h
 		-o mboard_app_dolphin.elf
 	$(ELF2DOL) mboard_app_dolphin.elf mboard_app_dolphin.dol
 
-clean:
-	rm -f mboard_app.elf mboard_app.dol mboard_app_dolphin.elf mboard_app_dolphin.dol
+# The same for the full message (tests/dolphin_mboard.py --full).
+dolphin-full: main.c ../../sdk/mboard/mboard.c ../../sdk/mboard/mboard.h
+	$(CC) $(CFLAGS) -DMBOARD_APP_DOLPHIN_FULL main.c ../../sdk/mboard/mboard.c $(LDFLAGS) -lfat -logc \
+		-o mboard_app_dolphin_full.elf
+	$(ELF2DOL) mboard_app_dolphin_full.elf mboard_app_dolphin_full.dol
 
-.PHONY: clean dolphin
+clean:
+	rm -f mboard_app.elf mboard_app.dol mboard_app_dolphin.elf mboard_app_dolphin.dol \
+		mboard_app_dolphin_full.elf mboard_app_dolphin_full.dol
+
+.PHONY: clean dolphin dolphin-full

@@ -7,10 +7,16 @@ Receive box: a post must leave what the SDK's NWC24CommitMsg() leaves for a
 game's message to its own Wii (docs/mboard.md), checked here with a FAT
 reader of its own; a post it refuses must leave both files as they were.
 Set MBOARD_REAL_BOX to a folder holding a Wii's wc24recv.ctl and .mbx to
-also post into a copy of those."""
+also post into a copy of those.
+
+The full message (mboard_msg: a Mii face, a JPEG, board data, Reply, delay,
+filing date) is checked against a rebuild from the SDK's own format strings
+(NWC24MsgCommit.c), and parsed back with Python's email package."""
 
 import base64
 import datetime
+import email
+import email.policy
 import os
 import pathlib
 import shutil
@@ -38,7 +44,7 @@ WII = 1234567890123456
 DOMAIN = "@wii.com"
 APP, GROUP = 0x4F484243, 0x3031  # 'OHBC', "01"
 UTC, LOCAL = "2026-10-22T18:30:05", "2026-10-22T11:30:05"
-E_IO, E_FORMAT, E_FULL, E_ARG, E_NO_ID = -1, -2, -3, -5, -7
+E_IO, E_FORMAT, E_FULL, E_ARG, E_NO_ID, E_TOO_BIG = -1, -2, -3, -5, -7, -9
 
 
 def empty_ctl():
@@ -151,6 +157,69 @@ def expected_message(msg_id, title, body, utc=UTC):
     return head.encode() + body.encode("utf-16-be"), minutes
 
 
+# A Mii's RFLCharData: a creation ID at 0x18 is what makes it one.
+FACE = bytes(range(0x18)) + bytes.fromhex("80aabbcc12345678") + bytes(range(0x20, 0x4a))
+JPEG = b"\xff\xd8\xff\xe0" + bytes(range(256)) * 3 + b"\xff\xd9"   # 774 bytes
+# A U8 archive's start (Nintendo's board data: chjump.bin, letterhead.arc).
+BOARD = bytes.fromhex("55aa382d00000020") + bytes(171)          # 179 bytes
+
+
+def b64_lines(data, step):
+    return [base64.b64encode(data[i:i + step]).decode() for i in range(0, len(data), step)]
+
+
+def expected_full(msg_id, title, body, face=None, jpeg=None, board=None, reply=False,
+                  delay=0, date=None, utc=UTC):
+    """NWC24CommitMsg()'s bytes for a WII_MENU message to the Wii itself,
+    from its format strings. Returns (bytes, minutes, offsets)."""
+    t = datetime.datetime.strptime(utc, "%Y-%m-%dT%H:%M:%S")
+    unix = int(t.replace(tzinfo=datetime.timezone.utc).timestamp())
+    minutes = (unix + 2208988800) // 60
+    addr = f"w{WII:016d}{DOMAIN}"
+    h = (f"Date: {t.day:02d} {t.strftime('%b')} {t.year} {t:%H:%M:%S} -0000\r\n"
+         f"From: {addr}\r\nTo: {addr}\r\n"
+         f"Message-Id: <{msg_id:05X}{WII >> 32:08X}{WII & 0xffffffff:08X}{minutes:08X}{DOMAIN}>\r\n"
+         f"X-Wii-AppId: 2-{APP:08X}-{GROUP:04X}\r\nX-Wii-Cmd: 00040001\r\n")
+    h += "X-Wii-AltName:" + "".join(f" {l}\r\n" for l in b64_lines(title.encode("utf-16-be") + b"\0\0", 42))
+    if face:
+        h += "X-WiiFace:" + "".join(f" {l}\r\n" for l in b64_lines(face, 42))
+    if not reply:
+        h += "X-Wii-MB-NoReply: -\r\n"
+    if date:
+        y, mo, d = date
+        h += f"X-Wii-MB-RegDate: {(y - 2000) << 9 | mo << 5 | d:04X}\r\n"
+    if delay:
+        h += f"X-Wii-MB-Delay: {delay:02X}\r\n"
+    h += "MIME-Version: 1.0\r\n"
+    atts = [(a, t_, s) for a, t_, s in ((jpeg, "image/jpeg", "jpg"),
+                                         (board, "application/x-wii-msgboard", "wii")) if a]
+    divider = f"Boundary-NWC24-{minutes:08X}{msg_id:05X}"
+    if atts:
+        h += f'Content-Type: multipart/mixed;\r\n boundary="{divider}"\r\n'
+        start = len(h)
+        h += f"\r\n--{divider}\r\n"
+    h += "Content-Type: text/plain; charset=utf-16be\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+    if not atts:
+        start = len(h)
+    out = h.encode()
+    body_at = len(out)
+    out += body.encode("utf-16-be")
+    spans = []
+    for i, (data, mime, suffix) in enumerate(atts):
+        name = f"{chr(97 + i)}{msg_id:07d}.{suffix}"
+        out += (f"\r\n--{divider}\r\nContent-Type: {mime};\r\n name={name}\r\n"
+                "Content-Transfer-Encoding: base64\r\n"
+                f"Content-Disposition: attachment;\r\n filename={name}\r\n\r\n").encode()
+        at = len(out)
+        full = len(data) - len(data) % 57
+        out += "".join(l + "\r\n" for l in b64_lines(data[:full], 57)).encode()
+        out += base64.b64encode(data[full:]) + b"\r\n\r\n"
+        spans.append((at, len(out) - at, len(data), 0x20000 if suffix == "jpg" else 0x30001))
+        if i == len(atts) - 1:
+            out += f"\r\n--{divider}--\r\n".encode()
+    return out, minutes, {"start": start, "body": body_at, "atts": spans}
+
+
 @unittest.skipUnless(CC, "no C compiler")
 class MboardTest(unittest.TestCase):
     @classmethod
@@ -203,9 +272,21 @@ class MboardTest(unittest.TestCase):
         return c, m
 
     def post(self, c, m, title="WiiStation", body="Played Final Fantasy VII\nfor 42 minutes.",
-             utc=UTC, wii=WII, domain=DOMAIN):
+             utc=UTC, wii=WII, domain=DOMAIN, **opts):
+        args = []
+        for key in ("face", "jpeg", "board"):
+            if opts.get(key) is not None:
+                f = self.dir / f"part.{key}"
+                f.write_bytes(opts[key])
+                args.append(f"{key}={f}")
+        if opts.get("reply"):
+            args.append("reply=1")
+        if opts.get("delay"):
+            args.append(f"delay={opts['delay']}")
+        if opts.get("date"):
+            args.append("date=%04d-%02d-%02d" % opts["date"])
         return self.host("post", c, m, wii, domain, f"{APP:08x}", f"{GROUP:04x}", utc, LOCAL,
-                         title.encode().hex(), body.encode().hex())
+                         title.encode().hex(), body.encode().hex(), *args)
 
     def check_box(self, ctl, mbx, posts):
         """posts: [(id, title, body)] in the order they were made."""
@@ -320,6 +401,104 @@ class MboardTest(unittest.TestCase):
         self.assertEqual(self.post(c, m, domain="wii.com"), E_NO_ID)
         self.assertEqual(self.post(c, m, body=""), E_ARG)
         self.assertEqual((c.read_bytes(), m.read_bytes()), before)
+
+    # ---- The full message: face, photo, board data, Reply, delay, date ----
+
+    def check_full(self, ctl, mbx, msg_id, slot, title, body, **opts):
+        want, minutes, at = expected_full(msg_id, title, body, **opts)
+        fat = Fat(mbx)
+        mb = next(e for e in fat.entries(0) if e["short"] == b"MB         ")
+        files = {e["long"]: fat.read(e) for e in fat.entries(mb["cluster"]) if e["attr"] == 0x20}
+        self.assertEqual(files[f"r{msg_id:07d}.msg"], want + bytes(-len(want) % 32))
+        e = bytes(ctl[0x80 * slot:0x80 * (slot + 1)])
+        f = struct.unpack(">8IQIIBBH5I2I8I3II", e)
+        atts = at["atts"]
+        flags = 0x200329 | (0x10000 if atts else 0) | (0x1000000 if opts.get("delay") else 0)
+        text = len(body.encode("utf-16-be"))
+        self.assertEqual(f[0:8], (msg_id, flags, len(want), APP, at["start"], 0, 0x40001, 0))
+        self.assertEqual(f[8:14], (WII, minutes, minutes + 60 * opts.get("delay", 0) if opts.get("delay") else 0,
+                                   1, len(atts), GROUP))
+        self.assertEqual(f[19:21], (at["body"], text))
+        pad = [(0, 0, 0, 0x10000)] * (2 - len(atts))
+        a = atts + pad
+        self.assertEqual(f[21:29], (a[0][0], a[0][1], a[1][0], a[1][1], a[0][2], a[1][2], a[0][3], a[1][3]))
+        self.assertEqual(f[29:33], (text, 0, 0x80000000, 0))
+        return want
+
+    def test_full_message(self):
+        """Every option at once: the bytes the SDK writes, and a MIME
+        reader gets each part back."""
+        c, m = self.box()
+        opts = dict(face=FACE, jpeg=JPEG, board=BOARD, delay=3, date=(2026, 10, 24))
+        self.assertEqual(self.post(c, m, "WiiStation", "Played Wii Sports\nfor 5 minutes.", **opts), 0)
+        want = self.check_full(c.read_bytes(), m.read_bytes(), 1, 1, "WiiStation",
+                               "Played Wii Sports\nfor 5 minutes.", **opts)
+        msg = email.message_from_bytes(want, policy=email.policy.compat32)
+        self.assertTrue(msg.is_multipart())
+        parts = msg.get_payload()
+        self.assertEqual([p.get_content_type() for p in parts],
+                         ["text/plain", "image/jpeg", "application/x-wii-msgboard"])
+        self.assertEqual(parts[0].get_payload(decode=True).decode("utf-16-be"),
+                         "Played Wii Sports\nfor 5 minutes.")
+        self.assertEqual(parts[1].get_payload(decode=True), JPEG)
+        self.assertEqual(parts[2].get_payload(decode=True), BOARD)
+        self.assertEqual(parts[1].get_filename(), "a0000001.jpg")
+        self.assertEqual(base64.b64decode("".join(msg["X-WiiFace"].split())), FACE)
+        self.assertEqual(msg["X-Wii-MB-NoReply"], "-")  # no Reply button unless asked
+        self.assertEqual((msg["X-Wii-MB-RegDate"], msg["X-Wii-MB-Delay"]), ("3558", "03"))
+        self.check_box_header(c.read_bytes(), m.read_bytes(), [len(want)])
+
+    def test_each_option_alone(self):
+        cases = [dict(face=FACE), dict(reply=True), dict(delay=240), dict(date=(2028, 2, 29)),
+                 dict(jpeg=JPEG), dict(board=BOARD),
+                 dict(jpeg=bytes.fromhex("ffd8ffe0") + bytes(57 * 4 - 4))]  # a whole number of lines
+        c, m = self.box()
+        sizes = []
+        for i, opts in enumerate(cases, 1):
+            with self.subTest(opts=sorted(opts)):
+                self.assertEqual(self.post(c, m, body=f"option {i}", **opts), 0)
+                sizes.append(len(self.check_full(c.read_bytes(), m.read_bytes(), i, i, "WiiStation",
+                                                 f"option {i}", **opts)))
+        self.check_box_header(c.read_bytes(), m.read_bytes(), sizes)
+
+    def check_box_header(self, ctl, mbx, sizes):
+        num, cap, tot, size, nxt, free, oldest, space = struct.unpack_from(">8I", ctl, 8)
+        self.assertEqual((num, tot, nxt, free, oldest), (len(sizes), sum(sizes), len(sizes) + 1,
+                                                         0x80 * (len(sizes) + 1), 1))
+        self.assertEqual(space, (Fat(mbx).free() - 1) * CL)
+        self.assertEqual(mbx[FAT1:FAT1 + FAT_LEN], mbx[FAT2:FAT2 + FAT_LEN])
+
+    def test_big_attachments(self):
+        """Board data at its limit, and a photo near the SDK's total."""
+        c, m = self.box()
+        board = BOARD + bytes(0x1E000 - len(BOARD))
+        self.assertEqual(self.post(c, m, board=board), 0)
+        jpeg = JPEG + bytes(0x20000 - len(JPEG))
+        self.assertEqual(self.post(c, m, body="big photo", jpeg=jpeg), 0)
+        self.check_full(c.read_bytes(), m.read_bytes(), 2, 2, "WiiStation", "big photo", jpeg=jpeg)
+
+    def test_option_refusals_change_nothing(self):
+        bad_face = FACE[:0x18] + bytes(8) + FACE[0x20:]
+        cases = [
+            ("face with no creation ID", dict(face=bad_face), E_ARG),
+            ("not a JPEG", dict(jpeg=b"\x89PNG" + bytes(100)), E_ARG),
+            ("board data not U8", dict(board=b"RIFF" + bytes(100)), E_ARG),
+            ("board data too big", dict(board=BOARD + bytes(0x1E000 - len(BOARD) + 1)), E_TOO_BIG),
+            ("photo and board over the total",
+             dict(jpeg=JPEG + bytes(0x245B0 - 0x1E000 - len(JPEG)), board=BOARD + bytes(0x1E000 - len(BOARD))),
+             E_TOO_BIG),
+            ("delay over 240 h", dict(delay=241), E_ARG),
+            ("30 February", dict(date=(2026, 2, 30)), E_ARG),
+            ("29 February, not a leap year", dict(date=(2027, 2, 29)), E_ARG),
+            ("year 2036", dict(date=(2036, 1, 1)), E_ARG),
+            ("month 13", dict(date=(2026, 13, 1)), E_ARG),
+        ]
+        for name, opts, want in cases:
+            with self.subTest(name):
+                c, m = self.box(name="refused")
+                before = (c.read_bytes(), m.read_bytes())
+                self.assertEqual(self.post(c, m, **opts), want)
+                self.assertEqual((c.read_bytes(), m.read_bytes()), before)
 
     @unittest.skipUnless(os.environ.get("MBOARD_REAL_BOX"), "MBOARD_REAL_BOX not set")
     def test_post_into_a_real_box(self):

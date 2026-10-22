@@ -22,6 +22,52 @@ mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);   // needs AHBPROT
 | Needs | the Wii's Wii number (any set-up Wii has one) | AHBPROT (`<ahb_access/>` in meta.xml) |
 | Network, WiiConnect24 service | no | no |
 
+## The full message: a Mii, a photo, board data
+
+`mboard_post_msg()` writes everything else a game's message can carry, in
+the same receive-box message:
+
+```c
+static uint8_t mii[MBOARD_FACE_SIZE];
+mboard_msg m = { 0 };
+
+m.title = "WiiStation";
+m.body = "Played Wii Sports\nfor 5 minutes.";
+if (mboard_mii(0, mii) == MBOARD_OK)   // the Wii's first Mii, as the icon
+    m.face = mii;
+m.jpeg = photo; m.jpeg_size = photo_size;   // a JPEG: the board shows it
+m.board = arc; m.board_size = arc_size;     // board data: a U8 archive
+m.reply = 1;                                // a Reply button
+mboard_post_msg(&m);
+```
+
+| Field | Header or part | Limit (the SDK's) | Refused with |
+| --- | --- | --- | --- |
+| `face` | `X-WiiFace`: 74 bytes of `RFLCharData` | a creation ID; the Wii Menu also checks every part ([mii.md](mii.md)) | `MBOARD_E_ARG` (ID 0) |
+| `jpeg` | an `image/jpeg` part; the Wii Menu converts it, and files the message as `odh` | starts `FF D8 FF`; the photo and board data together under 0x245B0 | `MBOARD_E_ARG`, `MBOARD_E_TOO_BIG` |
+| `board` | an `application/x-wii-msgboard` part: a U8 archive, e.g. `chjump.bin` (a button that opens a channel) | starts `55 AA 38 2D`; at most 0x1E000 | `MBOARD_E_ARG`, `MBOARD_E_TOO_BIG` |
+| `reply` | no `X-Wii-MB-NoReply` | | |
+| `delay_hours` | `X-Wii-MB-Delay`, the control entry's 0x2C and flag bit 24: held back from the board until then | 1-240 | `MBOARD_E_ARG` |
+| `file_year`, `file_month`, `file_day` | `X-Wii-MB-RegDate` | 2000-2035, a real date | `MBOARD_E_ARG` |
+
+The text, the encoded attachments and their headers must also fit the receive
+box's largest message (0x31C00), or the result is `MBOARD_E_TOO_BIG`.
+[messageboard-messages.md](messageboard-messages.md) has these formats:
+
+- the multipart layout, byte for byte;
+- the control entry's attachment fields;
+- where the Wii Menu files each kind of record;
+- the board record it builds.
+
+`mboard_post()` is `mboard_post_msg()` with only a title and text, and it
+writes the same bytes as before.
+
+Two side effects:
+
+- **A valid Mii also goes into the Wii's hidden Mii database.** That is what
+  the Wii Menu does with any message's Mii.
+- **A JPEG the Wii Menu cannot convert** shows as its question-mark picture.
+
 ## How games post: the SDK's loop-back
 
 The brief assumed that Mario Party 8 and 9 post through the WiiConnect24 send
@@ -186,12 +232,29 @@ profile's), checked by tracing it in Dolphin:
   half-finished post retried, ten refusals that change nothing, and a post
   into a copy of the bench Wii's real receive box (`MBOARD_REAL_BOX`). The
   play history is compared with `tools/msgboard/cdb_log.py`, byte for byte.
+  The full message (every option at once, each alone, board data at its
+  limit, a large photo, and ten option refusals) is compared with a rebuild
+  from the SDK's format strings, and Python's `email` package must read
+  each part back as it went in.
 - **Dolphin** (`tests/dolphin_mboard.py --restore`): the real Wii Menu 4.3U
   files the post as
   `/2026/10/01/12/05/HBLW_01/txt/3279E781.000` holding the text. Every file
   `cdb.vff` had is kept. `tests/nandput` then restores the box and
   `cdb.vff` byte for byte. `--ipl-symbols` gives Dolphin a map of the Wii
   Menu and logs its import: the trace that found the padding.
+- **Dolphin, the full message** (`tests/dolphin_mboard.py --full --restore`,
+  2026-10-22). `mboard_post_msg` posted text with a Mii (`test_mii()`), a
+  2,869-byte JPEG, and board data: a `chjump.bin` that opens HBC. The Wii
+  Menu filed it as `/2026/09/22/12/05/HBLW_01/odh/326CB881.000`, an `RI_5`
+  record holding:
+  - the text;
+  - the Mii's 74 bytes (face offset 0x1F8);
+  - the photo, as a 1,156-byte picture (attachment type 1);
+  - the 128 bytes of board data, unchanged (type 2).
+
+  Every file `cdb.vff` had was kept, and the restore put all three files
+  back byte for byte. An earlier run with an all-zero Mii filed the message
+  without the face: the eyebrow Y must be 3 or more ([mii.md](mii.md)).
 - **Bench Wii** (192.168.8.213, IOS58, Wii Menu 4.3U, WiiLink-registered,
   2026-10-22), through the queue (`tests/wii_mboard.py`):
   - `post` (job 20261022-114201-8b8b7c): `mboard_post` returned
@@ -242,3 +305,6 @@ Dolphin (`--restore`); on the bench Wii it has not been needed.
   the app's session and its games' lines both.
 - `MBOARD_E_BUSY` is worth one retry a few seconds later. The other
   errors are not worth retrying.
+- `mboard_post_msg` reads the photo and board data from the caller's
+  memory while it posts, and needs about 1.4 times their size in free
+  memory for the encoded message.

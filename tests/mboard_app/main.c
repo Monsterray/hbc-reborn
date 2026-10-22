@@ -5,10 +5,16 @@
 //                                         receive box, the clock, AHBPROT
 //   mboard_app.dol post TITLE BODY        mboard_post(); "\n" in BODY is a new line
 //   mboard_app.dol play NAME ID SECONDS   mboard_log_play()
+//   mboard_app.dol full TITLE BODY        mboard_post_msg() with a Mii face
+//                                         (sd:/mboard_test/face.bin, or the
+//                                         Wii's first Mii), photo.jpg and
+//                                         board.arc from sd:/mboard_test if
+//                                         there, and a Reply button
 // Each writes what it did to sd:/mboard_test/result.txt (and the screen),
 // ending with "done". Built with -DMBOARD_APP_DOLPHIN (make dolphin), a run
 // without arguments also posts and logs a fixed test text: Dolphin boots a
-// DOL without any (tests/dolphin_mboard.py).
+// DOL without any (tests/dolphin_mboard.py). -DMBOARD_APP_DOLPHIN_FULL
+// (make dolphin-full) runs `full` with a fixed text instead.
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -105,6 +111,71 @@ static void check(void) {
 	}
 }
 
+// A whole SD file, or NULL.
+static void *slurp(const char *path, u32 *size) {
+	FILE *f = fopen(path, "rb");
+	void *p = NULL;
+	long n;
+
+	*size = 0;
+	if (!f)
+		return NULL;
+	if (!fseek(f, 0, SEEK_END) && (n = ftell(f)) > 0 && !fseek(f, 0, SEEK_SET) &&
+			(p = malloc((size_t) n)) && fread(p, 1, (size_t) n, f) == (size_t) n) {
+		*size = (u32) n;
+	} else {
+		free(p);
+		p = NULL;
+	}
+	fclose(f);
+	return p;
+}
+
+static int full(const char *title, const char *body) {
+	static u8 face[MBOARD_FACE_SIZE];
+	mboard_msg m;
+	u32 size;
+	void *f;
+	int res, slot;
+	u64 t0;
+
+	memset(&m, 0, sizeof(m));
+	m.title = title;
+	m.body = body;
+	m.reply = 1;
+	f = slurp("sd:/mboard_test/face.bin", &size);
+	if (f && size == MBOARD_FACE_SIZE) {
+		memcpy(face, f, MBOARD_FACE_SIZE);
+		m.face = face;
+		say("face: sd:/mboard_test/face.bin\n");
+	} else {
+		for (slot = 0; slot < 100; ++slot) {
+			res = mboard_mii(slot, face);
+			if (res == MBOARD_OK) {
+				m.face = face;
+				break;
+			}
+			if (res != MBOARD_E_NO_MII)
+				break;
+		}
+		say("face: %s (%d %s)\n", m.face ? "a Mii from the Wii's database" : "none", res,
+			mboard_strerror(res));
+		if (m.face)
+			say("  Mii slot %d\n", slot);
+	}
+	free(f);
+	m.jpeg = slurp("sd:/mboard_test/photo.jpg", &m.jpeg_size);
+	m.board = slurp("sd:/mboard_test/board.arc", &m.board_size);
+	say("photo: %u bytes, board data: %u bytes\n", (unsigned) m.jpeg_size, (unsigned) m.board_size);
+	t0 = gettime();
+	res = mboard_post_msg(&m);
+	say("mboard_post_msg: %d (%s) in %llu ms\n", res, mboard_strerror(res),
+		ticks_to_millisecs(gettime() - t0));
+	free((void *) m.jpeg);
+	free((void *) m.board);
+	return res;
+}
+
 static void unescape(char *s) {
 	char *o = s;
 
@@ -149,6 +220,10 @@ int main(int argc, char **argv) {
 		say("mboard_log_play: %d (%s)\n", res, mboard_strerror(res));
 	}
 #endif
+#ifdef MBOARD_APP_DOLPHIN_FULL
+	if (argc < 2)
+		full("WiiStation", "Played Dolphin Full Test for 4 minutes.\nWith a Mii, a photo and board data.");
+#endif
 
 	say("mboard_app:");
 	for (res = 1; res < argc; ++res)
@@ -166,8 +241,12 @@ int main(int argc, char **argv) {
 		res = mboard_log_play(argv[2], argv[3], (u32) strtoul(argv[4], NULL, 10));
 		say("mboard_log_play: %d (%s) in %llu ms\n", res, mboard_strerror(res),
 			ticks_to_millisecs(gettime() - t0));
+	} else if (argc == 4 && !strcmp(argv[1], "full")) {
+		unescape(argv[3]);
+		full(argv[2], argv[3]);
+		check();
 	} else if (argc > 1 && (argc != 2 || strcmp(argv[1], "check"))) {
-		say("usage: check | post TITLE BODY | play NAME ID SECONDS\n");
+		say("usage: check | post TITLE BODY | play NAME ID SECONDS | full TITLE BODY\n");
 	}
 	say("done\n");
 	if (report) {

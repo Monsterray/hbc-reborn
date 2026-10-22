@@ -184,6 +184,23 @@ From the 1.3.6 review, each verified in the code first:
   `wc24send.mbx` as FAT16; the Wii writes it as FAT12 (`f0 ff ff ff 0f`).
   Matters only for Dolphin's own send path.
 
+- The full message (`mboard_post_msg`): a Mii face, a JPEG, board data, Reply,
+  delay and filing date, as `NWC24CommitMsg()` writes them (Petari's
+  `NWC24MsgCommit.c` format strings, rebuilt independently in
+  `tests/test_mboard.py`). `mboard_mii()` reads the Wii's Mii database. The
+  Wii Menu filed it in Dolphin with every part (docs/mboard.md, Proof). It
+  has not yet been shown on the bench Wii's board.
+- docs/messageboard-messages.md audited against the Wii Menu and SDK
+  decompilations, and corrected:
+  - its "authenticated record" offsets were CDB's file header;
+  - its `HAEA/<ID0>/<ID1>` path is the SD backup's;
+  - `HABA` is the Wii Shop Channel, from a `chjump.bin`;
+  - 0x245B0 limits the attachments, not the message.
+
+  The CDB signature (what the HMAC covers, and whether NAND reads check it)
+  is still unverified: those files are not decompiled. Mii notes are in
+  docs/mii.md.
+
 ### 1.10.8: Z+START, and Reconnect in player order
 
 - GameCube controller: HBC opens HOME with Z and START together (either

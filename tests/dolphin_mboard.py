@@ -17,11 +17,19 @@ With --ipl-symbols (config/43U/symbols.txt of the Wii Menu decompilation,
 github.com/koopthekoopa/wii-ipl) Dolphin gets a symbol map of the Wii Menu, so
 its OSReport() lines (what it does with each message) reach the log.
 
-usage: tests/dolphin_mboard.py [--fresh] [--day YYYY-MM-DD] [--ipl-symbols FILE]
+With --full, mboard_app_dolphin_full.dol (make -C tests/mboard_app
+dolphin-full) posts the full message instead: a Mii face, a JPEG photo and
+board data (a U8 archive holding a chjump.bin), with a Reply button, from
+files this puts on Dolphin's SD card. The Wii Menu must file it with all of
+them: the record holds the face, and the photo and board data as attachments.
+
+usage: tests/dolphin_mboard.py [--fresh] [--full] [--day YYYY-MM-DD] [--ipl-symbols FILE]
 """
 
 import argparse
 import calendar
+import io
+import struct
 import os
 import pathlib
 import re
@@ -45,6 +53,69 @@ CTL = NAND / "shared2/wc24/mbox/wc24recv.ctl"
 MBX = NAND / "shared2/wc24/mbox/wc24recv.mbx"
 CDB = NAND / "title/00000001/00000002/data/cdb.vff"
 BODY = "Played Dolphin Test for 3 minutes.\nA second line."
+APP_FULL = root / "tests" / "mboard_app" / "mboard_app_dolphin_full.dol"
+BODY_FULL = "Played Dolphin Full Test for 4 minutes.\nWith a Mii, a photo and board data."
+
+
+def test_mii():
+    """A Mii's RFLCharData (74 bytes; RFLiCharData in the Wii Menu
+    decompilation's RFLi_Types.h, big-endian bit fields from the top bit): a
+    girl named "Tester", born 22 Oct, every face part inside the ranges
+    RFLiCheckValidInfo() allows (an eyebrow's Y is at least 3), and a
+    creation ID with its "normal Mii" bit (31) set."""
+    def word(*fields):          # (value, bits), from the top bit down
+        v, used = 0, 0
+        for val, bits in fields:
+            used += bits
+            v |= val << (16 - used)
+        return struct.pack(">H", v)
+    out = word((0, 1), (1, 1), (10, 4), (22, 5), (4, 4), (0, 1))     # sex, birthday, colour
+    out += "Tester".encode("utf-16-be").ljust(20, b"\0")
+    out += bytes([0x40, 0x40]) + bytes.fromhex("89abcdef" "c0ffee00")  # height, build, ID
+    out += word((0, 3), (0, 3), (0, 4), (0, 3), (0, 1), (0, 2))     # face
+    out += word((33, 7), (1, 3), (0, 1))                            # hair
+    out += word((6, 5), (6, 5))                                     # eyebrow type, rotation
+    out += word((1, 3), (4, 4), (10, 5), (2, 4))                    # eyebrow colour, scale, Y, X
+    out += word((2, 6), (4, 5), (12, 5))                            # eye type, rotation, Y
+    out += word((0, 3), (4, 4), (2, 4))                             # eye colour, scale, X
+    out += word((1, 4), (4, 4), (9, 5))                             # nose
+    out += word((6, 5), (0, 2), (4, 4), (13, 5))                    # mouth
+    out += word((0, 4), (0, 3), (4, 4), (10, 5))                    # glasses
+    out += word((0, 2), (0, 2), (0, 3), (4, 4), (10, 5))            # mustache, beard
+    out += word((0, 1), (4, 4), (20, 5), (2, 5))                    # mole
+    out += "hbc-reborn".encode("utf-16-be").ljust(20, b"\0")        # creator
+    assert len(out) == 74
+    return out
+
+
+def test_photo():
+    """A 192x144 baseline JPEG: a gradient with a block, as a camera would."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (192, 144))
+    for y in range(144):
+        for x in range(192):
+            img.putpixel((x, y), (x * 255 // 191, y * 255 // 143, 128))
+    ImageDraw.Draw(img).rectangle((60, 40, 130, 100), fill=(250, 250, 250))
+    out = io.BytesIO()
+    img.save(out, "JPEG", quality=85, progressive=False)
+    return out.getvalue()
+
+
+def chjump_arc(title_hi, title_lo, arg=b""):
+    """Board data as Nintendo's own messages carry it: a U8 archive holding
+    chjump.bin ("ChJp", its size, 1, 0, the title to open, then its
+    argument), laid out as the archive in a Wii Shop message on the bench."""
+    arg = (arg + b"\0").ljust((len(arg) + 2) & ~1, b"\0") if arg else b""   # NUL, to 2 bytes
+    chj = b"ChJp" + struct.pack(">IIIII", 0x20 + len(arg), 1, 0, title_hi, title_lo)
+    chj += struct.pack(">II", 0x20, len(arg)) + arg
+    names = b"\0chjump.bin\0"
+    nodes = struct.pack(">BxHII", 1, 0, 0, 2) + struct.pack(">BxHII", 0, 1, 0, len(chj))
+    meta = len(nodes) + len(names)
+    data_at = (0x20 + meta + 31) & ~31
+    nodes = nodes[:12] + struct.pack(">BxHII", 0, 1, data_at, len(chj))
+    head = struct.pack(">IIII", 0x55AA382D, 0x20, meta, data_at) + bytes(16)
+    arc = head + nodes + names
+    return arc + bytes(data_at - len(arc)) + chj
 SETTINGS = ["Dolphin.Interface.ConfirmStop=False", "Dolphin.Interface.UsePanicHandlers=False",
             "Dolphin.Analytics.PermissionAsked=True", "Dolphin.Analytics.Enabled=False",
             "Dolphin.Core.CPUThread=True", "Logger.Options.WriteToFile=True",
@@ -128,12 +199,16 @@ def main():
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--day", default=time.strftime("%Y-%m-%d"))
     ap.add_argument("--ipl-symbols")
+    ap.add_argument("--full", action="store_true", help="the full message (mboard_post_msg)")
     ap.add_argument("--post-only", action="store_true", help="stop before the Wii Menu runs")
     ap.add_argument("--restore", action="store_true",
                     help="then put the files back with tests/nandput and check they match")
     opts = ap.parse_args()
+    global APP, BODY
+    if opts.full:
+        APP, BODY = APP_FULL, BODY_FULL
     if not APP.exists():
-        sys.exit(f"build {APP} first: make -C tests/mboard_app dolphin")
+        sys.exit(f"build {APP} first: make -C tests/mboard_app " + ("dolphin-full" if opts.full else "dolphin"))
     if subprocess.run(["tasklist", "/FI", "IMAGENAME eq Dolphin.exe"], capture_output=True,
                       text=True).stdout.count("Dolphin.exe"):
         print("note: another Dolphin is running; this one uses its own profile")
@@ -151,7 +226,23 @@ def main():
 
     before = snapshot()
     originals = {f: f.read_bytes() for f in (CTL, MBX, CDB)}
-    log = dolphin(["-e", str(APP)], f"{opts.day}T12:00", 40)
+    app_extra = ()
+    if opts.full:
+        # The parts, on Dolphin's SD card (its folder sync).
+        sync = PROFILE.parent / "sdsync"
+        shutil.rmtree(sync, ignore_errors=True)
+        (sync / "mboard_test").mkdir(parents=True)
+        parts = {"face.bin": test_mii(), "photo.jpg": test_photo(),
+                 "board.arc": chjump_arc(0x00010001, 0x4F484243)}   # opens HBC (OHBC)
+        for name, data in parts.items():
+            (sync / "mboard_test" / name).write_bytes(data)
+        print("parts: " + ", ".join(f"{k} {len(v)} bytes" for k, v in parts.items()))
+        app_extra = ("Dolphin.Core.WiiSDCardEnableFolderSync=True",
+                     f"Dolphin.General.WiiSDCardSyncFolder={sync}")
+    log = dolphin(["-e", str(APP)], f"{opts.day}T12:00", 40, extra=app_extra)
+    if opts.full:
+        result = PROFILE.parent / "sdsync" / "mboard_test" / "result.txt"
+        print(result.read_text() if result.exists() else "no result.txt")
     print("-- app's KD and FS calls --")
     for line in log.splitlines():
         if "KD" in line or "wc24recv" in line or "cdb.vff" in line or "OSREPORT" in line:
@@ -161,7 +252,13 @@ def main():
     check(after["ctl"]["num"] == before["ctl"]["num"] + 1, f"receive box: {before['ctl']['num']} -> {after['ctl']['num']} messages")
     check(len(new) == 1 and utf16(BODY) in next(iter(new.values()), b""), f"the new message file {list(new)}")
     check(all(after["box"].get(k) == v for k, v in before["box"].items()), "the box's other messages unchanged")
-    check(any(utf16("Dolphin Test") in v for v in after["cdb"].values()), "play history has \"Dolphin Test\"")
+    if opts.full:
+        msg = next(iter(new.values()), b"")
+        for what in (b"X-WiiFace:", b"image/jpeg", b"application/x-wii-msgboard"):
+            check(what in msg, f"the message has {what.decode()}")
+        check(b"X-Wii-MB-NoReply" not in msg, "the message has a Reply button")
+    else:
+        check(any(utf16("Dolphin Test") in v for v in after["cdb"].values()), "play history has \"Dolphin Test\"")
     check(all(k in after["cdb"] for k in before["cdb"]), "cdb.vff kept every file")
 
     if opts.post_only:
@@ -201,6 +298,22 @@ def main():
         text = final["cdb"][k]
         i = text.find(utf16("Played"))
         print(f"{k}: ...{text[i:i + 160].decode('utf-16-be', 'replace')!r}")
+        if opts.full:
+            # CDB's 0x400-byte file header, then the board record
+            # (ipl::cdb RIPL_BoardRecord: "RI_5", offsets of the title,
+            # text and face at 0x11C/0x120/0x124, two attachments at 0x128).
+            rec = text[0x400:]
+            print(f"  record magic {rec[:4]!r}, folder type {k.split('/')[-2]}")
+            check(rec[:4] == b"RI_5", "a board record")
+            face_at = struct.unpack_from(">I", rec, 0x124)[0]
+            check(face_at and rec[face_at:face_at + 0x18] == test_mii()[:0x18],
+                  f"the record holds the Mii (at 0x{face_at:x})")
+            atts = [struct.unpack_from(">III", rec, 0x128 + 12 * j) for j in range(2)]
+            print(f"  attachments (type, offset, size): {atts}")
+            arc = chjump_arc(0x00010001, 0x4F484243)
+            check(arc in rec, "the record holds the board data")
+            check(k.split("/")[-2] == "odh" and any(a[2] for a in atts),
+                  "the photo was kept (an odh record with an attachment)")
 
     if opts.restore:
         # The restore path: tests/nandput puts the files back as they were
