@@ -255,6 +255,20 @@ profile's), checked by tracing it in Dolphin:
   Every file `cdb.vff` had was kept, and the restore put all three files
   back byte for byte. An earlier run with an all-zero Mii filed the message
   without the face: the eyebrow Y must be 3 or more ([mii.md](mii.md)).
+- **Bench Wii, the full message** (2026-10-22). Two jobs ran
+  `tests/wii_mboard.py`:
+  - **`full`** (job 20261022-130042-3ebca3) posted the Wii's own Mii from
+    database slot 0, byte for byte, with the photo, a `chjump.bin` that opens
+    HBC, and Reply.
+  - **`board --full --already`** (job 20261022-133332-027b7e) then found
+    what the Wii Menu had filed: `/2026/09/22/13/26/HBLW_01/odh/326CCB98.000`,
+    holding the Mii, a 42,252-byte picture (Dolphin's conversion of the same
+    JPEG was 1,156 bytes), the board data, and Reply available. Every file
+    `cdb.vff` had was kept.
+
+  The user saw the message on the board with the Mii and the photo; its
+  button opened HBC, and Reply opened the reply screen (no contacts to send
+  to).
 - **Bench Wii** (192.168.8.213, IOS58, Wii Menu 4.3U, WiiLink-registered,
   2026-10-22), through the queue (`tests/wii_mboard.py`):
   - `post` (job 20261022-114201-8b8b7c): `mboard_post` returned

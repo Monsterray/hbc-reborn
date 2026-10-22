@@ -188,8 +188,10 @@ From the 1.3.6 review, each verified in the code first:
   delay and filing date, as `NWC24CommitMsg()` writes them (Petari's
   `NWC24MsgCommit.c` format strings, rebuilt independently in
   `tests/test_mboard.py`). `mboard_mii()` reads the Wii's Mii database. The
-  Wii Menu filed it in Dolphin with every part (docs/mboard.md, Proof). It
-  has not yet been shown on the bench Wii's board.
+  Wii Menu filed it with every part, in Dolphin and on the bench Wii, and
+  the user saw it on the bench board: the Mii, the photo, the button that
+  opened HBC, and Reply (docs/mboard.md, Proof). Delay and filing date are
+  checked on the PC only.
 - docs/messageboard-messages.md audited against the Wii Menu and SDK
   decompilations, and corrected:
   - its "authenticated record" offsets were CDB's file header;
