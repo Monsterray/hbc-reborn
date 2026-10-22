@@ -161,6 +161,29 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.9: sdk/mboard, posts to the Wii Message Board (try/mboard)
+
+- **sdk/mboard** (docs/mboard.md): a message on today's page through the
+  SDK's loop-back into the WiiConnect24 receive box, and a Play History
+  line through the play log's cdb.vff writer. Proven on PC images, in
+  Dolphin with the real Wii Menu, and on the bench Wii: the Wii Menu filed
+  the post and kept every file.
+- **Message files must be padded to 32 bytes.** The Wii Menu's reader
+  reads whole 32-byte blocks and silently drops a message whose file ends
+  inside one. Found by giving Dolphin a symbol map of the Wii Menu
+  (koopthekoopa/wii-ipl), so its `OSReport` lines and traced calls reach the
+  log, and by its GDB stub for return values.
+- **Open, `hbc.py send`:** an app without the agent that is done in under
+  10 s has HBC back before `upload_outcome()` sees it go quiet. The new HBC
+  starts its upload count at 0, so `send` waits 60 s and fails although
+  the app ran (`nandget` of a small folder, every time on 2026-10-22). Fix
+  when a test needs `send` to succeed for quick apps: treat an upload count
+  lower than `before`, or a new HBC start, as "launched".
+  `tests/wii_mboard.py` works around it by checking the app's own report.
+- **Open, Dolphin:** its VFF code (`VFFUtil.cpp`) treats the 2 MiB
+  `wc24send.mbx` as FAT16; the Wii writes it as FAT12 (`f0 ff ff ff 0f`).
+  Matters only for Dolphin's own send path.
+
 ### 1.10.8: Z+START, and Reconnect in player order
 
 - GameCube controller: HBC opens HOME with Z and START together (either

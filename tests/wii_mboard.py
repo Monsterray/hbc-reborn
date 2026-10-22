@@ -14,8 +14,12 @@
            a picture from the capture card every 15 s; then checks that the
            Wii Menu filed the message in cdb.vff and kept every file it had.
            Run after `post`; give it the post job's run folder.
+  restore  put a `backup` back: BACKUP_DIR's mbox/wc24recv.{ctl,mbx} and
+           menu/cdb.vff go to the SD card, tests/nandput writes them over the
+           NAND files (same sizes only, read back and compared), and a new
+           snapshot is compared with the backup.
 
-usage: tests/wii_mboard.py backup | post | board POST_RUN_DIR [--minutes N]
+usage: tests/wii_mboard.py backup | post | board POST_RUN_DIR [--minutes N] | restore BACKUP_DIR
 queue: wiibench.py add --name mboard-STEP --cwd REPO --timeout 2400 -- C:/Python312/python.exe tests/wii_mboard.py STEP
 """
 
@@ -201,6 +205,33 @@ def board(out, post_dir, minutes):
     return ok
 
 
+def restore(out, backup_dir):
+    files = {"mbox": ["wc24recv.ctl", "wc24recv.mbx"], "menu": ["cdb.vff"]}
+    for sub, names in files.items():
+        for name in names:
+            if not (backup_dir / sub / name).exists():
+                print(f"{backup_dir / sub / name} missing: nothing restored", flush=True)
+                return False
+    for sub, names in files.items():
+        for name in names:
+            tool("put", str(backup_dir / sub / name), f"sd:/mbrestore_{sub}/{name}")
+    launch(root / "tests" / "nandput" / "nandput.dol", "sd:/mbrestore_mbox", MBOX[0], *files["mbox"])
+    launch(root / "tests" / "nandput" / "nandput.dol", "--unlock", "sd:/mbrestore_menu", MENU[0], *files["menu"])
+    ok = True
+    for sub in files:
+        tool("get", f"sd:/mbrestore_{sub}/put_result.txt", str(out / f"put_{sub}.txt"))
+        report = (out / f"put_{sub}.txt").read_text(errors="replace")
+        print(report, flush=True)
+        ok = check(ok, report.rstrip().endswith("done") and "DIFFER" not in report and
+                   report.count("restored, verified") == len(files[sub]), f"nandput {sub}")
+    ok &= snapshot(out / "after_restore", [MBOX, MENU])
+    for sub, names in files.items():
+        for name in names:
+            ok = check(ok, (out / "after_restore" / sub / name).read_bytes() ==
+                       (backup_dir / sub / name).read_bytes(), f"{name} matches the backup")
+    return ok
+
+
 def main():
     step = sys.argv[1] if len(sys.argv) > 1 else ""
     bench_wii()
@@ -212,6 +243,8 @@ def main():
     elif step == "board" and len(sys.argv) > 2:
         minutes = int(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else 20
         ok = board(out, pathlib.Path(sys.argv[2]), minutes)
+    elif step == "restore" and len(sys.argv) > 2:
+        ok = restore(out, pathlib.Path(sys.argv[2]))
     else:
         sys.exit(__doc__)
     print("PASS" if ok else "FAIL", flush=True)

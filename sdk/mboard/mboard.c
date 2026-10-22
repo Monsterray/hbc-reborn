@@ -1314,8 +1314,9 @@ static s32 kd_call(s32 fd, s32 cmd) {
 	return r < 0 ? r : (s32) get32(out);
 }
 
-/* UTC as the SDK has it (KD's difference plus the RTC); when KD has none,
- * or a value more than a day from the local clock, the local clock. */
+/* UTC as the SDK has it (KD's difference plus the RTC). When KD has none, or
+ * one further from the local clock than any time zone is (UTC-12 to UTC+14;
+ * the bench Wii's was a day behind), the local clock. */
 static s64 utc_now(u64 local) {
 	static u8 out[32] ATTRIBUTE_ALIGN(32);
 	s64 local_secs = (s64) (local / MBOARD_TICKS_PER_SEC), utc = local_secs + 946684800;
@@ -1327,7 +1328,7 @@ static s64 utc_now(u64 local) {
 		if (IOS_Ioctl(fd, KD_GET_TIME_DIFF, NULL, 0, out, sizeof(out)) >= 0 && !get32(out) &&
 				CONF_GetCounterBias(&bias) >= 0) {
 			s64 kd = (s64) get64(out + 4) + (local_secs - (s64) bias);
-			if (kd - utc < 86400 && utc - kd < 86400)
+			if (kd - utc <= 12 * 3600 && utc - kd <= 14 * 3600)
 				utc = kd;
 		}
 		IOS_Close(fd);
