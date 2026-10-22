@@ -9,20 +9,33 @@
            "Final Fantasy VII" to today's play history; the same files after.
            Checks the new message byte for byte and that every message and
            cdb.vff file already there is unchanged.
+  full     the full message (mboard_post_msg): the Wii's first Mii from its
+           Mii database as the icon, a JPEG and board data (a chjump.bin that
+           opens HBC) from the SD card, and a Reply button. Checks the new
+           message carries the database's Mii byte for byte, the photo and
+           the board data, and that nothing else changed. Reads
+           /shared2/menu/FaceLib (the Mii database) too, read-only.
+  id       read-only: this Wii's whole Wii number and mail address (from
+           nwc24msg.cfg). Written to the job's run folder as wii_id.txt, not
+           to the repository: it is the console's address.
   board    for a person at the Wii: waits (up to --minutes) while they open
            the Wii Menu, look at the Message Board and start HBC again, with
            a picture from the capture card every 15 s; then checks that the
            Wii Menu filed the message in cdb.vff and kept every file it had.
-           Run after `post`; give it the post job's run folder.
+           Run after `post` (or `full`, with --full); give it that job's run
+           folder. With --full it also checks the board record: the Mii, the
+           photo and the board data. With --already the person has done
+           that before the job: it only reads the board and checks.
   restore  put a `backup` back: BACKUP_DIR's mbox/wc24recv.{ctl,mbx} and
            menu/cdb.vff go to the SD card, tests/nandput writes them over the
            NAND files (same sizes only, read back and compared), and a new
            snapshot is compared with the backup.
 
-usage: tests/wii_mboard.py backup | post | board POST_RUN_DIR [--minutes N] | restore BACKUP_DIR
+usage: tests/wii_mboard.py backup | id | post | full | board POST_RUN_DIR [--minutes N] [--full] [--already] | restore BACKUP_DIR
 queue: wiibench.py add --name mboard-STEP --cwd REPO --timeout 2400 -- C:/Python312/python.exe tests/wii_mboard.py STEP
 """
 
+import base64
 import os
 import pathlib
 import shutil
@@ -34,6 +47,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tests"))
 import vffread  # noqa: E402
+import dolphin_mboard  # noqa: E402  (test_photo, chjump_arc)
 
 PROTECTED = ("192.168.8.200", "192.168.8.243")  # real data: never written by this script
 PY = sys.executable
@@ -45,6 +59,8 @@ SD_BAK = "sd:/mbbak_"  # + the folder name: nandget makes one folder level only
 WC24 = ("/shared2/wc24", "wc24", False)
 MBOX = ("/shared2/wc24/mbox", "mbox", False)
 MENU = ("/title/00000001/00000002/data", "menu", True)
+FACELIB = ("/shared2/menu/FaceLib", "facelib", False)
+FULL_BODY = "Played Final Fantasy IX\nfor 23 minutes, as your Mii."
 TITLE = "WiiStation"
 BODY = "Played Final Fantasy VII\nfor 42 minutes."
 GAME, GAME_ID, GAME_SECONDS = "Final Fantasy VII", "WSFF7", 42 * 60
@@ -173,9 +189,95 @@ def post(out):
     return ok
 
 
-def board(out, post_dir, minutes):
+def first_mii(rfl_db):
+    """The first slot of RFL_DB.dat with a creation ID, as mboard_mii() picks."""
+    if rfl_db[:4] != b"RNOD":
+        return None, None
+    for slot in range(100):
+        mii = rfl_db[4 + 74 * slot:4 + 74 * (slot + 1)]
+        if any(mii[0x18:0x20]):
+            return slot, mii
+    return None, None
+
+
+def full(out):
+    before, after = out / "before", out / "after"
+    ok = snapshot(before, [MBOX, MENU, FACELIB])
+    rfl = before / "facelib" / "RFL_DB.dat"
+    slot, mii = first_mii(rfl.read_bytes()) if rfl.exists() else (None, None)
+    ok = check(ok, mii is not None, f"the Wii's Mii database has a Mii: slot {slot}")
+    if mii:
+        print(f"  its name: {mii[2:22].decode('utf-16-be').rstrip(chr(0))!r}, creator "
+              f"{mii[0x36:0x4a].decode('utf-16-be').rstrip(chr(0))!r}", flush=True)
+    photo = dolphin_mboard.test_photo()
+    arc = dolphin_mboard.chjump_arc(0x00010001, 0x4F484243)   # opens HBC (OHBC)
+    for name, data in (("photo.jpg", photo), ("board.arc", arc)):
+        (out / name).write_bytes(data)
+        tool("put", str(out / name), f"sd:/mboard_test/{name}")
+    tool("rm", "sd:/mboard_test/face.bin", check=False)        # take the Mii from the database
+    still(out, "0-before")
+    launch(APP, "full", TITLE, FULL_BODY.replace("\n", "\\n"))
+    still(out, "1-after-post")
+    tool("get", "sd:/mboard_test/result.txt", str(out / "full_result.txt"))
+    report = (out / "full_result.txt").read_text(errors="replace")
+    print(f"-- full_result.txt --\n{report}", flush=True)
+    ok = check(ok, "mboard_post_msg: 0 (posted)" in report, "mboard_post_msg returned MBOARD_OK")
+    ok = check(ok, "a Mii from the Wii's database" in report, "the app took the Mii from the database")
+    ok &= snapshot(after, [MBOX, MENU])
+
+    h0, v0, ctl0 = box(before / "mbox")
+    h1, v1, ctl1 = box(after / "mbox")
+    f0, f1 = v0.files(), v1.files()
+    new = {k: v for k, v in f1.items() if k not in f0}
+    ok = check(ok, h1["num"] == h0["num"] + 1 and len(new) == 1, f"one new message: {list(new)}")
+    msg = next(iter(new.values()), b"")
+    ok = check(ok, FULL_BODY.encode("utf-16-be") in msg, "it holds the text, as UTF-16")
+    face = b""
+    if b"X-WiiFace:" in msg:
+        i = msg.index(b"X-WiiFace:") + len(b"X-WiiFace:")
+        lines = [msg[i:msg.index(b"\r\n", i)]]
+        j = msg.index(b"\r\n", i) + 2
+        while msg[j:j + 1] == b" ":
+            lines.append(msg[j:msg.index(b"\r\n", j)])
+            j = msg.index(b"\r\n", j) + 2
+        face = base64.b64decode(b"".join(l.strip() for l in lines))
+    ok = check(ok, mii is not None and face == mii, "X-WiiFace is the database's Mii, byte for byte")
+    for what, data in ((b"image/jpeg", photo), (b"application/x-wii-msgboard", arc)):
+        ok = check(ok, what in msg and base64.b64encode(data[:57]) in msg, f"it carries the {what.decode()} part")
+    ok = check(ok, b"X-Wii-MB-NoReply" not in msg, "a Reply button")
+    ok = check(ok, all(len(v) % 32 == 0 for v in new.values()), "the file is padded to 32 bytes")
+    ok = check(ok, all(f1.get(k) == v for k, v in f0.items()), "every message already there is unchanged")
+    ok = check(ok, v1.fats_match(), "the two FATs match")
+    entries_before = {struct.unpack_from(">I", ctl0, o)[0]: ctl0[o:o + 0x80] for o in range(0x80, 0x8000, 0x80)}
+    ok = check(ok, all(ctl1[o:o + 0x80] == entries_before.get(struct.unpack_from(">I", ctl1, o)[0], b"")
+                       for o in range(0x80, 0x8000, 0x80)
+                       if struct.unpack_from(">I", ctl1, o)[0] in h0["ids"]),
+               "every control entry already there is unchanged")
+    ok = check(ok, h1["free_space"] == (v1.free() - 1) * 512, "free space recorded as the VF library counts it")
+    c0 = vffread.Vff((before / "menu" / "cdb.vff").read_bytes()).files()
+    c1 = vffread.Vff((after / "menu" / "cdb.vff").read_bytes()).files()
+    ok = check(ok, all(k in c1 for k in c0), f"cdb.vff kept all {len(c0)} files")
+    # HBC logs the app it ran to today's play history (1.8.9 on); the
+    # message itself is filed only when the Wii Menu next starts.
+    changed = [k for k, v in c0.items() if c1.get(k) != v] + [k for k in c1 if k not in c0]
+    ok = check(ok, all("/HAEA_#1/log/" in k or k == "/cdb.conf" for k in changed),
+               f"only play history (and cdb.conf) changed: {changed}")
+    return ok
+
+
+def wii_id(out):
+    launch(APP, "id")
+    tool("get", "sd:/mboard_test/result.txt", str(out / "wii_id.txt"))
+    report = (out / "wii_id.txt").read_text(errors="replace")
+    print(f"-- wii_id.txt --\n{report}", flush=True)
+    return check(True, "wii number: " in report, "read the Wii number")
+
+
+def board(out, post_dir, minutes, full_msg=False, already=False):
     """The person at the Wii does the Wii Menu part; this job only waits,
     takes pictures, and reads the result once HBC is back."""
+    if already:
+        return board_check(out, post_dir, full_msg)
     print(f"Waiting up to {minutes} min: go to the Wii Menu, open the Message Board, then start HBC.",
           flush=True)
     deadline = time.monotonic() + minutes * 60
@@ -193,11 +295,33 @@ def board(out, post_dir, minutes):
         print("HBC did not leave and come back in time", flush=True)
         return False
     time.sleep(10)
+    return board_check(out, post_dir, full_msg)
+
+
+def board_check(out, post_dir, full_msg):
     ok = snapshot(out / "after_board", [MBOX, MENU])
     c0 = vffread.Vff((post_dir / "after" / "menu" / "cdb.vff").read_bytes()).files()
     c1 = vffread.Vff((out / "after_board" / "menu" / "cdb.vff").read_bytes()).files()
-    filed = {k: v for k, v in c1.items() if k not in c0 and BODY.split("\n")[0].encode("utf-16-be") in v}
+    body = FULL_BODY if full_msg else BODY
+    filed = {k: v for k, v in c1.items() if k not in c0 and body.split("\n")[0].encode("utf-16-be") in v}
     ok = check(ok, filed, f"the Wii Menu filed the message: {list(filed)}")
+    if full_msg:
+        # The board record after CDB's 0x400-byte header (docs/messageboard-messages.md).
+        rfl = post_dir / "before" / "facelib" / "RFL_DB.dat"
+        _, mii = first_mii(rfl.read_bytes()) if rfl.exists() else (None, None)
+        for k, v in filed.items():
+            rec = v[0x400:]
+            face_at = struct.unpack_from(">I", rec, 0x124)[0]
+            atts = [struct.unpack_from(">III", rec, 0x128 + 12 * j) for j in range(2)]
+            print(f"  {k}: magic {rec[:4]!r}, face at 0x{face_at:x}, attachments "
+                  f"(type, offset, size) {atts}, no-reply {struct.unpack_from('>H', rec, 0x11A)[0]}", flush=True)
+            ok = check(ok, rec[:4] == b"RI_5" and k.split("/")[-2] == "odh", "an odh board record")
+            ok = check(ok, mii is not None and face_at and rec[face_at:face_at + 74] == mii,
+                       "the record holds the Mii")
+            ok = check(ok, any(a[0] == 1 and a[2] for a in atts), "the record holds the photo")
+            ok = check(ok, dolphin_mboard.chjump_arc(0x00010001, 0x4F484243) in rec,
+                       "the record holds the board data")
+            ok = check(ok, struct.unpack_from(">H", rec, 0x11A)[0] == 0, "Reply available")
     ok = check(ok, all(k in c1 for k in c0), f"cdb.vff kept all {len(c0)} files it had")
     h, v, _ = box(out / "after_board" / "mbox")
     print(f"receive box now: {h['num']} messages, ids {h['ids']}; new cdb.vff files: "
@@ -240,9 +364,13 @@ def main():
         ok = backup(out)
     elif step == "post":
         ok = post(out)
+    elif step == "full":
+        ok = full(out)
+    elif step == "id":
+        ok = wii_id(out)
     elif step == "board" and len(sys.argv) > 2:
         minutes = int(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else 20
-        ok = board(out, pathlib.Path(sys.argv[2]), minutes)
+        ok = board(out, pathlib.Path(sys.argv[2]), minutes, "--full" in sys.argv, "--already" in sys.argv)
     elif step == "restore" and len(sys.argv) > 2:
         ok = restore(out, pathlib.Path(sys.argv[2]))
     else:

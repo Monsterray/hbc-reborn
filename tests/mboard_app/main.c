@@ -5,6 +5,10 @@
 //                                         receive box, the clock, AHBPROT
 //   mboard_app.dol post TITLE BODY        mboard_post(); "\n" in BODY is a new line
 //   mboard_app.dol play NAME ID SECONDS   mboard_log_play()
+//   mboard_app.dol id                     read-only: this Wii's whole Wii
+//                                         number (its mail address), for
+//                                         sending between Wiis; check shows
+//                                         only its last four digits
 //   mboard_app.dol full TITLE BODY        mboard_post_msg() with a Mii face
 //                                         (sd:/mboard_test/face.bin, or the
 //                                         Wii's first Mii), photo.jpg and
@@ -176,6 +180,21 @@ static int full(const char *title, const char *body) {
 	return res;
 }
 
+// The whole Wii number, as nwc24msg.cfg holds it, and the account's domain:
+// w<16 digits><domain> is this Wii's address.
+static void wii_id(void) {
+	static u8 cfg[0x400] ATTRIBUTE_ALIGN(32);
+	u64 id;
+
+	if (read_nand("/shared2/wc24/nwc24msg.cfg", cfg, sizeof(cfg)) != (s32) sizeof(cfg)) {
+		say("nwc24msg.cfg: not readable\n");
+		return;
+	}
+	id = (u64) be32(cfg + 8) << 32 | be32(cfg + 12);
+	say("wii number: %016llu\naddress: w%016llu%.40s\nstage: %u\n", id, id,
+		(const char *) cfg + 0x18, be32(cfg + 0x14));
+}
+
 static void unescape(char *s) {
 	char *o = s;
 
@@ -241,12 +260,14 @@ int main(int argc, char **argv) {
 		res = mboard_log_play(argv[2], argv[3], (u32) strtoul(argv[4], NULL, 10));
 		say("mboard_log_play: %d (%s) in %llu ms\n", res, mboard_strerror(res),
 			ticks_to_millisecs(gettime() - t0));
+	} else if (argc == 2 && !strcmp(argv[1], "id")) {
+		wii_id();
 	} else if (argc == 4 && !strcmp(argv[1], "full")) {
 		unescape(argv[3]);
 		full(argv[2], argv[3]);
 		check();
 	} else if (argc > 1 && (argc != 2 || strcmp(argv[1], "check"))) {
-		say("usage: check | post TITLE BODY | play NAME ID SECONDS | full TITLE BODY\n");
+		say("usage: check | id | post TITLE BODY | play NAME ID SECONDS | full TITLE BODY\n");
 	}
 	say("done\n");
 	if (report) {
