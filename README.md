@@ -390,8 +390,10 @@ mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);   // needs AHBPROT
 `mboard_post_msg()` adds what a game's message can carry: a Mii as its icon
 (`mboard_mii()` reads one from the Wii's Mii database), a photo, a button
 that opens a channel, a Reply button, a delay, and the date it is filed
-under. `mboard_send_msg()` sends the same message to another Wii by its Wii
-number, through the WiiConnect24 mail server (WiiLink's today). Nothing needs
+under, and stationery (`tools/msgboard/stationery.py` makes a border, a board
+icon and music). `mboard_send_msg()` sends the same message to another Wii by
+its Wii number, through the WiiConnect24 mail server (WiiLink's today), and
+`mboard_friends()` reads and edits the Address Book. Nothing needs
 the internet except sending, and nothing deletes what is already on the
 board. HBC's own play log is this library's writer.
 
@@ -526,6 +528,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Why User Agreements will not open: the hidden EULA channel (HAKx), the IOS it needs, and IOS56, read-only | queue `python tests/wii_eulacheck.py` (build `tests/eulacheck` first) | the bench queue |
 | Message Board library (`sdk/mboard`) on the PC: posts, the full message, sending, play history, byte for byte | `python3 tests/test_mboard.py`, `python3 tests/test_cdblog.py` | C compiler |
 | Message Board library with the real Wii Menu 4.3U filing the post (`--full` for the Mii, photo and board data) | `python3 tests/dolphin_mboard.py --restore` (build `tests/mboard_app` first) | Dolphin, the Wii Menu profile |
+| Message Board stationery (a letter's border, board icon, music): every encoder read back, the five example themes | `python3 tests/test_stationery.py` | Pillow |
 | Message Board library on the bench Wii: `backup`, `post`, `full`, `send WII`, `board`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent and MEM2: nothing written into HBC's records while an app runs, the log target kept as it stops, the agent's memory at the top of the MEM2 arena | `python3 tests/wii_agent_mem2.py WII-IP` (`--dol` for another build) | Wii in any HBC |

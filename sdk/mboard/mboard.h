@@ -113,6 +113,50 @@ int mboard_send_msg(uint64_t to_wii_number, const mboard_msg *msg);
  * for mboard_msg.face. MBOARD_E_NO_MII for an empty slot. */
 int mboard_mii(int slot, uint8_t face[MBOARD_FACE_SIZE]);
 
+/* ---- The address book ------------------------------------------------------
+ * /shared2/wc24/nwc24fl.bin, the Wii Menu's Address Book (the SDK's
+ * NWC24FriendList.c): a 0x360-byte header ('WcFl', version 2, 100 slots, the
+ * count used, a bit per slot that KD sets once both Wiis have registered each
+ * other, the slots' Wii numbers), then 100 entries of 0x140 bytes: type (1 a
+ * Wii, 2 an e-mail address), status, the nickname (12 UTF-16 units with its
+ * NUL), the friend's Mii as its creation ID (8 bytes, 0 for none; the Wii
+ * Menu shows the Mii with that ID from the Wii's Mii database), and the
+ * address. No checksum. docs/mboard.md, "The address book". */
+
+#define MBOARD_FRIENDS 100
+#define MBOARD_FRIENDS_SIZE 32864u
+#define MBOARD_NICK_MAX 11        /* UTF-16 units */
+
+typedef struct {
+	int slot;
+	int type;                    /* 1: a Wii, 2: an e-mail address */
+	int confirmed;               /* both Wiis have registered each other */
+	uint64_t wii_number;         /* type 1 */
+	char email[64];              /* type 2, cut at 63 bytes */
+	uint16_t nick[MBOARD_NICK_MAX + 1];  /* UTF-16, NUL-terminated */
+	uint8_t mii_id[8];           /* the Mii's creation ID (RFLCharData 0x18), or 0 */
+} mboard_friend;
+
+/* Every contact, up to max; returns how many, or MBOARD_E_FORMAT. */
+int mboard_friends(mboard_friend *out, int max);
+/* Adds a Wii as the Wii Menu does: pending until both Wiis have registered
+ * each other (KD sends the registration). nick: UTF-8, 1-11 UTF-16 units;
+ * mii: a Mii (MBOARD_FACE_SIZE bytes) to show for it, or NULL. Returns the
+ * slot, MBOARD_E_FULL, or MBOARD_E_ARG (a number already there, or bad). */
+int mboard_friend_add(uint64_t wii_number, const char *nick_utf8, const uint8_t *mii);
+/* A contact's nickname (NULL: keep it) and Mii (NULL: keep it). The address
+ * cannot change: remove the contact and add it again. */
+int mboard_friend_set(int slot, const char *nick_utf8, const uint8_t *mii);
+int mboard_friend_remove(int slot);
+
+/* The cores, on the file's bytes (mboard_friends_* return as the above). */
+int mboard_friends_parse(const uint8_t *fl, mboard_friend *out, int max);
+int mboard_friends_add(uint8_t *fl, uint64_t wii_number, const uint16_t *nick, int nick_len,
+					   const uint8_t *mii_id);
+int mboard_friends_set(uint8_t *fl, int slot, const uint16_t *nick, int nick_len,
+					   const uint8_t *mii_id);
+int mboard_friends_remove(uint8_t *fl, int slot);
+
 /* name: UTF-8, up to 40 UTF-16 units kept. id: 1-6 ASCII letters or digits
  * that tell titles apart (a disc's game ID, a channel's four letters); lines
  * with the same name and ID on one day are added together. */

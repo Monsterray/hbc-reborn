@@ -143,6 +143,95 @@ built like the bench Wii's, checks them byte for byte, and checks the
 refusals. The send also worked into a copy of the bench Wii's real (empty)
 send box.
 
+## Stationery: a letter's own look, icon and music
+
+A letter's border, its icon on the board and a sound are board data:
+`mboard_msg.board`, an `application/x-wii-msgboard` part.
+[`tools/msgboard/stationery.py`](../tools/msgboard/stationery.py) makes one on
+the PC from images and a WAV:
+
+    stationery.py LETTER.png THUMB.png [--sound tune.wav] [--chjump 000100014F484243] -o board.arc
+
+The app ships the archive and passes it as `board`. The layout is the one
+WiiLink's letters carry. Repacked with this tool, a copy of one is byte for
+byte the same, and the Wii Menu files it (docs/messageboard-messages.md).
+
+- **The letter** is 512 x 376. The tool cuts it into a 9-slice frame of TPL
+  textures: `img/my_Letter_a.tpl` to `_i.tpl`, 64 | 384 | 64 wide and 144 /
+  168 / 64 high. They are RGB5A3 and keep their alpha, in an LZ77-compressed
+  U8, `letter_LZ.bin`. Keep the middle light: the Wii Menu writes the text
+  over it in a dark colour.
+- **The board icon** is 144 x 96 (`thumbnail_LZ.bin`,
+  `img/my_LetterS_b.tpl`).
+- **The sound** is `sound.bns`: mono DSP-ADPCM, 8 kHz like WiiLink's (the Wii
+  Menu takes 4-48 kHz, 1 or 2 channels). The tool's encoder decodes back at
+  47 dB SNR on a tone. The Wii Menu plays it once, 300 ms after the letter
+  opens, muting the board's music, and fades it as the letter closes.
+- **`chjump.bin`**, optional, adds the "start" button for a channel. The Wii
+  Menu shows it only if that channel is installed.
+- **The whole archive** must stay within 0x1E000 bytes. The letter must
+  unpack to less than 400 KiB, and the icon to less than 30 KiB.
+
+[`tools/msgboard/stationery_themes.py`](../tools/msgboard/stationery_themes.py)
+makes five examples, drawn and scored in code:
+
+| Theme | Size | Music |
+| --- | --- | --- |
+| `ocean` | 74,560 bytes | 5.0 s, an arpeggio |
+| `sunset` | 50,880 bytes | none |
+| `forest` | 51,616 bytes | none |
+| `nightsky` | 80,416 bytes | 6.4 s, "Twinkle Twinkle Little Star" |
+| `arcade` | 60,832 bytes | 2.0 s, a chiptune |
+
+`tests/test_stationery.py` reads each encoder back with a decoder of its
+own, and builds every theme. `tests/wii_mboard.py send WII --board ARC
+--body TEXT --no-photo` sends one from the bench Wii.
+
+## The address book
+
+The Wii Menu's Address Book is `/shared2/wc24/nwc24fl.bin` (the SDK's
+`NWC24FriendList.c`).
+
+- **The header**, 0x360 bytes:
+  - `WcFl`, version 2;
+  - 100 slots, and the number in use;
+  - 100 bits that KD sets once two Wiis have registered each other;
+  - a changed flag at 0x3C;
+  - each slot's Wii number, from 0x40.
+- **Then 100 entries** of 0x140 bytes:
+  - the type (1 a Wii, 2 an e-mail address);
+  - a status (1 pending; KD's bit, not this, says confirmed);
+  - the nickname, 12 UTF-16 units with its NUL;
+  - the contact's Mii, as its creation ID (8 bytes at 0x20; 0 for none);
+  - the address (a Wii's number, at 0x40).
+- **No checksum.**
+
+The Mii itself is not in the file. The Wii Menu shows the Mii with that
+creation ID from the Wii's Mii database (`RFL_DB.dat`): its own Miis, or the
+hidden database of Miis that came on messages.
+
+```c
+mboard_friend list[MBOARD_FRIENDS];
+int n = mboard_friends(list, MBOARD_FRIENDS);         /* every contact */
+
+static uint8_t mii[MBOARD_FACE_SIZE];
+mboard_mii(0, mii);
+mboard_friend_add(wii_number, "LR Wii", mii);         /* pending, as the Wii Menu adds one */
+mboard_friend_set(slot, "Living Room", mii);          /* nickname and Mii only */
+mboard_friend_remove(slot);
+```
+
+Each call works as the SDK's `NWC24WriteFriendInfo`, `UpdateFriendInfo` and
+`DeleteFriendInfo` do, byte for byte (`tests/test_mboard.py`). It pauses KD
+around the file, since KD reads and writes it too.
+
+- **Adding** leaves the contact pending; KD sends the registration and sets
+  the confirmed bit when the other Wii's arrives.
+- **The address cannot change:** remove the contact and add it again.
+- **Not done:** setting the confirmed bit by hand (KD would never register
+  the contact) and writing Miis into `RFL_DB.dat` (it has a CRC).
+- **On the bench Wii** only: `tests/wii_mboard.py friends [--set SLOT NICK]`.
+
 ## How games post: the SDK's loop-back
 
 The brief assumed that Mario Party 8 and 9 post through the WiiConnect24 send

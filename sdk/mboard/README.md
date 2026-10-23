@@ -32,7 +32,18 @@ mboard_send_msg(1234567890123456ull, &m);
 
 // A line in today's play history (needs <ahb_access/> in meta.xml).
 mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);
+
+// The Address Book: every contact, and adding or changing one.
+mboard_friend list[MBOARD_FRIENDS];
+int n = mboard_friends(list, MBOARD_FRIENDS);
+mboard_friend_set(list[0].slot, "Living Room", mii);
 ```
+
+A letter's own stationery (its border, its icon on the board, and music) is
+board data: make it on the PC with
+[tools/msgboard/stationery.py](../../tools/msgboard/stationery.py) and pass it
+as `m.board`. [tools/msgboard/stationery_themes.py](../../tools/msgboard/stationery_themes.py)
+makes five examples.
 
 Each call returns a result of 0 or more, or a negative `MBOARD_E_*` code
 (`mboard_strerror()` names it). The library checks every file before it

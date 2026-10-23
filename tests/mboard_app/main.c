@@ -14,6 +14,11 @@
 //                                         Wii's first Mii), photo.jpg and
 //                                         board.arc from sd:/mboard_test if
 //                                         there, and a Reply button
+//   mboard_app.dol friends                the address book (mboard_friends)
+//   mboard_app.dol friend-set SLOT NICK|- mii|-   a contact's nickname, and
+//                                         its Mii: the Wii's first Mii
+//   mboard_app.dol friend-add NUMBER NICK mboard_friend_add (no Mii)
+//   mboard_app.dol friend-remove SLOT     mboard_friend_remove
 //   mboard_app.dol send NUMBER TITLE BODY the same message to another Wii
 //                                         (mboard_send_msg), by its 16-digit
 //                                         Wii number
@@ -198,6 +203,36 @@ static void wii_id(void) {
 		(const char *) cfg + 0x18, be32(cfg + 0x14));
 }
 
+static void list_friends(void) {
+	static mboard_friend f[MBOARD_FRIENDS];
+	char nick[48];
+	int n, i, k, o;
+
+	n = mboard_friends(f, MBOARD_FRIENDS);
+	say("friends: %d (%s)\n", n, n < 0 ? mboard_strerror(n) : "contacts");
+	for (i = 0; i < n; ++i) {
+		// The nickname as UTF-8 (BMP only: the Wii keyboard's).
+		for (k = 0, o = 0; f[i].nick[k] && o < (int) sizeof(nick) - 4; ++k) {
+			u16 c = f[i].nick[k];
+			if (c < 0x80) {
+				nick[o++] = (char) c;
+			} else if (c < 0x800) {
+				nick[o++] = (char) (0xc0 | c >> 6);
+				nick[o++] = (char) (0x80 | (c & 63));
+			} else {
+				nick[o++] = (char) (0xe0 | c >> 12);
+				nick[o++] = (char) (0x80 | (c >> 6 & 63));
+				nick[o++] = (char) (0x80 | (c & 63));
+			}
+		}
+		nick[o] = 0;
+		say("friend %d: type %d, %s, number %016llu, nickname \"%s\", Mii %02x%02x%02x%02x%02x%02x%02x%02x\n",
+			f[i].slot, f[i].type, f[i].confirmed ? "confirmed" : "pending",
+			(unsigned long long) f[i].wii_number, nick, f[i].mii_id[0], f[i].mii_id[1], f[i].mii_id[2],
+			f[i].mii_id[3], f[i].mii_id[4], f[i].mii_id[5], f[i].mii_id[6], f[i].mii_id[7]);
+	}
+}
+
 static void unescape(char *s) {
 	char *o = s;
 
@@ -265,6 +300,26 @@ int main(int argc, char **argv) {
 			ticks_to_millisecs(gettime() - t0));
 	} else if (argc == 2 && !strcmp(argv[1], "id")) {
 		wii_id();
+	} else if (argc == 2 && !strcmp(argv[1], "friends")) {
+		list_friends();
+	} else if (argc == 4 && !strcmp(argv[1], "friend-set")) {
+		static u8 face[MBOARD_FACE_SIZE];
+		int slot;
+
+		for (slot = 0; slot < 100 && mboard_mii(slot, face) != MBOARD_OK; ++slot)
+			;
+		res = mboard_friend_set(atoi(argv[2]), strcmp(argv[3], "-") ? argv[3] : NULL,
+								slot < 100 ? face : NULL);
+		say("mboard_friend_set: %d (%s), Mii from slot %d\n", res, mboard_strerror(res), slot);
+		list_friends();
+	} else if (argc == 4 && !strcmp(argv[1], "friend-add")) {
+		res = mboard_friend_add(strtoull(argv[2], NULL, 10), argv[3], NULL);
+		say("mboard_friend_add: %d (%s)\n", res, res < 0 ? mboard_strerror(res) : "slot");
+		list_friends();
+	} else if (argc == 3 && !strcmp(argv[1], "friend-remove")) {
+		res = mboard_friend_remove(atoi(argv[2]));
+		say("mboard_friend_remove: %d (%s)\n", res, mboard_strerror(res));
+		list_friends();
 	} else if (argc == 4 && !strcmp(argv[1], "full")) {
 		unescape(argv[3]);
 		full(0, argv[2], argv[3]);
@@ -274,7 +329,8 @@ int main(int argc, char **argv) {
 		full(strtoull(argv[2], NULL, 10), argv[3], argv[4]);
 	} else if (argc > 1 && (argc != 2 || strcmp(argv[1], "check"))) {
 		say("usage: check | id | post TITLE BODY | play NAME ID SECONDS | full TITLE BODY | "
-			"send NUMBER TITLE BODY\n");
+			"send NUMBER TITLE BODY | friends | friend-set SLOT NICK|- | friend-add NUMBER NICK | "
+			"friend-remove SLOT\n");
 	}
 	say("done\n");
 	if (report) {

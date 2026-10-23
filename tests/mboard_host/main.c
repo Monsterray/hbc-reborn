@@ -192,11 +192,69 @@ static int post(int argc, char **argv) {
 	return 0;
 }
 
+// The address book: mboard_host friends FILE list | add NUMBER NICK-HEX [MII-ID-HEX]
+// | set SLOT NICK-HEX|- [MII-ID-HEX] | remove SLOT. Prints the result, and for
+// list one line per contact: slot type confirmed number nick-utf16-hex mii-id-hex.
+static int friends(int argc, char **argv) {
+	static uint8_t fl[MBOARD_FRIENDS_SIZE];
+	static mboard_friend list[MBOARD_FRIENDS];
+	uint16_t nick[MBOARD_NICK_MAX + 1];
+	uint8_t id[8];
+	int res = 0, n, i, k, nl = 0;
+	FILE *f;
+
+	if (argc < 4 || !(f = fopen(argv[2], "r+b")) || fread(fl, 1, sizeof(fl), f) != sizeof(fl)) {
+		fprintf(stderr, "usage: mboard_host friends FILE list|add|set|remove ...\n");
+		return 2;
+	}
+	if (argc > 5 && strcmp(argv[5], "-")) {
+		unhex(argv[5]);
+		nl = mboard_utf16(nick, MBOARD_NICK_MAX + 1, argv[5]);
+	}
+	if (argc > 6)
+		for (i = 0; i < 8; ++i)
+			sscanf(argv[6] + 2 * i, "%2hhx", &id[i]);
+	if (!strcmp(argv[3], "list")) {
+		n = mboard_friends_parse(fl, list, MBOARD_FRIENDS);
+		printf("%d\n", n);
+		for (i = 0; i < n; ++i) {
+			printf("%d %d %d %016llu ", list[i].slot, list[i].type, list[i].confirmed,
+				   (unsigned long long) list[i].wii_number);
+			for (k = 0; list[i].nick[k]; ++k)
+				printf("%04x", list[i].nick[k]);
+			printf(" ");
+			for (k = 0; k < 8; ++k)
+				printf("%02x", list[i].mii_id[k]);
+			printf("\n");
+		}
+		fclose(f);
+		return 0;
+	}
+	if (!strcmp(argv[3], "add") && argc > 5) {
+		res = mboard_friends_add(fl, strtoull(argv[4], NULL, 10), nick, nl, argc > 6 ? id : NULL);
+	} else if (!strcmp(argv[3], "set") && argc > 5) {
+		res = mboard_friends_set(fl, atoi(argv[4]), strcmp(argv[5], "-") ? nick : NULL, nl,
+								 argc > 6 ? id : NULL);
+	} else if (!strcmp(argv[3], "remove")) {
+		res = mboard_friends_remove(fl, atoi(argv[4]));
+	} else {
+		fprintf(stderr, "unknown friends command %s\n", argv[3]);
+		return 2;
+	}
+	if (res >= 0 && (fseek(f, 0, SEEK_SET) || fwrite(fl, 1, sizeof(fl), f) != sizeof(fl)))
+		res = MBOARD_E_IO;
+	fclose(f);
+	printf("%d\n", res);
+	return 0;
+}
+
 int main(int argc, char **argv) {
 	if (argc > 1 && !strcmp(argv[1], "play"))
 		return play(argc, argv);
 	if (argc > 1 && !strcmp(argv[1], "post"))
 		return post(argc, argv);
-	fprintf(stderr, "usage: mboard_host play|post ...\n");
+	if (argc > 1 && !strcmp(argv[1], "friends"))
+		return friends(argc, argv);
+	fprintf(stderr, "usage: mboard_host play|post|friends ...\n");
 	return 2;
 }

@@ -123,6 +123,28 @@ class Fat12:
         return sum(1 for c in range(2, self.n) if self.next(c) == 0)
 
 
+LRWII = 7000000000000001   # a made-up Wii number
+
+
+def empty_fl():
+    """An address book with no one in it: 'WcFl', version 2, 100 slots."""
+    b = bytearray(32864)
+    struct.pack_into(">4sIII", b, 0, b"WcFl", 2, 100, 0)
+    return b
+
+
+def put_friend(b, slot, number, nick, confirmed=False, mii_id=bytes(8)):
+    """As NWC24WriteFriendInfo writes a Wii; KD's bit when confirmed."""
+    e = 0x360 + 0x140 * slot
+    struct.pack_into(">II24s8s", b, e, 1, 1, nick.encode("utf-16-be").ljust(24, b"\0"), mii_id)
+    struct.pack_into(">Q", b, e + 0x40, number)
+    struct.pack_into(">Q", b, 0x40 + 8 * slot, number)
+    struct.pack_into(">I", b, 0x0C, struct.unpack_from(">I", b, 0x0C)[0] + 1)
+    if confirmed:
+        w = 0x10 + 4 * (slot >> 5)
+        struct.pack_into(">I", b, w, struct.unpack_from(">I", b, w)[0] | 1 << (slot & 31))
+
+
 def lfn_entry(short, name):
     s = 0
     for ch in short:
@@ -640,6 +662,60 @@ class MboardTest(unittest.TestCase):
         # The receive box's control file is not a send box's.
         c, m = self.box(empty_ctl()[:SEND_CTL], mbx0, name="sendref")
         self.assertEqual(self.post(c, m, to=OTHER), E_FORMAT)
+
+    # ---- The address book (nwc24fl.bin) -------------------------------------
+
+    def fl(self, *args):
+        out = subprocess.run([str(self.exe), "friends", *map(str, args)], check=True,
+                             capture_output=True, text=True).stdout.split("\n")
+        return int(out[0]), [l.split() for l in out[1:] if l.strip()]
+
+    def test_address_book(self):
+        """As the SDK's NWC24WriteFriendInfo, UpdateFriendInfo and
+        DeleteFriendInfo leave it, byte for byte."""
+        f = self.dir / "nwc24fl.bin"
+        img = empty_fl()
+        # One Wii already in it, confirmed by KD (the header's bit).
+        put_friend(img, 0, LRWII, "Dev Wii", confirmed=True)
+        f.write_bytes(img)
+        mii = bytes.fromhex("89abcdefc0ffee00")
+        self.assertEqual(self.fl(f, "add", OTHER, "Bench Wii".encode().hex(), mii.hex())[0], 1)
+        want = bytearray(img)
+        put_friend(want, 1, OTHER, "Bench Wii", mii_id=mii)
+        struct.pack_into(">I", want, 0x3C, 1)                        # the changed flag
+        self.assertEqual(f.read_bytes(), bytes(want))
+        n, rows = self.fl(f, "list")
+        self.assertEqual(n, 2)
+        self.assertEqual(rows[0][:4], ["0", "1", "1", f"{LRWII:016d}"])
+        self.assertEqual(rows[1], ["1", "1", "0", f"{OTHER:016d}", "Bench Wii".encode("utf-16-be").hex(), mii.hex()])
+        # Nickname and Mii only; a nickname of 11 units is the most.
+        self.assertEqual(self.fl(f, "set", 0, "Living room".encode().hex(), mii.hex())[0], 0)
+        struct.pack_into(">24s", want, 0x360 + 8, "Living room".encode("utf-16-be").ljust(24, b"\0"))
+        want[0x360 + 0x20:0x360 + 0x28] = mii
+        self.assertEqual(f.read_bytes(), bytes(want))
+        before = f.read_bytes()
+        for args, err in [(("add", OTHER, "Again".encode().hex()), E_ARG),          # already there
+                          (("add", 10 ** 16, "Big".encode().hex()), E_ARG),
+                          (("add", 4444, "Twelve chars".encode().hex()), E_ARG),
+                          (("set", 5, "Nobody".encode().hex()), E_ARG),
+                          (("remove", 99), E_ARG)]:
+            with self.subTest(args):
+                self.assertEqual(self.fl(f, *args)[0], err)
+                self.assertEqual(f.read_bytes(), before)
+        # Remove: the entry and its slot cleared, the count one less.
+        self.assertEqual(self.fl(f, "remove", 1)[0], 0)
+        want[0x360 + 0x140:0x360 + 0x280] = bytes(0x140)
+        struct.pack_into(">Q", want, 0x48, 0)
+        struct.pack_into(">I", want, 0x0C, 1)
+        self.assertEqual(f.read_bytes(), bytes(want))
+        # The book full: no slot left.
+        full = empty_fl()
+        for i in range(100):
+            put_friend(full, i, 1000 + i, f"W{i}")
+        f.write_bytes(full)
+        self.assertEqual(self.fl(f, "add", 5555, "Late".encode().hex())[0], E_FULL)
+        f.write_bytes(b"XXXX" + empty_fl()[4:])
+        self.assertEqual(self.fl(f, "list")[0], E_FORMAT)
 
     @unittest.skipUnless(os.environ.get("MBOARD_REAL_BOX"), "MBOARD_REAL_BOX not set")
     def test_post_into_a_real_box(self):

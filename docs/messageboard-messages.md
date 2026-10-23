@@ -314,9 +314,32 @@ Put together, the pieces make a 512 x 376 letter: WiiLink's is a blue-to-purple
 header with a WiiLink badge, ruled lines, and a WiiLink | Wii footer. The
 icon is a small envelope in the same colours. `sdk/mboard` already sends any
 board data (`mboard_msg.board`), so an app can send its own stationery as such
-an archive. The file names and layout here are WiiLink's, read from that one
-letter; which names the Wii Menu requires, and which it would do without,
-is not checked.
+an archive (`tools/msgboard/stationery.py` makes one).
+
+What the Wii Menu requires, from its decompilation (wii-ipl
+`src/scene/board/iplBoardObject.cpp`, `iplFocusObject.cpp`,
+`src/utility/iplUtility.cpp`, `src/bannerSound/AxAdpcmPlayer.cpp`):
+
+| Part | What the Wii Menu requires |
+| --- | --- |
+| The archive | it keeps the first `x-wii-msgboard` part under 0x1E000 bytes, and its root must be a U8 archive |
+| `thumbnail_LZ.bin` | LZ77-compressed (an uncompressed one is ignored), unpacking to under 0x7800 bytes; only `img/my_LetterS_b.tpl` is read |
+| `letter_LZ.bin` | LZ77, unpacking to under 0x64000 bytes; `img/my_Letter_a.tpl` to `_i.tpl`, each looked up on its own, so any subset works and a missing piece keeps the default stationery |
+| Every TPL | one image, at most 512 x 256, data 32-byte aligned, LOD 0; I4, I8, IA4, IA8, RGB565, RGB5A3 or CMPR (RGBA8 refused); an invalid one keeps the default |
+| The sound | the first of `sound.bns`, `sound.wav`, `sound.aif`, `sound.aiff` that exists; BNS: byte order 0xFEFF, 4-48 kHz, 1 or 2 channels, a loop end above the loop start, the file size its entry's |
+| `chjump.bin` | `ChJp`, 1-8 blocks inside its size, the title ID at 0x10; only block 0 is used; the button's text is the Wii Menu's own |
+
+The layout and animations are the Wii Menu's own (`my_LetterL.brlyt`); the
+archive supplies only textures and the sound. The sound plays once, 300 ms
+after the letter opens, with the board's music muted.
+
+### The address book and a contact's Mii
+
+`/shared2/wc24/nwc24fl.bin` holds each contact's nickname and Wii number,
+and the contact's Mii as its creation ID only; [mboard.md](mboard.md), "The
+address book", has the layout. The Mii a letter carries (`X-WiiFace`) is what
+puts a friend's Mii into the Wii's hidden Mii database, where the Address
+Book can find it by that ID.
 
 ## Doing it from homebrew
 

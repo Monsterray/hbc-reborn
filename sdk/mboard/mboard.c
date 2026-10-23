@@ -1415,6 +1415,131 @@ int mboard_send_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env, u
 	return box_commit(ctl, mbx, env, to, msg, &SEND_BOX);
 }
 
+/* ---- The address book ------------------------------------------------------ */
+
+#define FL_HEAD 0x360u
+#define FL_ENTRY 0x140u
+#define FL_MAGIC 0x5763466cu  /* 'WcFl' */
+
+static int fl_ok(const uint8_t *fl) {
+	return get32(fl) == FL_MAGIC && get32(fl + 4) == 2 && get32(fl + 8) == MBOARD_FRIENDS;
+}
+
+static int fl_bit(const uint8_t *fl, int slot) {
+	return get32(fl + 0x10 + 4 * (slot >> 5)) >> (slot & 31) & 1;
+}
+
+static void fl_set_bit(uint8_t *fl, int slot, int on) {
+	uint32_t w = get32(fl + 0x10 + 4 * (slot >> 5));
+
+	w = (w & ~(1u << (slot & 31))) | (uint32_t) on << (slot & 31);
+	put32(fl + 0x10 + 4 * (slot >> 5), w);
+}
+
+int mboard_friends_parse(const uint8_t *fl, mboard_friend *out, int max) {
+	int slot, n = 0, i;
+
+	if (!fl_ok(fl))
+		return MBOARD_E_FORMAT;
+	for (slot = 0; slot < MBOARD_FRIENDS && n < max; ++slot) {
+		const uint8_t *e = fl + FL_HEAD + FL_ENTRY * slot;
+		mboard_friend *f = &out[n];
+
+		if (!get64(fl + 0x40 + 8 * slot))
+			continue;
+		memset(f, 0, sizeof(*f));
+		f->slot = slot;
+		f->type = (int) get32(e);
+		/* KD's bit says confirmed; the entry's own status is not updated. */
+		f->confirmed = fl_bit(fl, slot);
+		for (i = 0; i < MBOARD_NICK_MAX; ++i)
+			f->nick[i] = (uint16_t) (e[8 + 2 * i] << 8 | e[9 + 2 * i]);
+		memcpy(f->mii_id, e + 0x20, 8);
+		if (f->type == 1)
+			f->wii_number = get64(e + 0x40);
+		else
+			memcpy(f->email, e + 0x40, sizeof(f->email) - 1);
+		++n;
+	}
+	return n;
+}
+
+static int nick_ok(const uint16_t *nick, int len) {
+	return nick && len >= 1 && len <= MBOARD_NICK_MAX;
+}
+
+static void put_nick(uint8_t *e, const uint16_t *nick, int len) {
+	int i;
+
+	memset(e + 8, 0, 24);
+	for (i = 0; i < len; ++i)
+		put16(e + 8 + 2 * i, nick[i]);
+}
+
+int mboard_friends_add(uint8_t *fl, uint64_t number, const uint16_t *nick, int nick_len,
+					   const uint8_t *mii_id) {
+	int slot;
+	uint8_t *e;
+
+	if (!fl_ok(fl))
+		return MBOARD_E_FORMAT;
+	if (!number || number > 9999999999999999ull || !nick_ok(nick, nick_len))
+		return MBOARD_E_ARG;
+	for (slot = 0; slot < MBOARD_FRIENDS; ++slot)
+		if (get64(fl + 0x40 + 8 * slot) == number)
+			return MBOARD_E_ARG;          /* already in the book */
+	for (slot = 0; slot < MBOARD_FRIENDS && get64(fl + 0x40 + 8 * slot); ++slot)
+		;
+	if (slot == MBOARD_FRIENDS)
+		return MBOARD_E_FULL;
+	/* NWC24WriteFriendInfo(): a Wii, pending, the address; then the header's
+	 * slot, count, its bit cleared and the changed flag set. */
+	e = fl + FL_HEAD + FL_ENTRY * slot;
+	memset(e, 0, FL_ENTRY);
+	put32(e, 1);
+	put32(e + 4, 1);
+	put_nick(e, nick, nick_len);
+	if (mii_id)
+		memcpy(e + 0x20, mii_id, 8);
+	put64(e + 0x40, number);
+	put64(fl + 0x40 + 8 * slot, number);
+	put32(fl + 0x0c, get32(fl + 0x0c) + 1);
+	fl_set_bit(fl, slot, 0);
+	put32(fl + 0x3c, get32(fl + 0x3c) | 1);
+	return slot;
+}
+
+int mboard_friends_set(uint8_t *fl, int slot, const uint16_t *nick, int nick_len,
+					   const uint8_t *mii_id) {
+	uint8_t *e;
+
+	if (!fl_ok(fl))
+		return MBOARD_E_FORMAT;
+	if (slot < 0 || slot >= MBOARD_FRIENDS || !get64(fl + 0x40 + 8 * slot) ||
+			(nick && !nick_ok(nick, nick_len)))
+		return MBOARD_E_ARG;
+	/* NWC24UpdateFriendInfo() changes only these two. */
+	e = fl + FL_HEAD + FL_ENTRY * slot;
+	if (nick)
+		put_nick(e, nick, nick_len);
+	if (mii_id)
+		memcpy(e + 0x20, mii_id, 8);
+	return slot;
+}
+
+int mboard_friends_remove(uint8_t *fl, int slot) {
+	if (!fl_ok(fl))
+		return MBOARD_E_FORMAT;
+	if (slot < 0 || slot >= MBOARD_FRIENDS || !get64(fl + 0x40 + 8 * slot))
+		return MBOARD_E_ARG;
+	/* NWC24DeleteFriendInfo(). */
+	memset(fl + FL_HEAD + FL_ENTRY * slot, 0, FL_ENTRY);
+	put64(fl + 0x40 + 8 * slot, 0);
+	put32(fl + 0x0c, get32(fl + 0x0c) - 1);
+	fl_set_bit(fl, slot, 0);
+	return MBOARD_OK;
+}
+
 /* ---- Text ------------------------------------------------------------------ */
 
 /* UTF-8 to UTF-16, at most max units; a bad sequence becomes U+FFFD. */
@@ -1813,6 +1938,115 @@ int mboard_log_play(const char *name_utf8, const char *id, uint32_t seconds) {
 	if (patched)
 		fs_permissions(0);
 	return res;
+}
+
+/* ---- The address book, on the Wii ---------------------------------------- */
+
+static char fl_path[] ATTRIBUTE_ALIGN(32) = "/shared2/wc24/nwc24fl.bin";
+
+/* The whole file, changed by `change` (NULL: only read), with KD paused, as
+ * NWC24OpenLib() would have it: KD reads and writes this file itself. */
+static int fl_do(int (*change)(uint8_t *fl, void *arg), void *arg, mboard_friend *out, int max) {
+	u8 *fl = memalign(32, MBOARD_FRIENDS_SIZE);
+	s32 kd, fd;
+	int res;
+
+	if (!fl)
+		return MBOARD_E_MEM;
+	ISFS_Initialize();
+	kd = IOS_Open(kd_path, 0);
+	if (kd < 0 || kd_call(kd, KD_TRY_SUSPEND) < 0) {
+		if (kd >= 0)
+			IOS_Close(kd);
+		free(fl);
+		return MBOARD_E_BUSY;
+	}
+	fd = IOS_Open(fl_path, change ? IPC_OPEN_RW : IPC_OPEN_READ);
+	if (fd < 0) {
+		res = nand_error(fd);
+	} else if (IOS_Read(fd, fl, MBOARD_FRIENDS_SIZE) != (s32) MBOARD_FRIENDS_SIZE) {
+		res = MBOARD_E_FORMAT;
+	} else {
+		res = change ? change(fl, arg) : mboard_friends_parse(fl, out, max);
+		if (change && res >= 0 && (IOS_Seek(fd, 0, SEEK_SET) != 0 ||
+				IOS_Write(fd, fl, MBOARD_FRIENDS_SIZE) != (s32) MBOARD_FRIENDS_SIZE))
+			res = MBOARD_E_IO;
+	}
+	if (fd >= 0)
+		IOS_Close(fd);
+	kd_call(kd, KD_RESUME);
+	IOS_Close(kd);
+	free(fl);
+	return res;
+}
+
+typedef struct {
+	int op, slot;
+	uint64_t number;
+	uint16_t nick[MBOARD_NICK_MAX];
+	int nick_len;            /* -1: keep it */
+	const uint8_t *mii;
+} fl_change;
+
+static int fl_apply(uint8_t *fl, void *arg) {
+	fl_change *c = arg;
+	const uint8_t *id = c->mii ? c->mii + 0x18 : NULL;   /* its creation ID */
+
+	if (c->op == 0)
+		return mboard_friends_add(fl, c->number, c->nick, c->nick_len, id);
+	if (c->op == 1)
+		return mboard_friends_set(fl, c->slot, c->nick_len < 0 ? NULL : c->nick, c->nick_len, id);
+	return mboard_friends_remove(fl, c->slot);
+}
+
+int mboard_friends(mboard_friend *out, int max) {
+	return fl_do(NULL, NULL, out, max);
+}
+
+static int nick_utf16(fl_change *c, const char *nick) {
+	uint16_t big[MBOARD_NICK_MAX + 1];
+
+	c->nick_len = -1;
+	if (!nick)
+		return 0;
+	/* More than 11 units is refused, not cut. */
+	if (mboard_utf16(big, MBOARD_NICK_MAX + 1, nick) > MBOARD_NICK_MAX)
+		return MBOARD_E_ARG;
+	c->nick_len = mboard_utf16(c->nick, MBOARD_NICK_MAX, nick);
+	return c->nick_len ? 0 : MBOARD_E_ARG;
+}
+
+int mboard_friend_add(uint64_t number, const char *nick, const uint8_t *mii) {
+	fl_change c;
+
+	memset(&c, 0, sizeof(c));
+	c.op = 0;
+	c.number = number;
+	c.mii = mii;
+	if (!nick || nick_utf16(&c, nick) < 0)
+		return MBOARD_E_ARG;
+	return fl_do(fl_apply, &c, NULL, 0);
+}
+
+int mboard_friend_set(int slot, const char *nick, const uint8_t *mii) {
+	fl_change c;
+
+	memset(&c, 0, sizeof(c));
+	c.op = 1;
+	c.slot = slot;
+	c.mii = mii;
+	if (nick_utf16(&c, nick) < 0)
+		return MBOARD_E_ARG;
+	return fl_do(fl_apply, &c, NULL, 0);
+}
+
+int mboard_friend_remove(int slot) {
+	fl_change c;
+
+	memset(&c, 0, sizeof(c));
+	c.op = 2;
+	c.slot = slot;
+	return fl_do(fl_apply, &c, NULL, 0);
 }
 
 #endif

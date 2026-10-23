@@ -22,6 +22,10 @@
            (the SMTP envelope, the other Wii in To:), then watches the send
            box for up to --minutes (default 10) for KD to upload it: KD
            deletes a message from the box once it has posted it.
+  friends  the address book (mboard_friends), Wii numbers shown as their last
+           four digits; with --set SLOT NICK it also gives that contact the
+           nickname NICK ("-" keeps it) and this Wii's first Mii
+           (mboard_friend_set), and checks nwc24fl.bin changed only there.
   id       read-only: this Wii's whole Wii number and mail address (from
            nwc24msg.cfg). Written to the job's run folder as wii_id.txt, not
            to the repository: it is the console's address.
@@ -38,7 +42,7 @@
            NAND files (same sizes only, read back and compared), and a new
            snapshot is compared with the backup.
 
-usage: tests/wii_mboard.py backup | id | post | full | send WII [--minutes N] | board POST_RUN_DIR [--minutes N] [--full] [--already] | restore BACKUP_DIR
+usage: tests/wii_mboard.py backup | id | friends [--set SLOT NICK] | post | full | send WII [--board ARC] [--body TEXT] [--no-photo] [--minutes N] | board POST_RUN_DIR [--minutes N] [--full] [--already] | restore BACKUP_DIR
 queue: wiibench.py add --name mboard-STEP --cwd REPO --timeout 2400 -- C:/Python312/python.exe tests/wii_mboard.py STEP
 """
 
@@ -299,8 +303,11 @@ def send_box(folder):
     return struct.unpack_from(">I", ctl, 8)[0], files, fat
 
 
-def send(out, name, minutes):
+def send(out, name, minutes, board_file=None, body=None, photo_too=True):
+    """board_file: a board-data archive (tools/msgboard/stationery.py) in
+    place of the HBC button; body: the text; photo_too: attach the photo."""
     to = wii_number(name)
+    body = body or SEND_BODY
     own = None
     before, after = out / "before", out / "after"
     ok = snapshot(before, [MBOX, WC24, FACELIB])
@@ -311,12 +318,16 @@ def send(out, name, minutes):
     rfl = before / "facelib" / "RFL_DB.dat"
     _, mii = first_mii(rfl.read_bytes()) if rfl.exists() else (None, None)
     photo = dolphin_mboard.test_photo()
-    arc = dolphin_mboard.chjump_arc(0x00010001, 0x4F484243)
-    for fname, data in (("photo.jpg", photo), ("board.arc", arc)):
+    arc = (pathlib.Path(board_file).read_bytes() if board_file else
+           dolphin_mboard.chjump_arc(0x00010001, 0x4F484243))
+    parts = [("board.arc", arc)] + ([("photo.jpg", photo)] if photo_too else [])
+    for fname, data in parts:
         (out / fname).write_bytes(data)
         tool("put", str(out / fname), f"sd:/mboard_test/{fname}")
+    if not photo_too:
+        tool("rm", "sd:/mboard_test/photo.jpg", check=False)
     tool("rm", "sd:/mboard_test/face.bin", check=False)
-    launch(APP, "send", str(to), TITLE, SEND_BODY.replace("\n", "\\n"))
+    launch(APP, "send", str(to), TITLE, body.replace("\n", "\\n"))
     tool("get", "sd:/mboard_test/result.txt", str(out / "send_result.txt"))
     report = (out / "send_result.txt").read_text(errors="replace")
     print("-- send_result.txt --\n" + report.replace(str(to), f"<{name}>"), flush=True)
@@ -333,10 +344,11 @@ def send(out, name, minutes):
         ok = check(ok, msg.startswith(env), "the SMTP envelope: this Wii to the other")
         ok = check(ok, f"\r\nTo: w{to:016d}{domain}\r\n".encode() in msg, "To: the other Wii")
         ok = check(ok, b"Content-Transfer-Encoding: base64" in msg and
-                   base64.b64encode(SEND_BODY.encode("utf-16-be")[:57]) in msg,
+                   base64.b64encode(body.encode("utf-16-be")[:57]) in msg,
                    "the text, as UTF-16 in base64 (a mail server keeps it intact)")
         ok = check(ok, mii is None or base64.b64encode(mii[:42]) in msg, "the Mii as its icon")
-        ok = check(ok, b"application/x-wii-msgboard" in msg and b"image/jpeg" in msg, "the photo and board data")
+        ok = check(ok, b"application/x-wii-msgboard" in msg and (b"image/jpeg" in msg) == photo_too,
+                   "the board data" + (" and the photo" if photo_too else ", no photo"))
     else:
         # KD may have uploaded it already, between the post and the snapshot.
         print("no new message in the send box: KD may have uploaded it already", flush=True)
@@ -352,6 +364,39 @@ def send(out, name, minutes):
         print(f"[{(minutes * 60 - (deadline - time.monotonic())) / 60:.0f} min] send box: {n2} messages"
               + ("; ours is gone: KD uploaded it" if gone else ""), flush=True)
     ok = check(ok, gone, "KD took the message from the send box (uploaded)")
+    return ok
+
+
+def masked(text):
+    """Wii numbers in a report as their last four digits."""
+    import re
+    return re.sub(r"\b\d{12}(\d{4})\b", r"............\1", text)
+
+
+def friends(out, set_slot=None, nick=None):
+    ok = snapshot(out / "before", [WC24, FACELIB])
+    if set_slot is None:
+        launch(APP, "friends")
+    else:
+        launch(APP, "friend-set", str(set_slot), nick or "-")
+    tool("get", "sd:/mboard_test/result.txt", str(out / "friends_result.txt"))
+    report = (out / "friends_result.txt").read_text(errors="replace")
+    print("-- friends_result.txt --\n" + masked(report), flush=True)
+    ok = check(ok, "friends: " in report and "friends: -" not in report, "read the address book")
+    if set_slot is None:
+        return ok
+    ok = check(ok, "mboard_friend_set: " + str(set_slot) + " " in report, "mboard_friend_set changed it")
+    ok &= snapshot(out / "after", [WC24])
+    a = (out / "before" / "wc24" / "nwc24fl.bin").read_bytes()
+    b = (out / "after" / "wc24" / "nwc24fl.bin").read_bytes()
+    e = 0x360 + 0x140 * set_slot
+    changed = [i for i in range(len(a)) if a[i] != b[i]]
+    ok = check(ok, all(e + 8 <= i < e + 0x28 for i in changed),
+               f"only the slot's nickname and Mii changed ({len(changed)} bytes)")
+    rfl = out / "before" / "facelib" / "RFL_DB.dat"
+    _, mii = first_mii(rfl.read_bytes()) if rfl.exists() else (None, None)
+    ok = check(ok, mii is not None and b[e + 0x20:e + 0x28] == mii[0x18:0x20],
+               "its Mii is this Wii's first Mii (by creation ID)")
     return ok
 
 
@@ -458,9 +503,17 @@ def main():
         ok = full(out)
     elif step == "id":
         ok = wii_id(out)
+    elif step == "friends":
+        if "--set" in sys.argv:
+            i = sys.argv.index("--set")
+            ok = friends(out, int(sys.argv[i + 1]), sys.argv[i + 2])
+        else:
+            ok = friends(out)
     elif step == "send" and len(sys.argv) > 2:
-        minutes = int(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else 10
-        ok = send(out, sys.argv[2], minutes)
+        def opt(flag):
+            return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
+        ok = send(out, sys.argv[2], int(opt("--minutes") or 10), opt("--board"), opt("--body"),
+                  "--no-photo" not in sys.argv)
     elif step == "board" and len(sys.argv) > 2:
         minutes = int(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else 20
         ok = board(out, pathlib.Path(sys.argv[2]), minutes, "--full" in sys.argv, "--already" in sys.argv)
