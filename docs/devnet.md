@@ -505,4 +505,8 @@ python3 tools/hbc.py ls sd:/apps/myapp
 ```
 
 `run` needs inbound TCP on the log port (4405 by default, `--log-port`) to be
-allowed through the PC's firewall.
+allowed through the PC's firewall. Inside a bench queue job the address and
+the port come from the job: `$HBC_WII` (the Wii it got) and
+`$WII_BENCH_LOG_PORT` (4300 for `dev`, 4301 for `lrwii`, 4302 for `prod`,
+inside the 4300-4315 range the bench firewall rule allows), so a queued
+command needs neither `--wii` nor `--log-port`.
