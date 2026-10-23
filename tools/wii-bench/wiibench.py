@@ -106,18 +106,21 @@ LOG_PORT_BASE = 4300  # the first Wii's jobs get TCP 4300 for the network log, t
 
 
 def parse_pool(spec):
-    """'name=ip[:port],name=ip[:port]' (or one per line) -> the Wiis, in order: the first is the
-    one dispatchers before 1.10.8 use, and gets log port LOG_PORT_BASE."""
+    """'name=ip[:port] [pinned],...' (or one per line) -> the Wiis, in order: the first is the
+    one dispatchers before 1.10.8 use, and gets log port LOG_PORT_BASE. A Wii marked `pinned`
+    takes only jobs added with --wii NAME, never one for any Wii: a console with real data on
+    it (the production Wiis) is on the queue so that nothing collides there, not to be picked."""
     pool = []
     for item in spec.replace("\n", ",").split(","):
-        item = item.strip()
-        if not item or item.startswith("#"):
+        item = item.split("#", 1)[0].strip()
+        if not item:
             continue
         name, _, addr = item.partition("=")
         if not addr:
             name, addr = f"wii{len(pool) + 1}", name
-        ip, _, port = addr.strip().partition(":")
-        pool.append({"name": name.strip(), "ip": ip, "port": int(port or 4299)})
+        addr, *marks = addr.split()
+        ip, _, port = addr.partition(":")
+        pool.append({"name": name.strip(), "ip": ip, "port": int(port or 4299), "pinned": "pinned" in marks})
     for i, w in enumerate(pool):
         w["log_port"] = LOG_PORT_BASE + i
     return pool
@@ -143,9 +146,14 @@ def bench_wii(wii=None):
     return dict(wii, ip=wii.get("ip") or WII, port=wii.get("port") or PORT)
 
 
+PINNED = set()        # the Wiis that take only jobs pinned to them (the pool's `pinned` mark)
+
+
 def may_use(job, slot):
-    """True if the job may run on the Wii named `slot` (add --wii pins it to one)."""
-    return (job.get("want_wii") or "any") in ("any", slot)
+    """True if the job may run on the Wii named `slot` (add --wii pins it to one; a pinned-only
+    Wii takes nothing else)."""
+    want = job.get("want_wii") or "any"
+    return want == slot or (want == "any" and slot not in PINNED)
 TIMEOUT = 1800        # s a job may run by default: the slowest 1% took 2,111 s and set --timeout
 QUICK = 2             # s of HBC idle after a queue job (ours, or the last lease holder's)
 RECENT = 60           # s after a queue job ended that QUICK applies
@@ -354,6 +362,7 @@ class Leases:
         self.pool = pool or default_pool()
         self.names = [w["name"] for w in self.pool]
         self.default = self.names[0]
+        self.pinned = {w["name"] for w in self.pool if w.get("pinned")}
         self.slots = {n: {"holder": None, "released_at": None, "left": None, "released_by": None} for n in self.names}
         self.waiters = {}
         self.grace_until = clock() + ttl
@@ -378,7 +387,8 @@ class Leases:
 
     def wii_info(self, name):
         w = next(x for x in self.pool if x["name"] == name)
-        return {"slot": name, "ip": w["ip"], "port": w["port"], "log_port": w.get("log_port", LOG_PORT_BASE)}
+        return {"slot": name, "ip": w["ip"], "port": w["port"], "log_port": w.get("log_port", LOG_PORT_BASE),
+                "pinned": bool(w.get("pinned"))}
 
     def _want(self, d):
         """The Wii a waiter or a queued job may use: "any", a Wii's name, or (said nothing:
@@ -386,7 +396,7 @@ class Leases:
         return d.get("want") or self.default
 
     def _eligible(self, want, slot):
-        return want == "any" or want == slot
+        return want == slot or (want == "any" and slot not in self.pinned)
 
     def _held_by(self, ticket):
         return next((n for n, s in self.slots.items() if s["holder"] and s["holder"]["ticket"] == ticket), None)
@@ -1492,14 +1502,18 @@ def cmd_add(a):
 
 def pool_names(timeout=10):
     """The Wiis' names: the lease server's (one, "bench", for a server before 1.10.8), else this
-    workstation's pool. None when the server does not answer."""
+    workstation's pool; PINNED learns which take pinned jobs only. None when the server does
+    not answer."""
     if not lease_server():
-        return [w["name"] for w in default_pool()]
-    try:
-        s = lease_call("/status", timeout=timeout)
-    except OSError:
-        return None
-    return [w["name"] for w in s.get("wiis") or []] or ["bench"]
+        pool = default_pool()
+    else:
+        try:
+            pool = lease_call("/status", timeout=timeout).get("wiis") or [{"name": "bench"}]
+        except OSError:
+            return None
+    PINNED.clear()
+    PINNED.update(w["name"] for w in pool if w.get("pinned"))
+    return [w["name"] for w in pool]
 
 
 def job_window():
@@ -2249,7 +2263,7 @@ def startable(j, workers, names):
     """True if a new turn for job j could get a Wii this dispatcher's turns are not already on or
     waiting for: one turn per Wii, so a job pinned to a free Wii starts while another Wii's jobs wait."""
     want = j.get("want_wii") or "any"
-    mine = set(names) if want == "any" else {want} & set(names)
+    mine = set(names) - PINNED if want == "any" else {want} & set(names)
     if not mine:
         return False
     busy = 0
@@ -2258,7 +2272,7 @@ def startable(j, workers, names):
             busy += w.slot in mine
         else:
             want_w = getattr(w.turn, "info", {}).get("want") if w.turn else w.want
-            busy += bool((set(names) if want_w in (None, "any") else {want_w}) & mine)
+            busy += bool((set(names) - PINNED if want_w in (None, "any") else {want_w}) & mine)
     return busy < len(mine)
 
 
@@ -2362,7 +2376,8 @@ def cmd_status(a):
             err = e
     wiis = the_wiis(s) if not err else [(w, None) for w in [bench_wii()]]
     for w, h in wiis:
-        print(f"Wii {w['name']} {w['ip']}: {wii_now({'holder': h} if s else None, err, w)}")
+        print(f"Wii {w['name']} {w['ip']}: {wii_now({'holder': h} if s else None, err, w)}"
+              + (f" [pinned jobs only: add --wii {w['name']}]" if w.get("pinned") else ""))
     print(f"dispatcher: {f'pid {pid}' if pid else 'not running'}")
     if lease_server():
         if err:
@@ -2994,10 +3009,13 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     me = socket.gethostname()
     if s.get("wiis"):
         pool = [(w["name"], w.get("ip") or WII, w.get("holder"), w.get("left")) for w in s["wiis"]]
+        pinned = {w["name"] for w in s["wiis"] if w.get("pinned")}
     elif s:
         pool = [("bench", WII, s.get("holder"), s.get("left"))]
+        pinned = set()
     else:
         pool = [(w["name"], w["ip"], None, None) for w in default_pool()]
+        pinned = {w["name"] for w in default_pool() if w.get("pinned")}
     here = {r.get("wii"): r for r in rows.get("running", [])}
     for name, ip, h, left in pool:
         if left:
@@ -3016,6 +3034,8 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             state, text = "mine", f"in use by {r['name']} here ({r['elapsed']})"
         else:
             state, text = "free", "free"
+        if name in pinned:
+            text += f" (pinned jobs only: add --wii {name})"
         last = last_on.get(name) or (last_on.get("") if len(pool) == 1 else None)
         row("wiis", name=name, ip=ip, state=state, line=text, last=last_note(*last) if last else "")
     kv["wiis_n"] = len(pool)

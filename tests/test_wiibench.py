@@ -1228,6 +1228,24 @@ class MultiWiiTest(unittest.TestCase):
         r = l.acquire({"ticket": "z", "host": "h", "name": "nope", "want": "three"})
         self.assertIn("no Wii named three", r["error_want"])
 
+    def test_a_pinned_only_wii_takes_only_its_own_jobs(self):
+        pool = self.wb.parse_pool("dev=192.168.8.213, prod=192.168.8.200 pinned  # real data")
+        self.assertEqual([(w["name"], w["ip"], w["pinned"]) for w in pool],
+                         [("dev", "192.168.8.213", False), ("prod", "192.168.8.200", True)])
+        l = self.wb.Leases(ttl=60, clock=lambda: 0.0, pool=pool)
+        l.grace_until = 0
+        l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "any"})       # dev
+        r = l.acquire({"ticket": "b", "host": "h", "name": "jb", "want": "any"})
+        self.assertFalse(r["granted"])            # prod is free, but takes no job for any Wii
+        r = l.acquire({"ticket": "c", "host": "h", "name": "jc", "want": "prod"})
+        self.assertEqual((r["granted"], r["slot"], r["pinned"]), (True, "prod", True))
+        from unittest import mock
+        with mock.patch.object(self.wb, "PINNED", {"prod"}):
+            self.assertFalse(self.wb.may_use({}, "prod"))
+            self.assertTrue(self.wb.may_use({"want_wii": "prod"}, "prod"))
+            self.assertTrue(self.wb.may_use({}, "dev"))
+            self.assertFalse(self.wb.startable({}, [], ["prod"]))   # an unpinned job never waits for prod
+
     def test_a_dispatcher_before_the_pool_only_gets_the_first_wii(self):
         l = self.leases()
         l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "any"})        # has one

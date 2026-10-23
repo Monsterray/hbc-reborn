@@ -208,12 +208,18 @@ Tool work in 1.10.8, no version of its own. See `tools/wii-bench/README.md`, "Se
   - Job records and events carry `wii`.
   - `report` gets a per-Wii table, and hand-overs pair by Wii.
   - `dispatcher.log` tags each turn's lines with its Wii.
+- **The bench's pool** (`compose.yaml`, 2026-10-22): `dev=192.168.8.213`, `lrwii=192.168.8.243
+  pinned`, `prod=192.168.8.200 pinned`. A `pinned` Wii takes only jobs added with `--wii` and
+  its name. Unpinned jobs never land on the production consoles and never wait for them, so
+  the rule that they take no ordinary queue jobs still holds. A pinned job there waits for HBC
+  to be idle, like any job, so a game being played is never interrupted.
 - **Checked:**
   - `MultiWiiTest`:
     - the pool parser;
     - a lease per Wii;
     - a pinned job that doesn't block the other Wii;
     - an old client held to the first Wii;
+    - a pinned-only Wii that turns away jobs for any Wii;
     - two real jobs at once on two fake HBCs without a server, each with its own Wii's
       `HBC_PORT` and log port;
     - pinned jobs through a server, with history, `status` and `snapshot`.
