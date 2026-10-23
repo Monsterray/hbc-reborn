@@ -288,6 +288,36 @@ the board shows a working button for it has not been checked on screen.
 Stationery (`letterhead.arc`) is said to travel the same way, but no sample
 was examined.
 
+
+### Board data: custom stationery and a board icon
+
+WiiLink's own letters bring their look in the same part. The one LRWii
+received on 2026-10-23 ("An Advanced Home for Account", filed under
+`HAEA_#1/odh/`, opt-out and no-reply set) carries an 85,152-byte U8 archive
+with three files:
+
+| File | What it is |
+| --- | --- |
+| `letter_LZ.bin` | the stationery: LZ77 (type 0x10) compressed U8, 385,920 bytes unpacked, holding `img/my_Letter_a.tpl` to `my_Letter_i.tpl` |
+| `thumbnail_LZ.bin` | the letter's icon on the board: LZ77 U8, 27,808 bytes, holding `img/my_LetterS_b.tpl` (144 x 96) |
+| `sound.bns` | a BNS sound (`BNS `, 0xFEFF), likely played as the letter opens; not checked |
+
+The stationery is a 9-slice frame of TPL textures, all RGB5A3 (format 5):
+
+| | left | middle | right |
+| --- | --- | --- | --- |
+| top | `a` 64 x 144 | `b` 384 x 144 | `c` 64 x 144 |
+| middle | `d` 64 x 168 | `e` 384 x 168 | `f` 64 x 168 |
+| bottom | `g` 64 x 64 | `h` 384 x 64 | `i` 64 x 64 |
+
+Put together, the pieces make a 512 x 376 letter: WiiLink's is a blue-to-purple
+header with a WiiLink badge, ruled lines, and a WiiLink | Wii footer. The
+icon is a small envelope in the same colours. `sdk/mboard` already sends any
+board data (`mboard_msg.board`), so an app can send its own stationery as such
+an archive. The file names and layout here are WiiLink's, read from that one
+letter; which names the Wii Menu requires, and which it would do without,
+is not checked.
+
 ## Doing it from homebrew
 
 Use sdk/mboard. `mboard_post()` sends text, and `mboard_post_msg()` adds a
