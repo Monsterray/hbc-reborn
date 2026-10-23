@@ -1,13 +1,15 @@
 """Run tests/netblock on a Wii and print TCP throughput by IOS call size.
 
-    python tests/netblock_run.py [WII] [--port 4300]
+    python tests/netblock_run.py [WII] [--port PORT]
 
 Sends netblock.dol through HBC with this PC's address, serves the app's
 SEND/RECV requests, prints each result in MB/s, and waits for HBC to come
-back. The port must accept inbound connections (the bench PC's firewall
-allows 4300)."""
+back. The port must accept inbound connections: in a bench queue job it
+defaults to the job's $WII_BENCH_LOG_PORT (4300-4315, which the bench
+firewall allows), else 4300."""
 
 import argparse
+import os
 import pathlib
 import socket
 import sys
@@ -31,7 +33,7 @@ def recv_exact(conn, n):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("wii", nargs="?")
-    parser.add_argument("--port", type=int, default=4300)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("WII_BENCH_LOG_PORT") or 4300))
     opts = parser.parse_args()
     wii = hbc.wii_address(opts.wii)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:

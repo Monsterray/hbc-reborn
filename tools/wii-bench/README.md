@@ -327,12 +327,27 @@ server: `wiibench.py serve`, stdlib Python only, on TCP 4310.
 The queue can drive more than one Wii. Each Wii has its own lease, and a job runs on
 whichever Wii is free first, unless it names one.
 
-- **The pool** is a list of `name=ip[:port]`, separated by commas or newlines, in
-  `$WII_BENCH_WIIS`:
+- **The pool** is a list of `name=ip[:port] [pinned]`, separated by commas or newlines, in
+  `$WII_BENCH_WIIS`. This bench's, in `compose.yaml`:
 
   ```bash
-  WII_BENCH_WIIS="bench=192.168.8.213,second=192.168.8.214"
+  WII_BENCH_WIIS="dev=192.168.8.213, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"
   ```
+
+  | Name | Address | Takes |
+  |---|---|---|
+  | `dev` | 192.168.8.213 | any job: the bench Wii |
+  | `lrwii` | 192.168.8.243 | only `add --wii lrwii`: the living-room Wii, real data |
+  | `prod` | 192.168.8.200 | only `add --wii prod`: the everyday Wii, real data |
+
+  - **`pinned`:** a pinned Wii takes only jobs added with `--wii` and its name. A job for
+    any Wii never lands there, and never waits for one. The production consoles are on the
+    queue so that work there goes one job at a time, waits for HBC to be idle (so a game
+    being played is never interrupted), and shows in the monitor. They are not extra test
+    Wiis. Pin a job there only when that console is the point of the test, and only when
+    asked to.
+  - The first Wii in the list gets the jobs of dispatchers from before 1.10.8, so it must
+    not be a pinned one.
 
   - With a lease server, set it on the server (`WII_BENCH_WIIS` in `compose.yaml`, or
     `serve --wii bench=192.168.8.213 --wii second=192.168.8.214`). Every workstation then
@@ -341,7 +356,7 @@ whichever Wii is free first, unless it names one.
     named `wiis` in the state folder, one Wii per line.
   - With no pool set, there is one Wii, named `bench`, at each workstation's
     `$WII_BENCH_IP`, just as before 1.10.8.
-- **Choosing a Wii:** `add --wii second` runs a job on that Wii only. `add` refuses a name
+- **Choosing a Wii:** `add --wii lrwii` runs a job on that Wii only. `add` refuses a name
   that isn't in the pool. Without `--wii`, the job runs on any free Wii.
 - **Order:** a free Wii goes to the earliest-received job that may use it. A job pinned to a
   busy Wii doesn't hold up later jobs that can run on another one.
