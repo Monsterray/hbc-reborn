@@ -1,5 +1,6 @@
-"""HBC's Message Board play log writer (channel/channelapp/source/cdblog.c)
-against the reference the Wii Menu accepted in Dolphin
+"""HBC's Message Board play log writer, sdk/mboard's mboard_play_vff() (HBC
+builds it into playtime.c since 1.10.9), against the reference the Wii Menu
+accepted in Dolphin
 (tools/msgboard/cdb_log.py): the same sessions, on the same image, must give
 the same bytes. The image is built here, as the Wii Menu leaves an empty
 cdb.vff (docs/messageboard.md); a real one stays on the Wii."""
@@ -60,18 +61,18 @@ class CdbLogTest(unittest.TestCase):
     def test_same_bytes_as_the_reference(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)
-            exe = tmp / "cdblog_host"
-            subprocess.run([CC, "-O2", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
-                            "-I", str(root / "channel/channelapp/source"),
-                            str(root / "tests/cdblog_host/main.c"),
-                            str(root / "channel/channelapp/source/cdblog.c"), "-o", str(exe)],
-                           check=True)
+            exe = tmp / "mboard_host"
+            subprocess.run([CC, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                            "-D_CRT_SECURE_NO_WARNINGS", "-DMBOARD_NO_OGC",
+                            "-I", str(root / "sdk/mboard"), str(root / "tests/mboard_host/main.c"),
+                            str(root / "sdk/mboard/mboard.c"), "-o", str(exe)] +
+                           ([] if os.name == "nt" else ["-lm"]), check=True)
             img_c = tmp / "c.vff"
             img_c.write_bytes(empty_vff())
             img_py = empty_vff()
             results = []
             for name, tid, start, end, now in SESSIONS:
-                out = subprocess.run([str(exe), str(img_c), name, tid, start, end, now, WIIID.hex()],
+                out = subprocess.run([str(exe), "play", str(img_c), name, tid, start, end, now, WIIID.hex()],
                                      check=True, capture_output=True, text=True).stdout.strip()
                 try:
                     py = ref.log(img_py, name, tid, tm(start), tm(end), tm(now), WIIID)

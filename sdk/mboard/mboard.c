@@ -4,9 +4,10 @@
  *
  * The receive-box post writes what the Revolution SDK's NWC24CommitMsg()
  * writes for a message a game addresses to its own Wii (its loop-back
- * delivery), field for field. The play-history writer is the Homebrew
- * Channel's (channel/channelapp/source/cdblog.c), checked byte for byte
- * against the same reference (tests/test_mboard.py).
+ * delivery), field for field. The play-history writer is the one the
+ * Homebrew Channel logs with (playtime.c builds this file, its cores only),
+ * checked byte for byte against the Wii Menu's accepted reference
+ * (tests/test_cdblog.py, tests/test_mboard.py).
  */
 
 #include <stdlib.h>

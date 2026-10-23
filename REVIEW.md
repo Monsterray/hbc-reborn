@@ -161,7 +161,16 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
-### 1.10.9: sdk/mboard, posts to the Wii Message Board (try/mboard)
+### 1.10.9: sdk/mboard, posts to the Wii Message Board
+
+- HBC's play log is now sdk/mboard's writer: `playtime.c` calls
+  `mboard_play_vff()`, and `channel/channelapp/Makefile` builds `mboard.c`
+  with `-DMBOARD_NO_OGC`. `cdblog.c`, `cdblog.h` and `tests/cdblog_host` are
+  gone. The two writers were the same code, checked against the same
+  reference. `mboard_session` has `cdblog_session`'s layout, so HBC's saved
+  state (`playlog.bin`) still reads, and the result codes are the same
+  numbers. `tests/test_cdblog.py` and `tools/msgboard/c_then_menu.py` drive
+  `tests/mboard_host play`.
 
 - **sdk/mboard** (docs/mboard.md): a message on today's page through the
   SDK's loop-back into the WiiConnect24 receive box, and a Play History

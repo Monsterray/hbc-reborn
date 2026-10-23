@@ -1,0 +1,50 @@
+# mboard: the Wii Message Board from homebrew
+
+`mboard` puts messages on the Wii Message Board the way games do, sends them
+to other Wiis, and adds lines to the day's play history. It is two files,
+[mboard.h](mboard.h) and [mboard.c](mboard.c). They need only libogc and are
+in the public domain, so you can copy them into any project.
+
+## Use
+
+```c
+#include "mboard.h"
+
+// A message on today's page; the Wii Menu files it when it next starts.
+mboard_post("WiiStation", "Played Final Fantasy VII
+for 42 minutes.");
+
+// The same with a Mii icon, a photo and a Reply button.
+static uint8_t mii[MBOARD_FACE_SIZE];
+mboard_msg m = { 0 };
+m.title = "WiiStation";
+m.body = "Played Wii Sports
+for 5 minutes.";
+if (mboard_mii(0, mii) == MBOARD_OK)
+    m.face = mii;
+m.jpeg = photo;
+m.jpeg_size = photo_size;
+m.reply = 1;
+mboard_post_msg(&m);
+
+// To another Wii, by its 16-digit Wii number (both on WiiLink).
+mboard_send_msg(1234567890123456ull, &m);
+
+// A line in today's play history (needs <ahb_access/> in meta.xml).
+mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);
+```
+
+Each call returns a result of 0 or more, or a negative `MBOARD_E_*` code
+(`mboard_strerror()` names it). The library checks every file before it
+writes and never deletes anything already on the board.
+
+## Docs
+
+- [docs/mboard.md](../../docs/mboard.md): the API, the files, the IOS calls,
+  what can go wrong, and the proof on a Wii.
+- [docs/messageboard-messages.md](../../docs/messageboard-messages.md): how
+  the board stores a message, and what sets the sender, icon and contents.
+- [docs/messageboard.md](../../docs/messageboard.md): the play history.
+- [docs/mii.md](../../docs/mii.md): Mii data, and what makes a Mii valid.
+
+The Homebrew Channel's own play log is this library's `mboard_play_vff()`.

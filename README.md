@@ -20,9 +20,12 @@ replacing it.
 | PC client for the developer network | [`tools/hbc.py`](tools/hbc.py) |
 | App-side network log header | [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) |
 | In-app agent: the tools and crash reports inside a running app | [`sdk/hbc_agent.h`](sdk/hbc_agent.h), [`sdk/hbc_agent`](sdk/hbc_agent) |
+| Wii Message Board: posts, mail to another Wii, play history (HBC's play log too) | [`sdk/mboard`](sdk/mboard) |
+| Wii Remote speaker driver | [`sdk/wiispk`](sdk/wiispk) |
 | Banner, WAD packaging, PyWii | [`channel/banner`](channel/banner), [`channel/title`](channel/title), [`pywii`](pywii) |
 | WiiPAX executable packer, host `wiiload` | [`wiipax`](wiipax), [`channel/wiiload`](channel/wiiload) |
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
+| Message Board: the library, the board's formats, Miis | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md), [`docs/mii.md`](docs/mii.md) |
 | Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
 
 This code differs from the official HBC build, which adds protection
@@ -371,6 +374,36 @@ speaker cleanly, where libogc's `WPAD_SendStreamData` stutters and turns to
 noise, and it loads any PCM WAV file. [Its README](sdk/wiispk/README.md) has
 the API and explains what libogc gets wrong.
 
+### Posting to the Wii Message Board from your app
+
+[`sdk/mboard`](sdk/mboard) is two files that need only libogc, in the public
+domain, so any app can copy them in. They put a message on the Wii Message
+Board the way a game does, or add a line to the day's play history:
+
+```c
+#include "mboard.h"
+
+mboard_post("WiiStation", "Played Final Fantasy VII\nfor 42 minutes.");
+mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);   // needs AHBPROT
+```
+
+`mboard_post_msg()` adds what a game's message can carry: a Mii as its icon
+(`mboard_mii()` reads one from the Wii's Mii database), a photo, a button
+that opens a channel, a Reply button, a delay, and the date it is filed
+under. `mboard_send_msg()` sends the same message to another Wii by its Wii
+number, through the WiiConnect24 mail server (WiiLink's today). Nothing needs
+the internet except sending, and nothing deletes what is already on the
+board. HBC's own play log is this library's writer.
+
+Docs:
+
+- [`docs/mboard.md`](docs/mboard.md): the API, the files and IOS calls, what
+  can go wrong, and the proof on a Wii.
+- [`docs/messageboard-messages.md`](docs/messageboard-messages.md): how the
+  board stores a message and what sets the sender, icon and contents.
+- [`docs/messageboard.md`](docs/messageboard.md): the play history.
+- [`docs/mii.md`](docs/mii.md): Mii data.
+
 ## Installing the channel on a Wii
 
 Run the DOL over Wiiload first (above). Install the WAD only after that works,
@@ -489,6 +522,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
+| Message Board library (`sdk/mboard`) on the PC: posts, the full message, sending, play history, byte for byte | `python3 tests/test_mboard.py`, `python3 tests/test_cdblog.py` | C compiler |
+| Message Board library with the real Wii Menu 4.3U filing the post (`--full` for the Mii, photo and board data) | `python3 tests/dolphin_mboard.py --restore` (build `tests/mboard_app` first) | Dolphin, the Wii Menu profile |
+| Message Board library on the bench Wii: `backup`, `post`, `full`, `send WII`, `board`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent and MEM2: nothing written into HBC's records while an app runs, the log target kept as it stops, the agent's memory at the top of the MEM2 arena | `python3 tests/wii_agent_mem2.py WII-IP` (`--dol` for another build) | Wii in any HBC |
 | `hbc_agent_stop()` (then an IOS reload, a re-init, a crash) and `hbc_agent_listen()` (the app's own server on 4299) on a real Wii | `make -C tests/agent_app`, then `python3 tests/wii_agent_stop.py --wii WII-IP` (`--dol` for another build) | Wii in any HBC |
@@ -552,6 +588,7 @@ python3 tools/wii-bench/wiibench.py wait <id>
 
 Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
-[`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) is public domain so apps can include
-it freely. The agent library (`sdk/hbc_agent`) is built from HBC's own
+[`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) and [`sdk/mboard`](sdk/mboard) are
+public domain so apps can include them freely, and
+[`sdk/wiispk`](sdk/wiispk) is under the zlib licence. The agent library (`sdk/hbc_agent`) is built from HBC's own
 sources and is GPL.

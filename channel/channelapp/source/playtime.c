@@ -4,7 +4,7 @@
 // the Message Board at its next start. HBC spoils that record, as it always
 // has: one record cannot tell HBC from the apps it runs. Instead HBC logs
 // each session itself, straight into the Message Board's play log in
-// cdb.vff (cdblog.c, docs/messageboard.md): its own time in the menu, and
+// cdb.vff (sdk/mboard's mboard_play_vff(), docs/messageboard.md): its own time in the menu, and
 // each app it launched, timed from the launch to HBC's return. A pending
 // launch is kept in HBC's data folder so it survives the app.
 //
@@ -22,7 +22,7 @@
 #include <unistd.h>
 
 #include "../config.h"
-#include "cdblog.h"
+#include "mboard.h"
 #include "devnet.h"
 #include "isfs.h"
 #include "playtime.h"
@@ -40,9 +40,9 @@ static char wiiid_path[] __attribute__((aligned(32))) =
 
 // A play record the Wii Menu wrote this long before HBC started means the
 // Wii Menu launched HBC (and not HBC's reload stub, after an app).
-#define FROM_MENU_TICKS (120 * CDBLOG_TICKS_PER_SEC)
+#define FROM_MENU_TICKS (120 * MBOARD_TICKS_PER_SEC)
 // No app session is logged as longer than this: the clock was likely changed.
-#define MAX_SESSION_TICKS (24 * 3600 * CDBLOG_TICKS_PER_SEC)
+#define MAX_SESSION_TICKS (24 * 3600 * MBOARD_TICKS_PER_SEC)
 
 #define MEM2_PROT 0x0D8B420A
 #define STATE_MAGIC 0x4842504c  // 'HBPL'
@@ -51,7 +51,7 @@ typedef struct {
 	u32 magic;
 	u32 pending;  // an app was launched and has not come back yet
 	u32 wiiload;  // sent over Wiiload: its agent may name it better
-	cdblog_session app;
+	mboard_session app;
 } state;
 
 static void utf8_to_name(u16 *out, const char *s);
@@ -132,19 +132,19 @@ static int ios_write(void *ctx, u32 off, const void *buf, u32 len) {
 
 static const char *result_name(int res) {
 	switch (res) {
-	case CDBLOG_ADDED: return "added";
-	case CDBLOG_COMBINED: return "added to its line";
-	case CDBLOG_CREATED: return "a new day";
-	case CDBLOG_E_IO: return "NAND error";
-	case CDBLOG_E_FORMAT: return "unknown format, nothing written";
-	case CDBLOG_E_FULL: return "the day is full";
+	case MBOARD_OK: return "added";
+	case MBOARD_COMBINED: return "added to its line";
+	case MBOARD_CREATED: return "a new day";
+	case MBOARD_E_IO: return "NAND error";
+	case MBOARD_E_FORMAT: return "unknown format, nothing written";
+	case MBOARD_E_FULL: return "the day is full";
 	default: return "out of memory";
 	}
 }
 
-static void log_session(const cdblog_session *s) {
+static void log_session(const mboard_session *s) {
 	static u8 wiiid[32] ATTRIBUTE_ALIGN(32);
-	cdblog_io io;
+	mboard_io io;
 	bool have_id = false;
 	int patched, res;
 	s32 fd;
@@ -165,9 +165,9 @@ static void log_session(const cdblog_session *s) {
 		io.ctx = (void *) fd;
 		io.read = ios_read;
 		io.write = ios_write;
-		res = cdblog_add(&io, s, gettime(), have_id ? wiiid : NULL);
+		res = mboard_play_vff(&io, s, gettime(), have_id ? wiiid : NULL);
 		IOS_Close(fd);
-		hlog("Play log: %u min, %s\n", (unsigned) ((s->end - s->start) / CDBLOG_TICKS_PER_SEC / 60),
+		hlog("Play log: %u min, %s\n", (unsigned) ((s->end - s->start) / MBOARD_TICKS_PER_SEC / 60),
 			 result_name(res));
 	}
 	if (patched)
@@ -335,7 +335,7 @@ static void folder_id(char *id, const char *dir) {
 }
 
 void playtime_leave(const char *app_name, const char *app_dir) {
-	cdblog_session hbc;
+	mboard_session hbc;
 	u64 now = gettime();
 	u32 tid = (u32) (MY_TITLEID & 0xffffffff);
 	state st;

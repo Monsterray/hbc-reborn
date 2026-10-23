@@ -1,7 +1,8 @@
 /*
  * mboard.h - post to the Wii Message Board from homebrew (libogc).
  *
- * Two ways in, both offline (docs/mboard.md has the formats and the proof):
+ * Four ways in, all but one offline (docs/mboard.md has the formats and the
+ * proof):
  *
  *   mboard_post("WiiStation", "Played Final Fantasy VII for 42 minutes.");
  *       A message on today's page, as a game posts one: the SDK's own
@@ -17,19 +18,24 @@
  *       board data (a button that opens a channel, stationery), a Reply
  *       button, a delay, and the date it is filed under.
  *
+ *   mboard_send_msg(to_wii_number, &msg);
+ *       That message to another Wii: into the WiiConnect24 send box, and KD
+ *       is asked to upload it now. The one call that needs the internet and
+ *       a working WiiConnect24 account on both Wiis (WiiLink's today).
+ *
  *   mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);
  *       A line in today's "Today's Play History", ending now, the way the
  *       Wii Menu logs a disc. Written into the Wii Menu's own cdb.vff, so it
  *       needs AHBPROT (meta.xml <ahb_access/>): IOS's NAND permission check
- *       is lifted for the moment of the write and put back. The same writer
- *       as the Homebrew Channel's play log (1.8.9 on).
+ *       is lifted for the moment of the write and put back. The writer
+ *       the Homebrew Channel's play log uses (built into it since 1.10.9).
  *
  * Each returns a result >= 0 on success or a negative MBOARD_E_* code, and
  * either writes all of its change or none of it as far as the reader sees:
  * nothing it finds unexpected is touched (MBOARD_E_FORMAT), other messages
  * are never deleted to make room (MBOARD_E_FULL), and new data lands before
  * anything that points to it. Call from one thread at a time, with ISFS
- * free to use; neither call touches the network.
+ * free to use; only mboard_send_msg touches the network (through KD).
  *
  * Needs nothing beyond libogc. This file and mboard.c are in the public
  * domain; copy them into your project.

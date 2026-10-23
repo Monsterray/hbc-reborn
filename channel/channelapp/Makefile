@@ -25,7 +25,12 @@ DIR_I18N = i18n
 DIR_BUILD = build
 DIR_BUILD_CHAN = $(DIR_BUILD)/channel
 
+# The Message Board's play log is sdk/mboard's writer (playtime.c), built
+# here without its libogc half: HBC reaches cdb.vff through its own IOS code.
+MBOARD = ../../sdk/mboard
+
 DIR_INCLUDES = $(DIR_BUILD) \
+		$(MBOARD) \
 		$(DEVKITPRO)/libogc/include \
 		$(DEVKITPRO)/portlibs/ppc/include \
 		$(DEVKITPRO)/portlibs/ppc/include/freetype2
@@ -77,7 +82,7 @@ ENCODING = utf-8
 FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
-FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) \
+FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
 		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
@@ -199,6 +204,10 @@ $(DIR_BUILD)/%.o: $(DIR_STUB)/%.S
 $(DIR_BUILD)/%.o: $(DIR_SRC)/%.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
+$(DIR_BUILD)/mboard.o: $(MBOARD)/mboard.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) -DMBOARD_NO_OGC -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
 -include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 

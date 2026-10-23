@@ -1,6 +1,7 @@
 // Host driver for sdk/mboard/mboard.c's cores (tests/test_mboard.py):
 //   mboard_host play IMAGE NAME ID START END NOW [WIIID-HEX]
-//     Times are local, YYYY-MM-DDTHH:MM:SS. Like tests/cdblog_host.
+//     Times are local, YYYY-MM-DDTHH:MM:SS (tests/test_cdblog.py, and HBC's
+//     play log, which is this writer).
 //   mboard_host post CTL MBX WII-NUMBER DOMAIN APPID-HEX GROUP-HEX UTC LOCAL TITLE BODY [OPT...]
 //     UTC and LOCAL as above; TITLE and BODY as hex UTF-8. OPT: face=FILE
 //     jpeg=FILE board=FILE reply=1 delay=HOURS date=YYYY-MM-DD (mboard_msg);

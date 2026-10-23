@@ -82,7 +82,9 @@ The text is generated from the list (English shown):
 
 ## What HBC logs
 
-`channel/channelapp/source/playtime.c` drives `cdblog.c`:
+`channel/channelapp/source/playtime.c` drives the writer, `sdk/mboard`'s
+`mboard_play_vff()` (HBC builds `sdk/mboard/mboard.c` without its libogc
+half, since 1.10.9; it was HBC's own `cdblog.c` before):
 
 - HBC's own time, from when it started (or when the Wii Menu launched it, by
   the Wii Menu's fresh play_rec.dat) until it leaves: to an app, to the Wii

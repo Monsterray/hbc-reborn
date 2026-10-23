@@ -1,4 +1,4 @@
-"""Dolphin check of HBC's C writer: build tests/cdblog_host, log sessions into
+"""Dolphin check of HBC's C writer (sdk/mboard): build tests/mboard_host, log sessions into
 the Dolphin profile's cdb.vff with it, have the Wii Menu merge a play_rec.dat
 record into the same day, and print the day's message.
 
@@ -17,14 +17,14 @@ day = sys.argv[1]
 py = sys.executable
 
 with tempfile.TemporaryDirectory() as tmp:
-    exe = pathlib.Path(tmp) / "cdblog_host"
-    subprocess.run([CC, "-O2", "-Wall", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I",
-                    str(root / "channel/channelapp/source"), str(root / "tests/cdblog_host/main.c"),
-                    str(root / "channel/channelapp/source/cdblog.c"), "-o", str(exe)], check=True)
+    exe = pathlib.Path(tmp) / "mboard_host"
+    subprocess.run([CC, "-std=c99", "-O2", "-DMBOARD_NO_OGC", "-D_CRT_SECURE_NO_WARNINGS", "-I",
+                    str(root / "sdk/mboard"), str(root / "tests/mboard_host/main.c"),
+                    str(root / "sdk/mboard/mboard.c"), "-o", str(exe)], check=True)
     for args in (["Homebrew Channel", "OHBC", f"{day}T19:00:00", f"{day}T19:20:00", f"{day}T19:20:01"],
                  ["Wii64 (from C)", "HBWII6", f"{day}T19:20:05", f"{day}T19:55:00", f"{day}T19:55:01"],
                  ["Homebrew Channel", "OHBC", f"{day}T19:55:02", f"{day}T19:58:00", f"{day}T19:58:01"]):
-        r = subprocess.run([str(exe), str(VFF)] + args, capture_output=True, text=True)
+        r = subprocess.run([str(exe), "play", str(VFF)] + args, capture_output=True, text=True)
         print("C writer:", args[0], "->", r.stdout.strip(), r.stderr.strip())
 
 subprocess.run([py, str(here / "playrec_re.py"), "rec_at", "HBC Menu Romeo", "HROM01",
