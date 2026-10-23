@@ -48,6 +48,8 @@ enum {
 	MBOARD_OK = 0,         /* posted; for mboard_log_play: a new line today */
 	MBOARD_COMBINED = 1,   /* mboard_log_play: the title's line today got longer */
 	MBOARD_CREATED = 2,    /* mboard_log_play: today's first line, a new message */
+	MBOARD_QUEUED = 3,     /* mboard_send_msg: in the send box; KD would not send it
+	                          now, so it goes on WiiConnect24's next round */
 
 	MBOARD_E_IO = -1,      /* a NAND read or write failed part way */
 	MBOARD_E_FORMAT = -2,  /* a file is not as expected: nothing was written */
@@ -92,6 +94,15 @@ typedef struct {
 
 int mboard_post_msg(const mboard_msg *msg);
 
+/* The same message to another Wii, by its 16-digit Wii number: into this
+ * Wii's WiiConnect24 send box, and KD (IOS's WiiConnect24 service) is asked to
+ * upload it to the mail server now. Needs a WiiConnect24 account that works
+ * (WiiLink's, today: Nintendo's server is gone) on both Wiis, and the
+ * internet; the other Wii's Wii Menu files it on its board when it next
+ * receives mail. MBOARD_OK when KD took the request, MBOARD_QUEUED when the
+ * message waits for KD's next round. */
+int mboard_send_msg(uint64_t to_wii_number, const mboard_msg *msg);
+
 /* Slot 0-99 of the Wii's Mii database (/shared2/menu/FaceLib/RFL_DB.dat),
  * for mboard_msg.face. MBOARD_E_NO_MII for an empty slot. */
 int mboard_mii(int slot, uint8_t face[MBOARD_FACE_SIZE]);
@@ -133,10 +144,16 @@ typedef struct {
 } mboard_env;
 
 #define MBOARD_RECV_CTL_SIZE 0x8000u
+#define MBOARD_SEND_CTL_SIZE 0x4000u
 
 /* ctl: the whole wc24recv.ctl, updated in place (the caller writes it back
  * when the result is MBOARD_OK); mbx: wc24recv.mbx. */
 int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
+					const mboard_msg *msg);
+
+/* ctl: the whole wc24send.ctl (MBOARD_SEND_CTL_SIZE), mbx: wc24send.mbx; to:
+ * another Wii's number (this Wii's own is MBOARD_E_ARG: post that). */
+int mboard_send_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env, uint64_t to,
 					const mboard_msg *msg);
 
 typedef struct {

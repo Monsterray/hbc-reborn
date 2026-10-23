@@ -14,6 +14,9 @@
 //                                         Wii's first Mii), photo.jpg and
 //                                         board.arc from sd:/mboard_test if
 //                                         there, and a Reply button
+//   mboard_app.dol send NUMBER TITLE BODY the same message to another Wii
+//                                         (mboard_send_msg), by its 16-digit
+//                                         Wii number
 // Each writes what it did to sd:/mboard_test/result.txt (and the screen),
 // ending with "done". Built with -DMBOARD_APP_DOLPHIN (make dolphin), a run
 // without arguments also posts and logs a fixed test text: Dolphin boots a
@@ -135,7 +138,7 @@ static void *slurp(const char *path, u32 *size) {
 	return p;
 }
 
-static int full(const char *title, const char *body) {
+static int full(u64 to, const char *title, const char *body) {
 	static u8 face[MBOARD_FACE_SIZE];
 	mboard_msg m;
 	u32 size;
@@ -172,9 +175,9 @@ static int full(const char *title, const char *body) {
 	m.board = slurp("sd:/mboard_test/board.arc", &m.board_size);
 	say("photo: %u bytes, board data: %u bytes\n", (unsigned) m.jpeg_size, (unsigned) m.board_size);
 	t0 = gettime();
-	res = mboard_post_msg(&m);
-	say("mboard_post_msg: %d (%s) in %llu ms\n", res, mboard_strerror(res),
-		ticks_to_millisecs(gettime() - t0));
+	res = to ? mboard_send_msg(to, &m) : mboard_post_msg(&m);
+	say("%s: %d (%s) in %llu ms\n", to ? "mboard_send_msg" : "mboard_post_msg", res,
+		mboard_strerror(res), ticks_to_millisecs(gettime() - t0));
 	free((void *) m.jpeg);
 	free((void *) m.board);
 	return res;
@@ -241,7 +244,7 @@ int main(int argc, char **argv) {
 #endif
 #ifdef MBOARD_APP_DOLPHIN_FULL
 	if (argc < 2)
-		full("WiiStation", "Played Dolphin Full Test for 4 minutes.\nWith a Mii, a photo and board data.");
+		full(0, "WiiStation", "Played Dolphin Full Test for 4 minutes.\nWith a Mii, a photo and board data.");
 #endif
 
 	say("mboard_app:");
@@ -264,10 +267,14 @@ int main(int argc, char **argv) {
 		wii_id();
 	} else if (argc == 4 && !strcmp(argv[1], "full")) {
 		unescape(argv[3]);
-		full(argv[2], argv[3]);
+		full(0, argv[2], argv[3]);
 		check();
+	} else if (argc == 5 && !strcmp(argv[1], "send")) {
+		unescape(argv[4]);
+		full(strtoull(argv[2], NULL, 10), argv[3], argv[4]);
 	} else if (argc > 1 && (argc != 2 || strcmp(argv[1], "check"))) {
-		say("usage: check | id | post TITLE BODY | play NAME ID SECONDS | full TITLE BODY\n");
+		say("usage: check | id | post TITLE BODY | play NAME ID SECONDS | full TITLE BODY | "
+			"send NUMBER TITLE BODY\n");
 	}
 	say("done\n");
 	if (report) {

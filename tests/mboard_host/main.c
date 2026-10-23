@@ -3,7 +3,8 @@
 //     Times are local, YYYY-MM-DDTHH:MM:SS. Like tests/cdblog_host.
 //   mboard_host post CTL MBX WII-NUMBER DOMAIN APPID-HEX GROUP-HEX UTC LOCAL TITLE BODY [OPT...]
 //     UTC and LOCAL as above; TITLE and BODY as hex UTF-8. OPT: face=FILE
-//     jpeg=FILE board=FILE reply=1 delay=HOURS date=YYYY-MM-DD (mboard_msg).
+//     jpeg=FILE board=FILE reply=1 delay=HOURS date=YYYY-MM-DD (mboard_msg);
+//     to=WII-NUMBER: to another Wii, CTL and MBX being the send box.
 //     CTL is written back only when the post succeeds, as mboard_post() does.
 // Prints the result code.
 
@@ -120,7 +121,8 @@ static int post(int argc, char **argv) {
 	mboard_msg m;
 	mboard_io io;
 	FILE *fc, *fm;
-	uint32_t size;
+	uint32_t size, ctl_size = MBOARD_RECV_CTL_SIZE;
+	uint64_t to = 0;
 	int res, i, y, mo, d;
 
 	if (argc < 12) {
@@ -128,9 +130,14 @@ static int post(int argc, char **argv) {
 						"TITLE BODY\n");
 		return 2;
 	}
+	for (i = 12; i < argc; ++i)
+		if (!strncmp(argv[i], "to=", 3)) {
+			to = strtoull(argv[i] + 3, NULL, 10);
+			ctl_size = MBOARD_SEND_CTL_SIZE;
+		}
 	fc = fopen(argv[2], "r+b");
 	fm = fopen(argv[3], "r+b");
-	if (!fc || !fm || fread(ctl, 1, sizeof(ctl), fc) != sizeof(ctl)) {
+	if (!fc || !fm || fread(ctl, 1, ctl_size, fc) != ctl_size) {
 		fprintf(stderr, "cannot read %s or %s\n", argv[2], argv[3]);
 		return 2;
 	}
@@ -161,6 +168,8 @@ static int post(int argc, char **argv) {
 			m.reply = atoi(argv[i] + 6);
 		} else if (!strncmp(argv[i], "delay=", 6)) {
 			m.delay_hours = atoi(argv[i] + 6);
+		} else if (!strncmp(argv[i], "to=", 3)) {
+			/* read above */
 		} else if (sscanf(argv[i], "date=%d-%d-%d", &y, &mo, &d) == 3) {
 			m.file_year = (uint16_t) y;
 			m.file_month = (uint8_t) mo;
@@ -173,8 +182,8 @@ static int post(int argc, char **argv) {
 	io.ctx = fm;
 	io.read = file_read;
 	io.write = file_write;
-	res = mboard_post_box(ctl, &io, &env, &m);
-	if (res == MBOARD_OK && (fseek(fc, 0, SEEK_SET) || fwrite(ctl, 1, sizeof(ctl), fc) != sizeof(ctl)))
+	res = to ? mboard_send_box(ctl, &io, &env, to, &m) : mboard_post_box(ctl, &io, &env, &m);
+	if (res == MBOARD_OK && (fseek(fc, 0, SEEK_SET) || fwrite(ctl, 1, ctl_size, fc) != ctl_size))
 		res = MBOARD_E_IO;
 	fclose(fc);
 	fclose(fm);

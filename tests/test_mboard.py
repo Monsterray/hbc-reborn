@@ -41,6 +41,8 @@ CL = 0x200
 NCLUSTERS = (BOX_SIZE - DATA) // CL + 2
 
 WII = 1234567890123456
+OTHER = 6543210987654321                # another Wii, for the send box
+SEND_SIZE, SEND_CTL = 0x200000, 0x4000
 DOMAIN = "@wii.com"
 APP, GROUP = 0x4F484243, 0x3031  # 'OHBC', "01"
 UTC, LOCAL = "2026-10-22T18:30:05", "2026-10-22T11:30:05"
@@ -56,6 +58,69 @@ def empty_ctl():
     for off in range(0x80, CTL_SIZE, 0x80):
         struct.pack_into(">I", ctl, off + 0x0C, (off + 0x80) % CTL_SIZE)
     return ctl
+
+
+def empty_send():
+    """The send box as the bench Wii has it with nothing to send: a 127-entry
+    control file and a 2 MiB FAT12 VFF holding only "mb", its FATs as long
+    as FAT16 ones (0x2000 bytes: the second at 0x2020, the root at 0x4020)."""
+    ctl = bytearray(SEND_CTL)
+    struct.pack_into(">4s9I", ctl, 0, b"WcTf", 4, 0, 127, 0, SEND_CTL, 1, 0x80, 0, SEND_SIZE)
+    for off in range(0x80, SEND_CTL, 0x80):
+        struct.pack_into(">I", ctl, off + 0x0C, (off + 0x80) % SEND_CTL)
+    img = bytearray(SEND_SIZE)
+    img[0:16] = bytes.fromhex("56464620feff010000200000" "00200000")
+    for fat in (0x20, 0x2020):
+        img[fat:fat + 6] = bytes.fromhex("f0ffffff0f00")   # FAT12: cluster 2 (mb) ends its chain
+    img[0x4020:0x4040] = lfn_entry(b"MB         ", "mb")
+    img[0x4040:0x4060] = dir_entry(b"MB         ", 0x10, 2, 0)
+    img[0x5020:0x5040] = dir_entry(b".          ", 0x10, 2, 0)
+    img[0x5040:0x5060] = dir_entry(b"..         ", 0x10, 0, 0)
+    return ctl, img
+
+
+class Fat12:
+    """The send box's FAT12, read on its own: two FATs of 0x2000 bytes."""
+    FAT1, FAT_LEN, ROOT, DATA = 0x20, 0x2000, 0x4020, 0x5020
+
+    def __init__(self, img):
+        self.img = img
+        self.n = (SEND_SIZE - self.DATA) // CL + 2
+
+    def next(self, c):
+        w = struct.unpack_from("<H", self.img, self.FAT1 + c + c // 2)[0]
+        return w >> 4 if c & 1 else w & 0xfff
+
+    def chain(self, c):
+        out = []
+        while 2 <= c < 0xff8:
+            out.append(c)
+            c = self.next(c)
+        return out
+
+    def entries(self, cluster):
+        areas = ([(self.ROOT, 0x1000)] if cluster == 0 else
+                 [(self.DATA + (c - 2) * CL, CL) for c in self.chain(cluster)])
+        lfn = None
+        for start, size in areas:
+            for off in range(start, start + size, 32):
+                e = self.img[off:off + 32]
+                if e[0] == 0:
+                    return
+                if e[11] == 0x0f:
+                    lfn = (e[1:11] + e[14:26] + e[28:32]).decode("utf-16-le").split("\0")[0]
+                elif e[0] != 0xe5:
+                    yield {"short": bytes(e[0:11]), "long": lfn, "attr": e[11],
+                           "cluster": struct.unpack_from("<H", e, 26)[0],
+                           "size": struct.unpack_from("<I", e, 28)[0]}
+                    lfn = None
+
+    def read(self, ent):
+        return b"".join(self.img[self.DATA + (c - 2) * CL:self.DATA + (c - 1) * CL]
+                        for c in self.chain(ent["cluster"]))[:ent["size"]]
+
+    def free(self):
+        return sum(1 for c in range(2, self.n) if self.next(c) == 0)
 
 
 def lfn_entry(short, name):
@@ -169,15 +234,17 @@ def b64_lines(data, step):
 
 
 def expected_full(msg_id, title, body, face=None, jpeg=None, board=None, reply=False,
-                  delay=0, date=None, utc=UTC):
-    """NWC24CommitMsg()'s bytes for a WII_MENU message to the Wii itself,
+                  delay=0, date=None, utc=UTC, to=WII):
+    """NWC24CommitMsg()'s bytes for a WII_MENU message to the Wii itself (or,
+    with `to`, to another Wii: then the send box's, with its SMTP envelope),
     from its format strings. Returns (bytes, minutes, offsets)."""
     t = datetime.datetime.strptime(utc, "%Y-%m-%dT%H:%M:%S")
     unix = int(t.replace(tzinfo=datetime.timezone.utc).timestamp())
     minutes = (unix + 2208988800) // 60
-    addr = f"w{WII:016d}{DOMAIN}"
-    h = (f"Date: {t.day:02d} {t.strftime('%b')} {t.year} {t:%H:%M:%S} -0000\r\n"
-         f"From: {addr}\r\nTo: {addr}\r\n"
+    addr, to_addr = f"w{WII:016d}{DOMAIN}", f"w{to:016d}{DOMAIN}"
+    h = f"MAIL FROM: {addr}\r\nRCPT TO: {to_addr}\r\nDATA\r\n" if to != WII else ""
+    h += (f"Date: {t.day:02d} {t.strftime('%b')} {t.year} {t:%H:%M:%S} -0000\r\n"
+         f"From: {addr}\r\nTo: {to_addr}\r\n"
          f"Message-Id: <{msg_id:05X}{WII >> 32:08X}{WII & 0xffffffff:08X}{minutes:08X}{DOMAIN}>\r\n"
          f"X-Wii-AppId: 2-{APP:08X}-{GROUP:04X}\r\nX-Wii-Cmd: 00040001\r\n")
     h += "X-Wii-AltName:" + "".join(f" {l}\r\n" for l in b64_lines(title.encode("utf-16-be") + b"\0\0", 42))
@@ -285,6 +352,8 @@ class MboardTest(unittest.TestCase):
             args.append(f"delay={opts['delay']}")
         if opts.get("date"):
             args.append("date=%04d-%02d-%02d" % opts["date"])
+        if opts.get("to"):
+            args.append(f"to={opts['to']}")
         return self.host("post", c, m, wii, domain, f"{APP:08x}", f"{GROUP:04x}", utc, LOCAL,
                          title.encode().hex(), body.encode().hex(), *args)
 
@@ -499,6 +568,57 @@ class MboardTest(unittest.TestCase):
                 before = (c.read_bytes(), m.read_bytes())
                 self.assertEqual(self.post(c, m, **opts), want)
                 self.assertEqual((c.read_bytes(), m.read_bytes()), before)
+
+    # ---- To another Wii: the send box ------------------------------------
+
+    def test_send(self):
+        """Two messages into a FAT12 send box: the SMTP envelope and the other
+        Wii in To:, TO_SEND in the entry, both FATs packed FAT12, /mb/s*.msg."""
+        ctl0, mbx0 = empty_send()
+        c, m = self.box(ctl0, mbx0, name="send")
+        opts = dict(face=FACE, jpeg=JPEG, board=BOARD, reply=True)
+        self.assertEqual(self.post(c, m, "WiiStation", "Hello from the bench\nWii.", to=OTHER, **opts), 0)
+        self.assertEqual(self.post(c, m, "WiiStation", "A second one.", to=OTHER), 0)
+        ctl, mbx = c.read_bytes(), m.read_bytes()
+        self.assertEqual(mbx[0x20:0x2020], mbx[0x2020:0x4020], "FAT copies differ")
+        fat = Fat12(mbx)
+        mb = next(e for e in fat.entries(0) if e["short"] == b"MB         ")
+        files = {e["long"]: e for e in fat.entries(mb["cluster"]) if e["attr"] == 0x20}
+        self.assertEqual(sorted(files), ["s0000001.msg", "s0000002.msg"])
+        sizes = []
+        for i, (body, o) in enumerate([("Hello from the bench\nWii.", opts), ("A second one.", {})], 1):
+            want, minutes, at = expected_full(i, "WiiStation", body, to=OTHER, **o)
+            self.assertEqual(fat.read(files[f"s{i:07d}.msg"]), want + bytes(-len(want) % 32))
+            self.assertTrue(want.startswith(f"MAIL FROM: w{WII:016d}{DOMAIN}\r\nRCPT TO: "
+                                            f"w{OTHER:016d}{DOMAIN}\r\nDATA\r\nDate: ".encode()))
+            f = struct.unpack(">8IQIIBBH5I2I8I3II", ctl[0x80 * i:0x80 * (i + 1)])
+            flags = 0x200319 | (0x10000 if at["atts"] else 0)       # TO_SEND, not TO_RECV
+            self.assertEqual(f[0:5], (i, flags, len(want), APP, at["start"]))
+            self.assertEqual(f[8:14], (WII, minutes, 0, 1, len(at["atts"]), GROUP))
+            to_at = want.index(b"\r\nTo: ") + 6
+            self.assertEqual(f[15], to_at | len(f"w{OTHER:016d}{DOMAIN}") << 20)
+            self.assertEqual(f[19], at["body"])
+            sizes.append(len(want))
+        num, cap, tot, size, nxt, free, oldest, space = struct.unpack_from(">8I", ctl, 8)
+        self.assertEqual((num, cap, tot, size, nxt, free, oldest), (2, 127, sum(sizes), SEND_CTL, 3, 0x180, 1))
+        self.assertEqual(space, (fat.free() - 1) * CL)
+        # A message's clusters chain through the FAT12 entries and end it.
+        chain = fat.chain(files["s0000001.msg"]["cluster"])
+        self.assertEqual(len(chain), -(-(sizes[0] + (-sizes[0] % 32)) // CL))
+        self.assertEqual(fat.next(chain[-1]), 0xfff)
+
+    def test_send_refusals(self):
+        ctl0, mbx0 = empty_send()
+        for name, kw, want in [("to itself", dict(to=WII), E_ARG),
+                               ("a number of 17 digits", dict(to=10 ** 16), E_ARG)]:
+            with self.subTest(name):
+                c, m = self.box(ctl0, mbx0, name="sendref")
+                before = (c.read_bytes(), m.read_bytes())
+                self.assertEqual(self.post(c, m, **kw), want)
+                self.assertEqual((c.read_bytes(), m.read_bytes()), before)
+        # The receive box's control file is not a send box's.
+        c, m = self.box(empty_ctl()[:SEND_CTL], mbx0, name="sendref")
+        self.assertEqual(self.post(c, m, to=OTHER), E_FORMAT)
 
     @unittest.skipUnless(os.environ.get("MBOARD_REAL_BOX"), "MBOARD_REAL_BOX not set")
     def test_post_into_a_real_box(self):

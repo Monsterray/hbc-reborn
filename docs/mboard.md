@@ -68,6 +68,69 @@ Two side effects:
   the Wii Menu does with any message's Mii.
 - **A JPEG the Wii Menu cannot convert** shows as its question-mark picture.
 
+## To another Wii: the send box
+
+`mboard_send_msg(to, &msg)` sends the same message to another Wii, given
+that Wii's 16-digit Wii number. It goes through WiiConnect24's mail server,
+so both Wiis need an account that works. Nintendo's server is gone, so
+today that means WiiLink's (`@rc24.xyz` in `nwc24msg.cfg`, stage 2). Both
+Wiis also need the internet.
+
+**What it writes** is what `NWC24CommitMsg()` writes for a message to any
+other Wii (Petari `NWC24MsgCommit.c`): the same headers and parts as
+`mboard_post_msg`, with these differences:
+
+- **The SMTP envelope** comes first, and the control entry's offsets count
+  it:
+  ```
+  MAIL FROM: w<this Wii>@rc24.xyz
+  RCPT TO: w<the other>@rc24.xyz
+  DATA
+  ```
+- **`To:`** names the other Wii.
+- **The box** is `/shared2/wc24/mbox/wc24send.{ctl,mbx}`, not the receive
+  box. The file is `/mb/s0000001.msg`, and the entry's flags have TO_SEND
+  (0x10) where a post has TO_RECV (0x20).
+- **The box's format** is different too. The control file is 0x4000 bytes
+  with 127 entries. The VFF is 2 MiB and FAT12: its 4,075 data clusters
+  are under FAT16's minimum. It still has FAT16-sized FATs (0x2000 bytes
+  each: the second at 0x2020, the root at 0x4020, data from 0x5020), with
+  FAT12 entries packed at their start.
+
+**After writing**, it resumes KD and calls `/dev/net/kd/request` ioctl 0x0B
+(`SEND_MAIL_NOW`). KD then posts the box to the server's `send.cgi` and
+deletes each message it sent (Dolphin's `NetKDRequest.cpp`, `WC24Send.cpp`).
+If KD refuses, the result is `MBOARD_QUEUED`, and the message waits for
+KD's next round.
+
+**WiiLink's server** (WiiLink24/Mail-Server `send.go`):
+
+- It refuses a sender whose `mlid` and `passwd` (from `nwc24msg.cfg`) don't
+  match its account.
+- It refuses a `From:` that isn't the sender.
+- It stores the message for any recipient with an account. It does not look
+  at friend lists.
+
+**The receiving Wii Menu** files a letter from any Wii; it uses the friend
+list only for the sender's name. Whether the receiving Wii's KD filters out
+mail from Wiis that are not in its address book is not known: no source
+for it was found.
+
+### Proof
+
+The bench Wii (`@rc24.xyz`) sent to LRWii (192.168.8.243, `@rc24.xyz`) on
+2026-10-22 (`tests/wii_mboard.py send LRWii`, job 20261022-183706-3b6d87):
+
+- `mboard_send_msg` returned `MBOARD_OK` in 7,985 ms. Most of that time is
+  KD's upload during `SEND_MAIL_NOW`.
+- The send box's next ID went from 1 to 2, and the box was empty again: KD
+  had posted the message and deleted it.
+
+On the PC, `tests/test_mboard.py` sends two messages into a FAT12 send box
+built like the bench Wii's, checks them byte for byte, and checks the
+refusals. The send also worked into a copy of the bench Wii's real (empty)
+send box.
+
 ## How games post: the SDK's loop-back
 
 The brief assumed that Mario Party 8 and 9 post through the WiiConnect24 send

@@ -15,6 +15,13 @@
            message carries the database's Mii byte for byte, the photo and
            the board data, and that nothing else changed. Reads
            /shared2/menu/FaceLib (the Mii database) too, read-only.
+  send WII the full message (as `full`, with a Reply button) to another Wii:
+           WII is a name in Documents/wii-backups/wii-numbers.txt (e.g.
+           LRWii), read there so the number stays out of the repository and
+           the queue. Checks the new message in the send box byte for byte
+           (the SMTP envelope, the other Wii in To:), then watches the send
+           box for up to --minutes (default 10) for KD to upload it: KD
+           deletes a message from the box once it has posted it.
   id       read-only: this Wii's whole Wii number and mail address (from
            nwc24msg.cfg). Written to the job's run folder as wii_id.txt, not
            to the repository: it is the console's address.
@@ -31,7 +38,7 @@
            NAND files (same sizes only, read back and compared), and a new
            snapshot is compared with the backup.
 
-usage: tests/wii_mboard.py backup | id | post | full | board POST_RUN_DIR [--minutes N] [--full] [--already] | restore BACKUP_DIR
+usage: tests/wii_mboard.py backup | id | post | full | send WII [--minutes N] | board POST_RUN_DIR [--minutes N] [--full] [--already] | restore BACKUP_DIR
 queue: wiibench.py add --name mboard-STEP --cwd REPO --timeout 2400 -- C:/Python312/python.exe tests/wii_mboard.py STEP
 """
 
@@ -265,6 +272,84 @@ def full(out):
     return ok
 
 
+NUMBERS = pathlib.Path(os.path.expanduser("~")) / "Documents" / "wii-backups" / "wii-numbers.txt"
+SEND_BODY = "Hello from the bench Wii.\nSent by sdk/mboard over WiiLink."
+
+
+def wii_number(name):
+    """The 16-digit number a line "NAME ... wii number: N" gives."""
+    for line in NUMBERS.read_text().splitlines():
+        words = line.split()
+        if words and words[0] == name and "wii number:" in line:
+            return int(line.split("wii number:")[1].split()[0])
+    sys.exit(f"no Wii called {name} in {NUMBERS}")
+
+
+def send_box(folder):
+    """The send box's control header and its FAT12 volume's files."""
+    sys.path.insert(0, str(root / "tests"))
+    import test_mboard
+    ctl = (folder / "wc24send.ctl").read_bytes()
+    fat = test_mboard.Fat12((folder / "wc24send.mbx").read_bytes())
+    mb = next((e for e in fat.entries(0) if e["short"] == b"MB         "), None)
+    files = {e["long"]: fat.read(e) for e in fat.entries(mb["cluster"]) if e["attr"] == 0x20} if mb else {}
+    return struct.unpack_from(">I", ctl, 8)[0], files, fat
+
+
+def send(out, name, minutes):
+    to = wii_number(name)
+    own = None
+    before, after = out / "before", out / "after"
+    ok = snapshot(before, [MBOX, WC24, FACELIB])
+    cfg = (before / "wc24" / "nwc24msg.cfg").read_bytes()
+    own = struct.unpack_from(">Q", cfg, 8)[0]
+    domain = cfg[0x18:0x58].split(b"\0")[0].decode()
+    ok = check(ok, to != own, f"sending to {name}, not to this Wii itself")
+    rfl = before / "facelib" / "RFL_DB.dat"
+    _, mii = first_mii(rfl.read_bytes()) if rfl.exists() else (None, None)
+    photo = dolphin_mboard.test_photo()
+    arc = dolphin_mboard.chjump_arc(0x00010001, 0x4F484243)
+    for fname, data in (("photo.jpg", photo), ("board.arc", arc)):
+        (out / fname).write_bytes(data)
+        tool("put", str(out / fname), f"sd:/mboard_test/{fname}")
+    tool("rm", "sd:/mboard_test/face.bin", check=False)
+    launch(APP, "send", str(to), TITLE, SEND_BODY.replace("\n", "\\n"))
+    tool("get", "sd:/mboard_test/result.txt", str(out / "send_result.txt"))
+    report = (out / "send_result.txt").read_text(errors="replace")
+    print("-- send_result.txt --\n" + report.replace(str(to), f"<{name}>"), flush=True)
+    ok = check(ok, "mboard_send_msg: 0 " in report or "mboard_send_msg: 3 " in report,
+               "mboard_send_msg put it in the send box")
+    n0, f0, _ = send_box(before / "mbox")
+    ok &= snapshot(after, [MBOX])
+    n1, f1, fat = send_box(after / "mbox")
+    new = {k: v for k, v in f1.items() if k not in f0}
+    print(f"send box: {n0} -> {n1} messages; new files {list(new)}", flush=True)
+    if new:
+        msg = next(iter(new.values()))
+        env = f"MAIL FROM: w{own:016d}{domain}\r\nRCPT TO: w{to:016d}{domain}\r\nDATA\r\n".encode()
+        ok = check(ok, msg.startswith(env), "the SMTP envelope: this Wii to the other")
+        ok = check(ok, f"\r\nTo: w{to:016d}{domain}\r\n".encode() in msg, "To: the other Wii")
+        ok = check(ok, SEND_BODY.encode("utf-16-be") in msg, "the text, as UTF-16")
+        ok = check(ok, mii is None or base64.b64encode(mii[:42]) in msg, "the Mii as its icon")
+        ok = check(ok, b"application/x-wii-msgboard" in msg and b"image/jpeg" in msg, "the photo and board data")
+    else:
+        # KD may have uploaded it already, between the post and the snapshot.
+        print("no new message in the send box: KD may have uploaded it already", flush=True)
+    ok = check(ok, all(f1.get(k) == v for k, v in f0.items() if k in f1), "nothing else in the send box changed")
+    # KD removes a message from the send box once it has posted it.
+    deadline = time.monotonic() + minutes * 60
+    gone = not new
+    while not gone and time.monotonic() < deadline:
+        time.sleep(60)
+        snapshot(out / "later", [MBOX])
+        n2, f2, _ = send_box(out / "later" / "mbox")
+        gone = not any(k in f2 for k in new)
+        print(f"[{(minutes * 60 - (deadline - time.monotonic())) / 60:.0f} min] send box: {n2} messages"
+              + ("; ours is gone: KD uploaded it" if gone else ""), flush=True)
+    ok = check(ok, gone, "KD took the message from the send box (uploaded)")
+    return ok
+
+
 def wii_id(out):
     launch(APP, "id")
     tool("get", "sd:/mboard_test/result.txt", str(out / "wii_id.txt"))
@@ -368,6 +453,9 @@ def main():
         ok = full(out)
     elif step == "id":
         ok = wii_id(out)
+    elif step == "send" and len(sys.argv) > 2:
+        minutes = int(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else 10
+        ok = send(out, sys.argv[2], minutes)
     elif step == "board" and len(sys.argv) > 2:
         minutes = int(sys.argv[sys.argv.index("--minutes") + 1]) if "--minutes" in sys.argv else 20
         ok = board(out, pathlib.Path(sys.argv[2]), minutes, "--full" in sys.argv, "--already" in sys.argv)

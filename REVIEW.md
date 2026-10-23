@@ -202,6 +202,15 @@ From the 1.3.6 review, each verified in the code first:
   The CDB signature (what the HMAC covers, and whether NAND reads check it)
   is still unverified: those files are not decompiled. Mii notes are in
   docs/mii.md.
+- `mboard_send_msg()`: the message to another Wii through the send box (the
+  VFF layer now writes FAT12) and KD's `SEND_MAIL_NOW`. The bench Wii's KD
+  took it and emptied the box (docs/mboard.md, "To another Wii"). Delivery
+  on the other Wii (LRWii) is to be checked by a person. Not known: whether
+  the receiving KD needs the sender in its address book.
+- A queue job's first launch hung for an hour (17:29-18:28, 2026-10-22).
+  The queue had logged the Wii "used outside the queue" two minutes before,
+  and nandget ran normally once the Wii came back. Not a library fault, but
+  the bench was held all that time: watch for it.
 
 ### 1.10.8: Z+START, and Reconnect in player order
 

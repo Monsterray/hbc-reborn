@@ -70,8 +70,11 @@ static uint32_t crc32(const uint8_t *p, uint32_t n) {
 
 /* ---- VFF: the Wii's FAT volume in a NAND file --------------------------
  * A 0x20-byte header, two FATs, a 0x1000-byte root directory, then 512-byte
- * clusters from cluster 2. Only FAT16 volumes (cdb.vff, wc24recv.mbx); the
- * small FAT12 ones (wc24send.mbx) are refused. */
+ * clusters from cluster 2. FAT16 for the big volumes (cdb.vff,
+ * wc24recv.mbx), FAT12 below 4085 clusters (wc24send.mbx, 2 MiB). Either
+ * way each FAT is as long as a FAT16 one would be (two bytes a cluster):
+ * the bench Wii's send box has its second FAT at 0x2020 and its root at
+ * 0x4020, with FAT12 entries packed at the start. */
 
 #define CL 0x200u
 #define ROOT_LEN 0x1000u
@@ -82,6 +85,8 @@ typedef struct {
 	const mboard_io *io;
 	uint8_t *fat;
 	uint32_t fat_len, fat1, fat2, root, data, nclusters;
+	int fat12;
+	uint16_t eoc;     /* the end of a chain: 0xfff, or 0xffff */
 	uint8_t dirty[FAT_MAX / 512];
 	int err;
 } vff;
@@ -116,17 +121,21 @@ static int vff_open(vff *v, const mboard_io *io, uint32_t size) {
 		return v->err = MBOARD_E_FORMAT;
 	clusters = size / CL;
 	v->fat_len = (clusters * 2 + 511) & ~511u;
-	if (clusters < 4085 || v->fat_len > FAT_MAX)
+	if (clusters < 64 || v->fat_len > FAT_MAX)
 		return v->err = MBOARD_E_FORMAT;
 	v->fat1 = 0x20;
 	v->fat2 = v->fat1 + v->fat_len;
 	v->root = v->fat2 + v->fat_len;
 	v->data = v->root + ROOT_LEN;
 	v->nclusters = (size - v->data) / CL + 2;
+	/* FAT12 by the data clusters' count, as FAT itself decides it. */
+	v->fat12 = v->nclusters - 2 < 4085;
+	v->eoc = v->fat12 ? 0xfff : 0xffff;
 	v->fat = malloc(v->fat_len);
 	if (!v->fat)
 		return v->err = MBOARD_E_MEM;
-	if (!rd(v, v->fat1, v->fat, v->fat_len) && memcmp(v->fat, fat_head, sizeof(fat_head)))
+	/* The media byte and the reserved entry: f0 ff ff ff, or f0 ff ff for FAT12. */
+	if (!rd(v, v->fat1, v->fat, v->fat_len) && memcmp(v->fat, fat_head, v->fat12 ? 3 : 4))
 		v->err = MBOARD_E_FORMAT;
 	return v->err;
 }
@@ -153,17 +162,36 @@ static uint32_t at(vff *v, uint16_t c) {
 	return v->data + (uint32_t) (c - 2) * CL;
 }
 
+/* FAT12 packs two entries in three bytes: an even cluster's in the low 12
+ * bits of its two bytes, an odd one's in the high 12. */
 static uint16_t fat_get(vff *v, uint16_t c) {
-	return le16(v->fat + 2 * c);
+	uint16_t w;
+
+	if (!v->fat12)
+		return le16(v->fat + 2 * c);
+	w = le16(v->fat + c + c / 2);
+	return c & 1 ? w >> 4 : w & 0xfff;
 }
 
 static void fat_set(vff *v, uint16_t c, uint16_t val) {
-	put_le16(v->fat + 2 * c, val);
-	v->dirty[2 * c / 512] = 1;
+	uint32_t off;
+	uint16_t w;
+
+	if (!v->fat12) {
+		put_le16(v->fat + 2 * c, val);
+		v->dirty[2 * c / 512] = 1;
+		return;
+	}
+	off = c + c / 2u;
+	w = le16(v->fat + off);
+	w = c & 1 ? (uint16_t) ((w & 0x000f) | val << 4) : (uint16_t) ((w & 0xf000) | (val & 0xfff));
+	put_le16(v->fat + off, w);
+	v->dirty[off / 512] = 1;
+	v->dirty[(off + 1) / 512] = 1;
 }
 
 static int is_cluster(vff *v, uint16_t c) {
-	return c >= 2 && c < 0xfff8 && c < v->nclusters;
+	return c >= 2 && c < (v->fat12 ? 0xff8 : 0xfff8) && c < v->nclusters;
 }
 
 static uint32_t free_clusters(vff *v) {
@@ -187,7 +215,7 @@ static uint16_t alloc(vff *v, uint16_t after, int zero) {
 		v->err = MBOARD_E_FULL;
 		return 0;
 	}
-	fat_set(v, c, 0xffff);
+	fat_set(v, c, v->eoc);
 	if (after)
 		fat_set(v, after, c);
 	if (zero)
@@ -376,7 +404,7 @@ static int write_file(vff *v, uint32_t off, const uint8_t *data, uint32_t len, s
 		put_le16(e + 26, chain[0]);
 	for (i = need; i < n; ++i)
 		fat_set(v, chain[i], 0);
-	fat_set(v, chain[need - 1], 0xffff);
+	fat_set(v, chain[need - 1], v->eoc);
 	for (i = 0; i < need; ++i) {
 		uint32_t part = len - i * CL < CL ? len - i * CL : CL;
 		memset(block, 0, CL);
@@ -785,8 +813,13 @@ int mboard_play_vff(const mboard_io *cdb, const mboard_session *s, uint64_t now,
  * entries are chained through their app_id word. wc24recv.mbx: a 7 MiB
  * FAT16 VFF with the messages as /mb/rNNNNNNN.msg. */
 
-#define BOX_SIZE 0x700000u
-#define BOX_CAPACITY 255u
+/* The two mailboxes: wc24recv.* (a message to this Wii, and the SDK's
+ * loop-back) and wc24send.* (what KD uploads to the mail server). */
+typedef struct {
+	uint32_t ctl_size, capacity, mbx_size;
+	char letter;      /* the message files: /mb/r0000001.msg, /mb/s0000001.msg */
+	uint32_t flag;    /* NWC24_MSGOBJ_TO_RECV or TO_SEND */
+} box_kind;
 #define BOX_ENTRY 0x80u
 #define BOX_MAGIC 0x57635466u  /* 'WcTf' */
 #define MSG_ID_MAX 1000000u
@@ -798,6 +831,7 @@ int mboard_play_vff(const mboard_io *cdb, const mboard_session *s, uint64_t now,
  * NWC24CommitMsg() leave them for a message delivered to the receive box. */
 #define F_FOR_RECIPIENT 0x1u
 #define F_FOR_MENU 0x8u
+#define F_TO_SEND 0x10u
 #define F_TO_RECV 0x20u
 #define F_INITIALIZED 0x100u
 #define F_DELIVERING 0x200u
@@ -805,6 +839,9 @@ int mboard_play_vff(const mboard_io *cdb, const mboard_session *s, uint64_t now,
 #define LED_DEFAULT 0x00040001u    /* NWC24SetMsgLedPattern(NWC24_LED_APP_DEFAULT) */
 #define TXT_PLAIN 0x00010000u      /* an unused attachment's type */
 #define ICON_NEW_NONE 0x80000000u
+
+static const box_kind RECV_BOX = { MBOARD_RECV_CTL_SIZE, 255, 0x700000, 'r', F_TO_RECV };
+static const box_kind SEND_BOX = { MBOARD_SEND_CTL_SIZE, 127, 0x200000, 's', F_TO_SEND };
 
 typedef struct {
 	uint8_t *p;
@@ -863,10 +900,10 @@ static void put_base64(buf *b, const uint8_t *p, uint32_t n) {
 	}
 }
 
-/* "w" + the Wii number's 16 digits + the account domain. */
-static void put_addr(buf *b, const mboard_env *env) {
+/* "w" + a Wii number's 16 digits + the account domain (the SDK's
+ * SynthesizeAddrStr(): every Wii address takes this Wii's domain). */
+static void put_addr(buf *b, const mboard_env *env, uint64_t id) {
 	char t[17];
-	uint64_t id = env->wii_number;
 	int i;
 
 	for (i = 15; i >= 0; --i, id /= 10)
@@ -958,7 +995,7 @@ static void put_b64_body(buf *b, const uint8_t *p, uint32_t n) {
  * its text as UTF-16 in 8 bits and an LED pattern (Super Mario Galaxy's
  * letters), and what else the game set: a face, the board's Reply, filing
  * date and delay, and attachments. No SMTP envelope: it is not sent. */
-static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint32_t msg_id,
+static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint64_t to, uint32_t msg_id,
 						uint32_t minutes, const parts *p) {
 	static const char *const months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
 										  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
@@ -967,6 +1004,15 @@ static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint32_t msg_
 	unsigned tl;
 	int i;
 
+	/* For the send box, the SMTP envelope KD hands the server (the SDK's
+	 * WriteSMTP_MAILFROM, _RCPTTO, _DATA); the offsets below count it. */
+	if (to != env->wii_number) {
+		put_str(b, "MAIL FROM: ");
+		put_addr(b, env, env->wii_number);
+		put_str(b, "\r\nRCPT TO: ");
+		put_addr(b, env, to);
+		put_str(b, "\r\nDATA\r\n");
+	}
 	put_str(b, "Date: ");
 	put_dec(b, (uint32_t) c.d, 2);
 	put_str(b, " ");
@@ -983,11 +1029,11 @@ static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint32_t msg_
 
 	put_str(b, "From: ");
 	o->from = b->n;
-	put_addr(b, env);
+	put_addr(b, env, env->wii_number);
 	o->from = pack(o->from, b->n - o->from);
 	put_str(b, "\r\nTo: ");
 	o->to = b->n;
-	put_addr(b, env);
+	put_addr(b, env, to);
 	o->to = pack(o->to, b->n - o->to);
 	put_str(b, "\r\n");
 
@@ -1076,7 +1122,8 @@ static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint32_t msg_
 
 /* The receive box's message file, written as the VF library does: one
  * long-name entry ("r0000001.msg") and its 8.3 entry, in /mb. */
-static int box_file(vff *v, uint32_t msg_id, const uint8_t *data, uint32_t len, stamp st) {
+static int box_file(vff *v, char letter, uint32_t msg_id, const uint8_t *data, uint32_t len,
+					stamp st) {
 	char lfn[13], n11[11];
 	uint32_t where[2], off;
 	uint16_t mb;
@@ -1085,12 +1132,12 @@ static int box_file(vff *v, uint32_t msg_id, const uint8_t *data, uint32_t len, 
 	mb = subdir(v, 0, "MB         ", st, "mb");
 	if (!mb)
 		return v->err ? v->err : MBOARD_E_FULL;
-	lfn[0] = 'r';
+	lfn[0] = letter;
 	for (i = 7; i >= 1; --i, msg_id /= 10)
 		lfn[i] = (char) ('0' + msg_id % 10);
 	memcpy(lfn + 8, ".msg", 5);
 	memset(n11, ' ', 11);
-	n11[0] = 'R';
+	n11[0] = (char) (letter - 'a' + 'A');
 	memcpy(n11 + 1, lfn + 1, 7);
 	memcpy(n11 + 8, "MSG", 3);
 
@@ -1194,8 +1241,10 @@ static int check_msg(const mboard_msg *m, parts *p, uint16_t *title, uint16_t *b
 	return MBOARD_OK;
 }
 
-int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
-					const mboard_msg *m) {
+/* One message into a mailbox: to this Wii's own number, the receive box (as
+ * the SDK's loop-back); to another's, the send box. */
+static int box_commit(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env, uint64_t to,
+					  const mboard_msg *m, const box_kind *k) {
 	static uint16_t title[MBOARD_TITLE_MAX], body[MBOARD_BODY_MAX];
 	uint32_t num, cap, next_id, free_at, next_free, free_space, msg_id, minutes, len, off, oldest;
 	uint32_t room, flags;
@@ -1211,6 +1260,8 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 	if (!env->wii_number || env->wii_number > 9999999999999999ull || !env->domain ||
 			env->domain[0] != '@' || strlen(env->domain) > 63)
 		return MBOARD_E_NO_ID;
+	if (!to || to > 9999999999999999ull)
+		return MBOARD_E_ARG;
 
 	/* The control file, as GetCachedMBCHeader() and AddMBCEntry() check it. */
 	num = get32(ctl + 0x08);
@@ -1218,20 +1269,20 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 	next_id = get32(ctl + 0x18);
 	free_at = get32(ctl + 0x1c);
 	free_space = get32(ctl + 0x24);
-	if (get32(ctl) != BOX_MAGIC || get32(ctl + 4) != 4 || cap != BOX_CAPACITY ||
-			get32(ctl + 0x14) != MBOARD_RECV_CTL_SIZE)
+	if (get32(ctl) != BOX_MAGIC || get32(ctl + 4) != 4 || cap != k->capacity ||
+			get32(ctl + 0x14) != k->ctl_size)
 		return MBOARD_E_FORMAT;
 	if (num >= cap || !free_at)
 		return MBOARD_E_FULL;
-	if (free_at < BOX_ENTRY || free_at >= MBOARD_RECV_CTL_SIZE || (free_at - BOX_ENTRY) % BOX_ENTRY)
+	if (free_at < BOX_ENTRY || free_at >= k->ctl_size || (free_at - BOX_ENTRY) % BOX_ENTRY)
 		return MBOARD_E_FORMAT;
 	e = ctl + free_at;
 	next_free = get32(e + 0x0c);
-	if (get32(e) != 0 || (next_free && (next_free < BOX_ENTRY || next_free >= MBOARD_RECV_CTL_SIZE ||
+	if (get32(e) != 0 || (next_free && (next_free < BOX_ENTRY || next_free >= k->ctl_size ||
 										(next_free - BOX_ENTRY) % BOX_ENTRY)))
 		return MBOARD_E_FORMAT;
 	msg_id = next_id >= 1 && next_id <= MSG_ID_MAX ? next_id : 1;
-	for (off = BOX_ENTRY; off < MBOARD_RECV_CTL_SIZE; off += BOX_ENTRY)
+	for (off = BOX_ENTRY; off < k->ctl_size; off += BOX_ENTRY)
 		if (get32(ctl + off) == msg_id)
 			return MBOARD_E_FORMAT;  /* a message already has the next id */
 
@@ -1252,7 +1303,7 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 	b.n = 0;
 	b.over = 0;
 	memset(&o, 0, sizeof(o));
-	len = compose(&b, &o, env, msg_id, minutes, &p);
+	len = compose(&b, &o, env, to, msg_id, minutes, &p);
 	if (b.over) {
 		free(msg);
 		return MBOARD_E_TOO_BIG;
@@ -1269,19 +1320,19 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 	 * with NWC24_ERR_FILE_READ on a file that ends inside one. The control
 	 * entry keeps the exact length. */
 	memset(msg + len, 0, ((len + 31) & ~31u) - len);
-	res = vff_open(&v, mbx, BOX_SIZE);
+	res = vff_open(&v, mbx, k->mbx_size);
 	/* The VF library leaves the volume's last cluster unused: the free
 	 * space it records is one cluster short of what the FAT shows free. */
 	v.nclusters -= 1;
 	if (!res)
-		res = box_file(&v, msg_id, msg, (len + 31) & ~31u, fat_stamp(env->local));
+		res = box_file(&v, k->letter, msg_id, msg, (len + 31) & ~31u, fat_stamp(env->local));
 	if (!res && v.err)
 		res = v.err;
 	if (!res) {
 		free_space = free_clusters(&v) * CL;
 
 		/* CopyMsgObjToMBCFmt(), then AddMBCEntry()'s header update. */
-		flags = F_FOR_RECIPIENT | F_FOR_MENU | F_TO_RECV | F_INITIALIZED | F_DELIVERING | F_21;
+		flags = F_FOR_RECIPIENT | F_FOR_MENU | k->flag | F_INITIALIZED | F_DELIVERING | F_21;
 		if (p.n_att)
 			flags |= F_MULTIPART;
 		if (p.delay_hours)
@@ -1318,7 +1369,7 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 
 		/* DuplicationCheck() recomputes the oldest id. */
 		oldest = 0;
-		for (off = BOX_ENTRY; off < MBOARD_RECV_CTL_SIZE; off += BOX_ENTRY) {
+		for (off = BOX_ENTRY; off < k->ctl_size; off += BOX_ENTRY) {
 			uint32_t id = get32(ctl + off);
 			if (id && (!oldest || compare_id(oldest, id) > 0))
 				oldest = id;
@@ -1333,6 +1384,19 @@ int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 	vff_close(&v);
 	free(msg);
 	return res;
+}
+
+int mboard_post_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
+					const mboard_msg *msg) {
+	return box_commit(ctl, mbx, env, env->wii_number, msg, &RECV_BOX);
+}
+
+int mboard_send_box(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env, uint64_t to,
+					const mboard_msg *msg) {
+	/* To this Wii itself, the SDK would loop it back: use mboard_post_box. */
+	if (to == env->wii_number)
+		return MBOARD_E_ARG;
+	return box_commit(ctl, mbx, env, to, msg, &SEND_BOX);
 }
 
 /* ---- Text ------------------------------------------------------------------ */
@@ -1392,6 +1456,7 @@ const char *mboard_strerror(int result) {
 	case MBOARD_E_DENIED: return "permission denied";
 	case MBOARD_E_TOO_BIG: return "photo, board data or message too big";
 	case MBOARD_E_NO_MII: return "no Mii in that slot";
+	case MBOARD_QUEUED: return "queued; WiiConnect24 sends it on its next round";
 	default: return "unknown error";
 	}
 }
@@ -1412,6 +1477,8 @@ static char cfg_path[] ATTRIBUTE_ALIGN(32) = "/shared2/wc24/nwc24msg.cfg";
 static char cbk_path[] ATTRIBUTE_ALIGN(32) = "/shared2/wc24/nwc24msg.cbk";
 static char ctl_path[] ATTRIBUTE_ALIGN(32) = "/shared2/wc24/mbox/wc24recv.ctl";
 static char mbx_path[] ATTRIBUTE_ALIGN(32) = "/shared2/wc24/mbox/wc24recv.mbx";
+static char send_ctl_path[] ATTRIBUTE_ALIGN(32) = "/shared2/wc24/mbox/wc24send.ctl";
+static char send_mbx_path[] ATTRIBUTE_ALIGN(32) = "/shared2/wc24/mbox/wc24send.mbx";
 static char kd_path[] ATTRIBUTE_ALIGN(32) = "/dev/net/kd/request";
 static char kd_time_path[] ATTRIBUTE_ALIGN(32) = "/dev/net/kd/time";
 static char cdb_path[] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
@@ -1419,6 +1486,7 @@ static char wiiid_path[] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/no
 
 #define KD_TRY_SUSPEND 2
 #define KD_RESUME 3
+#define KD_SEND_MAIL_NOW 0x0b
 #define KD_GET_TIME_DIFF 24
 
 static int nand_error(s32 r) {
@@ -1538,6 +1606,8 @@ static void app_identity(u32 *app, u16 *group) {
 	ISFS_GetAttr(path, &owner, group, &attr, &own, &grp, &oth);
 }
 
+static int commit(uint64_t to, const mboard_msg *msg);
+
 int mboard_post(const char *title_utf8, const char *body_utf8) {
 	mboard_msg m;
 
@@ -1548,7 +1618,18 @@ int mboard_post(const char *title_utf8, const char *body_utf8) {
 }
 
 int mboard_post_msg(const mboard_msg *msg) {
+	return commit(0, msg);
+}
+
+int mboard_send_msg(uint64_t to, const mboard_msg *msg) {
+	return to ? commit(to, msg) : MBOARD_E_ARG;
+}
+
+/* to: 0 for the receive box (this Wii's board), else the send box. */
+static int commit(uint64_t to, const mboard_msg *msg) {
 	static char domain[64];
+	const box_kind *k = to ? &SEND_BOX : &RECV_BOX;
+	char *ctl_file = to ? send_ctl_path : ctl_path, *mbx_file = to ? send_mbx_path : mbx_path;
 	u8 *ctl = NULL;
 	mboard_env env;
 	mboard_io io;
@@ -1573,28 +1654,28 @@ int mboard_post_msg(const mboard_msg *msg) {
 		return MBOARD_E_BUSY;
 	}
 
-	ctl = memalign(32, MBOARD_RECV_CTL_SIZE);
-	fd = IOS_Open(ctl_path, IPC_OPEN_RW);
+	ctl = memalign(32, k->ctl_size);
+	fd = IOS_Open(ctl_file, IPC_OPEN_RW);
 	if (!ctl) {
 		res = MBOARD_E_MEM;
 	} else if (fd < 0) {
 		res = nand_error(fd);
-	} else if (IOS_Read(fd, ctl, MBOARD_RECV_CTL_SIZE) != (s32) MBOARD_RECV_CTL_SIZE) {
+	} else if (IOS_Read(fd, ctl, k->ctl_size) != (s32) k->ctl_size) {
 		res = MBOARD_E_FORMAT;
 	} else {
-		s32 box = IOS_Open(mbx_path, IPC_OPEN_RW);
+		s32 box = IOS_Open(mbx_file, IPC_OPEN_RW);
 		if (box < 0) {
 			res = nand_error(box);
 		} else {
 			io.ctx = (void *) box;
 			io.read = ios_read;
 			io.write = ios_write;
-			res = mboard_post_box(ctl, &io, &env, msg);
+			res = to ? mboard_send_box(ctl, &io, &env, to, msg) : mboard_post_box(ctl, &io, &env, msg);
 			IOS_Close(box);
 		}
 		/* The control entry last: it is what makes the message exist. */
 		if (res == MBOARD_OK && (IOS_Seek(fd, 0, SEEK_SET) != 0 ||
-				IOS_Write(fd, ctl, MBOARD_RECV_CTL_SIZE) != (s32) MBOARD_RECV_CTL_SIZE))
+				IOS_Write(fd, ctl, k->ctl_size) != (s32) k->ctl_size))
 			res = MBOARD_E_IO;
 	}
 	if (fd >= 0)
@@ -1602,6 +1683,10 @@ int mboard_post_msg(const mboard_msg *msg) {
 	free(ctl);
 	r = kd_call(kd, KD_RESUME);
 	(void) r;
+	/* KD uploads the send box on its own rounds; ask for one now. If it
+	 * will not, the message waits for the next (MBOARD_QUEUED). */
+	if (to && res == MBOARD_OK && kd_call(kd, KD_SEND_MAIL_NOW) < 0)
+		res = MBOARD_QUEUED;
 	IOS_Close(kd);
 	return res;
 }
