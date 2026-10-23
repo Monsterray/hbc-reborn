@@ -935,7 +935,7 @@ static int compare_id(uint32_t a, uint32_t b) {  /* CompareMsgId(): ids wrap at 
 #define ATTACH_MAX 2
 
 typedef struct {
-	uint32_t from, to, ctype, txenc, start, body, body_len;
+	uint32_t from, to, ctype, txenc, start, body, body_len, body_raw;
 	uint32_t att[ATTACH_MAX], att_len[ATTACH_MAX];
 } offsets;
 
@@ -945,6 +945,7 @@ typedef struct {
 	int title_len, body_len;
 	const uint8_t *face;
 	int reply, delay_hours;
+	int b64_text;                /* to another Wii: the text part in base64 */
 	uint16_t reg_date;           /* the SDK's: (year - 2000) << 9 | month << 5 | day */
 	int n_att;
 	const uint8_t *att[ATTACH_MAX];
@@ -1086,17 +1087,28 @@ static uint32_t compose(buf *b, offsets *o, const mboard_env *env, uint64_t to, 
 	}
 	put_str(b, "Content-Type: text/plain; charset=");
 	o->ctype = pack(b->n, 9);  /* "utf-16be" and its NUL */
+	/* To another Wii the text goes base64, as the Wii Menu's own letters
+	 * do: a mail server rewrites line ends, and in raw UTF-16 a line end is
+	 * the bytes 00 0A (WiiLink's makes it 00 0D 0A, and every character
+	 * after it lands a byte off). The loop-back never meets a server. */
 	put_str(b, "utf-16be\r\nContent-Transfer-Encoding: ");
-	o->txenc = pack(b->n, 5);  /* "8bit" */
-	put_str(b, "8bit\r\n\r\n");
+	o->txenc = pack(b->n, p->b64_text ? 7 : 5);  /* "base64" or "8bit", and the NUL */
+	put_str(b, p->b64_text ? "base64\r\n\r\n" : "8bit\r\n\r\n");
 	if (!p->n_att)
 		o->start = b->n;
 
 	o->body = b->n;
-	for (i = 0; i < p->body_len; ++i) {
-		uint8_t u[2];
-		put16(u, p->body[i]);
-		put_bytes(b, u, 2);
+	{
+		uint8_t raw[2 * MBOARD_BODY_MAX];
+		uint32_t n = 0;
+
+		for (i = 0; i < p->body_len && i < MBOARD_BODY_MAX; ++i, n += 2)
+			put16(raw + n, p->body[i]);
+		if (p->b64_text)
+			put_b64_body(b, raw, n);
+		else
+			put_bytes(b, raw, n);
+		o->body_raw = n;
 	}
 	o->body_len = b->n - o->body;
 
@@ -1263,6 +1275,7 @@ static int box_commit(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 		return MBOARD_E_NO_ID;
 	if (!to || to > 9999999999999999ull)
 		return MBOARD_E_ARG;
+	p.b64_text = to != env->wii_number;
 
 	/* The control file, as GetCachedMBCHeader() and AddMBCEntry() check it. */
 	num = get32(ctl + 0x08);
@@ -1290,6 +1303,8 @@ static int box_commit(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 	/* CheckMsgBoxSpace(): the encoded attachments and the text, under the
 	 * box's largest message. */
 	room = (uint32_t) (2 * p.body_len);
+	if (p.b64_text)
+		room = (room * 4 + 2) / 3 + room / B64_STEP * 2 + 4;
 	for (i = 0; i < p.n_att; ++i)
 		room += (p.att_size[i] * 4 + 2) / 3 + p.att_size[i] / B64_STEP * 2 + 4;
 	if (room >= MSG_LIMIT)
@@ -1365,7 +1380,7 @@ static int box_commit(uint8_t *ctl, const mboard_io *mbx, const mboard_env *env,
 			put32(e + 0x60 + 4 * i, i < p.n_att ? p.att_size[i] : 0);
 			put32(e + 0x68 + 4 * i, i < p.n_att ? p.att_type[i] : TXT_PLAIN);
 		}
-		put32(e + 0x70, o.body_len);        /* the text's size before encoding */
+		put32(e + 0x70, o.body_raw);        /* the text's size before encoding */
 		put32(e + 0x78, ICON_NEW_NONE);
 
 		/* DuplicationCheck() recomputes the oldest id. */

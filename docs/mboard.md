@@ -88,6 +88,14 @@ other Wii (Petari `NWC24MsgCommit.c`): the same headers and parts as
   DATA
   ```
 - **`To:`** names the other Wii.
+- **The text is base64** (`Content-Transfer-Encoding: base64`, 57 bytes to a
+  line, as the SDK writes it and the Wii Menu's own letters send it), not raw
+  UTF-16 in 8 bits as in a post. WiiLink's server keeps mail as text: its
+  `send.go` deletes every NUL byte, and its `receive.go` turns every LF into
+  CRLF (WiiLink24/Mail-Server). Raw UTF-16 lost every other byte of its ASCII
+  and reached LRWii as CJK characters and question-mark boxes (2026-10-23).
+  The headers and attachments were already base64. The entry's 0x70 keeps
+  the text's size before encoding (the SDK's `WritePlainText`).
 - **The box** is `/shared2/wc24/mbox/wc24send.{ctl,mbx}`, not the receive
   box. The file is `/mb/s0000001.msg`, and the entry's flags have TO_SEND
   (0x10) where a post has TO_RECV (0x20).
@@ -112,9 +120,13 @@ KD's next round.
   at friend lists.
 
 **The receiving Wii Menu** files a letter from any Wii; it uses the friend
-list only for the sender's name. Whether the receiving Wii's KD filters out
-mail from Wiis that are not in its address book is not known: no source
-for it was found.
+list only for the sender's name. The receiving Wii's KD, though, needs the
+sender in its address book: LRWii received nothing until both Wiis had
+registered each other (Wii Menu, Address Book, Register, Wii Number), and
+then filed the letter (2026-10-23). Both also need the WiiConnect24 user
+agreement accepted: LRWii's black screen there was an old EULA channel (HAKE
+version 1, on IOS20, which Nintendo stubbed), fixed with HAKE version 3 on
+IOS56 (`tests/wii_eulacheck.py` finds this).
 
 ### Proof
 

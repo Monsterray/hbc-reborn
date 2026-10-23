@@ -281,7 +281,10 @@ def wii_number(name):
     for line in NUMBERS.read_text().splitlines():
         words = line.split()
         if words and words[0] == name and "wii number:" in line:
-            return int(line.split("wii number:")[1].split()[0])
+            # 16 digits, however grouped ("1234 5678 ...", "1234:5678:...").
+            digits = "".join(ch for ch in line.split("wii number:")[1] if ch.isdigit())[:16]
+            if len(digits) == 16:
+                return int(digits)
     sys.exit(f"no Wii called {name} in {NUMBERS}")
 
 
@@ -329,7 +332,9 @@ def send(out, name, minutes):
         env = f"MAIL FROM: w{own:016d}{domain}\r\nRCPT TO: w{to:016d}{domain}\r\nDATA\r\n".encode()
         ok = check(ok, msg.startswith(env), "the SMTP envelope: this Wii to the other")
         ok = check(ok, f"\r\nTo: w{to:016d}{domain}\r\n".encode() in msg, "To: the other Wii")
-        ok = check(ok, SEND_BODY.encode("utf-16-be") in msg, "the text, as UTF-16")
+        ok = check(ok, b"Content-Transfer-Encoding: base64" in msg and
+                   base64.b64encode(SEND_BODY.encode("utf-16-be")[:57]) in msg,
+                   "the text, as UTF-16 in base64 (a mail server keeps it intact)")
         ok = check(ok, mii is None or base64.b64encode(mii[:42]) in msg, "the Mii as its icon")
         ok = check(ok, b"application/x-wii-msgboard" in msg and b"image/jpeg" in msg, "the photo and board data")
     else:

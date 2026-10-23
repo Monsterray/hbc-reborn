@@ -265,12 +265,21 @@ def expected_full(msg_id, title, body, face=None, jpeg=None, board=None, reply=F
         h += f'Content-Type: multipart/mixed;\r\n boundary="{divider}"\r\n'
         start = len(h)
         h += f"\r\n--{divider}\r\n"
-    h += "Content-Type: text/plain; charset=utf-16be\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"
+    b64 = to != WII   # to another Wii the text goes base64, like the Wii Menu's letters
+    h += ("Content-Type: text/plain; charset=utf-16be\r\nContent-Transfer-Encoding: "
+          + ("base64" if b64 else "8bit") + "\r\n\r\n")
     if not atts:
         start = len(h)
     out = h.encode()
     body_at = len(out)
-    out += body.encode("utf-16-be")
+    raw = body.encode("utf-16-be")
+    if b64:
+        full = len(raw) - len(raw) % 57
+        out += "".join(l + "\r\n" for l in b64_lines(raw[:full], 57)).encode()
+        out += base64.b64encode(raw[full:]) + b"\r\n\r\n"
+    else:
+        out += raw
+    text_len = len(out) - body_at
     spans = []
     for i, (data, mime, suffix) in enumerate(atts):
         name = f"{chr(97 + i)}{msg_id:07d}.{suffix}"
@@ -284,7 +293,7 @@ def expected_full(msg_id, title, body, face=None, jpeg=None, board=None, reply=F
         spans.append((at, len(out) - at, len(data), 0x20000 if suffix == "jpg" else 0x30001))
         if i == len(atts) - 1:
             out += f"\r\n--{divider}--\r\n".encode()
-    return out, minutes, {"start": start, "body": body_at, "atts": spans}
+    return out, minutes, {"start": start, "body": body_at, "text_len": text_len, "atts": spans}
 
 
 @unittest.skipUnless(CC, "no C compiler")
@@ -597,7 +606,19 @@ class MboardTest(unittest.TestCase):
             self.assertEqual(f[8:14], (WII, minutes, 0, 1, len(at["atts"]), GROUP))
             to_at = want.index(b"\r\nTo: ") + 6
             self.assertEqual(f[15], to_at | len(f"w{OTHER:016d}{DOMAIN}") << 20)
-            self.assertEqual(f[19], at["body"])
+            te = want.index(b"base64\r\n\r\n")
+            self.assertEqual(f[18], te | 7 << 20)                    # "base64"
+            self.assertEqual(f[19:21], (at["body"], at["text_len"]))  # the encoded text
+            self.assertEqual(f[29], len(body.encode("utf-16-be")))   # its size before encoding
+            # The text survives WiiLink's server: send.go deletes every NUL
+            # byte (it keeps mail as text), and receive.go makes every LF a
+            # CRLF (WiiLink24/Mail-Server). Raw UTF-16 did not: its ASCII lost
+            # every other byte and read back as CJK characters.
+            served = want.split(b"DATA\r\n", 1)[1].replace(b"\x00", b"")
+            served = served.replace(b"\n", b"\r\n").replace(b"\r\r\n", b"\r\n")
+            msg = email.message_from_bytes(served, policy=email.policy.compat32)
+            part = msg.get_payload()[0] if msg.is_multipart() else msg
+            self.assertEqual(part.get_payload(decode=True).decode("utf-16-be"), body)
             sizes.append(len(want))
         num, cap, tot, size, nxt, free, oldest, space = struct.unpack_from(">8I", ctl, 8)
         self.assertEqual((num, cap, tot, size, nxt, free, oldest), (2, 127, sum(sizes), SEND_CTL, 3, 0x180, 1))
