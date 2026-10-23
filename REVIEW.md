@@ -207,10 +207,18 @@ From the 1.3.6 review, each verified in the code first:
   took it and emptied the box (docs/mboard.md, "To another Wii"). Delivery
   on the other Wii (LRWii) is to be checked by a person. Not known: whether
   the receiving KD needs the sender in its address book.
-- A queue job's first launch hung for an hour (17:29-18:28, 2026-10-22).
-  The queue had logged the Wii "used outside the queue" two minutes before,
-  and nandget ran normally once the Wii came back. Not a library fault, but
-  the bench was held all that time: watch for it.
+- tests/nandget waited about an hour inside a NAND read of
+  /shared2/wc24/mbox (job 20261022-172858-0193ca, 17:30-18:28, 2026-10-22):
+  - its files on the SD card are dated 18:28, and HBC came back at 18:29;
+  - the queue held the Wii as frozen meanwhile, its freeze data showing only
+    a fresh HBC;
+  - the queue's earlier "used outside the queue" line was the job before's
+    (a single failed probe).
+
+  The likely cause is KD, which owns those files: nandget read them without
+  pausing it. nandget and nandput now pause KD (ioctl 2, then 3) around
+  any /shared2/wc24 path, as sdk/mboard does, and nandget times each file.
+  Trigger to look again: a copy that still takes minutes.
 
 ### 1.10.8: Z+START, and Reconnect in player order
 

@@ -20,6 +20,7 @@
 
 #include <fat.h>
 #include <gccore.h>
+#include <ogc/lwp_watchdog.h>
 #include <ogc/machine/processor.h>
 
 extern void __exception_setreload(int t);
@@ -104,6 +105,43 @@ static int fs_permissions(int lifted) {
 	return n;
 }
 
+/* KD (IOS's WiiConnect24 service) owns /shared2/wc24: a read or write there
+ * while it checks or sends mail can wait on it (a bench job's copy of the
+ * mailboxes once waited an hour). Ask it to pause first, as sdk/mboard does
+ * (NWC24OpenLib: /dev/net/kd/request ioctl 2), and let it go after (3). */
+static s32 kd_fd = -1;
+
+static s32 kd_ioctl(s32 cmd) {
+	static u8 in[32] ATTRIBUTE_ALIGN(32), out[32] ATTRIBUTE_ALIGN(32);
+	s32 r;
+
+	memset(in, 0, sizeof(in));
+	memset(out, 0, sizeof(out));
+	r = cmd == 2 ? IOS_Ioctl(kd_fd, cmd, in, sizeof(in), out, sizeof(out))
+				 : IOS_Ioctl(kd_fd, cmd, NULL, 0, out, sizeof(out));
+	return r < 0 ? r : (s32) (out[0] << 24 | out[1] << 16 | out[2] << 8 | out[3]);
+}
+
+static void kd_pause(const char *nand_dir) {
+	static char path[] ATTRIBUTE_ALIGN(32) = "/dev/net/kd/request";
+
+	if (strncmp(nand_dir, "/shared2/wc24", 13))
+		return;
+	kd_fd = IOS_Open(path, 0);
+	if (kd_fd >= 0)
+		say("WiiConnect24 paused: %d\n", (int) kd_ioctl(2));
+	else
+		say("WiiConnect24: no KD (%d)\n", (int) kd_fd);
+}
+
+static void kd_resume(void) {
+	if (kd_fd < 0)
+		return;
+	say("WiiConnect24 resumed: %d\n", (int) kd_ioctl(3));
+	IOS_Close(kd_fd);
+	kd_fd = -1;
+}
+
 int main(int argc, char **argv) {
 	static char names[64 * 13] ATTRIBUTE_ALIGN(32);
 	const char *dir, *sd_dir;
@@ -144,6 +182,7 @@ int main(int argc, char **argv) {
 	ISFS_Initialize();
 
 	say("nandget %s -> %s\n", dir, sd_dir);
+	kd_pause(dir);
 	if (unlock) {
 		lifted = fs_permissions(1);
 		say("permission check lifted at %d site(s) (heap start %08x)\n", lifted,
@@ -161,13 +200,19 @@ int main(int argc, char **argv) {
 				say("%s: name too long\n", p);
 				continue;
 			}
-			copy(nand, sd);
+			{
+				u64 t0 = gettime();
+
+				copy(nand, sd);
+				say("  (%llu ms)\n", ticks_to_millisecs(gettime() - t0));
+			}
 		}
 	}
 	if (unlock && lifted > 0) {
 		int back = fs_permissions(0);
 		say("permission check restored at %d site(s)%s\n", back, back == lifted ? "" : " (MISMATCH)");
 	}
+	kd_resume();
 	say("done\n");
 	if (report)
 		fclose(report);
