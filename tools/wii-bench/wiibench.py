@@ -159,7 +159,7 @@ QUICK = 2             # s of HBC idle after a queue job (ours, or the last lease
 RECENT = 60           # s after a queue job ended that QUICK applies
 CHAIN_GRACE = 15      # s the lease is kept for the same agent's next job, nobody else waiting
 RETURN_WAIT = float(os.environ.get("WII_BENCH_RETURN_WAIT", "120"))   # s for HBC to come back after a job (shorter only for tests)
-BUSY_STEP = 15        # s between probes of a Wii that is busy: an app outside the queue runs
+BUSY_STEP = float(os.environ.get("WII_BENCH_BUSY_STEP", "15"))   # s between probes of a busy Wii (shorter only for tests)
 
 
 def pid_alive(pid):
@@ -2047,6 +2047,7 @@ def wait_idle(full, need, job_id=None, turn=None):
             ok_since, need, step = None, full, BUSY_STEP
             busy_since = t if busy_since is None else busy_since
             busy_log["first_busy"] = busy_log.get("first_busy", busy_since)
+            busy_log["probes"] = busy_log.get("probes", 0) + 1
             mins = int((t - busy_since) // 60)
             if busy_what is None or not busy_what.startswith(state):
                 busy_what = f"{state}: busy: {agent_app(wii)} is running" if state == "agent" else f"{state}: busy or off"
@@ -2067,9 +2068,25 @@ def wait_idle(full, need, job_id=None, turn=None):
                 report(job_id, msg, (wii or {}).get("name"))
 
 
+def used_outside(wait):
+    """True when a wait for HBC found the Wii busy on two probes or more: someone used it. One
+    probe without an answer is not enough. In 2026-10-17..23, 13 of the 18 "outside" events were
+    exactly 15 s busy (BUSY_STEP), one failed probe each, with HBC answering the next: a probe
+    that timed out, not a person. The wait still starts over after one; only the report waits
+    for a second."""
+    return bool(wait.get("busy_s")) and wait.get("probes", 0) >= 2
+
+
+def real_outside(e):
+    """The same for a logged event: one from before the probe count is real when it lasted
+    longer than one probe interval."""
+    return e.get("probes", 2 if e.get("busy_s", 0) > BUSY_STEP else 1) >= 2
+
+
 def outside_use(turn, wait, ago):
     by = turn.released_by or {}
     ev = {"type": "outside", "host": socket.gethostname(), "busy_s": wait["busy_s"], "what": wait.get("what"),
+          "probes": wait.get("probes"),
           "after": by.get("name"), "after_host": by.get("host"), "since_release_s": ago, "wii": turn.slot}
     say(f"the Wii was used outside the queue: {wait.get('what')} for {wait['busy_s']} s"
         + (f", after {by.get('host')}'s {by.get('name')} left it in HBC" if by else ""))
@@ -2184,7 +2201,7 @@ def run_turn(a, p, shared, worker):
                   or (ago is not None and ago < RECENT))
         if not wait_idle(a.idle, min(QUICK, a.idle) if recent else a.idle, turn.job_id, turn):
             return                                 # all cancelled while it waited: give the turn up
-        if turn.last_wait.get("busy_s") and (ago is not None or last_end is not None):
+        if used_outside(turn.last_wait) and (ago is not None or last_end is not None):
             # The last queue job left the Wii in HBC, yet it was not: someone used it
             # outside the queue (a person, or an agent's hbc.py run that skipped it).
             # 3 of 4 long waits for HBC in 2026-10-12..19 were this.
@@ -2254,7 +2271,7 @@ def run_turn(a, p, shared, worker):
                 if not wait_idle(a.idle, 0 if same else min(QUICK, a.idle), p.stem, turn):
                     break
                 p = PENDING / f"{turn.job_id}.json"   # its job, or the next free one if that was cancelled
-                if turn.last_wait.get("busy_s"):   # between two jobs of this turn: outside the queue
+                if used_outside(turn.last_wait):   # between two jobs of this turn: outside the queue
                     turn.released_by = {"host": socket.gethostname(), "name": job.get("name")}
                     outside_use(turn, turn.last_wait, 0)
 
@@ -2526,7 +2543,7 @@ def cmd_report(a):
     trouble = ([f"{loc(e['t'])} {e.get('host')}'s {e.get('name')}: {job_problem(e)[1]}"
                 for e in jobs_ if job_problem(e) and e.get("exit") != "timeout"]
                + [f"{loc(e['t'])} {e.get('host')} found the Wii used outside the queue for {e.get('busy_s')} s "
-                  f"({e.get('what')}), after {e.get('after_host')}'s {e.get('after')}" for e in evs if e["type"] == "outside"]
+                  f"({e.get('what')}), after {e.get('after_host')}'s {e.get('after')}" for e in evs if e["type"] == "outside" and real_outside(e)]
                + [f"{loc(e['t'])} {e.get('host')}'s {e.get('name')}: no lease renewal for {e['lease_gap_s']} s"
                   + (" and the lease was lost" if e.get("lease_lost") else "") for e in jobs_ if e.get("lease_gap_s")]
                + [f"{loc(e['t'])} {e.get('host')} held the lease {e['hbc_wait_s'] / 60:.0f} min waiting for HBC "
@@ -2973,7 +2990,7 @@ def wii_board(board, order, evs, rows, last_on, now, hours, width, server_down, 
         elif local or h:
             paint(now - (local["elapsed_s"] if local else h.get("phase_s", h.get("held_s", 0))), now, "b")
         for e in evs:                              # someone used the Wii outside the queue
-            if e.get("type") == "outside" and mine(e):
+            if e.get("type") == "outside" and mine(e) and real_outside(e):
                 i = int((e["t"] - start) / step)
                 if 0 <= i < cells:
                     lane[i] = "!"
@@ -3193,7 +3210,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                 problems.append(dict(t=t, severity=sev, kind=kind, host=host, job=e.get("name"), id=e.get("id"),
                                      detail=detail or "see the job's log on its workstation"))
                 seen_ids.add(e.get("id"))
-        elif typ == "outside":
+        elif typ == "outside" and real_outside(e):
             problems.append(dict(t=t, severity="warn", kind="outside the queue", host=host, job=e.get("after") or "-", id="-",
                                  detail=f"the Wii was not in HBC for {_age(e.get('busy_s', 0))} ({e.get('what')}) "
                                         f"although the last queue job" + (f", {e.get('after_host')}'s," if e.get("after_host") else "")

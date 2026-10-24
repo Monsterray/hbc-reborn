@@ -132,6 +132,9 @@ Two more things the errors page (and `report`) flags:
   there. Someone used the Wii without the queue: a person, or an agent's `hbc.py run` straight
   to the Wii. The entry names the job that last left the Wii in HBC. HBC does not record who
   sent an app, so that is as close as the queue can get. Queue everything that uses the Wii.
+  It takes two probes in a row without HBC's answer: one alone (a probe that timed out) only
+  restarts the idle wait. Events from before this rule count when they lasted longer than one
+  probe interval (15 s).
 - **Lease gap:** the dispatcher could not renew its lease for over 30 s during a job (the
   job's record says how long). Past 60 s the server lets the lease go, and another workstation
   could get the Wii mid-run. `dispatcher.log` says why the renewals failed. `stop ID`, or `g` on the manage page, gives the wait up. After a hard freeze only

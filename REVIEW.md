@@ -404,6 +404,27 @@ would, writing and compiling the code for six tasks.
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
 
+#### "Used outside the queue" needs two missed probes
+
+Tool work, no version of its own.
+
+- **What was wrong:** 13 of the 18 `outside` events in 2026-10-17..23 lasted exactly 15 s, the
+  busy-probe interval (`BUSY_STEP`). Each was one `HBCV` probe that got no answer, followed by
+  HBC answering the next one. That is a probe that timed out, not a person at the Wii. Those
+  events filled the errors page and the new lanes with flags.
+- **The fix:**
+  - `wait_idle` counts the probes that miss (`probes`). An event is logged only after two or
+    more (`used_outside`).
+  - One miss still restarts the full idle wait, as before.
+  - The errors page, `report` and the lanes read older events the same way (`real_outside`):
+    one without a count is real only when it lasted longer than 15 s. The 885 s and 135 s
+    spells of 10-22 stay; the 15 s ones go.
+  - `WII_BENCH_BUSY_STEP` shortens the probe interval, for tests only.
+- **Checked:**
+  - `test_one_probe_without_an_answer_is_not_use_outside_the_queue`.
+  - The real-dispatcher outside-use test, now with a 1 s probe interval and a 4 s busy spell.
+  - The lanes test, where a 15 s event no longer gets a flag.
+
 #### The monitor: a line, a card and a lane per Wii
 
 Tool work, no version of its own. Five designs were mocked up; the one built combines three:

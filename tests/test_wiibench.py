@@ -273,6 +273,25 @@ class IdleWaitTest(unittest.TestCase):
         self.wb.wait_idle(20, 0)
         self.assertEqual((self.now, self.probes), (0.0, 1))
 
+    def test_one_probe_without_an_answer_is_not_use_outside_the_queue(self):
+        from unittest import mock
+        turn = mock.Mock(target=None)
+        turn._refill.return_value = True
+        turn.job_id = "j"
+        self.answers = ["off"]                     # one probe missed, then HBC answers
+        self.wb.wait_idle(20, 2, "j", turn)
+        self.assertEqual(turn.last_wait["probes"], 1)
+        self.assertFalse(self.wb.used_outside(turn.last_wait))
+        self.answers = ["agent", "agent", "off"]   # three in a row: someone has the Wii
+        self.wb.wait_idle(20, 2, "j", turn)
+        self.assertEqual(turn.last_wait["probes"], 3)
+        self.assertTrue(self.wb.used_outside(turn.last_wait))
+        # Logged events: one from before the count is real only past one probe interval.
+        self.assertFalse(self.wb.real_outside({"busy_s": 15}))
+        self.assertTrue(self.wb.real_outside({"busy_s": 885}))
+        self.assertFalse(self.wb.real_outside({"busy_s": 40, "probes": 1}))
+        self.assertTrue(self.wb.real_outside({"busy_s": 30, "probes": 2}))
+
     def test_a_busy_wii_brings_back_the_full_wait(self):
         self.answers = ["hbc", "agent", "off"]
         self.wb.wait_idle(20, 2)
@@ -809,7 +828,8 @@ class LeaseDispatcherTest(unittest.TestCase):
     done = DispatcherTest.done
 
     def dispatch(self):
-        d = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", "4"], env=self.env,
+        d = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", "4"],
+                             env=dict(self.env, WII_BENCH_BUSY_STEP="1"),
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.addCleanup(d.wait)
         self.addCleanup(d.kill)
@@ -1060,7 +1080,7 @@ class LeaseDispatcherTest(unittest.TestCase):
                    "hbc_back_s" in (self.home / "queue/done" / f"{a1}.json").read_text(), 30)
         self.fake.agent = True                     # someone's app, sent without the queue
         self.addCleanup(setattr, self.fake, "agent", False)
-        a2 = self.add("second", "A", secs=0.3)
+        a2 = self.add("second", "A", secs=0.3)     # (the dispatcher probes a busy Wii every 1 s here)
         threading.Timer(4, setattr, (self.fake, "agent", False)).start()
         rec = self.home / "queue/done" / f"{a2}.json"
         self.until(lambda: rec.exists(), 60)
@@ -1259,7 +1279,8 @@ class MultiWiiTest(unittest.TestCase):
                {"type": "job", "t": now - 5000, "wii": "one", "name": "bad job", "secs": 600, "exit": 1, "hbc_back_s": None,
                 "wii_left": "busy or off"},
                {"type": "recovery", "t": now - 2000, "wii": "one", "name": "bad job", "freeze": {"recovered_after_s": 2400}},
-               {"type": "outside", "t": now - 1000, "wii": "three"},
+               {"type": "outside", "t": now - 1000, "wii": "three", "busy_s": 600, "probes": 9},
+               {"type": "outside", "t": now - 4000, "wii": "three", "busy_s": 15},   # one probe: not shown
                {"type": "grant", "t": now - 100, "slot": "one", "waited_s": 90}]
         order = [{"name": "q1", "want": "any"}, {"name": "q2", "want": "two"}, {"name": "q3", "want": "any"}]
         rows, kv = {}, {}
@@ -1281,7 +1302,7 @@ class MultiWiiTest(unittest.TestCase):
         self.assertIn("r", lanes["one"]["cells"])
         self.assertTrue(lanes["one"]["cells"].endswith("b"))           # running now
         self.assertTrue(lanes["two"]["cells"].endswith("y"))           # waiting for HBC now
-        self.assertIn("!", lanes["three"]["cells"])
+        self.assertEqual(lanes["three"]["cells"].count("!"), 1)
         self.assertIn("froze", lanes["one"]["labels"])
         self.assertEqual((lanes["one"]["jobs"], lanes["one"]["failed"], lanes["one"]["wait"]), (2, 1, "1m30s"))
         self.assertTrue(kv["lane_ticks"].endswith("now"))
