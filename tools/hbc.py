@@ -203,6 +203,16 @@ def lastlog(wii):
             "text": text.decode("utf-8", "replace")}
 
 
+WAYS_OUT = {
+    "not_checked": None,
+    "stub": "through the reload stub (IOS answered)",
+    "es_launch": "HBC launched through ES (an IOS module did not answer)",
+    "reset": "system reset through HW_RESETS (IOS did not answer)",
+    "stm_reset": "system reset through STM (IOS did not answer)",
+    "stub_anyway": "through the reload stub, after the other ways failed",
+}
+
+
 def crash_report(crash, elf=None):
     """Format a crash reply's fields, with source lines when elf is given."""
     addrs = [crash["pc"], crash["lr"]] + crash.get("frames", [])
@@ -232,6 +242,10 @@ def crash_report(crash, elf=None):
         # An agent whose crash hook faulted too says where (HBC 1.10.2 on).
         if crash.get("reason"):
             lines[0] += f"; {crash['reason']}"
+    # How the agent got the Wii back (HBC 1.10.14 on; docs/devnet.md).
+    way = WAYS_OUT.get(crash.get("way_out", "not_checked"))
+    if way:
+        lines.append(f"  left  {way}")
     for label, key in (("pc", "pc"), ("lr", "lr")):
         lines.append(f"  {label:5} {crash[key]}  {where.get(crash[key], '')}".rstrip())
     if kind == "exception" or (kind == "stack" and crash.get("exception")):

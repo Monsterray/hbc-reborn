@@ -363,6 +363,13 @@ class HBCToolTest(unittest.TestCase):
         self.assertIn("  last output:\n    loading\n    level 3\n    demo: fatal (129)", out)
         self.fake.crash = dict(base, kind="hang", code=0, reason="no hbc_agent_alive() for 60 s")
         self.assertIn("demo hung after 61.5 s: no hbc_agent_alive() for 60 s", self.cli("crash"))
+        self.assertNotIn("  left ", self.cli("crash"))
+        # How the agent got the Wii back (HBC 1.10.14 on).
+        self.fake.crash["way_out"] = "es_launch"
+        self.assertIn("  left  HBC launched through ES (an IOS module did not answer)",
+                      self.cli("crash"))
+        self.fake.crash["way_out"] = "stub"
+        self.assertIn("  left  through the reload stub (IOS answered)", self.cli("crash"))
 
     def test_lastlog(self):
         self.fake.crash = {}

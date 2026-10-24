@@ -40,8 +40,8 @@ import dolphin_smoke  # noqa: E402
 
 CRASH_ADDR = 0x91800020
 CRASH_WORDS = 3 + 5 + 2 + 2 + 12   # magic .. uptime_ms, frames
-# Version 2 (sdk/hbc_agent.h): then app[20], kind, code, reason[64], check.
-CRASH_SIZE = CRASH_WORDS * 4 + 20 + 4 + 4 + 64 + 4
+# Version 3 (sdk/hbc_agent.h): then app[20], kind, code, reason[64], way_out, check.
+CRASH_SIZE = CRASH_WORDS * 4 + 20 + 4 + 4 + 64 + 4 + 4
 NAMES = {2: "machine check", 3: "DSI", 4: "ISI", 6: "alignment", 7: "program"}
 REASON_AT = CRASH_WORDS * 4 + 20 + 4 + 4
 
