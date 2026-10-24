@@ -161,7 +161,7 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
-### 1.10.9: the overlay and MotionPlus
+### 1.10.10: the overlay and MotionPlus
 
 - libogc reports a MotionPlus only once an app switches it on
   (`WPAD_SetMotionPlus`, which probes for it): before, the agent showed no
@@ -175,6 +175,10 @@ From the 1.3.6 review, each verified in the code first:
   MotionPlus): "none" before; on Test "active" at once, the gyro 7986/8632/8693
   at rest (spread 12-14 over 11 reads); after closing "present", not ours.
   Calibrate's gyro uses the same switch-on; its result is shown only on screen.
+- 1.10.10: HBC links this tree's agent (channel/channelapp/Makefile builds
+  sdk/hbc_agent first), so HBC's HOME menu does the same. `wii_mplus.py --hbc`
+  ran this tree's HBC DOL on the bench Wii and passed: active on Test (gyro
+  7991/8634/8693), off again after HOME closed.
 
 ### 1.10.9: sdk/mboard, posts to the Wii Message Board
 

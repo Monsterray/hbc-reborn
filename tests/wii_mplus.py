@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The agent's overlay with a MotionPlus remote, on a Wii.
 
-Runs tests/agent_app (an app that never uses MotionPlus itself), opens the
-HOME overlay with `hbc.py key h`, goes to WiiMote > (the remote) > More >
+Runs tests/agent_app (an app that never uses MotionPlus itself), or with
+--hbc this tree's channel DOL (HBC's HOME menu is the agent's overlay), opens
+the HOME overlay with `hbc.py key h`, goes to WiiMote > (the remote) > More >
 Test, checking HBCS overlay_ui's focus before every A, and then checks HBCS
 "remotes" for that remote:
 
@@ -16,17 +17,21 @@ A remote with no MotionPlus is reported as "none" and the test says so. Put
 a Wii Remote Plus (or one with a MotionPlus fitted) on the Wii first; leave it
 still for the gyro figures. Ends in HBC through the agent's exit.
 
-usage: tests/wii_mplus.py [WII-IP] [--chan N] [--seconds S]
+usage: tests/wii_mplus.py [WII-IP] [--chan N] [--seconds S] [--hbc]
 """
 
 import argparse
 import pathlib
+import shutil
 import sys
+import tempfile
 import time
 
 root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tools"))
+sys.path.insert(0, str(root / "tests"))
 import hbc  # noqa: E402
+import dolphin_smoke  # noqa: E402  (expected: this tree's version)
 
 MENU_WM = 3                                        # sdk/hbc_agent/ov_ui.c
 ID_WIIMOTE, ID_FIND, ID_MORE, ID_TEST = 104, 140, 150, 171
@@ -66,6 +71,7 @@ def main():
     ap.add_argument("wii", nargs="?")
     ap.add_argument("--chan", type=int, default=0, help="the remote, 0-3 (default 0: player 1)")
     ap.add_argument("--seconds", type=float, default=3, help="how long to read the gyro")
+    ap.add_argument("--hbc", action="store_true", help="HBC's own HOME menu (this tree's DOL)")
     a = ap.parse_args()
     wii = hbc.wii_address(a.wii)
     chan = a.chan
@@ -76,16 +82,24 @@ def main():
         if not ok:
             failed.append(what)
 
-    hbc.send(wii, str(root / "tests/agent_app/agent_app.dol"), ["stay", "240"])
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        try:
-            if hbc.is_agent(hbc.version(wii, hbc.POLL_TIMEOUT)):
-                break
-        except (OSError, hbc.HBCError):
-            pass
-        time.sleep(0.5)
-    time.sleep(2)
+    if a.hbc:
+        work = pathlib.Path(tempfile.mkdtemp(prefix="hbc-mplus-"))
+        shutil.copy(root / "channel/channelapp/channelapp-channel.dol", work / "hbc.dol")
+        hbc.send(wii, str(work / "hbc.dol"), [])
+        print(f"running HBC {hbc.relaunch_wait(wii, dolphin_smoke.expected)}", flush=True)
+        shutil.rmtree(work, ignore_errors=True)
+        time.sleep(3)
+    else:
+        hbc.send(wii, str(root / "tests/agent_app/agent_app.dol"), ["stay", "240"])
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                if hbc.is_agent(hbc.version(wii, hbc.POLL_TIMEOUT)):
+                    break
+            except (OSError, hbc.HBCError):
+                pass
+            time.sleep(0.5)
+        time.sleep(2)
     try:
         before = remote(wii, chan)
         print(f"remote {chan} before: {before}", flush=True)
@@ -161,10 +175,15 @@ def main():
         raise
     finally:
         try:
-            hbc.exit_app(wii)                          # hbc.py exit: the agent leaves to HBC
+            if a.hbc:
+                # Back to the installed HBC: an agent app's exit returns there.
+                hbc.send(wii, str(root / "tests/agent_app/agent_app.dol"), ["exit"])
+                time.sleep(8)
+            else:
+                hbc.exit_app(wii)                      # hbc.py exit: the agent leaves to HBC
+                time.sleep(4)
         except (OSError, hbc.HBCError):
             pass
-        time.sleep(4)
         print(f"back in HBC {hbc.hbc_wait(wii, 90)}", flush=True)
     if failed:
         raise SystemExit(f"failed: {len(failed)}")

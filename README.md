@@ -532,7 +532,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
-| The overlay with a MotionPlus remote: Test switches it on (the gyro, live), closing switches it back off | `python3 tests/wii_mplus.py WII-IP [--chan N]` | Wii in any HBC, a MotionPlus remote |
+| The overlay with a MotionPlus remote: Test switches it on (the gyro, live), closing switches it back off | `python3 tests/wii_mplus.py WII-IP [--chan N] [--hbc]` (`--hbc`: HBC's own HOME menu) | Wii in any HBC, a MotionPlus remote |
 | What a Wii's DNS answers from a fresh network start (WiiLink's user agreement server, Pi-hole), read-only | queue `python tests/wii_dns.py [NAME...]` (build `tests/dnscheck` first) | the bench queue |
 | Why User Agreements will not open: the hidden EULA channel (HAKx), the IOS it needs, and IOS56, read-only | queue `python tests/wii_eulacheck.py` (build `tests/eulacheck` first) | the bench queue |
 | Message Board library (`sdk/mboard`) on the PC: posts, the full message, sending, play history, byte for byte | `python3 tests/test_mboard.py`, `python3 tests/test_cdblog.py` | C compiler |
