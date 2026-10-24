@@ -160,12 +160,16 @@ byte the same, and the Wii Menu files it (docs/messageboard-messages.md).
   textures: `img/my_Letter_a.tpl` to `_i.tpl`, 64 | 384 | 64 wide and 144 /
   168 / 64 high. They are RGB5A3 and keep their alpha, in an LZ77-compressed
   U8, `letter_LZ.bin`. Keep the middle light: the Wii Menu writes the text
-  over it in a dark colour.
+  over it in a dark colour. Keep the top band (about the first 60 rows)
+  plain and dark: it writes the sender's name there in a light colour, which
+  is why WiiLink's letters have a solid banner (a light top made the name
+  unreadable on the bench Wii's first arcade letter).
 - **The board icon** is 144 x 96 (`thumbnail_LZ.bin`,
   `img/my_LetterS_b.tpl`).
 - **The sound** is `sound.bns`: mono DSP-ADPCM, 8 kHz like WiiLink's (the Wii
   Menu takes 4-48 kHz, 1 or 2 channels). The tool's encoder decodes back at
-  47 dB SNR on a tone. The Wii Menu plays it once, 300 ms after the letter
+  47 dB SNR on a tone. The themes keep their tunes at about a quarter of full
+  scale (the board plays them loud). The Wii Menu plays it once, 300 ms after the letter
   opens, muting the board's music, and fades it as the letter closes.
 - **`chjump.bin`**, optional, adds the "start" button for a channel. The Wii
   Menu shows it only if that channel is installed.
@@ -179,9 +183,9 @@ makes five examples, drawn and scored in code:
 | --- | --- | --- |
 | `ocean` | 74,560 bytes | 5.0 s, an arpeggio |
 | `sunset` | 50,880 bytes | none |
-| `forest` | 68,608 bytes | none |
+| `forest` | 69,280 bytes | none |
 | `nightsky` | 95,200 bytes | 7.0 s, an original dreamy tune with an echo |
-| `arcade` | 60,864 bytes | 2.0 s, a chiptune |
+| `arcade` | 60,768 bytes | 2.0 s, a chiptune |
 
 `tests/test_stationery.py` reads each encoder back with a decoder of its
 own, and builds every theme. `tests/wii_mboard.py send WII --board ARC

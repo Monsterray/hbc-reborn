@@ -11,8 +11,9 @@ outside art or music), as board-data archives for sdk/mboard:
                moon, and an original dreamy tune with an echo
     arcade     a pixel border for homebrew, a chiptune
 
-Each letter keeps a light writing area: the Wii Menu writes the text in a dark
-colour over the middle of the frame. Sound is mono DSP-ADPCM at 8 kHz, as
+Each letter keeps a light writing area, where the Wii Menu writes the text in
+a dark colour, and a darker band across the top, where it writes the sender's
+name in a light one (as WiiLink's letters do). Sound is mono DSP-ADPCM at 8 kHz, as
 WiiLink's letters have it. See tools/msgboard/stationery.py for the format.
 """
 
@@ -187,7 +188,7 @@ def ocean():
     music = tune([("C4", .5), ("E4", .5), ("G4", .5), ("C5", .5), ("G4", .5), ("E4", .5),
                   ("A3", .5), ("C4", .5), ("E4", .5), ("A4", .5), ("E4", .5), ("C4", .5),
                   ("F3", .5), ("A3", .5), ("C4", .5), ("F4", .5), ("G3", .5), ("B3", .5),
-                  ("D4", .5), ("G4", 1.5)], 132)
+                  ("D4", .5), ("G4", 1.5)], 132, volume=0.28)
     return img, thumb, music
 
 
@@ -206,7 +207,7 @@ def sunset():
 
 def forest():
     img, mask = big_card((52, 110, 58))
-    sky = vgrad_layer((150, 205, 235), (220, 238, 225), 10, 150)
+    sky = vgrad_layer((44, 104, 150), (196, 228, 228), 10, 150)
     d = ImageDraw.Draw(sky)
     # Light coming through the trees.
     rays = layer()
@@ -330,7 +331,7 @@ def nightsky():
     music = tune([("E5", .5), ("B4", .5), ("G5", .5), ("F#5", .5), ("E5", 1), (None, .5),
                   ("D5", .5), ("A4", .5), ("F#5", .5), ("E5", .5), ("D5", 1), (None, .5),
                   ("C5", .5), ("G4", .5), ("E5", .5), ("D5", .5), ("B4", .75), ("C5", .25), ("D5", .5),
-                  ("B4", 2)], 116, wave="sine", volume=0.55, tail=0.6, echo=0.45, echo_s=0.26)
+                  ("B4", 2)], 116, wave="sine", volume=0.28, tail=0.6, echo=0.45, echo_s=0.26)
     return img, thumb, music
 
 
@@ -339,27 +340,30 @@ def arcade():
     colours = [(240, 70, 70), (250, 200, 60), (80, 200, 90), (70, 150, 240), (190, 90, 220)]
     deco = layer()
     d = ImageDraw.Draw(deco)
-    # A pixel border, top and bottom, kept inside the paper.
+    # A solid banner across the top: the Wii Menu writes the sender's name
+    # there, as on WiiLink's letters, so it must be dark and plain.
+    d.rectangle((0, 10 * S, W * S, 70 * S), fill=(36, 34, 72, 255))
+    # A pixel strip under it and at the bottom, kept inside the paper.
     for i, x in enumerate(range(10, W - 10, 16)):
-        for j, y in enumerate((10, 26, H - 42, H - 26)):
+        for j, y in enumerate((70, H - 42, H - 26)):
             if (i + j) % 2 == 0:
                 d.rectangle((x * S, y * S, (x + 16) * S - 1, (y + 16) * S - 1), fill=colours[(i + j) % 5] + (255,))
     for k, x in enumerate((60, 140, 220, 300, 380)):     # little invaders
         c = colours[k]
         for (px, py) in [(2, 0), (3, 0), (1, 1), (2, 1), (3, 1), (4, 1), (0, 2), (1, 2), (3, 2), (5, 2),
                          (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (1, 4), (4, 4), (0, 5), (5, 5)]:
-            d.rectangle(((x + px * 6) * S, (60 + py * 6) * S, (x + px * 6 + 6) * S - 1, (66 + py * 6) * S - 1),
+            d.rectangle(((x + px * 6) * S, (96 + py * 6) * S, (x + px * 6 + 6) * S - 1, (102 + py * 6) * S - 1),
                         fill=c + (255,))
     on_paper(img, mask, deco)
     big_rules(ImageDraw.Draw(img), (210, 210, 200))
     img = img.resize((W, H), Image.NEAREST)               # keep the pixels sharp
-    ImageDraw.Draw(img).text((W // 2 - 42, 112), "HOMEBREW  MAIL", fill=(30, 30, 30, 255))
+    ImageDraw.Draw(img).text((W // 2 - 42, 140), "HOMEBREW  MAIL", fill=(30, 30, 30, 255))
     thumb = envelope((30, 30, 30), (240, 70, 70),
                      mark=lambda dd: [dd.rectangle((60 + i * 8, 64, 66 + i * 8, 70), fill=colours[i] + (255,))
                                       for i in range(3)])
     music = tune([("E5", .25), ("G5", .25), ("E6", .25), ("C6", .25), ("D6", .25), ("G6", .5), (None, .25),
                   ("C5", .25), ("E5", .25), ("G5", .25), ("C6", .5), ("B5", .25), ("G5", .25), ("C6", 1)],
-                 140, wave="square", volume=0.45, tail=0.1)
+                 140, wave="square", volume=0.18, tail=0.1)
     return img, thumb, music
 
 
