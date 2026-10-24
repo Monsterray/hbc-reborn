@@ -105,6 +105,12 @@ def main():
             print(f"  {name}: agent/HBC up {ratio_up:.2f}, down {ratio_down:.2f}")
         print(f"PASS: agent on the Wii ({sends} DOL sends to reach HBC {expected})")
     except (AssertionError, OSError, hbc.HBCError) as exc:
+        # Leave the Wii in HBC even so: the bench queue needs it there, and a
+        # failed check can stop with the agent app still running.
+        try:
+            hbc.exit_app(wii)
+        except (OSError, hbc.HBCError):
+            pass
         raise SystemExit(f"FAIL: {exc!r}")
     finally:
         shutil.rmtree(snap, ignore_errors=True)

@@ -36,7 +36,7 @@ POLL_TIMEOUT = 2
 CHECKSUM_BYTES_PER_S = 1 << 20
 
 # newlib errno values the client acts on
-ENOENT, EISDIR = 2, 21
+ENOENT, EEXIST, EXDEV, EISDIR, ENOSYS = 2, 17, 18, 21, 88
 
 
 class HBCError(Exception):
@@ -47,7 +47,7 @@ class HBCError(Exception):
 
 # The Wii reports newlib errno values, which differ from the host's.
 WII_ERRNO = {1: "EPERM", 2: "ENOENT", 5: "EIO", 6: "ENXIO", 9: "EBADF", 11: "EAGAIN",
-             12: "ENOMEM", 13: "EACCES", 16: "EBUSY", 17: "EEXIST", 20: "ENOTDIR",
+             12: "ENOMEM", 13: "EACCES", 16: "EBUSY", 17: "EEXIST", 18: "EXDEV", 20: "ENOTDIR",
              21: "EISDIR", 22: "EINVAL", 23: "ENFILE", 24: "EMFILE", 27: "EFBIG",
              28: "ENOSPC", 30: "EROFS", 71: "EPROTO", 77: "EBADMSG", 88: "ENOSYS",
              90: "ENOTEMPTY", 91: "ENAMETOOLONG", 104: "ECONNRESET", 116: "ETIMEDOUT"}
@@ -362,6 +362,8 @@ def file_request(wii, op, remote, size=0, payload=b"", timeout=TIMEOUT):
 
 FRAME = 64 * 1024
 FLAG_COMPRESS = 0x01
+FLAG_REPLACE = 0x02   # op R: replace a file at the destination
+MOVE_SINCE = (1, 10, 14)   # the first HBC with op R
 _proto = {}
 
 
@@ -777,6 +779,76 @@ def remove_tree(wii, remote, out=print):
     return count
 
 
+def remote_exists(wii, remote):
+    try:
+        stat_remote(wii, remote)
+        return True
+    except HBCError as exc:
+        if exc.code == ENOENT:
+            return False
+        raise
+
+
+def move(wii, src, dst, replace=False, out=print):
+    """Rename or move src to dst on the Wii (op R, HBC 1.10.14). A dst ending
+    in "/", or a folder that is there, means "into that folder", keeping the
+    name; missing folders above dst are made. An existing dst is refused
+    unless replace (a file only). Between devices (sd: to usb:) it copies
+    each file, checks its CRC-32, and only then deletes the source. Returns
+    the destination as it ended up."""
+    refuse_protected(src, "move")
+    # Ask first: an older HBC or agent answers op R with ENOSYS without reading
+    # the destination that follows the request, and closing on unread data
+    # can reset the connection before its answer arrives.
+    found = re.match(r"(\d+)\.(\d+)\.(\d+)", version(wii))
+    if found and tuple(map(int, found.groups())) < MOVE_SINCE:
+        raise HBCError(f"this HBC or app agent ({found.group(0)}) cannot rename or move: it needs "
+                       "HBC 1.10.14, or an agent app built with it", ENOSYS)
+    payload = dst.encode("utf-8")
+    try:
+        with connect(wii) as conn:
+            conn.sendall(file_header("R", src, len(payload), FLAG_REPLACE if replace else 0) + payload)
+            final = recv_reply(conn, f"{src}: Wii returned").decode("utf-8", "replace")
+    except HBCError as exc:
+        if exc.code == ENOSYS:
+            raise HBCError("this HBC or app agent cannot rename or move (it needs HBC 1.10.14, "
+                           "or an agent app built with it)", exc.code) from None
+        if exc.code != EXDEV:
+            raise
+        final = move_across(wii, src, dst, replace)
+    out(f"{src} -> {final}")
+    return final
+
+
+def move_across(wii, src, dst, replace):
+    """A move between devices: copy every file, check its CRC-32, and only
+    then delete the source."""
+    src = remote_norm(src)
+    if dst.endswith("/") or (remote_exists(wii, dst) and remote_is_dir(wii, dst)):
+        dst = remote_join(remote_norm(dst), remote_base(src))
+    is_dir = remote_is_dir(wii, src)
+    if remote_exists(wii, dst) and (not replace or is_dir or remote_is_dir(wii, dst)):
+        raise HBCError(f"{dst}: Wii returned {wii_error(EEXIST)}", EEXIST)
+    if is_dir:
+        dirs, rels = remote_tree(wii, src)
+        files = {rel: remote_join(src, rel) for rel in rels}
+        for rel in [""] + sorted(dirs):
+            file_request(wii, "M", remote_join(dst, rel) if rel else dst)
+    else:
+        files = {"": src}
+    for rel, path in sorted(files.items()):
+        target = remote_join(dst, rel) if rel else dst
+        data = get_file(wii, path, progress=Progress(path))
+        put_file(wii, target, data, progress=Progress(target))
+        if checksum(wii, target) != (len(data), zlib.crc32(data)):
+            raise HBCError(f"{target}: the copy does not match {path}; {src} is kept")
+    if is_dir:
+        remove_tree(wii, src, out=lambda *a: None)
+    else:
+        file_request(wii, "D", src)
+    return dst
+
+
 # FAT keeps file times in 2 s steps.
 FAT_TIME_STEP = 2
 
@@ -1078,6 +1150,7 @@ Commands
     sync LOCAL PATH     upload only what changed (--delete removes extras)
     rm PATH             delete a file or empty folder (-r for a whole folder)
     mkdir PATH          make a folder
+    mv FROM TO          rename or move a file or folder (also between devices)
     order DIR [APP...]  HBC's Custom app order: show it, or set it (meta.xml)
   Apps built with the in-app agent (sdk/hbc_agent.h)
     exit                ask the running app to go back to HBC
@@ -1206,6 +1279,23 @@ Deletes a file or an empty folder, or with -r a whole folder. Device roots
 hbc.py mkdir PATH
 
 Makes a folder, and any missing folders above it.""",
+    "mv": """\
+hbc.py mv [--replace] FROM TO
+
+Renames or moves a file or folder. A TO ending in "/", or a folder that is
+there, means "into that folder", keeping the name:
+
+    hbc.py mv sd:/apps/old sd:/apps/new             rename a folder
+    hbc.py mv sd:/boot.dol sd:/apps/myapp/          move a file into a folder
+    hbc.py mv sd:/game.iso usb:/games/              move to another device
+
+Missing folders above TO are made. If TO is already there, it is refused,
+unless --replace (which replaces a file, never a folder). A folder cannot go
+into itself. On one device the Wii renames in place, at once, whatever the
+size. Between devices hbc.py copies each file, checks its CRC-32, and
+deletes the source only after that. Device roots and <device>:/apps itself
+are refused. An app renamed under sd:/apps shows in HBC's list at once.
+Also "rename". HBC 1.10.14 on, and agent apps built with it.""",
     "order": """\
 hbc.py order [--clear] APPS [FOLDER ...]
 
@@ -1275,6 +1365,9 @@ of it here. While an agent app runs, this prints its output so far.""",
 }
 
 
+COMMAND_HELP["rename"] = COMMAND_HELP["mv"]
+
+
 def print_help(topic=None):
     if topic in COMMAND_HELP:
         print(COMMAND_HELP[topic])
@@ -1292,6 +1385,7 @@ COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--delete": ("delete", ("sync",)),
                  "--checksum": ("checksum", ("sync",)),
                  "--clear": ("clear", ("crash", "order")),
+                 "--replace": ("replace", ("mv", "rename")),
                  "--yes": ("yes", ("send", "run"))}
 VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
                "--name": ("name", ("send", "run"))}
@@ -1545,6 +1639,9 @@ def main(argv=None):
         elif cmd == "mkdir":
             need(1, "REMOTE")
             file_request(wii, "M", args[0])
+        elif cmd in ("mv", "rename"):
+            need(2, "[--replace] FROM TO")
+            move(wii, args[0], args[1], bool(flags.get("replace")))
         elif cmd == "order":
             need(1, "[--clear] APPS [FOLDER ...]")
             if flags.get("clear"):

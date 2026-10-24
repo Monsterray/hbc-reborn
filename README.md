@@ -83,6 +83,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `sync [--delete] [--checksum] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
 | `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
 | `mkdir REMOTE` | Create a directory and its parents. |
+| `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted. An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |
 | `order [--clear] APPS [FOLDER ...]` | HBC's Custom app order (see [Your own app order](#your-own-app-order)): with only `APPS` (e.g. `sd:/apps`), print the apps in that order with their `<sort_id>`; with folders, give them 10, 20, 30... in the order named, editing or making each `meta.xml`; `--clear` removes every `<sort_id>`. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
@@ -158,6 +159,7 @@ make && python3 tools/hbc.py run myapp.dol          # build, run, watch the log
 python3 tools/hbc.py sync dist/myapp sd:/apps/myapp # install: only changed files move
 python3 tools/hbc.py put data/level1.bin sd:/apps/myapp/level1.bin
 python3 tools/hbc.py get sd:/apps/myapp/save.dat    # pull a file the app wrote
+python3 tools/hbc.py mv sd:/apps/myapp sd:/apps/myapp-old   # rename, at once
 python3 tools/hbc.py status                         # IOS, AHBPROT, memory after a run
 ```
 

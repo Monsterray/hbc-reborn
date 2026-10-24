@@ -63,7 +63,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
+`proto` is 7 when the file op `R` (rename and move) exists, 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
 `kind`, `code` and `reason` exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
 `crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
@@ -147,6 +147,7 @@ character, and paths of 256 bytes or more.
 | `C` | checksum a file | u32 size, u32 CRC-32 |
 | `D` | delete a file or an empty directory | none |
 | `M` | create a directory and its parents | none |
+| `R` | rename or move: `path` is the source, `size` the length of the destination path, which follows it; flags bit 1 replaces a file at the destination (protocol 7, HBC 1.10.14) | the destination as it ended up |
 
 An entry line's `mtime` is the time the entry last changed, in seconds since
 1970 by the Wii's clock: FAT keeps local time with no zone, and HBCS `time`
@@ -165,6 +166,30 @@ client may still be sending: `hbc.py` checks for it before each frame, so
 it reports the Wii's error rather than the reset that follows. After a put or delete
 under `<device>:/apps/<name>/` on the mounted device, HBC reloads that app's
 menu entry, so an uploaded app appears (and a deleted one disappears) at once.
+
+Op `R` renames in place, so a file or folder of any size moves at once:
+
+- **Into a folder.** A destination ending in `/`, or a folder that is there
+  already, means "into that folder": the source keeps its name. The reply
+  says where it ended up. Missing folders above the destination are made,
+  as for a put.
+- **Refusals.** Each leaves everything as it was:
+  - `EXDEV`: the source and destination are on different devices. A move
+    between devices is a copy and a delete, which the client does: `hbc.py
+    mv` copies each file, checks its CRC-32, and only then deletes the
+    source.
+  - `EEXIST`: something is at the destination, unless flags bit 1 asks to
+    replace it. Even then only a file is replaced: a folder there gives
+    `EISDIR`, and moving a folder onto a file gives `ENOTDIR`.
+  - `EINVAL`: a folder moved into itself, a device root (`sd:/`) as the
+    source, or a path the rules above refuse.
+- **Case only.** A rename that changes only the case of the name (FAT does
+  not tell `Boot.dol` from `boot.dol`) finds the source itself at the
+  destination and goes ahead.
+- **Apps.** Like a put or delete, a rename under `<device>:/apps/` reloads the
+  app entries of both the old and the new name.
+
+An HBC or agent from before op `R` answers `ENOSYS`.
 
 If an app is launched from the Wii while a transfer runs, HBC stops the
 transfer first (an upload's partial file is deleted), and only then unmounts

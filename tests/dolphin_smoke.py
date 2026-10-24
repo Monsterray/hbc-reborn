@@ -209,7 +209,8 @@ def check_devnet(run, log_port=0):
     hbc.file_request(wii, "M", "sd:/hbctest/sub")
     hbc.file_request(wii, "P", "sd:/hbctest/sub/blob.bin", len(payload), payload)
     listing = hbc.file_request(wii, "L", "sd:/hbctest/sub").decode()
-    assert f"f {len(payload)} blob.bin" in listing, listing
+    assert any(e["name"] == "blob.bin" and e["size"] == len(payload)
+               for e in map(hbc.parse_entry, listing.splitlines()[1:])), listing
     assert hbc.file_request(wii, "G", "sd:/hbctest/sub/blob.bin") == payload
     for bad in ("sd:/hbctest/../x", "sd:relative", "nand:/x", "sd:/a\\b"):
         try:
@@ -323,6 +324,9 @@ def check_devnet(run, log_port=0):
     hbc.file_request(wii, "D", "sd:/hbctest/sub")
     hbc.file_request(wii, "D", "sd:/hbctest")
     print("devnet files: PASS")
+
+    import agent_checks   # the rename checks, shared with the agent's
+    agent_checks.check_move(wii, "sd:/hbcmv", apps=True)
 
     app = root / "tests/netlog_app/netlog_app.dol"
     server = hbc.LogServer(log_port)

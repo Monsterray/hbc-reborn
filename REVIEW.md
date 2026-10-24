@@ -161,6 +161,68 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.14: rename and move (HBCF op R, hbc.py mv)
+
+- **New op `R`** in `devfile.c`, which HBC and the agent share, so both have
+  it. Protocol 7.
+  - **Request:** the path is the source; `size` gives the length of the
+    destination path, which follows it.
+  - **Reply:** the destination as it ended up.
+  - **Into a folder:** a destination ending in `/`, or a folder that is
+    there, means "into that folder". Missing folders above the destination
+    are made.
+  - **Refusals:**
+    - another device: `EXDEV`;
+    - something already there: `EEXIST`, unless flags bit 1, which replaces
+      a file only (`EISDIR` for a folder there, `ENOTDIR` for a folder onto a
+      file);
+    - a folder into itself, or a device root: `EINVAL`.
+  - **Case only:** a case-only rename on FAT finds the source itself and goes
+    ahead.
+  - **Apps:** a rename under `apps/` reloads both app entries.
+- **`hbc.py mv [--replace] FROM TO`** (also `rename`). Between devices it
+  copies each file, checks its CRC-32, and only then deletes the source.
+  - It asks the version (`HBCV`) first and refuses an HBC or agent before
+    1.10.14 with what it needs.
+  - Sending blind is not safe. An older HBC answers op `R` with `ENOSYS`
+    without reading the destination that follows the request. Closing with
+    unread data then resets the connection, and on Windows the reset can
+    arrive before the answer. The new test against the fake Wii failed this
+    way about 1 run in 5, until the client asked first.
+- **Proof:**
+  - `tests/test_hbc_tool.py`: 4 new tests against the fake Wii, which got
+    op `R`.
+  - `agent_checks.check_move` runs on HBC (`check_devnet`, with the app list
+    following a renamed app folder) and on the agent.
+  - Dolphin (`dolphin_smoke.py --devnet` and `--agent` on the WAD): all pass.
+  - The bench Wii: `wii_devnet.py` (this tree's DOL) passes everything, and
+    `wii_agent.py` passes rename and move.
+- **Found on the bench Wii: `sd:/hbctest` and `sd:/hbcbench` would not
+  delete.** Both were empty-looking folders from 2026-10-12, and deleting
+  them gave `EACCES`.
+  - FatFs reports a folder that is not empty as `FR_DENIED` (`EACCES`, not
+    `ENOTEMPTY`), so it still holds an entry the listing does not show:
+    damage on that card.
+  - Op `R` renamed them to `sd:/hbctest-stuck-20261024` and
+    `sd:/hbcbench-stuck-20261024`, the first renames on a real Wii. Run
+    chkdsk on that card to clear them.
+- **Fixed in the tests** (both predate rename):
+  - Two checks still read folder listings in the pre-1.10.6 format, so they
+    never matched. `dolphin_smoke.py --devnet` failed on the blob listing.
+    `agent_checks` took an existing `sd:/screenshots` for one it had made,
+    and tried to delete it. FAT refused, because the user's screenshots are
+    there, so nothing was lost.
+  - A failed `wii_agent.py` now asks the agent app to exit, so the Wii is
+    left in HBC, as the bench queue needs.
+- **Open: the app log loses its last lines now and then.**
+  - On the bench Wii, `wii_agent.py` passed rename and move in all three runs
+    (2026-10-24).
+  - The second and third runs each failed later, at a different network-log
+    check in the crash, fatal and exit sequence: the app's last lines never
+    reached the PC's log server. The run before them passed those checks.
+  - Op `R` does not touch the log path. The next step is to see whether
+    1.10.13 does the same.
+
 ### 1.10.13: sdk/mii audit, robust and easy to use
 
 Two independent reviews (2026-10-24) covered `sdk/mii`. One checked the code

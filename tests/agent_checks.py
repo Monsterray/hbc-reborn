@@ -26,6 +26,82 @@ APP = root / "tests/agent_app/agent_app.dol"
 ELF = root / "tests/agent_app/agent_app.elf"
 
 
+def raw_move(wii, src, dst, flags=0):
+    """Op R without hbc.py's own checks: (status errno name or "ok", reply)."""
+    payload = dst.encode()
+    with socket.create_connection((wii, hbc.PORT), timeout=15) as conn:
+        conn.sendall(hbc.file_header("R", src, len(payload), flags) + payload)
+        try:
+            return "ok", hbc.recv_reply(conn).decode()
+        except hbc.HBCError as exc:
+            return hbc.WII_ERRNO.get(exc.code, str(exc.code)), ""
+
+
+def check_move(wii, base, apps=False):
+    """Op R (rename and move, HBC 1.10.14) on the Wii's own FAT layer, under
+    base (made and removed here). With apps, also that HBC's app list follows
+    an app folder renamed under sd:/apps."""
+    quiet = lambda *a: None
+
+    def names(path):
+        return {e["name"] for e in hbc.list_entries(wii, path)[0]}
+
+    hbc.put_file(wii, f"{base}/a.bin", b"A" * 1000)
+    hbc.put_file(wii, f"{base}/dir/x.bin", b"X")
+    hbc.put_file(wii, f"{base}/dir/sub/y.bin", b"Y" * 70_000)
+    assert hbc.move(wii, f"{base}/a.bin", f"{base}/b.bin", out=quiet) == f"{base}/b.bin"
+    assert hbc.get_file(wii, f"{base}/b.bin") == b"A" * 1000
+    assert "a.bin" not in names(base)
+    # Into a folder: a trailing "/" (made if missing), or a folder that is there.
+    assert hbc.move(wii, f"{base}/b.bin", f"{base}/new/", out=quiet) == f"{base}/new/b.bin"
+    assert hbc.move(wii, f"{base}/new/b.bin", f"{base}/dir", out=quiet) == f"{base}/dir/b.bin"
+    # A folder with its contents, in place, whatever their size.
+    assert hbc.move(wii, f"{base}/dir", f"{base}/moved", out=quiet) == f"{base}/moved"
+    assert names(f"{base}/moved") == {"b.bin", "x.bin", "sub"}
+    assert hbc.get_file(wii, f"{base}/moved/sub/y.bin") == b"Y" * 70_000
+    assert "dir" not in names(base)
+    # A case-only rename: FAT finds the source itself under the new name.
+    assert hbc.move(wii, f"{base}/moved/x.bin", f"{base}/moved/X.BIN", out=quiet) == \
+        f"{base}/moved/X.BIN"
+    assert "X.BIN" in names(f"{base}/moved"), names(f"{base}/moved")
+    # Refusals, each leaving everything as it was.
+    hbc.put_file(wii, f"{base}/c.bin", b"C")
+    for src, dst, flags, want in (
+            (f"{base}/c.bin", f"{base}/moved/b.bin", 0, "EEXIST"),
+            (f"{base}/moved", f"{base}/c.bin", 2, "ENOTDIR"),
+            (f"{base}/moved", f"{base}/moved/sub/in", 0, "EINVAL"),
+            (f"{base}/nosuch", f"{base}/n", 0, "ENOENT"),
+            ("sd:/", f"{base}/root", 0, "EINVAL"),
+            (f"{base}/c.bin", "sd:/../x", 0, "EINVAL"),
+            (f"{base}/c.bin", "usb:/c.bin", 0, "EXDEV")):
+        got = raw_move(wii, src, dst, flags)[0]
+        assert got == want, (src, dst, flags, got, want)
+    assert hbc.get_file(wii, f"{base}/c.bin") == b"C"
+    assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"A" * 1000
+    # --replace replaces a file.
+    assert raw_move(wii, f"{base}/c.bin", f"{base}/moved/b.bin", 2) == ("ok", f"{base}/moved/b.bin")
+    assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"C"
+    hbc.remove_tree(wii, base, out=quiet)
+
+    if apps:
+        app = (root / "tests/netlog_app/netlog_app.dol").read_bytes()
+        hbc.put_file(wii, "sd:/apps/hbcmvone/boot.dol", app)
+
+        def listed(name):
+            return name in hbc.status(wii).get("app_list", {}).get("order", [])
+        deadline = time.monotonic() + 8
+        while not listed("hbcmvone"):
+            assert time.monotonic() < deadline, "the uploaded app did not appear"
+            time.sleep(0.2)
+        hbc.move(wii, "sd:/apps/hbcmvone", "sd:/apps/hbcmvtwo", out=quiet)
+        deadline = time.monotonic() + 8
+        while listed("hbcmvone") or not listed("hbcmvtwo"):
+            assert time.monotonic() < deadline, "the app list did not follow the rename"
+            time.sleep(0.2)
+        hbc.remove_tree(wii, "sd:/apps/hbcmvtwo", out=quiet)
+    print("devnet rename and move: PASS")
+
+
 class LogCollector:
     """Accept any number of app log connections and keep their text."""
 
@@ -153,6 +229,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         print(f"  heap {heap_before} free before transfers, {st['heap_free']} after; "
               f"agent stack {st['agent_stack_used']} of {st['agent_stack_size']}")
         print("agent files and status: PASS")
+        check_move(wii, "sd:/hbcmv")
 
         check_overlay(wii, log, st)
 
@@ -234,8 +311,11 @@ def overlay_keys(wii, keys, settle=1.0):
 
 def check_overlay(wii, log, st):
     """The HOME overlay, driven with `hbc.py key` and seen with `hbc.py screen`."""
-    shots_before = {n for _, _, n in hbc.list_dir(wii, "sd:/screenshots")[0]} \
-        if "d screenshots" in hbc.file_request(wii, "L", "sd:/").decode() else set()
+    # Whether sd:/screenshots was there before (the user's own screenshots):
+    # then only the screenshot taken here is deleted, never the folder.
+    had_folder = any(e["type"] == "d" and e["name"] == "screenshots"
+                     for e in hbc.list_entries(wii, "sd:/")[0])
+    shots_before = {n for _, _, n in hbc.list_dir(wii, "sd:/screenshots")[0]} if had_folder else set()
     app = strip_luma(wii)
     overlay_keys(wii, "h")
     log.wait_for("agent_app: overlay\n", 10)
@@ -270,7 +350,7 @@ def check_overlay(wii, log, st):
 
     for name in new:
         hbc.file_request(wii, "D", f"sd:/screenshots/{name}")
-    if not shots_before and not (after - set(new)):
+    if not had_folder and not (after - set(new)):
         hbc.file_request(wii, "D", "sd:/screenshots")
     hbc.remove_tree(wii, "sd:/hbctest", out=lambda *a: None)
     print(f"agent overlay: PASS (strip luma {app:.0f} -> {shown:.0f} -> {closed:.0f}, "

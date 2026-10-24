@@ -56,6 +56,8 @@ class FakeHBC:
         self.lastlog = None  # (why, uptime_ms, app, text) for HBCL
         self.exits = 0
         self.keys = b""
+        self.no_rename = False  # an HBC or agent before op R (1.10.14)
+        self.version = "1.2.0"   # what HBCV answers
         self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -103,7 +105,7 @@ class FakeHBC:
         hdr = self.recv(conn, 16)
         magic = hdr[:4]
         if magic == b"HBCV":
-            conn.sendall(b"1.5.0 agent\0" if self.agent else b"1.2.0\0")
+            conn.sendall(b"1.5.0 agent\0" if self.agent else self.version.encode() + b"\0")
         elif magic == b"HBCS":
             st = {"version": "1.2.0", "proto": 2, "log": self.log,
                   "time": int(time.time()) + self.clock}
@@ -247,8 +249,49 @@ class FakeHBC:
             elif op == "M":
                 self.make_dirs(path)
                 self.reply(conn, 0)
+            elif op == "R" and not self.no_rename:
+                self.rename(conn, path, self.recv(conn, size).decode(), hdr[5])
+            elif op == "R":
+                # No op R. A real old HBC leaves the destination unread (which
+                # is why hbc.py asks its version first); read it here so the
+                # test sees the answer, not a reset.
+                self.recv(conn, size)
+                self.reply(conn, -88)
             else:
                 self.reply(conn, -88)  # newlib ENOSYS
+
+    def rename(self, conn, src, dst, flags):
+        """Op R as devfile.c's file_move() does it."""
+        into = dst.endswith("/")
+        if into and dst[-2] != ":":
+            dst = dst[:-1]
+        if into or (dst in self.dirs and dst.lower() != src.lower()):
+            dst = dst.rstrip("/") + "/" + src.rsplit("/", 1)[1]
+        is_dir = src in self.dirs
+        if not is_dir and src not in self.files:
+            return self.reply(conn, -ENOENT)
+        if dst.split(":")[0] != src.split(":")[0]:
+            return self.reply(conn, -18)   # newlib EXDEV
+        if is_dir and dst.lower().startswith(src.lower() + "/"):
+            return self.reply(conn, -EINVAL)
+        if dst != src and (dst in self.files or dst in self.dirs):
+            if not flags & 2:
+                return self.reply(conn, -17)   # EEXIST
+            if dst in self.dirs:
+                return self.reply(conn, -EISDIR)
+            if is_dir:
+                return self.reply(conn, -ENOTDIR)
+            del self.files[dst]
+        self.make_dirs(parent(dst))
+        if is_dir:
+            for p in [p for p in self.files if p.startswith(src + "/")]:
+                self.files[dst + p[len(src):]] = self.files.pop(p)
+            for p in [p for p in self.dirs if p == src or p.startswith(src + "/")]:
+                self.dirs.discard(p)
+                self.dirs.add(dst + p[len(src):])
+        elif dst != src:
+            self.files[dst] = self.files.pop(src)
+        self.reply(conn, 0, dst.encode())
 
 
 class HBCToolTest(unittest.TestCase):
@@ -266,6 +309,8 @@ class HBCToolTest(unittest.TestCase):
         self.fake.exits = 0
         self.fake.next_result = None
         self.fake.upload = None
+        self.fake.no_rename = False
+        self.fake.version = "1.2.0"
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = pathlib.Path(tmp.name)
@@ -753,6 +798,96 @@ class HBCToolTest(unittest.TestCase):
                          [{"name": "sub", "type": "d", "size": 0, "readonly": False},
                           {"name": "f.bin", "type": "f", "size": 5, "readonly": False}])
         self.assertTrue(all(isinstance(e["mtime"], int) for e in listing))
+
+    # ---- mv: op R (HBC 1.10.14) ------------------------------------------------
+
+    def put(self, files):
+        self.fake.version = "1.10.14"
+        for path, data in files.items():
+            hbc.put_file(WII, path, data)
+
+    def test_mv_renames_and_moves(self):
+        self.put({"sd:/mvt/a.bin": b"A", "sd:/mvt/dir/x.bin": b"X", "sd:/mvt/dir/sub/y.bin": b"Y"})
+        quiet = lambda *a: None
+        self.assertEqual(hbc.move(WII, "sd:/mvt/a.bin", "sd:/mvt/b.bin", out=quiet), "sd:/mvt/b.bin")
+        self.assertEqual(self.fake.files["sd:/mvt/b.bin"], b"A")
+        self.assertNotIn("sd:/mvt/a.bin", self.fake.files)
+        # Into a folder: a trailing "/", or a folder that is there.
+        self.assertEqual(hbc.move(WII, "sd:/mvt/b.bin", "sd:/mvt/new/", out=quiet), "sd:/mvt/new/b.bin")
+        self.assertEqual(hbc.move(WII, "sd:/mvt/new/b.bin", "sd:/mvt/dir", out=quiet),
+                         "sd:/mvt/dir/b.bin")
+        # A folder moves with everything in it.
+        self.assertEqual(hbc.move(WII, "sd:/mvt/dir", "sd:/mvt/moved", out=quiet), "sd:/mvt/moved")
+        self.assertEqual(self.fake.files["sd:/mvt/moved/sub/y.bin"], b"Y")
+        self.assertFalse([p for p in self.fake.files if p.startswith("sd:/mvt/dir/")])
+        with self.assertRaisesRegex(hbc.HBCError, "EINVAL"):
+            hbc.move(WII, "sd:/mvt/moved", "sd:/mvt/moved/sub/in", out=quiet)
+        hbc.remove_tree(WII, "sd:/mvt", out=quiet)
+
+    def test_mv_replaces_only_when_asked(self):
+        self.put({"sd:/mvr/a.bin": b"new", "sd:/mvr/b.bin": b"old", "sd:/mvr/d/keep.bin": b"k"})
+        with self.assertRaisesRegex(hbc.HBCError, "EEXIST"):
+            hbc.move(WII, "sd:/mvr/a.bin", "sd:/mvr/b.bin", out=lambda *a: None)
+        self.assertEqual(self.fake.files["sd:/mvr/b.bin"], b"old")
+        out = self.cli("mv", "--replace", "sd:/mvr/a.bin", "sd:/mvr/b.bin")
+        self.assertEqual(out.strip(), "sd:/mvr/a.bin -> sd:/mvr/b.bin")
+        self.assertEqual(self.fake.files["sd:/mvr/b.bin"], b"new")
+        # A folder never replaces a file, even with --replace; and a file "onto"
+        # a folder goes into it, as mv does.
+        with self.assertRaisesRegex(SystemExit, "ENOTDIR"):
+            self.cli("rename", "--replace", "sd:/mvr/d", "sd:/mvr/b.bin")
+        self.assertEqual(self.fake.files["sd:/mvr/b.bin"], b"new")
+        self.fake.make_dirs("sd:/mvr/e")
+        self.assertEqual(hbc.move(WII, "sd:/mvr/b.bin", "sd:/mvr/e", out=lambda *a: None),
+                         "sd:/mvr/e/b.bin")
+        hbc.remove_tree(WII, "sd:/mvr", out=lambda *a: None)
+
+    def test_mv_between_devices_copies_checks_then_deletes(self):
+        self.put({"sd:/mvx/one.bin": os.urandom(70_000), "sd:/mvx/tree/a.bin": b"a" * 5000,
+                  "sd:/mvx/tree/deep/b.bin": b"b"})
+        self.fake.make_dirs("sd:/mvx/tree/empty")
+        one = self.fake.files["sd:/mvx/one.bin"]
+        start = len(self.fake.requests)
+        self.assertEqual(hbc.move(WII, "sd:/mvx/one.bin", "usb:/mvx/", out=lambda *a: None),
+                         "usb:/mvx/one.bin")
+        self.assertEqual(self.fake.files["usb:/mvx/one.bin"], one)
+        self.assertNotIn("sd:/mvx/one.bin", self.fake.files)
+        ops = [op for op, _ in self.fake.requests[start:]]
+        self.assertLess(ops.index("C"), ops.index("D"), "checked before the source is deleted")
+        hbc.move(WII, "sd:/mvx/tree", "usb:/tree2", out=lambda *a: None)
+        self.assertEqual(self.fake.files["usb:/tree2/deep/b.bin"], b"b")
+        self.assertIn("usb:/tree2/empty", self.fake.dirs)
+        self.assertFalse([p for p in self.fake.files if p.startswith("sd:/mvx/tree")])
+        self.assertNotIn("sd:/mvx/tree", self.fake.dirs)
+        # An existing destination on the other device is refused there too.
+        self.put({"sd:/mvx/c.bin": b"c", "usb:/mvx/c.bin": b"other"})
+        with self.assertRaisesRegex(hbc.HBCError, "EEXIST"):
+            hbc.move(WII, "sd:/mvx/c.bin", "usb:/mvx/c.bin", out=lambda *a: None)
+        self.assertEqual(self.fake.files["sd:/mvx/c.bin"], b"c")
+
+    def test_mv_refusals(self):
+        self.fake.version = "1.10.14"
+        with self.assertRaisesRegex(hbc.HBCError, "refusing to move"):
+            hbc.move(WII, "sd:/apps", "sd:/apps2", out=lambda *a: None)
+        with self.assertRaisesRegex(hbc.HBCError, "refusing to move"):
+            hbc.move(WII, "usb:/", "sd:/x", out=lambda *a: None)
+        with self.assertRaisesRegex(hbc.HBCError, "ENOENT"):
+            hbc.move(WII, "sd:/nosuch.bin", "sd:/x.bin", out=lambda *a: None)
+        # An HBC before op R: refused before anything is sent. It would answer
+        # ENOSYS without reading the destination, and could reset the
+        # connection first.
+        self.put({"sd:/old.bin": b"o"})
+        self.fake.version = "1.10.13"
+        start = len(self.fake.requests)
+        with self.assertRaisesRegex(hbc.HBCError, r"\(1\.10\.13\) cannot rename or move.*1\.10\.14"):
+            hbc.move(WII, "sd:/old.bin", "sd:/new.bin", out=lambda *a: None)
+        self.assertEqual(self.fake.requests[start:], [], "nothing sent")
+        self.assertIn("sd:/old.bin", self.fake.files)
+        # One that claims a new enough version but has no op R still says why.
+        self.fake.version = "1.10.14"
+        self.fake.no_rename = True
+        with self.assertRaisesRegex(hbc.HBCError, "cannot rename or move"):
+            hbc.move(WII, "sd:/old.bin", "sd:/new.bin", out=lambda *a: None)
 
 
 if __name__ == "__main__":

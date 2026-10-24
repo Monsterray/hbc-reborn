@@ -7,6 +7,7 @@
 
 // HBCF header byte 5 for op 'g': the client accepts zlib frames.
 #define DEVNET_FLAG_COMPRESS 0x01
+#define DEVNET_FLAG_REPLACE 0x02    // op R: replace a file at the destination
 
 // The most recent file transfer, for the status reply.
 typedef struct {

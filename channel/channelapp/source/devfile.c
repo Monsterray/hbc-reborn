@@ -335,6 +335,96 @@ static void file_checksum(s32 s, const char *path) {
 	devfile_reply(s, abort_requested ? -EINTR : 0, out, sizeof(out));
 }
 
+// Op R: rename or move. The request's path is the source; size is the length
+// of the destination path, which follows it. A destination ending in "/", or
+// one that is a folder already, means "into that folder", keeping the name.
+// Missing folders above the destination are made. Both must be on the same
+// device (EXDEV: a move between devices is a copy and a delete, which the
+// client does). An existing destination is EEXIST unless flags bit 1 asks to
+// replace it, and only a file is replaced. A folder cannot move into itself.
+// The reply's payload is the destination as it ended up.
+static void file_move(s32 s, const char *src, u32 size, u8 flags, devfile_change_fn changed) {
+	char dst[DEVFILE_PATH_MAX];
+	const char *colon = strchr(src, ':');
+	const char *base = strrchr(src, '/');
+	struct stat from, to;
+	size_t n, srclen = strlen(src);
+	bool into;
+	s32 err = 0;
+
+	if (!size || size >= sizeof(dst) || !tcp_read(s, (u8 *) dst, size, NULL, NULL)) {
+		devfile_reply(s, -EINVAL, NULL, 0);
+		return;
+	}
+	dst[size] = 0;
+
+	// A device root ("sd:/") is not a thing to move.
+	if (!colon || !colon[2]) {
+		devfile_reply(s, -EINVAL, NULL, 0);
+		return;
+	}
+	if (stat(src, &from)) {
+		devfile_reply(s, -ENOENT, NULL, 0);
+		return;
+	}
+
+	n = strlen(dst);
+	into = n > 0 && dst[n - 1] == '/';
+	if (into && n > 1 && dst[n - 2] != ':')
+		dst[--n] = 0;               // "sd:/apps/x/" -> "sd:/apps/x", then the name
+	if (valid_path(dst) && devfile_mount_hook)
+		devfile_mount_hook(dst);
+	if (!valid_path(dst)) {
+		devfile_reply(s, -EINVAL, NULL, 0);
+		return;
+	}
+	// Into a folder: an explicit "/", or a folder that is there (and is not
+	// the source itself under another case: that is a rename).
+	if (into || (!stat(dst, &to) && S_ISDIR(to.st_mode) && strcasecmp(dst, src))) {
+		if (n + 1 + strlen(base + 1) >= sizeof(dst)) {
+			devfile_reply(s, -ENAMETOOLONG, NULL, 0);
+			return;
+		}
+		if (dst[n - 1] != '/')
+			dst[n++] = '/';
+		strcpy(dst + n, base + 1);
+		if (!valid_path(dst)) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return;
+		}
+	}
+
+	if (strncmp(src, dst, colon - src + 1))
+		err = -EXDEV;
+	else if (S_ISDIR(from.st_mode) && !strncasecmp(dst, src, srclen) && dst[srclen] == '/')
+		err = -EINVAL;              // a folder into itself
+	else if (!strcmp(src, dst))
+		err = 0;                    // nothing to do
+	else if (strcasecmp(src, dst) && !stat(dst, &to)) {
+		// Something else is there. A case-only rename (FAT does not tell
+		// "Boot.dol" from "boot.dol") finds the source itself, and goes on.
+		if (!(flags & DEVNET_FLAG_REPLACE))
+			err = -EEXIST;
+		else if (S_ISDIR(to.st_mode))
+			err = -EISDIR;
+		else if (S_ISDIR(from.st_mode))
+			err = -ENOTDIR;
+		else if (unlink(dst))
+			err = -errno;
+	}
+	if (!err && strcmp(src, dst)) {
+		make_parents(dst);
+		if (rename(src, dst))
+			err = -errno;
+	}
+	if (!err && changed) {
+		changed(src);
+		changed(dst);
+	}
+	gprintf("devnet: R %s -> %s: %d\n", src, dst, err);
+	devfile_reply(s, err, err ? NULL : dst, err ? 0 : strlen(dst));
+}
+
 static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 	char path[DEVFILE_PATH_MAX];
 	char part[DEVFILE_PATH_MAX + 8];
@@ -433,6 +523,9 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 		make_parents(path);
 		err = mkdir(path, 0777) && errno != EEXIST ? -errno : 0;
 		devfile_reply(s, err, NULL, 0);
+		break;
+	case 'R':
+		file_move(s, path, size, hdr[5], changed);
 		break;
 	default:
 		devfile_reply(s, -ENOSYS, NULL, 0);
