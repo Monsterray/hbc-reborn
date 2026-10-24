@@ -161,6 +161,19 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.12: sdk/mii on a real Wii Remote
+
+- `mii_remote_read_raw()` returns both copies as the Remote holds them, for a
+  backup. `tests/mii_app remote-rewrite` (`wii_mii.py remote-rewrite`) uses it
+  to save the Remote's memory, then writes its own Miis back unchanged.
+- On the bench Wii (2026-10-23) Wii Remote 1 carried 10 Miis made on other
+  Wiis, so `remote-add` stopped with `MII_E_FULL` and wrote nothing.
+  - `check`: copy 0 at 0x0FCA has a right magic and CRC, and every Mii passes
+    the check. That proves the 0x0FCA base.
+  - `remote-rewrite`: both copies were written in 7.2 s (188 writes of 8
+    bytes) and read back. Both then matched the bytes from before, byte for
+    byte: what `mii_remote_build` makes is what the Mii Channel wrote.
+
 ### 1.10.11: sdk/mii, Miis from homebrew
 
 - New: `sdk/mii`, two public-domain files that need only libogc:
@@ -204,9 +217,7 @@ From the 1.3.6 review, each verified in the code first:
     - `add` puts "HBC Mii" in slot 1. Only that slot and the CRC changed, the
       CRC is right, and a reload holds the same Mii.
     - `backup` and `restore` put the original file back, byte for byte.
-- Not yet on a real Remote. libogc drops a Remote after 5 idle minutes, so
-  `wii_mii.py remote-add ID` needs someone to press a button on Wii Remote 1
-  as the job starts.
+- Not yet on a real Remote in 1.10.11 (see 1.10.12).
 
 ### 1.10.10: the overlay and MotionPlus
 

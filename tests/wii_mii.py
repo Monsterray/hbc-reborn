@@ -17,11 +17,15 @@
   remote-add ID / remote-remove ID
             copy the database's Mii with that ID to Wii Remote 1, or take it
             off; written and read back
+  remote-rewrite
+            write Wii Remote 1's own Miis back unchanged (both copies), read
+            back and compared; its memory is saved first, to the SD card and
+            the run folder (remote_backup.bin)
   restore BACKUP_DIR
             put a backup's RFL_DB.dat back (tests/nandput: same size only,
             read back and compared), then compare a new copy with it
 
-usage: tests/wii_mii.py backup | check | add [--name NAME] | remove ID | hidden | remote-add ID | remote-remove ID | restore BACKUP_DIR
+usage: tests/wii_mii.py backup | check | add [--name NAME] | remove ID | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
 queue: wiibench.py add --wii dev --name mii-STEP --cwd REPO --timeout 1200 -- C:/Python312/python.exe tests/wii_mii.py STEP
 """
 
@@ -137,6 +141,9 @@ def main():
                       "only one hidden Mii's data differs")
     elif step in ("remote-add", "remote-remove") and len(sys.argv) > 2:
         ok = app_ok(run_app(out, step, sys.argv[2], label=step))
+    elif step == "remote-rewrite":
+        ok = app_ok(run_app(out, step, label=step))
+        wm.tool("get", "sd:/mii_test/remote_backup.bin", str(out / "remote_backup.bin"), check=False)
     elif step == "restore" and len(sys.argv) > 2:
         backup = pathlib.Path(sys.argv[2]) / FACELIB[1] / DB
         if not backup.exists() or not crc_ok(backup.read_bytes()):

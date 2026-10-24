@@ -295,6 +295,9 @@ int mii_is_home(const mii *m);
 
 /* chan 0-3. Each call waits for the Remote, at most a few seconds. */
 int mii_remote_read(int chan, mii_remote *r);
+/* Both copies as the Remote holds them (2 x MII_REMOTE_BLOCK bytes), for a
+ * backup; mii_remote_parse reads them. */
+int mii_remote_read_raw(int chan, uint8_t mem[2 * MII_REMOTE_BLOCK]);
 int mii_remote_write(int chan, const mii_remote *r);
 #endif
 

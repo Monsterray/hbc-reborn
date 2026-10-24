@@ -19,6 +19,9 @@
 //   mii_app.dol remote-remove ID   take it off the Remote again (creator
 //                                  "hbc-reborn" only)
 //   mii_app.dol remote-both ID     remote-add, then remote-remove
+//   mii_app.dol remote-rewrite     write Wii Remote 1's own Miis back
+//                                  unchanged, after saving its memory to
+//                                  sd:/mii_test/remote_backup.bin
 // Each writes what it did to sd:/mii_test/result.txt (and the screen),
 // ending with "done". Names other than this test's are never printed.
 // With no arguments at all, they are read from sd:/mii_test/args.txt, one
@@ -382,6 +385,58 @@ static int sd_args(char **argv, int max) {
 	return argc;
 }
 
+/* Write the Remote's own set back unchanged: the write path on a full Remote
+ * whose Miis are not this test's. Its memory is saved to
+ * sd:/mii_test/remote_backup.bin first. */
+static void remote_rewrite(void) {
+	static u8 before[2 * MII_REMOTE_BLOCK], after[2 * MII_REMOTE_BLOCK];
+	mii_remote rm, back;
+	FILE *f;
+	int r, n = 0, i;
+	u64 t0;
+
+	if (!wait_remote(0)) {
+		result("no Wii Remote 1 within 15 s", MII_E_NO_REMOTE);
+		return;
+	}
+	if ((r = mii_remote_read_raw(0, before)) < 0) {
+		result("mii_remote_read_raw", r);
+		return;
+	}
+	f = fopen("sd:/mii_test/remote_backup.bin", "wb");
+	if (!f || fwrite(before, 1, sizeof(before), f) != sizeof(before)) {
+		if (f)
+			fclose(f);
+		result("saving remote_backup.bin", MII_E_IO);
+		return;
+	}
+	fclose(f);
+	say("remote_backup.bin: %u bytes saved\n", (unsigned) sizeof(before));
+	mii_remote_parse(before, sizeof(before), &rm);
+	for (i = 0; i < MII_REMOTE_SLOTS; ++i)
+		n += !mii_id_empty(rm.raw[i] + 0x18);
+	say("read: copy %d, %d Miis, secret %03x\n", rm.copy, n, rm.secret);
+	if (rm.copy < 0) {
+		result("no whole copy to write back", MII_E_FORMAT);
+		return;
+	}
+	t0 = gettime();
+	r = mii_remote_write(0, &rm);
+	result("mii_remote_write", r);
+	say("written in %llu ms\n", ticks_to_millisecs(gettime() - t0));
+	if ((r = mii_remote_read_raw(0, after)) < 0) {
+		result("mii_remote_read_raw again", r);
+		return;
+	}
+	mii_remote_parse(after, sizeof(after), &back);
+	result("the same Miis read back",
+		   memcmp(back.raw, rm.raw, sizeof(rm.raw)) || back.secret != rm.secret ? MII_E_VERIFY : MII_OK);
+	result("both copies the same", memcmp(after, after + MII_REMOTE_BLOCK, MII_REMOTE_BLOCK) ? MII_E_VERIFY : MII_OK);
+	say("copy 0 bytes unchanged from before: %s; copy 1: %s\n",
+		memcmp(after, before, MII_REMOTE_BLOCK) ? "no" : "yes",
+		memcmp(after + MII_REMOTE_BLOCK, before + MII_REMOTE_BLOCK, MII_REMOTE_BLOCK) ? "no" : "yes");
+}
+
 int main(int argc, char **argv) {
 	static char *sd_argv[8];
 	void *xfb;
@@ -430,6 +485,8 @@ int main(int argc, char **argv) {
 		remote_change(argv[2], 1);
 		remote_change(argv[2], 0);
 	}
+	else if (argc == 2 && !strcmp(argv[1], "remote-rewrite"))
+		remote_rewrite();
 	else
 		say("usage: check | add NAME SEED | remove ID | hidden SEED | remote-add ID | remote-remove ID\n");
 	say("failures %d\ndone\n", failures);

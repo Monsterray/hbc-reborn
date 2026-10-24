@@ -118,8 +118,8 @@ at 0x12BA. Dolphin's `WiimoteEmu.h` has the same range.
   - RFL writes a copy and reads it back, then does the same with the other.
 - **The 0x0FCA base comes from Dolphin and WiiBrew.** RFL itself passes face
   offsets 0 and 0x2F0 to `WPADReadFaceData`, which is not decompiled.
-  `sdk/mii` uses 0x0FCA. Dolphin answers there, but on its own layout, so
-  only a run on a real Remote will prove it (not done yet; below).
+  `sdk/mii` uses 0x0FCA. A real Remote proves it: the bench run below read 10
+  Miis there that the Mii Channel had written, both copies whole.
 
 ## RFLCharData: 74 bytes (0x4A)
 
@@ -356,8 +356,18 @@ Tests:
   - `restore`: a backup goes back through `tests/nandput`, and the file
     matches it byte for byte.
 
-  A real Remote is not tested yet. libogc drops an idle Remote after 5
-  minutes, so `remote-add` needs someone to press a button as it starts.
+  - `check` with a real Wii Remote 1, which carries 10 Miis made on other
+    Wiis: copy 0 has a right magic and CRC at 0x0FCA, read in 1149 ms, and
+    every Mii passes the check.
+  - `remote-rewrite`: the Remote's memory is saved first, then its 10 Miis
+    are written back to both copies (7.2 s, 188 writes of 8 bytes) and read
+    back. Both copies then match the bytes from before, byte for byte. So
+    `mii_remote_build` makes exactly what the Mii Channel writes.
+
+  libogc drops an idle Remote after 5 minutes, so a Remote step needs the
+  Remote awake (a button pressed) as the job starts. `remote-add` stops
+  with `MII_E_FULL` on a Remote with all 10 slots in use; it never
+  overwrites a Mii.
 
 ## Sources
 

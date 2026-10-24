@@ -81,6 +81,10 @@ Each call that can fail returns 0 or more, or a negative `MII_E_*` code
   `mii_hidden_put` and `mii_remote_put` check the Mii first
   (`MII_E_INVALID`), and `mii_db_put` refuses a Mii already in another
   slot (`MII_E_EXISTS`).
+- **It never picks a slot for you on a Remote.** `mii_remote_put` writes the
+  slot you name, used or not, so look for an empty one first (the test app
+  stops with `MII_E_FULL` on a full Remote). `mii_remote_read_raw` gives the
+  Remote's memory as it is, to keep as a backup before a write.
 - **It will not save over someone else's write.** `mii_db_save` checks the
   file is still the one it loaded (`MII_E_CHANGED`).
 

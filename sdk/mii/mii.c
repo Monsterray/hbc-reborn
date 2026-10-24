@@ -1253,17 +1253,29 @@ static int rm_write(struct wiimote_t *wm, u32 addr, const u8 *data, u32 len) {
 	return MII_OK;
 }
 
-int mii_remote_read(int chan, mii_remote *r) {
+int mii_remote_read_raw(int chan, uint8_t mem[2 * MII_REMOTE_BLOCK]) {
 	struct wiimote_t *wm = remote(chan);
 	int res;
 
-	if (!r || chan < 0 || chan > 3)
+	if (!mem || chan < 0 || chan > 3)
 		return MII_E_ARG;
 	if (!wm)
 		return MII_E_NO_REMOTE;
 	if ((res = rm_read(wm, MII_REMOTE_ADDR, rm_mem, sizeof(rm_mem))) < 0)
 		return res;
-	return mii_remote_parse(rm_mem, sizeof(rm_mem), r);
+	memcpy(mem, rm_mem, sizeof(rm_mem));
+	return MII_OK;
+}
+
+int mii_remote_read(int chan, mii_remote *r) {
+	static u8 mem[2 * MII_REMOTE_BLOCK];
+	int res;
+
+	if (!r)
+		return MII_E_ARG;
+	if ((res = mii_remote_read_raw(chan, mem)) < 0)
+		return res;
+	return mii_remote_parse(mem, sizeof(mem), r);
 }
 
 /* Each copy written, then read back, before the next is touched: whatever
