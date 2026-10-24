@@ -63,7 +63,9 @@ OPTIONS
                     ignoring case).
 
 SECTIONS AND FIELDS
-  wiis      name ip state line last
+  wiis      name ip state line rank takes log_port for_ job job_id who ...
+            (every Wii: the line at the top, the cards on the queue page)
+  lanes     name ip cells labels jobs failed busy wait   (the history page)
   running   id name agent started elapsed timeout left wii
   waiting   place host name since waited
   pending   turn host id name agent age wii
@@ -103,6 +105,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCH="$HERE/wiibench.py"
 # shellcheck source=lib/monitor_lib.sh
 source "$HERE/lib/monitor_lib.sh"
+
+# ${#s} must count characters, not bytes: the cards and lanes are drawn with box-drawing
+# characters and padded by length. The first UTF-8 locale this system has.
+for _l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+    { LC_ALL="$_l"; } 2>/dev/null
+    _t="·"; (( ${#_t} == 1 )) && break
+done
+unset _l _t
 
 PY=""
 for p in ${WII_BENCH_PYTHON:-} python3 python; do
@@ -172,7 +182,7 @@ collect() {
         if [ "$tries" = 2 ] || [ -z "${SNAP_PID:-}" ] || [ -z "${SNAP[1]:-}" ] || ! kill -0 "$SNAP_PID" 2>/dev/null; then
             snap_start
         fi
-        printf '%s\t%s\t%s\n' "$HOURS" "$sorts" "$filters" >&"${SNAP[1]}" 2>/dev/null || continue
+        printf '%s\t%s\t%s\t%s\n' "$HOURS" "$sorts" "$filters" "$COLS" >&"${SNAP[1]}" 2>/dev/null || continue
         # A timeout on the first line only: `read -t` waits in select() before every read, and
         # on a Git Bash pipe that is polled, about 1.6 ms a line (400 ms a snapshot, measured
         # 2026-10-02; 75 ms without). Once the answer has started, a plain read cannot hang:
@@ -214,7 +224,7 @@ collect_once() {
                 rest="${line#@row$'\t'}"; sec="${rest%%$'\t'*}"; n="${NROWS[$sec]:-0}"
                 ROWS["$sec:$n"]="${rest#*$'\t'}"; NROWS[$sec]=$(( n + 1 )) ;;
         esac
-    done < <("$PY" "$BENCH" snapshot --hours "$HOURS" "${sorts[@]+"${sorts[@]}"}" 2>"$ERRFILE")
+    done < <("$PY" "$BENCH" snapshot --hours "$HOURS" --width "$COLS" "${sorts[@]+"${sorts[@]}"}" 2>"$ERRFILE")
 }
 
 # k <key> [default] -- sets V to KV[key] ("-", the snapshot's empty, reads as empty)
@@ -345,26 +355,194 @@ header_line() {
 # many_wiis -- true with more than one Wii in the pool: the tables get a WII column
 many_wiis() { (( ${KV[wiis_n]:-1} > 1 )); }
 
-# wii_lines -- with more than one Wii, a line for each instead of the one "Wii:" line
-wii_lines() {
-    local i w plain color
-    for (( i = 0; i < ${NROWS[wiis]:-0}; i++ )); do
-        row_fields wiis "$i"
-        case "${F[2]}" in
-            left)    color="${c_bold}${c_red}" ;;
-            mine)    color="$c_cyan" ;;
-            other)   color="$c_yellow" ;;
-            unknown) color="$c_gray" ;;
-            *)       color="$c_green" ;;
-        esac
-        [ "${F[3]}" = "-" ] && F[3]="free"
-        fit "Wii ${F[0]} (${F[1]}): ${F[3]}" $(( COLS - 2 )); plain="$V"
-        w="${color}${plain}${c_reset}"
-        if [ -n "${F[4]:-}" ] && [ "${F[4]}" != "-" ] && (( COLS - ${#plain} - 9 >= 20 )); then
-            fit "${F[4]}" $(( COLS - ${#plain} - 9 )); w+="  ${c_gray}last: $V${c_reset}"
-        fi
-        lines+=("$w")
+# The "wiis" rows' fields (wiibench.py's SNAPSHOT_FIELDS): F[...] by name.
+WF_NAME=0 WF_IP=1 WF_STATE=2 WF_LINE=3 WF_RANK=4 WF_TAKES=5 WF_LOGPORT=6 WF_FOR=7 WF_JOB=8 WF_JOBID=9
+WF_WHO=10 WF_ELAPSED=11 WF_TIMEOUT=12 WF_DETAIL=13 WF_LEASE=14 WF_NEXT1=15 WF_NEXT2=16 WF_MORE=17
+WF_LASTMARK=18 WF_LASTNAME=19 WF_LASTEXIT=20 WF_LASTHBC=21 WF_LASTAGO=22 WF_WIN=23 WF_WINJOBS=24
+WF_WINFAILED=25 WF_WINBUSY=26 WF_MED=27 WF_NARROW=28 WF_PINNED=29
+
+# f <index> -- sets V to that field of the row in F ("-", the snapshot's empty, reads as empty)
+f() { V="${F[$1]:-}"; [ "$V" = "-" ] && V=""; :; }
+
+# wii_look <state> -- SYM and COLOR for a Wii's state
+wii_look() {
+    case "$1" in
+        left)    SYM="✖"; COLOR="${c_bold}${c_red}" ;;
+        waiting) SYM="▲"; COLOR="${c_bold}${c_yellow}" ;;
+        running) SYM="▶"; COLOR="${c_bold}${c_cyan}" ;;
+        unknown) SYM="○"; COLOR="$c_gray" ;;
+        *)       SYM="●"; COLOR="${c_bold}${c_green}" ;;
+    esac
+}
+
+# wii_one_line -- every Wii on one line, problems first, in the longest form that fits: the
+# full sentence, a short one, then only the times. Sets V (colored) and W (its length).
+wii_one_line() {
+    local level i r seg sep plain out text
+    local -a order=()
+    for r in 0 1 2 3 4; do
+        for (( i = 0; i < ${NROWS[wiis]:-0}; i++ )); do
+            row_fields wiis "$i"; [ "${F[$WF_RANK]}" = "$r" ] && order+=("$i")
+        done
     done
+    for level in wide med narrow; do
+        plain=""; out=""
+        for i in "${order[@]}"; do
+            row_fields wiis "$i"; wii_look "${F[$WF_STATE]}"
+            case "$level" in wide) f $WF_LINE ;; med) f $WF_MED ;; *) f $WF_NARROW ;; esac; text="$V"
+            sep=""
+            if [ -n "$plain" ]; then
+                if [ "$level" = narrow ]; then sep="  "; else sep="  │  "; fi
+            fi
+            seg="$SYM ${F[$WF_NAME]}"; [ -n "$text" ] && seg+=" $text"
+            plain+="$sep$seg"
+            out+="${c_gray}${sep}${c_reset}${COLOR}${SYM} ${F[$WF_NAME]}${c_reset}"
+            if [ -n "$text" ]; then
+                if [ "${F[$WF_STATE]}" = left ]; then out+=" ${c_red}${text}${c_reset}"; else out+=" $text"; fi
+            fi
+        done
+        (( ${#plain} <= COLS - 1 )) && break
+    done
+    if (( ${#plain} > COLS - 1 )); then fit "$plain" $(( COLS - 1 )); out="$V"; plain="$V"; fi
+    V="$out"; W=${#plain}
+}
+
+# ---------------------------------------------------------------- the Wii cards
+
+# card_line LABEL VALUE [COLOR] -- one line of the card being built (CL), padded to IW
+card_line() {
+    local lab="$1" val="$2" col="${3:-}" pad
+    [ -z "$val" ] && [ "$lab" != " " ] && lab=""   # no label on an empty line
+    [ -n "$lab" ] && printf -v lab '%-6s' "$lab"
+    fit "$val" $(( IW - ${#lab} )); val="$V"
+    (( ${#val} == 0 )) && val=""
+    printf -v pad '%*s' $(( IW - ${#lab} - ${#val} )) ''
+    CL+=("${c_gray}│${c_reset} ${c_gray}${lab}${c_reset}${col}${val}${c_reset}${pad} ${c_gray}│${c_reset}")
+}
+
+# card <row> -- the card of one Wii, IW characters inside, into CL
+card() {
+    local name ip state lab right left_ pad d bw fill el tm bar
+    row_fields wiis "$1"
+    name="${F[$WF_NAME]}"; ip="${F[$WF_IP]}"; state="${F[$WF_STATE]}"
+    wii_look "$state"
+    # ╭─ name ───── ip ─╮
+    printf -v d '%*s' $(( IW - ${#name} - ${#ip} - 4 > 0 ? IW - ${#name} - ${#ip} - 4 : 1 )) ''
+    CL+=("${c_gray}╭─${c_reset} ${c_bold}${name}${c_reset} ${c_gray}${d// /─}${c_reset} ${ip} ${c_gray}─╮${c_reset}")
+    f $WF_TAKES; lab="$V"; f $WF_LOGPORT; [ -n "$V" ] && lab+=" · log port $V"
+    card_line "" "$lab" "$c_gray"
+    case "$state" in
+        left) left_="LEFT OUT OF HBC" ;; waiting) left_="WAITING FOR HBC" ;; running) left_="RUNNING" ;;
+        unknown) left_="UNKNOWN" ;; *) left_="FREE" ;;
+    esac
+    left_="$SYM $left_"; f $WF_FOR; right=""; [ -n "$V" ] && right="for $V"
+    (( ${#left_} + ${#right} + 1 > IW )) && right=""
+    printf -v pad '%*s' $(( IW - ${#left_} - ${#right} )) ''
+    CL+=("${c_gray}│${c_reset} ${COLOR}${left_}${c_reset}${pad}${c_gray}${right}${c_reset} ${c_gray}│${c_reset}")
+    f $WF_JOB
+    if [ -n "$V" ]; then card_line "" "$V" "$c_bold"
+    elif [ "${F[$WF_PINNED]}" = yes ]; then card_line "" "only jobs added with --wii $name" "$c_gray"
+    elif [ "$state" = free ]; then card_line "" "ready for any job" "$c_gray"
+    else card_line "" ""; fi
+    f $WF_JOBID; card_line "job" "$V"
+    f $WF_WHO; card_line "from" "$V"
+    f $WF_ELAPSED; el="$V"; f $WF_TIMEOUT; tm="$V"
+    if [ -n "$el" ] && [ -n "$tm" ] && (( tm > 0 )); then
+        if (( el < 60 )); then lab=" ${el}s"; else lab=" $(( el / 60 ))m"; fi
+        lab+=" / $(( tm / 60 ))m"
+        bw=$(( IW - ${#lab} )); fill=$(( el * bw / tm )); (( fill > bw )) && fill=$bw
+        printf -v bar '%*s' "$fill" ''; printf -v d '%*s' $(( bw - fill )) ''
+        CL+=("${c_gray}│${c_reset} ${c_cyan}${bar// /▓}${c_gray}${d// /░}${c_reset}${lab} ${c_gray}│${c_reset}")
+    else
+        f $WF_DETAIL
+        case "$state" in waiting|left) card_line "" "$V" "$c_yellow" ;; *) card_line "" "$V" "$c_gray" ;; esac
+    fi
+    f $WF_LEASE; card_line "" "$V" "$c_gray"
+    printf -v d '%*s' "$IW" ''
+    CL+=("${c_gray}│ ${d// /┄} │${c_reset}")
+    f $WF_NEXT1; card_line "next" "${V:-nothing queued}" "$([ -n "$V" ] || echo "$c_gray")"
+    f $WF_NEXT2; lab="$V"; f $WF_MORE; [ -n "$V" ] && lab+=" (+$V more)"
+    card_line " " "$lab"
+    f $WF_LASTNAME
+    if [ -n "$V" ]; then
+        lab="$V"; f $WF_LASTEXIT; lab+=" · exit $V"
+        if [ "${F[$WF_LASTMARK]}" = bad ]; then card_line "last" "✗ $lab" "$c_red"
+        else card_line "last" "✓ $lab" "$c_green"; fi
+        f $WF_LASTHBC; lab="$V"; f $WF_LASTAGO; [ -n "$V" ] && lab+="${lab:+ · }$V ago"
+        card_line " " "$lab" "$c_gray"
+    else
+        card_line "last" "no job in the window" "$c_gray"; card_line "" ""
+    fi
+    f $WF_WINJOBS; lab="$V jobs · "; f $WF_WINFAILED; lab+="$V failed · "; f $WF_WINBUSY; lab+="$V busy"
+    f $WF_WIN; card_line "$V" "$lab" "$([ "${F[$WF_WINFAILED]}" != 0 ] && echo "$c_yellow")"
+    printf -v d '%*s' $(( IW + 2 )) ''
+    CL+=("${c_gray}╰${d// /─}╯${c_reset}")
+}
+
+# render_wii_cards -- the queue page's WIIS: a card per Wii, as many across as fit
+render_wii_cards() {
+    local n="${NROWS[wiis]:-0}" per wd i j k out
+    (( n == 0 )) && return
+    per=$n
+    while :; do
+        wd=$(( (COLS - 2 - (per - 1)) / per ))
+        (( wd >= 34 || per == 1 )) && break
+        per=$(( per - 1 ))
+    done
+    (( wd > 46 )) && wd=46
+    IW=$(( wd - 4 ))
+    heading "$c_cyan" "WIIS" "${n} on the queue; problems in red and yellow" wiis
+    for (( i = 0; i < n; i += per )); do
+        local -a rows_=()
+        for (( k = i; k < i + per && k < n; k++ )); do
+            CL=(); card "$k"
+            for (( j = 0; j < ${#CL[@]}; j++ )); do rows_[$j]+="${CL[$j]} "; done
+        done
+        for (( j = 0; j < ${#rows_[@]}; j++ )); do lines+=("  ${rows_[$j]% }"); done
+    done
+    lines+=("")
+}
+
+# ---------------------------------------------------------------- the lanes
+
+# lane_cells <codes> -- V: the lane drawn, a color change only where the code changes
+lane_cells() {
+    local s="$1" i c prev="" out="" ch col
+    for (( i = 0; i < ${#s}; i++ )); do
+        c="${s:i:1}"
+        case "$c" in
+            g) col="$c_green"; ch="█" ;;
+            r) col="$c_red"; ch="█" ;;
+            b) col="$c_cyan"; ch="█" ;;
+            y) col="$c_yellow"; ch="░" ;;
+            "!") col="${c_bold}${c_magenta}"; ch="⚑" ;;
+            *) col="$c_gray"; ch="·" ;;
+        esac
+        [ "$c" != "$prev" ] && { out+="${c_reset}${col}"; prev="$c"; }
+        out+="$ch"
+    done
+    V="${out}${c_reset}"
+}
+
+# render_lanes -- the history page's WIIS, HOUR BY HOUR: the window in cells, one lane per Wii
+render_lanes() {
+    local i stats
+    (( ${NROWS[lanes]:-0} == 0 )) && return
+    heading "$c_cyan" "WIIS, HOUR BY HOUR" "last ${HOURS} h, ${KV[lane_step]:-?} a cell, oldest on the left" lanes
+    printf -v stats ' │%5s%5s%6s%8s' JOBS FAIL BUSY "LONGEST"
+    lines+=("${c_gray}  $(printf '%-11s' '')${KV[lane_ticks]:-}${stats}${c_reset}")
+    for (( i = 0; i < ${NROWS[lanes]}; i++ )); do
+        row_fields lanes "$i"
+        lane_cells "${F[2]}"
+        printf -v stats ' │%5s%5s%6s%8s' "${F[4]}" "${F[5]}" "${F[6]}" "${F[7]}"
+        local head; printf -v head '  %-5s %-4s ' "${F[0]:0:5}" "${F[1]:0:4}"
+        lines+=("${c_bold}${head}${c_reset}${V}${c_gray}${stats}${c_reset}")
+        if [[ "${F[3]}" =~ [^\ ] ]] && [ "${F[3]}" != "-" ]; then
+            lines+=("${c_gray}             ${F[3]}${c_reset}")
+        fi
+    done
+    lines+=("             ${c_green}█ ok${c_reset}  ${c_red}█ failed or froze${c_reset}  ${c_cyan}█ running${c_reset}  ${c_yellow}░ waiting for HBC${c_reset}  ${c_bold}${c_magenta}⚑${c_reset} ${c_gray}used outside the queue  · idle${c_reset}")
+    lines+=("")
 }
 
 # status_lines -- the lines under the tab bar on every page: who has the Wii (each Wii, with
@@ -373,8 +551,8 @@ status_lines() {
     local w plain host holder e n room
     k host; host="$V"; k holder_host; holder="$V"
     k left_host
-    if many_wiis; then
-        wii_lines
+    if (( ${NROWS[wiis]:-0} > 0 )); then           # every Wii, one line (a server before 1.10.8: below)
+        wii_one_line; w="$V"; plain=""; printf -v plain '%*s' "$W" ''
     elif [ -n "$V" ]; then
         plain="Wii LEFT OUT OF HBC by $V's "
         k left_name; plain+="$V: "; k left_wii; plain+="$V ("; k left_ago; plain+="$V)"
@@ -399,8 +577,8 @@ status_lines() {
         # "last:" gets what is left of the line, and goes when too little is
         room=$(( COLS - ${#plain} - 9 ))
         k wii_last; (( room >= 20 )) && [ -n "$V" ] && { fit "$V" "$room"; w+="  ${c_gray}last: $V${c_reset}"; }
-        lines+=("$w")
     fi
+    lines+=("$w")
     case "${KV[server_ok]:-}" in
         yes) w="${c_green}lease server ok${c_reset}" ;;
         no)  w="${c_red}lease server unreachable${c_reset}" ;;
@@ -427,6 +605,7 @@ status_lines() {
 
 render_queue() {
     local i fmt room color nm host
+    render_wii_cards
     # RUNNING HERE
     heading "$c_cyan" "RUNNING HERE" "this workstation's dispatcher" running
     if (( ${NROWS[running]:-0} == 0 )); then
@@ -576,6 +755,7 @@ render_errors() {
 
 render_history() {
     local i fmt color host nm
+    render_lanes
     k history_src "this workstation"
     heading "$c_cyan" "WORKSTATIONS" "last ${HOURS} h, from $V" hosts
     if (( ${NROWS[hosts]:-0} == 0 )); then

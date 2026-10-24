@@ -2822,7 +2822,170 @@ def job_problem(j):
     return None
 
 
-def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=None):
+LANE_PREFIX = 13      # columns before a lane's cells: "  dev   .213 "
+LANE_STATS = 26       # columns after them: jobs, failed, busy, longest wait
+
+
+def hbc_name(j):
+    """'HBC 1.10.9', 'stock HBC', or 'HBC' from a job record."""
+    v = j.get("hbc_version")
+    return v if v and v.startswith("stock") else f"HBC {v}" if v else "HBC"
+
+
+def _short_ip(ip):
+    return "." + ip.rsplit(".", 1)[1] if ip and ip.count(".") == 3 else (ip or "-")
+
+
+def wii_board(board, order, evs, rows, last_on, now, hours, width, server_down, row, kv):
+    """Each Wii, described for the monitor: a "wiis" row (its card on the queue page, and its
+    part of the one-line status at the top of every page, in three lengths) and a "lanes" row
+    (the history page: the window in cells, what each Wii did). From what the snapshot already
+    has; nothing here asks the Wii."""
+    first = board[0]["name"] if board else "bench"
+    here = {}
+    for r in rows.get("running", []):
+        here[r.get("wii") if r.get("wii") not in (None, "-") else first] = r
+    span = hours * 3600
+    jobs_ = [e for e in evs if e.get("type") == "job"]
+    wh = f"{hours:g}h"
+    for b in board:
+        name, h, left, pinned = b["name"], b["holder"] or {}, b["left"], b["pinned"]
+        local = here.get(name)
+        phase = str(h.get("phase") or "")
+        if left:
+            state = "left"
+        elif server_down:
+            state = "unknown"
+        elif h and phase.startswith(WAITING_FOR_HBC):
+            state = "waiting"
+        elif h or local:
+            state = "running"
+        else:
+            state = "free"
+        job = (local or {}).get("name") or h.get("name") or (left or {}).get("name") or ""
+        job_id = (local or {}).get("id") or h.get("job") or ""
+        who = h.get("host") or (left or {}).get("host") or (socket.gethostname() if local else "")
+        if local and local.get("agent"):
+            who += f" · {local['agent']}"
+        elapsed = local["elapsed_s"] if local else (h.get("phase_s") if phase.startswith("running") else None)
+        timeout = (local or {}).get("timeout_s")
+        for_s = (left.get("ago_s") if left else h.get("phase_s") if state == "waiting" else
+                 elapsed if state == "running" and elapsed is not None else h.get("held_s") if h else
+                 b.get("released_ago"))
+        what = phase.split(": ", 1)[1] if state == "waiting" and ": " in phase else ""
+        detail = (left.get("wii") if left else what if state == "waiting" else
+                  phase if state == "running" and phase and not phase.startswith("running") else "")
+        lease = (f"lease held {_age(h['held_s'])}" + (f" · renewed {h['age']}s ago" if "age" in h else "")
+                 if h and "held_s" in h else "")
+        nxt = [j for j in order if (j.get("want") or "any") == name or ((j.get("want") or "any") == "any" and not pinned)]
+        # The last job on this Wii: every workstation's (the history), else this one's own.
+        mine = [e for e in jobs_ if (e.get("wii") or first) == name]
+        last = max(mine, key=lambda e: e.get("t", 0)) if mine else None
+        if last is None and (last_on.get(name) or (len(board) == 1 and last_on.get(""))):
+            tf, j = last_on.get(name) or last_on.get("")
+            last = dict(j, t=tf)
+        if last:
+            back = last.get("hbc_back_s")
+            last_hbc = (f"left it {last.get('wii_left')}" if back is None and last.get("wii_left") else
+                        f"{hbc_name(last)} at once" if back is not None and back <= HBC_AT_ONCE else
+                        f"{hbc_name(last)} after {back:.0f} s" if back is not None else "")
+            last_bad = bool(job_problem(last))
+        busy = sum(e.get("secs") or 0 for e in mine)
+        n = len(nxt)
+        # The one-line status, in three lengths: the monitor takes the longest that fits.
+        el = _age(elapsed) if elapsed is not None else ""
+        fr = _age(for_s) if for_s is not None else ""
+        if state == "left":
+            wide = f"LEFT OUT OF HBC {fr}: {left.get('wii')} (after {left.get('host')}'s {left.get('name')})"
+            med, narrow = f"LEFT {fr}", fr
+        elif state == "waiting":
+            wide, med, narrow = f"waiting {fr} for HBC" + (f": {what}" if what else ""), f"HBC? {fr}", fr
+        elif state == "running" and el:
+            tm = f"/{_age(timeout)}" if timeout else ""
+            wide = f"{job} {el}{tm}" + (f" +{n} queued" if n else "")
+            med = f"{job[:18]} {el}" + (f" +{n}" if n else "")
+            narrow = el + (f" +{n}" if n else "")
+        elif state == "running":
+            wide, med, narrow = f"{job}: {phase or 'starting'}", f"{job[:18]}", ""
+        elif state == "unknown":
+            wide, med, narrow = "server unreachable", "?", ""
+        else:
+            wide = "free" + (" (pinned)" if pinned else "") + (f" +{n} queued" if n else "")
+            med, narrow = "free" + (f" +{n}" if n else ""), ""
+        row("wiis", name=name, ip=b["ip"], state=state, line=wide,
+            rank={"left": 0, "waiting": 1, "unknown": 2, "running": 3}.get(state, 4),
+            takes="pinned jobs only" if pinned else "takes any job",
+            log_port=b.get("log_port") or "", for_=fr, job=job, job_id=job_id, who=who,
+            elapsed_s=elapsed if elapsed is not None else "", timeout_s=timeout or "", detail=detail, lease=lease,
+            next1=nxt[0].get("name") if n > 0 else "", next2=nxt[1].get("name") if n > 1 else "",
+            more=max(0, n - 2) or "",
+            last_mark=("bad" if last_bad else "ok") if last else "",
+            last_name=last.get("name") if last else "", last_exit=last.get("exit") if last else "",
+            last_hbc=last_hbc if last else "", last_ago=_age(now - last["t"]) if last else "",
+            win=wh, win_jobs=len(mine), win_failed=sum(1 for e in mine if job_problem(e)),
+            win_busy=f"{100 * busy / span:.0f}%" if span else "0%",
+            med=med, narrow=narrow, pinned="yes" if pinned else "no")
+    # The lanes: the window in cells, oldest on the left.
+    cells = max(20, width - LANE_PREFIX - LANE_STATS - 2)
+    start, step = now - span, span / cells
+    kv["lane_cells"], kv["lane_step"] = cells, _age(step)
+    ticks = [" "] * cells
+    every = max(8, cells // 6)
+    for i in range(0, cells - 6, every):
+        lab = time.strftime("%H:%M", time.localtime(start + i * step))
+        ticks[i:i + len(lab)] = lab
+    ticks[cells - 3:] = "now"
+    kv["lane_ticks"] = "".join(ticks)
+    for b in board:
+        name = b["name"]
+        lane, labels = ["."] * cells, [" "] * cells
+
+        def paint(t0, t1, code, label=None):
+            i0 = max(0, int((t0 - start) / step))
+            i1 = min(cells - 1, int((t1 - start) / step))
+            if i1 < 0 or i0 >= cells:
+                return
+            for i in range(i0, max(i0, i1) + 1):
+                lane[i] = code
+            room = i1 - i0 + 1                     # a name only where the block has room for one
+            if label and room >= 3 and all(c == " " for c in labels[i0:i1 + 1]):
+                text = label[:room]
+                for k, ch in enumerate(text):
+                    if i0 + k < cells:
+                        labels[i0 + k] = ch
+        mine = lambda e: (e.get("wii") or e.get("slot") or first) == name
+        for e in evs:                              # the waits for HBC at the start of a turn
+            if e.get("type") == "release" and mine(e) and e.get("hbc_wait_s"):
+                g = e["t"] - e.get("held_s", 0)
+                paint(g, g + e["hbc_wait_s"], "y")
+        for e in evs:                              # each job, and the hold after a hard freeze
+            if e.get("type") == "job" and mine(e):
+                t1 = e["t"] - (e.get("hbc_back_s") or 0)
+                paint(t1 - (e.get("secs") or 0), t1, "r" if job_problem(e) else "g",
+                      (e.get("name") or "").split(" ")[0] if (e.get("secs") or 0) < 600 else e.get("name"))
+            elif e.get("type") == "recovery" and mine(e):
+                held = ((e.get("freeze") or {}).get("recovered_after_s")) or 0
+                paint(e["t"] - held, e["t"], "r", f"{e.get('name')} froze: held {_age(held)} for a reset")
+        h = b["holder"] or {}
+        local = here.get(name)
+        if str(h.get("phase", "")).startswith(WAITING_FOR_HBC):
+            paint(now - h.get("phase_s", 0), now, "y")
+        elif local or h:
+            paint(now - (local["elapsed_s"] if local else h.get("phase_s", h.get("held_s", 0))), now, "b")
+        for e in evs:                              # someone used the Wii outside the queue
+            if e.get("type") == "outside" and mine(e):
+                i = int((e["t"] - start) / step)
+                if 0 <= i < cells:
+                    lane[i] = "!"
+        js = [e for e in evs if e.get("type") == "job" and mine(e)]
+        waits = [e.get("waited_s", 0) for e in evs if e.get("type") == "grant" and mine(e) and e.get("waited_s", 0) >= 1]
+        busy = sum(e.get("secs") or 0 for e in js)
+        row("lanes", name=name, ip=_short_ip(b["ip"]), cells="".join(lane), labels="".join(labels),
+            jobs=len(js), failed=sum(1 for e in js if job_problem(e)),
+            busy=f"{100 * busy / span:.0f}%" if span else "0%", wait=_age(max(waits)) if waits else "-")
+
+
+def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=None, width=None):
     now = time.time()
     since = now - hours * 3600
     kv, rows = {}, {}
@@ -2852,7 +3015,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         to = j.get("timeout") or TIMEOUT
         row("running", id=j["id"], name=j.get("name"), agent=(j.get("agent") or "")[:12], started=_when(t0, now),
             elapsed=_age(now - t0), elapsed_s=int(now - t0), timeout=_age(to), left=_age(max(0, to - (now - t0))),
-            left_s=int(max(0, to - (now - t0))), wii=j.get("wii") or "-")
+            left_s=int(max(0, to - (now - t0))), wii=j.get("wii") or "-", timeout_s=to)
     local_q = []
     for p in pending:
         try:
@@ -3005,40 +3168,20 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     else:
         kv["history_src"] = "lease server"
 
-    # Each Wii: who has it, or free. The server's pool, else this workstation's.
-    me = socket.gethostname()
+    # Each Wii: the server's pool, else this workstation's. Described at the end (wii_board),
+    # which needs the queue's order and the history.
     if s.get("wiis"):
-        pool = [(w["name"], w.get("ip") or WII, w.get("holder"), w.get("left")) for w in s["wiis"]]
-        pinned = {w["name"] for w in s["wiis"] if w.get("pinned")}
+        board = [dict(name=w["name"], ip=w.get("ip") or WII, holder=w.get("holder"), left=w.get("left"),
+                      pinned=bool(w.get("pinned")), log_port=w.get("log_port"), released_ago=w.get("released_ago"))
+                 for w in s["wiis"]]
     elif s:
-        pool = [("bench", WII, s.get("holder"), s.get("left"))]
-        pinned = set()
+        board = [dict(name="bench", ip=WII, holder=s.get("holder"), left=s.get("left"), pinned=False,
+                      log_port=LOG_PORT_BASE, released_ago=None)]
     else:
-        pool = [(w["name"], w["ip"], None, None) for w in default_pool()]
-        pinned = {w["name"] for w in default_pool() if w.get("pinned")}
-    here = {r.get("wii"): r for r in rows.get("running", [])}
-    for name, ip, h, left in pool:
-        if left:
-            ago = f"{_age(left['ago_s'])} ago" if "ago_s" in left else f"since {str(left.get('since'))[-8:]}"
-            state, text = "left", f"LEFT OUT OF HBC by {left.get('host')}'s {left.get('name')}: {left.get('wii')} ({ago})"
-        elif h:
-            for_ = _age(h["held_s"]) if "held_s" in h else "?"
-            text = f"{'this workstation' if h.get('host') == me else h.get('host')} has it for {h.get('name')} ({for_})"
-            if str(h.get("phase", "")).startswith(WAITING_FOR_HBC):
-                text += f": {h['phase']}" + (f" for {_age(h['phase_s'])}" if "phase_s" in h else "")
-            state = "mine" if h.get("host") == me else "other"
-        elif url and kv.get("server_ok") != "yes":
-            state, text = "unknown", "the lease server does not answer"
-        elif not url and (name in here or (len(pool) == 1 and here)):
-            r = here.get(name) or next(iter(here.values()))
-            state, text = "mine", f"in use by {r['name']} here ({r['elapsed']})"
-        else:
-            state, text = "free", "free"
-        if name in pinned:
-            text += f" (pinned jobs only: add --wii {name})"
-        last = last_on.get(name) or (last_on.get("") if len(pool) == 1 else None)
-        row("wiis", name=name, ip=ip, state=state, line=text, last=last_note(*last) if last else "")
-    kv["wiis_n"] = len(pool)
+        board = [dict(name=w["name"], ip=w["ip"], holder=None, left=None, pinned=bool(w.get("pinned")),
+                      log_port=w.get("log_port"), released_ago=None) for w in default_pool()]
+    pool = [(w["name"], w["ip"], w["holder"], w["left"]) for w in board]
+    kv["wiis_n"] = len(board)
 
     # Problems in the history (every workstation's when the server keeps it).
     for e in evs:
@@ -3158,6 +3301,9 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
             row("waits", when=_when(e["t"], now), when_s=int(e["t"]), waited=_age(e["waited_s"]),
                 waited_s=e["waited_s"], host=e.get("host"), name=e.get("name"))
 
+    wii_board(board, order, evs, rows, last_on, now, hours, width or 120,
+              bool(url) and kv.get("server_ok") != "yes", row, kv)
+
     for l in log[-log_lines:]:
         row("log", line=l)
 
@@ -3181,7 +3327,11 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
 
 
 SNAPSHOT_FIELDS = {
-    "wiis": ("name", "ip", "state", "line", "last"),
+    "wiis": ("name", "ip", "state", "line", "rank", "takes", "log_port", "for_", "job", "job_id", "who",
+             "elapsed_s", "timeout_s", "detail", "lease", "next1", "next2", "more", "last_mark", "last_name",
+             "last_exit", "last_hbc", "last_ago", "win", "win_jobs", "win_failed", "win_busy", "med", "narrow",
+             "pinned"),
+    "lanes": ("name", "ip", "cells", "labels", "jobs", "failed", "busy", "wait"),
     "running": ("id", "name", "agent", "started", "elapsed", "timeout", "left", "wii"),
     "pending": ("turn", "host", "id", "name", "agent", "age", "wii"),
     "manage": ("state", "turn", "host", "id", "name", "agent", "folder", "age"),
@@ -3214,8 +3364,10 @@ def serve_snapshots(default_hours):
         parts = line.rstrip("\r\n").split("\t") + ["", ""]
         try:
             hours = float(parts[0]) if parts[0] else default_hours
+            parts += [""]
             kv, rows = snapshot(hours, [x for x in parts[1].split("\x1f") if x],
-                                [x for x in parts[2].split("\x1f") if x], cache=cache)
+                                [x for x in parts[2].split("\x1f") if x], cache=cache,
+                                width=int(parts[3]) if parts[3].isdigit() else None)
             out = snapshot_lines(kv, rows)
         except Exception as e:                     # say so on screen; the next request tries again
             out = [f"@kv\terror\t{_cell(f'{type(e).__name__}: {e}')}"]
@@ -3226,7 +3378,7 @@ def serve_snapshots(default_hours):
 def cmd_snapshot(a):
     if a.serve:
         return serve_snapshots(a.hours)
-    kv, rows = snapshot(a.hours, a.sort or (), a.filter or ())
+    kv, rows = snapshot(a.hours, a.sort or (), a.filter or (), width=a.width)
     if a.json:
         print(json.dumps({"kv": kv, "rows": rows}, indent=1))
         return
@@ -3327,6 +3479,7 @@ def main():
     s = sub.add_parser("rollover", help="archive old runs now (the dispatcher does it every 10 minutes)")
     s = sub.add_parser("snapshot", help="what monitor.sh shows, as tab-separated lines (never touches the Wii)")
     s.add_argument("--hours", type=float, default=24); s.add_argument("--json", action="store_true")
+    s.add_argument("--width", type=int, help="the terminal's columns, for the history lanes (default 120)")
     s.add_argument("--serve", action="store_true", help="answer requests on stdin (monitor.sh's coprocess)")
     s.add_argument("--sort", action="append", help="SECTION:FIELD[:desc]")
     s.add_argument("--filter", action="append", help="SECTION:TEXT")

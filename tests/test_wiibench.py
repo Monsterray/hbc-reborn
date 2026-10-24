@@ -1246,6 +1246,46 @@ class MultiWiiTest(unittest.TestCase):
             self.assertTrue(self.wb.may_use({}, "dev"))
             self.assertFalse(self.wb.startable({}, [], ["prod"]))   # an unpinned job never waits for prod
 
+    def test_the_board_and_the_lanes(self):
+        now = 100000.0
+        board = [dict(name="one", ip="10.0.0.1", holder={"host": "pc", "name": "long job", "job": "j9",
+                                                          "phase": "running: long job", "phase_s": 600, "held_s": 620, "age": 2},
+                      left=None, pinned=False, log_port=4300, released_ago=None),
+                 dict(name="two", ip="10.0.0.2", holder={"host": "pc2", "name": "w", "phase": "waiting for HBC: Wii busy or off",
+                                                          "phase_s": 360, "held_s": 360, "age": 1},
+                      left=None, pinned=True, log_port=4301, released_ago=None),
+                 dict(name="three", ip="10.0.0.3", holder=None, left=None, pinned=False, log_port=4302, released_ago=50)]
+        evs = [{"type": "job", "t": now - 7000, "wii": "one", "name": "ok job", "secs": 900, "exit": 0, "hbc_back_s": 0.1},
+               {"type": "job", "t": now - 5000, "wii": "one", "name": "bad job", "secs": 600, "exit": 1, "hbc_back_s": None,
+                "wii_left": "busy or off"},
+               {"type": "recovery", "t": now - 2000, "wii": "one", "name": "bad job", "freeze": {"recovered_after_s": 2400}},
+               {"type": "outside", "t": now - 1000, "wii": "three"},
+               {"type": "grant", "t": now - 100, "slot": "one", "waited_s": 90}]
+        order = [{"name": "q1", "want": "any"}, {"name": "q2", "want": "two"}, {"name": "q3", "want": "any"}]
+        rows, kv = {}, {}
+        row = lambda sec, **f: rows.setdefault(sec, []).append(f)
+        self.wb.wii_board(board, order, evs, {}, {}, now, 3, 140, False, row, kv)
+        one, two, three = rows["wiis"]
+        self.assertEqual([w["state"] for w in rows["wiis"]], ["running", "waiting", "free"])
+        self.assertEqual((one["rank"], two["rank"], three["rank"]), (3, 1, 4))
+        self.assertEqual(one["line"], "long job 10m00s +2 queued")      # any-Wii jobs may run on it
+        self.assertEqual(two["line"], "waiting 6m00s for HBC: Wii busy or off")
+        self.assertEqual((two["next1"], two["next2"]), ("q2", ""))       # pinned: only its own
+        self.assertEqual((one["last_name"], one["last_mark"]), ("bad job", "bad"))
+        self.assertEqual(two["takes"], "pinned jobs only")
+        lanes = {l["name"]: l for l in rows["lanes"]}
+        cells = int(kv["lane_cells"])
+        self.assertEqual(cells, 140 - self.wb.LANE_PREFIX - self.wb.LANE_STATS - 2)
+        self.assertTrue(all(len(l["cells"]) == cells and len(l["labels"]) == cells for l in lanes.values()))
+        self.assertIn("g", lanes["one"]["cells"])
+        self.assertIn("r", lanes["one"]["cells"])
+        self.assertTrue(lanes["one"]["cells"].endswith("b"))           # running now
+        self.assertTrue(lanes["two"]["cells"].endswith("y"))           # waiting for HBC now
+        self.assertIn("!", lanes["three"]["cells"])
+        self.assertIn("froze", lanes["one"]["labels"])
+        self.assertEqual((lanes["one"]["jobs"], lanes["one"]["failed"], lanes["one"]["wait"]), (2, 1, "1m30s"))
+        self.assertTrue(kv["lane_ticks"].endswith("now"))
+
     def test_a_dispatcher_before_the_pool_only_gets_the_first_wii(self):
         l = self.leases()
         l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "any"})        # has one
@@ -1534,10 +1574,10 @@ class MonitorTest(unittest.TestCase):
             self.assertEqual(r.returncode, 2)
             self.assertIn("needs bash 4.3", r.stderr)
             return
-        want = {"queue": ["RUNNING HERE", "running job", "QUEUED HERE", "queued two", "RECENT JOBS HERE", "leaving job",
-                          "no lease server", "5 error(s)"],
+        want = {"queue": ["WIIS", "╭─ bench", "RUNNING HERE", "running job", "QUEUED HERE", "queued two",
+                          "RECENT JOBS HERE", "leaving job", "no lease server", "5 error(s)", "▶ bench running job"],
                 "errors": ["PROBLEMS", "boom: the build is broken", "No space left on device", "Wii left"],
-                "history": ["WORKSTATIONS", "LONGEST WAITS"],
+                "history": ["WIIS, HOUR BY HOUR", "JOBS FAIL", "WORKSTATIONS", "LONGEST WAITS"],
                 "log": ["DISPATCHER LOG", "lease lost"]}
         for page, texts in want.items():
             r = subprocess.run([b, mon, "--once", f"--page={page}"], env=env, capture_output=True, timeout=120)

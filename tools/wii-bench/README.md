@@ -215,15 +215,50 @@ waits, and anything that needs a look: a Wii left out of HBC, an expired lease, 
 
 | Page | Shows |
 | --- | --- |
-| 1 queue | who has the Wii now, the jobs running here, every workstation waiting for the Wii, every job queued on every workstation in the order the turns will come, and the last jobs here (exit, seconds, HBC after the job, chained or not) |
+| 1 queue | a card per Wii (below), the jobs running here, every workstation waiting for the Wii, every job queued on every workstation in the order the turns will come, and the last jobs here (exit, seconds, HBC after the job, chained or not) |
 | 2 errors | every problem in the window, newest first: failed and timed-out jobs with their log's last line, a Wii left out of HBC, an expired lease, a workstation that left the line, the lease server unreachable, a dispatcher that crashed, jobs queued with no dispatcher, a workstation still on a dispatcher before 1.9.1 |
-| 3 history | per workstation: jobs, failures, Wii minutes, turns, median and longest wait; hand-over speed; the longest waits |
+| 3 history | a lane per Wii over the window (below); per workstation: jobs, failures, Wii minutes, turns, median and longest wait; hand-over speed; the longest waits |
 | 4 log | the end of this workstation's `dispatcher.log`, problems in colour |
 | 5 manage | every job running, waiting or queued, on every workstation, with its agent and project folder; cancel or stop one, an agent's, a workstation's or all; give up waiting for a frozen Wii |
 
-The two lines under the tabs, on every page, say who has the Wii (or that it was left out of
-HBC), whether the lease server answers, what this dispatcher is doing, and how many errors and
-warnings the window holds.
+The two lines under the tabs, on every page:
+
+- **Every Wii on one line**, problems first:
+
+  ```text
+  ▲ prod waiting 6m40s for HBC: Wii busy or off  │  ▶ dev vbagx tests (12) 3m12s/30m00s +2 queued  │  ● lrwii free (pinned)
+  ```
+
+  `✖` left out of HBC, `▲` waiting for HBC, `▶` running, `●` free, `○` the lease server
+  doesn't answer. When the line doesn't fit, each Wii gets a shorter form (`▲ prod HBC? 6m40s`),
+  then only its times (`▲ prod 6m40s  ▶ dev 3m12s +2  ● lrwii`).
+- Whether the lease server answers, what this dispatcher is doing, and how many errors and
+  warnings the window holds.
+
+**The cards** (queue page) give one box per Wii, as many across as the terminal fits (three
+need about 140 columns; fewer stack). Each card shows:
+
+- its address, whether it takes any job or pinned jobs only, and its network-log port;
+- its state and for how long;
+- the job, its id, and the workstation and agent that queued it;
+- a progress bar against the job's `--timeout` (for a job running here), or what the Wii is
+  doing instead;
+- the lease: held how long, renewed how recently;
+- the next two jobs that may run on it;
+- the last job on it: exit, and the HBC it came back to (a stock HBC shows here);
+- the window's jobs, failures and how busy the Wii was.
+
+**The lanes** (history page) give one line per Wii across the window, oldest on the left:
+
+- `█` green for a job that went well, red for one that failed or a Wii held after a freeze,
+  cyan for a job running now;
+- `░` yellow for a turn waiting for HBC;
+- `⚑` for use outside the queue;
+- `·` for idle.
+
+A block long enough gets its job's name underneath (a freeze says how long the Wii was held).
+On the right: jobs, failures, how busy the Wii was, and the longest wait for it. Each cell
+covers the window divided by the terminal's width (24 h on 150 columns: about 13 minutes).
 
 The HBC column is the dispatcher's check after each job: `ok` when HBC answered as the job
 ended (most jobs wait for HBC themselves before they end), `12s` when it came back that much
