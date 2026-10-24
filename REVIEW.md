@@ -161,6 +161,21 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.9: the overlay and MotionPlus
+
+- libogc reports a MotionPlus only once an app switches it on
+  (`WPAD_SetMotionPlus`, which probes for it): before, the agent showed no
+  "+ M+", no gyro on Test and measured none on Calibrate in an app that does
+  not use MotionPlus itself. Test and Calibrate now switch it on for their
+  remote, and the agent switches it back off on Test's close and the
+  overlay's, for the remotes it switched on (only where one was found: a
+  switch-off probes again otherwise). HBCS "remotes" adds "mplus" (none,
+  present, active), "mplus_ours" and "gyro".
+- `tests/wii_mplus.py` on the bench Wii (2026-10-23, a remote with a
+  MotionPlus): "none" before; on Test "active" at once, the gyro 7986/8632/8693
+  at rest (spread 12-14 over 11 reads); after closing "present", not ours.
+  Calibrate's gyro uses the same switch-on; its result is shown only on screen.
+
 ### 1.10.9: sdk/mboard, posts to the Wii Message Board
 
 - HBC's play log is now sdk/mboard's writer: `playtime.c` calls
