@@ -179,9 +179,9 @@ makes five examples, drawn and scored in code:
 | --- | --- | --- |
 | `ocean` | 74,560 bytes | 5.0 s, an arpeggio |
 | `sunset` | 50,880 bytes | none |
-| `forest` | 51,616 bytes | none |
-| `nightsky` | 80,416 bytes | 6.4 s, "Twinkle Twinkle Little Star" |
-| `arcade` | 60,832 bytes | 2.0 s, a chiptune |
+| `forest` | 68,608 bytes | none |
+| `nightsky` | 95,200 bytes | 7.0 s, an original dreamy tune with an echo |
+| `arcade` | 60,864 bytes | 2.0 s, a chiptune |
 
 `tests/test_stationery.py` reads each encoder back with a decoder of its
 own, and builds every theme. `tests/wii_mboard.py send WII --board ARC

@@ -6,8 +6,9 @@ outside art or music), as board-data archives for sdk/mboard:
 
     ocean      waves and bubbles, a calm arpeggio
     sunset     a low sun and a dusk sky, silent
-    forest     pines and leaves, silent
-    nightsky   stars and a moon, "Twinkle Twinkle Little Star" (traditional)
+    forest     misty hills, three rows of pines, light rays, mushrooms, silent
+    nightsky   a spacy night: nebulae, gold stars, a ringed planet, a crescent
+               moon, and an original dreamy tune with an echo
     arcade     a pixel border for homebrew, a chiptune
 
 Each letter keeps a light writing area: the Wii Menu writes the text in a dark
@@ -75,8 +76,9 @@ def freq(name):
     return 440.0 * 2 ** ((NOTE[n] + 12 * (octave - 4) - 9) / 12)
 
 
-def tune(notes, bpm, wave="sine", volume=0.55, tail=0.4):
-    """notes: [(name or None, beats)]. A soft attack and decay per note."""
+def tune(notes, bpm, wave="sine", volume=0.55, tail=0.4, echo=0.0, echo_s=0.28):
+    """notes: [(name or None, beats)]. A soft attack and decay per note;
+    echo: how much of the sound comes back echo_s later (0 for none)."""
     out = []
     beat = 60.0 / bpm
     for name, beats in notes:
@@ -93,8 +95,77 @@ def tune(notes, bpm, wave="sine", volume=0.55, tail=0.4):
             else:
                 v = math.sin(2 * math.pi * f * t) + 0.3 * math.sin(4 * math.pi * f * t)
             out.append(v * env)
+    if echo:
+        d = int(echo_s * RATE)
+        out += [0.0] * (2 * d)
+        for i in range(d, len(out)):
+            out[i] += echo * out[i - d]
     peak = max(1e-9, max(abs(v) for v in out))
     return [int(v / peak * volume * 32767) for v in out]
+
+
+
+# ---- Drawing at twice the size, and clipping to the paper --------------------
+
+S = 2                       # supersampling: drawn at S x, scaled down smooth
+
+
+def big_card(edge, paper=(252, 252, 248)):
+    """A letter drawn at S x: the edge, the paper, and a mask of the paper."""
+    img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((0, 0, W * S - 1, H * S - 1), 18 * S, fill=edge + (255,))
+    d.rounded_rectangle((10 * S, 10 * S, (W - 11) * S, (H - 11) * S), 12 * S, fill=paper + (255,))
+    mask = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((10 * S, 10 * S, (W - 11) * S, (H - 11) * S), 12 * S, fill=255)
+    return img, mask
+
+
+def on_paper(img, mask, layer):
+    """layer drawn over the paper only: nothing reaches the edge."""
+    clipped = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    clipped.paste(layer, (0, 0), Image.composite(layer.getchannel("A"), Image.new("L", img.size, 0), mask))
+    img.alpha_composite(clipped)
+
+
+def layer():
+    return Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
+
+
+def band(lay, y0, y1):
+    """lay with everything outside rows y0-y1 (letter pixels) cut away."""
+    cut = Image.new("L", lay.size, 0)
+    ImageDraw.Draw(cut).rectangle((0, y0 * S, lay.width, y1 * S - 1), fill=255)
+    lay.putalpha(Image.composite(lay.getchannel("A"), Image.new("L", lay.size, 0), cut))
+    return lay
+
+
+def small(img):
+    return img.resize((W, H), Image.LANCZOS)
+
+
+def vgrad_layer(top, bottom, y0, y1):
+    lay = layer()
+    d = ImageDraw.Draw(lay)
+    for y in range(y0 * S, y1 * S):
+        t = (y - y0 * S) / max(1, (y1 - y0) * S - 1)
+        d.line([(0, y), (W * S, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)) + (255,))
+    return lay
+
+
+def star(d, cx, cy, r, colour, points=5):
+    """A five-point star, as Mario's are drawn."""
+    pts = []
+    for k in range(points * 2):
+        a = -math.pi / 2 + k * math.pi / points
+        rr = r if k % 2 == 0 else r * 0.45
+        pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+    d.polygon(pts, fill=colour)
+
+
+def big_rules(d, colour, ys=range(186, 330, 44)):
+    for y in ys:
+        d.line([(28 * S, y * S), ((W - 28) * S, y * S)], fill=colour + (255,), width=S)
 
 
 # ---- The themes -------------------------------------------------------------
@@ -134,57 +205,155 @@ def sunset():
 
 
 def forest():
-    img, d = card((60, 130, 70))
-    vgrad(d, (10, 10, W - 10, 135), (180, 225, 170), (225, 245, 215))
-    for k in range(9):                                   # pines
-        x = 30 + k * 58
-        h = 60 + (k * 37) % 40
-        d.polygon([(x, 130), (x + 26, 130 - h), (x + 52, 130)], fill=(50 + k * 6, 120 + k * 4, 60, 255))
-        d.rectangle((x + 22, 130, x + 30, 138), fill=(110, 80, 50, 255))
-    rnd = random.Random(3)
-    for _ in range(18):                                  # falling leaves
-        x, y = rnd.randint(20, W - 30), rnd.randint(H - 52, H - 18)
-        d.ellipse((x, y, x + 10, y + 6), fill=(90 + rnd.randint(0, 80), 150, 60, 255))
-    d.line([(10, H - 56), (W - 10, H - 56)], fill=(60, 130, 70, 255), width=3)
-    rules(d, (190, 220, 185))
-    thumb = envelope((60, 130, 70), (120, 190, 110))
+    img, mask = big_card((52, 110, 58))
+    sky = vgrad_layer((150, 205, 235), (220, 238, 225), 10, 150)
+    d = ImageDraw.Draw(sky)
+    # Light coming through the trees.
+    rays = layer()
+    dr = ImageDraw.Draw(rays)
+    for k, x in enumerate((120, 230, 360)):
+        dr.polygon([(x * S, 10 * S), ((x + 26) * S, 10 * S), ((x + 90) * S, 150 * S), ((x + 30) * S, 150 * S)],
+                   fill=(255, 250, 220, 70))
+    sky.alpha_composite(rays)
+    # Misty hills, then three rows of pines, far to near.
+    for y, colour in ((112, (170, 205, 180)), (124, (140, 185, 150))):
+        d.ellipse((-60 * S, y * S, 300 * S, (y + 80) * S), fill=colour + (255,))
+        d.ellipse((220 * S, (y - 6) * S, 600 * S, (y + 80) * S), fill=colour + (255,))
+    rnd = random.Random(5)
+    for row, (base, height, colour, n) in enumerate(((136, 46, (88, 140, 96), 13), (146, 62, (62, 120, 72), 10),
+                                                      (156, 80, (38, 96, 52), 7))):
+        for i in range(n):
+            x = (i + 0.5) * W / n + rnd.uniform(-12, 12)
+            h = height * rnd.uniform(0.8, 1.15)
+            w = h * 0.55
+            for tier in range(3):                         # a tiered pine
+                top = base - h + tier * h * 0.28
+                bottom = base - h * 0.42 + tier * h * 0.3
+                half = w * (0.45 + tier * 0.2)
+                d.polygon([(x * S, top * S), ((x + half) * S, bottom * S), ((x - half) * S, bottom * S)],
+                          fill=tuple(c - tier * 6 for c in colour) + (255,))
+            d.rectangle(((x - 3) * S, (base - 6) * S, (x + 3) * S, (base + 2) * S), fill=(96, 70, 44, 255))
+    # A soft meadow edge under the trees, then nothing below the scene.
+    d.rectangle((0, 156 * S, W * S, 162 * S), fill=(120, 170, 100, 255))
+    on_paper(img, mask, band(sky, 10, 162))
+    # The forest floor: grass, ferns, mushrooms, and a stream of fallen leaves.
+    floor = vgrad_layer((120, 170, 90), (78, 130, 66), H - 64, H - 10)
+    fd = ImageDraw.Draw(floor)
+    for i in range(70):
+        x = rnd.uniform(12, W - 12)
+        y = rnd.uniform(H - 62, H - 14)
+        fd.line([(x * S, y * S), ((x + rnd.uniform(-3, 3)) * S, (y - 7) * S)], fill=(150, 200, 110, 255), width=S)
+    for x in (70, 210, 330, 450):                         # mushrooms
+        y = H - 30 + rnd.uniform(-6, 6)
+        fd.rectangle(((x - 3) * S, (y - 2) * S, (x + 3) * S, (y + 9) * S), fill=(245, 235, 215, 255))
+        fd.chord(((x - 11) * S, (y - 10) * S, (x + 11) * S, (y + 6) * S), 180, 360, fill=(210, 60, 50, 255))
+        for dx, dy in ((-5, -5), (3, -7), (6, -3)):
+            fd.ellipse(((x + dx - 2) * S, (y + dy - 2) * S, (x + dx + 2) * S, (y + dy + 2) * S), fill=(255, 250, 240, 255))
+    for i in range(26):                                   # leaves
+        x, y = rnd.uniform(16, W - 26), rnd.uniform(H - 58, H - 18)
+        colour = rnd.choice(((214, 120, 40), (190, 80, 40), (230, 170, 60), (120, 160, 60)))
+        fd.ellipse((x * S, y * S, (x + 9) * S, (y + 5) * S), fill=colour + (255,))
+    # Keep the floor below the writing area.
+    cut = Image.new("L", floor.size, 0)
+    ImageDraw.Draw(cut).rectangle((0, (H - 64) * S, W * S, H * S), fill=255)
+    floor.putalpha(Image.composite(floor.getchannel("A"), Image.new("L", floor.size, 0), cut))
+    on_paper(img, mask, floor)
+    big_rules(ImageDraw.Draw(img), (190, 215, 180))
+    img = small(img)
+    thumb = envelope((52, 110, 58), (120, 180, 100),
+                     mark=lambda dd: dd.polygon([(64, 74), (72, 58), (80, 74)], fill=(52, 110, 58, 255)))
     return img, thumb, None
 
 
 def nightsky():
-    img, d = card((25, 35, 80))
-    vgrad(d, (10, 10, W - 10, 140), (20, 30, 75), (60, 70, 140))
-    rnd = random.Random(7)
-    for _ in range(60):                                  # stars
-        x, y = rnd.randint(16, W - 16), rnd.randint(14, 130)
-        r = rnd.choice((1, 1, 1, 2))
-        d.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 220, 255))
-    d.ellipse((W - 120, 26, W - 60, 86), fill=(255, 245, 200, 255))      # the moon
-    d.ellipse((W - 104, 20, W - 50, 74), fill=(40, 52, 110, 255))
-    vgrad(d, (10, H - 50, W - 10, H - 10), (60, 70, 140), (25, 35, 80))
-    rules(d, (200, 205, 230))
-    thumb = envelope((25, 35, 80), (90, 100, 170))
-    # "Twinkle Twinkle Little Star": traditional, in the public domain.
-    music = tune([("C4", 1), ("C4", 1), ("G4", 1), ("G4", 1), ("A4", 1), ("A4", 1), ("G4", 2),
-                  ("F4", 1), ("F4", 1), ("E4", 1), ("E4", 1), ("D4", 1), ("D4", 1), ("C4", 2)],
-                 150, wave="tri", volume=0.6)
+    """A spacy night, as a Mario night level: deep space, nebulae, gold
+    stars, a ringed planet, a shooting star and a crescent moon."""
+    img, mask = big_card((34, 24, 78))
+    sky = vgrad_layer((14, 10, 44), (58, 36, 120), 10, 152)
+    rnd = random.Random(11)
+    # Nebulae: soft clouds of colour, blurred.
+    from PIL import ImageFilter
+    neb = layer()
+    nd = ImageDraw.Draw(neb)
+    for cx, cy, r, colour in ((120, 60, 70, (170, 70, 200, 90)), (360, 110, 80, (60, 120, 230, 80)),
+                              (260, 40, 50, (230, 90, 160, 70))):
+        nd.ellipse(((cx - r) * S, (cy - r * 0.6) * S, (cx + r) * S, (cy + r * 0.6) * S), fill=colour)
+    sky.alpha_composite(neb.filter(ImageFilter.GaussianBlur(18 * S)))
+    d = ImageDraw.Draw(sky)
+    for _ in range(90):                                   # far stars
+        x, y, r = rnd.uniform(14, W - 14), rnd.uniform(14, 148), rnd.choice((0.6, 0.8, 1.0, 1.4))
+        d.ellipse(((x - r) * S, (y - r) * S, (x + r) * S, (y + r) * S), fill=(255, 250, 230, rnd.randint(150, 255)))
+    for x, y, r in ((60, 40, 9), (200, 100, 7), (300, 32, 6), (445, 128, 8), (150, 132, 5)):   # gold stars
+        star(d, x * S, y * S, r * S, (255, 214, 60, 255))
+        star(d, x * S, y * S, r * 0.5 * S, (255, 245, 170, 255))
+    # A ringed planet.
+    px, py, pr = 92, 102, 22
+    ring = layer()
+    rd = ImageDraw.Draw(ring)
+    rd.ellipse(((px - 40) * S, (py - 9) * S, (px + 40) * S, (py + 9) * S), outline=(255, 200, 120, 230), width=3 * S)
+    planet = layer()
+    pd = ImageDraw.Draw(planet)
+    pd.ellipse(((px - pr) * S, (py - pr) * S, (px + pr) * S, (py + pr) * S), fill=(236, 120, 90, 255))
+    pd.chord(((px - pr) * S, (py - pr) * S, (px + pr) * S, (py + pr) * S), 200, 340, fill=(250, 170, 110, 255))
+    sky.alpha_composite(ring)
+    sky.alpha_composite(planet)
+    front = layer()                                       # the ring's near half over the planet
+    ImageDraw.Draw(front).arc(((px - 40) * S, (py - 9) * S, (px + 40) * S, (py + 9) * S), 0, 180,
+                              fill=(255, 210, 140, 255), width=3 * S)
+    sky.alpha_composite(front)
+    # A shooting star.
+    d.line([(300 * S, 70 * S), (240 * S, 92 * S)], fill=(255, 250, 220, 160), width=2 * S)
+    star(d, 300 * S, 70 * S, 6 * S, (255, 250, 220, 255))
+    # The moon: a crescent cut out of a disc (no dark circle), with a glow.
+    mx, my, mr = W - 92, 54, 30
+    moon = layer()
+    md = ImageDraw.Draw(moon)
+    md.ellipse(((mx - mr) * S, (my - mr) * S, (mx + mr) * S, (my + mr) * S), fill=(255, 244, 196, 255))
+    md.ellipse(((mx - mr + 18) * S, (my - mr - 8) * S, (mx + mr + 18) * S, (my + mr - 8) * S), fill=(0, 0, 0, 0))
+    glow = moon.filter(ImageFilter.GaussianBlur(8 * S))
+    sky.alpha_composite(glow)
+    sky.alpha_composite(moon)
+    on_paper(img, mask, band(sky, 10, 152))
+    ground = vgrad_layer((58, 36, 120), (24, 16, 64), H - 54, H - 10)
+    gd = ImageDraw.Draw(ground)
+    for x, y, r in ((40, H - 32, 5), (130, H - 22, 4), (250, H - 34, 6), (380, H - 24, 4), (470, H - 36, 5)):
+        star(gd, x * S, y * S, r * S, (255, 214, 60, 255))
+    cut = Image.new("L", ground.size, 0)
+    ImageDraw.Draw(cut).rectangle((0, (H - 54) * S, W * S, H * S), fill=255)
+    ground.putalpha(Image.composite(ground.getchannel("A"), Image.new("L", ground.size, 0), cut))
+    on_paper(img, mask, ground)
+    big_rules(ImageDraw.Draw(img), (205, 200, 235))
+    img = small(img)
+    thumb = envelope((34, 24, 78), (120, 90, 200),
+                     mark=lambda dd: star(dd, 72, 70, 9, (255, 214, 60, 255)))
+    # An original dreamy tune (not Nintendo's): slow bells over an echo.
+    music = tune([("E5", .5), ("B4", .5), ("G5", .5), ("F#5", .5), ("E5", 1), (None, .5),
+                  ("D5", .5), ("A4", .5), ("F#5", .5), ("E5", .5), ("D5", 1), (None, .5),
+                  ("C5", .5), ("G4", .5), ("E5", .5), ("D5", .5), ("B4", .75), ("C5", .25), ("D5", .5),
+                  ("B4", 2)], 116, wave="sine", volume=0.55, tail=0.6, echo=0.45, echo_s=0.26)
     return img, thumb, music
 
 
 def arcade():
-    img, d = card((30, 30, 30), paper=(250, 250, 240))
+    img, mask = big_card((30, 30, 30), paper=(250, 250, 240))
     colours = [(240, 70, 70), (250, 200, 60), (80, 200, 90), (70, 150, 240), (190, 90, 220)]
-    for i, x in enumerate(range(10, W - 10, 16)):        # a pixel border, top and bottom
+    deco = layer()
+    d = ImageDraw.Draw(deco)
+    # A pixel border, top and bottom, kept inside the paper.
+    for i, x in enumerate(range(10, W - 10, 16)):
         for j, y in enumerate((10, 26, H - 42, H - 26)):
             if (i + j) % 2 == 0:
-                d.rectangle((x, y, x + 15, y + 15), fill=colours[(i + j) % 5] + (255,))
+                d.rectangle((x * S, y * S, (x + 16) * S - 1, (y + 16) * S - 1), fill=colours[(i + j) % 5] + (255,))
     for k, x in enumerate((60, 140, 220, 300, 380)):     # little invaders
         c = colours[k]
         for (px, py) in [(2, 0), (3, 0), (1, 1), (2, 1), (3, 1), (4, 1), (0, 2), (1, 2), (3, 2), (5, 2),
                          (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (1, 4), (4, 4), (0, 5), (5, 5)]:
-            d.rectangle((x + px * 6, 60 + py * 6, x + px * 6 + 5, 65 + py * 6), fill=c + (255,))
-    d.text((W // 2 - 70, 112), "HOMEBREW  MAIL", fill=(30, 30, 30, 255))
-    rules(d, (210, 210, 200))
+            d.rectangle(((x + px * 6) * S, (60 + py * 6) * S, (x + px * 6 + 6) * S - 1, (66 + py * 6) * S - 1),
+                        fill=c + (255,))
+    on_paper(img, mask, deco)
+    big_rules(ImageDraw.Draw(img), (210, 210, 200))
+    img = img.resize((W, H), Image.NEAREST)               # keep the pixels sharp
+    ImageDraw.Draw(img).text((W // 2 - 42, 112), "HOMEBREW  MAIL", fill=(30, 30, 30, 255))
     thumb = envelope((30, 30, 30), (240, 70, 70),
                      mark=lambda dd: [dd.rectangle((60 + i * 8, 64, 66 + i * 8, 70), fill=colours[i] + (255,))
                                       for i in range(3)])
