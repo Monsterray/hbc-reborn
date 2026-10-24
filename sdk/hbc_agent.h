@@ -381,10 +381,13 @@ s32 hbc_agent_net_wait(u32 ms);
  *   5. the reload stub anyway, which may wait for good (HBC_WAY_STUB_ANYWAY).
  * A reset reboots the whole console: boot2, then the System Menu, or
  * Priiloader where it is installed; the agent writes Priiloader's magic word
- * "Abra" at 0x817FEFF0 first, which runs its autoboot (HBC, if set). Whether
- * the crash block and kept log in MEM2 outlive a reset is not known yet.
+ * "Abra" at 0x817FEFF0 first, which runs its autoboot (HBC, if set). Without
+ * Priiloader the Wii stops in the System Menu: the resets are the last
+ * resort, for a Wii that would otherwise stay frozen. The kept log outlived
+ * an HW_RESETS reset on the bench Wii (2026-10-24); the crash block across a
+ * reset is not shown yet.
  * Each step is written to the crash block's way_out and to the kept log
- * before it is taken. A healthy IOS answers the 32 closes in a few ms.
+ * before it is taken. A healthy IOS answers the 32 closes in about 25 ms.
  * An exception still leaves through libogc's crash screen and the stub,
  * unchecked: interrupts are off there. HBC_AGENT_NO_IOS_CHECK turns the
  * check off. */

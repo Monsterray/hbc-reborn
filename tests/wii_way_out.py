@@ -21,6 +21,7 @@ runs one, only with someone at the Wii, who brings it back to HBC.
 import argparse
 import os
 import pathlib
+import subprocess
 import sys
 import time
 
@@ -28,9 +29,10 @@ root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tests"))
 sys.path.insert(0, str(root / "tools"))
 import hbc  # noqa: E402
-from wii_agent_safety import APP, run_until_back  # noqa: E402
+from wii_agent_safety import APP  # noqa: E402
 
 PRODUCTION = {"192.168.8.200", "192.168.8.243"}
+WIICAP = pathlib.Path("C:/tools/wii-capture/wiicap.py")
 CASES = {
     0: ("stub", ["IOS closed all 32 descriptors", "the reload stub"]),
     17: ("es_launch", ["no reply to the close of fd 3", "HBC through ES"]),
@@ -39,9 +41,31 @@ CASES = {
 }
 
 
+def run_back(wii, bits, seconds=120):
+    """Send agent_app wayout BITS; return HBC's crash and kept log once HBC
+    (not the app) answers with a kept log from this run. The app lives a
+    second, and an HBC before 1.10.14 cannot read the version 3 crash block,
+    so the kept log, which every HBC serves, says the run is over."""
+    hbc.request(wii, b"HBCC")
+    hbc.send(wii, APP, ["wayout", str(bits)])
+    mark = f"way out test, bits {bits},"
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        try:
+            if hbc.is_agent(hbc.version(wii, 3)):
+                continue
+            kept = hbc.lastlog(wii)
+        except (OSError, hbc.HBCError):
+            continue
+        if kept and mark in kept["text"]:
+            return hbc.status(wii).get("crash"), kept
+    raise AssertionError(f"bits {bits}: no kept log from this run within {seconds} s")
+
+
 def check(wii, bits, way, steps):
     start = time.monotonic()
-    crash, kept = run_until_back(wii, ["wayout", str(bits)], 120)
+    crash, kept = run_back(wii, bits)
     back = time.monotonic() - start
     text = kept["text"] if kept else ""
     lines = [l for l in text.splitlines() if l.startswith("agent: way out:")]
@@ -61,6 +85,56 @@ def check(wii, bits, way, steps):
     print(f"PASS way out, bits {bits}: {way}")
 
 
+def answers(wii):
+    try:
+        hbc.version(wii, 3)
+        return True
+    except (OSError, hbc.HBCError):
+        return False
+
+
+def reset_run(wii, bits, seconds=240):
+    """One reset: the TV recorded through the capture card (the dev Wii's),
+    then wait for HBC to stop answering and answer again (Priiloader's
+    autoboot, or someone at the Wii), and show what survived the reset."""
+    out = pathlib.Path(os.environ.get("WII_BENCH_OUT", "."))
+    video = None
+    if WIICAP.is_file():
+        video = subprocess.Popen([sys.executable, str(WIICAP), "video", str(seconds),
+                                  "--out", str(out / f"reset-{bits}.mp4")])
+        time.sleep(5)   # the card's first frames are dark
+    hbc.request(wii, b"HBCC")
+    start = time.monotonic()
+    hbc.send(wii, APP, ["wayout", str(bits)])
+    gone = None
+    while time.monotonic() - start < seconds:
+        up = answers(wii)
+        now = time.monotonic() - start
+        if gone is None and not up and now > 2:
+            gone = now
+            print(f"bits {bits}: HBC and the app stopped answering at {gone:.1f} s")
+        if gone is not None and up:
+            print(f"bits {bits}: HBC answered again at {now:.1f} s")
+            break
+        time.sleep(1)
+    else:
+        raise SystemExit(f"bits {bits}: HBC did not come back within {seconds} s")
+    time.sleep(3)
+    st = hbc.status(wii)
+    print(f"HBC {st.get('version')} back; crash block: "
+          f"{'kept' if st.get('crash') else 'none (lost, or an HBC before 1.10.14)'}")
+    if st.get("crash"):
+        print(hbc.crash_report(st["crash"]))
+    kept = hbc.lastlog(wii)
+    lines = [l for l in (kept or {}).get("text", "").splitlines() if l.startswith("agent: way out:")]
+    print(f"kept log: {'kept, why ' + kept['why'] if kept else 'none'}")
+    for line in lines:
+        print("   ", line)
+    if video:
+        video.wait()
+        print(f"TV recording: {out / f'reset-{bits}.mp4'}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--wii")
@@ -74,9 +148,7 @@ def main():
         raise SystemExit("run this as a wii-bench queue job (wiibench.py add --wii dev ...)")
     print(f"HBC {hbc.hbc_wait(wii, 90)} on {wii}")
     if opts.reset:
-        hbc.send(wii, APP, ["wayout", str(opts.reset)])
-        print(f"bits {opts.reset}: sent; the Wii should reset within about 5 s. Bring it back "
-              "to HBC; then `hbc.py lastlog` and `hbc.py crash` show what survived.")
+        reset_run(wii, opts.reset)
         return
     failed = []
     for bits, (way, steps) in CASES.items():

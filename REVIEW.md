@@ -189,10 +189,14 @@ reload stub, which waits on IOS with no time limit: three power cycles.
   `WiiIPC::IsReady()`), so a late reply left in ARMMSG blocked every later
   ack. The agent now takes such replies while it waits for an ack.
   `tests/dolphin_way_out.py` runs the agent's test bits through this tree's
-  WAD in Dolphin. Not yet proven: which way a real wedge takes (is the
-  kernel silent, or only DI?), whether ES can launch HBC past a stuck DI,
-  where a `HW_RESETS` reset lands on the bench Wii, and whether MEM1 and the
-  MEM2 records survive it.
+  WAD in Dolphin. On the bench Wii (`tests/wii_way_out.py`, test bits):
+  the stub (closes in 25 ms), the ES launch back into HBC (19 s) and the
+  stub-anyway fallback all came back; one `HW_RESETS` reset rebooted the
+  console through BootMii's menu (8 s, on by itself) and Priiloader's
+  autoboot into HBC, 33 s after the reset, with the kept log intact. Not yet
+  proven: which way a real wedge takes (is the kernel silent, or only DI?),
+  whether ES can launch HBC past a stuck DI, the crash block across a reset
+  (the bench's HBC 1.10.9 cannot read version 3), and STM's hot reset.
 - **Next, with a trigger.** The stub itself still waits forever, for apps
   without the agent and for an exception after a wedge (libogc's crash
   screen calls `__reload()` with interrupts off). Trigger: a hardware run

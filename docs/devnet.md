@@ -435,7 +435,8 @@ leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
 reason (64 bytes), `way_out` (below), and a rotate-and-XOR check word over
 the rest. HBC still reads version 2 blocks (agents before 1.10.14, with
 `way_out` `not_checked`) and version 1 blocks (agents before 1.9.0), as
-exceptions.
+exceptions. `hbc.py crash --elf app.elf` adds function names and lines with
+`powerpc-eabi-addr2line`, then the last lines of the kept log.
 
 ### The way out
 
@@ -497,16 +498,27 @@ Sources for the hardware behaviour, and what is not proven:
   setting from the boot state in NAND, unless MEM1 holds its magic word
   ([Priiloader `main.cpp`](https://github.com/DacoTaco/priiloader/blob/master/src/priiloader/source/main.cpp),
   `CheckMagicWords()`): the agent writes `Abra` at `0x817feff0` first, which
-  runs its autoboot. Whether MEM1 and the MEM2 records (`0x91800020`,
-  `0x91800100`) outlive either reset is not proven; a Wii that lands in the
-  System Menu still needs someone to start HBC.
+  runs its autoboot. A Wii without Priiloader lands in the System Menu,
+  where someone still has to start HBC: the resets are the last resort,
+  after the stub and the ES launch, for when the Wii would otherwise stay
+  frozen.
 - Dolphin models none of this: AHBPROT always reads open, `HW_RESETS` bit 0
   and STM's hot reset do nothing, and its IPC always answers.
   `tests/dolphin_way_out.py` shows the decisions with the agent's test bits,
   and `tests/test_way_out.py` runs `way_out.c` against a model of the IPC
-  registers. Neither shows how a real IOS wedges. `hbc.py crash
---elf app.elf` adds function names and lines with `powerpc-eabi-addr2line`,
-then the last lines of the kept log.
+  registers. Neither shows how a real IOS wedges.
+
+On the bench Wii (2026-10-24, `tests/wii_way_out.py`, HBC 1.10.9 installed,
+the agent's test bits): healthy closes took 25 ms and left through the stub;
+a close forced to get no reply launched HBC through ES, back in HBC in 19 s;
+a failed launch with resets off fell back on the stub. One `HW_RESETS` reset
+(IOS forced silent) rebooted the console with no IOS help: BootMii (boot2)
+showed its menu for about 8 s and went on by itself, Priiloader autobooted
+HBC, and HBC answered 33 s after the reset. The kept log at `0x91800100`
+survived the reset with the agent's steps in it. Not yet shown: the crash
+block across a reset (HBC 1.10.9 does not read version 3), a Wii without
+Priiloader (a reset there ends in the System Menu), STM's hot reset, and a
+real wedge.
 
 ### Safety tools
 
