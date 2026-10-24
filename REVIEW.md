@@ -161,6 +161,53 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.11: sdk/mii, Miis from homebrew
+
+- New: `sdk/mii`, two public-domain files that need only libogc:
+  - a Mii as a struct, its check (with the reason it fails), new and random
+    Miis, creation IDs, and `.mii` files;
+  - `RFL_DB.dat`'s 100 slots and its hidden database;
+  - a Wii Remote's 10 Miis.
+
+  Formats and sources are in docs/mii.md. It never writes a database whose CRC
+  or size is wrong.
+- Three things found on the way, each now in the code and docs/mii.md:
+  - **libogc 3's `wiiuse_write_data` keeps only the low 4 bits of the
+    length** (`clrlwi r11,r6,28` in libwiiuse.a). A 16-byte write goes out
+    with size 0. Dolphin logs "WriteData: invalid size: 0", and a Remote
+    sends no ack, so the write waits forever. `sdk/mii` writes 8 bytes at a
+    time. `sdk/wiispk` writes 7 bytes at most, so it is not affected. Any
+    other caller of `wiiuse_write_data` must stay under 16 on libogc 3.
+  - **The Wi-Fi MAC from NCD ioctlv 8 into a MEM1 buffer came back with its
+    last two bytes wrong** on the bench Wii, every time. libogc's
+    `net_get_mac_address`, whose 6-byte buffer is in its MEM2 net heap, gave
+    the MAC whose home word matches the Mii made on that Wii. Just after
+    HBC's IOS reload, both fail with -6 for a few seconds, until IOS's
+    network module registers `/dev/net/ncd/manage`. `mii_wifi_mac` waits up
+    to 8 s, once.
+  - **A free hidden-database node is ID 0 with next and prev -1**
+    (`RFLiClearTableData`), not all zeros: the bench Wii's file has
+    `7fff7fff` in all 10,000. The first bench run of `wii_mii.py hidden`
+    zeroed a node it freed, and its byte compare caught it. It still read as
+    free, and the restore put the original back.
+- Proof:
+  - `tests/test_mii.py` (18 tests, the PC) also runs on a copy of the bench
+    Wii's own database (`MII_REAL_DB`).
+  - `tests/dolphin_mii.py` passes all 13 checks: a database on Dolphin's NAND,
+    and the emulated Remote written and read back.
+  - On the bench Wii (`tests/wii_mii.py`, 2026-10-23):
+    - `check` loads the database in 725 ms with its CRC right. The Mii made
+      there passes the check and reads as made there.
+    - `hidden`: a Mii into the hidden database and out. Afterwards the table
+      and slots match, byte for byte; only that Mii's 0x40 bytes of data
+      remain, as with RFL.
+    - `add` puts "HBC Mii" in slot 1. Only that slot and the CRC changed, the
+      CRC is right, and a reload holds the same Mii.
+    - `backup` and `restore` put the original file back, byte for byte.
+- Not yet on a real Remote. libogc drops a Remote after 5 idle minutes, so
+  `wii_mii.py remote-add ID` needs someone to press a button on Wii Remote 1
+  as the job starts.
+
 ### 1.10.10: the overlay and MotionPlus
 
 - libogc reports a MotionPlus only once an app switches it on

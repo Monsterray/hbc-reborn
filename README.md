@@ -21,11 +21,13 @@ replacing it.
 | App-side network log header | [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) |
 | In-app agent: the tools and crash reports inside a running app | [`sdk/hbc_agent.h`](sdk/hbc_agent.h), [`sdk/hbc_agent`](sdk/hbc_agent) |
 | Wii Message Board: posts, mail to another Wii, play history (HBC's play log too) | [`sdk/mboard`](sdk/mboard) |
+| Miis: the data, the Mii database, a Wii Remote's Miis | [`sdk/mii`](sdk/mii) |
 | Wii Remote speaker driver | [`sdk/wiispk`](sdk/wiispk) |
 | Banner, WAD packaging, PyWii | [`channel/banner`](channel/banner), [`channel/title`](channel/title), [`pywii`](pywii) |
 | WiiPAX executable packer, host `wiiload` | [`wiipax`](wiipax), [`channel/wiiload`](channel/wiiload) |
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
-| Message Board: the library, the board's formats, Miis | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md), [`docs/mii.md`](docs/mii.md) |
+| Message Board: the library, the board's formats | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md) |
+| Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
 | Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
 
 This code differs from the official HBC build, which adds protection
@@ -414,6 +416,39 @@ Docs:
 - [`docs/messageboard.md`](docs/messageboard.md): the play history.
 - [`docs/mii.md`](docs/mii.md): Mii data.
 
+### Miis in your app
+
+[`sdk/mii`](sdk/mii) is two files that need only libogc, in the public
+domain. They give an app what the Wii's own Mii library gives games:
+
+```c
+#include "mii.h"
+
+mii_db db;
+mii m;
+uint32_t seed = gettime();
+
+mii_random(&m, MII_ANY, MII_ANY, &seed);   // or mii_default(), or edit any field
+mii_set_name(m.name, "Homebrew");
+mii_make_id(&m);
+if (mii_db_load(&db) == MII_OK) {
+    if (mii_db_add(&db, &m) >= 0)          // into the Mii Channel's plaza
+        mii_db_save(&db);
+    mii_db_free(&db);
+}
+```
+
+- **A Mii as a struct**, packed to and from the 74 bytes every Wii file
+  holds. `mii_check()` says whether the Wii would accept it, and why not.
+- **`.mii` files**: the 74-byte form and the 76-byte form with a CRC.
+- **The Mii database**: the Mii Channel's 100 Miis, and the hidden database
+  of Miis met on letters and Remotes. It reads, adds, changes and removes
+  them. It never writes a database whose CRC is wrong.
+- **A Wii Remote's 10 Miis**: `mii_remote_read()` and `mii_remote_write()`.
+
+[Its README](sdk/mii/README.md) has the API, and
+[`docs/mii.md`](docs/mii.md) the formats and their sources.
+
 ## Installing the channel on a Wii
 
 Run the DOL over Wiiload first (above). Install the WAD only after that works,
@@ -539,6 +574,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Message Board library with the real Wii Menu 4.3U filing the post (`--full` for the Mii, photo and board data) | `python3 tests/dolphin_mboard.py --restore` (build `tests/mboard_app` first) | Dolphin, the Wii Menu profile |
 | Message Board stationery (a letter's border, board icon, music): every encoder read back, the five example themes | `python3 tests/test_stationery.py` | Pillow |
 | Message Board library on the bench Wii: `backup`, `id`, `post`, `full`, `send WII`, `board`, `friends`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
+| Mii library (`sdk/mii`) on the PC: every field and limit, IDs, CRCs, the database, the hidden database and a Remote's Miis byte for byte (`MII_REAL_DB` adds a Wii's own `RFL_DB.dat`) | `python3 tests/test_mii.py` | C compiler |
+| Mii library in Dolphin: a database on its NAND (add, hidden, remove) and the emulated Wii Remote's Miis, each written and read back | `python3 tests/dolphin_mii.py` (build `tests/mii_app` first) | Dolphin |
+| Mii library on the bench Wii: `backup`, `check`, `add`, `remove ID`, `hidden`, `remote-add ID`, `remote-remove ID`, `restore` | queue `python tests/wii_mii.py STEP` (build `tests/mii_app`, `tests/nandget` and `tests/nandput` first; it refuses any other Wii) | the bench queue |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent and MEM2: nothing written into HBC's records while an app runs, the log target kept as it stops, the agent's memory at the top of the MEM2 arena | `python3 tests/wii_agent_mem2.py WII-IP` (`--dol` for another build) | Wii in any HBC |
 | `hbc_agent_stop()` (then an IOS reload, a re-init, a crash) and `hbc_agent_listen()` (the app's own server on 4299) on a real Wii | `make -C tests/agent_app`, then `python3 tests/wii_agent_stop.py --wii WII-IP` (`--dol` for another build) | Wii in any HBC |
@@ -602,7 +640,7 @@ python3 tools/wii-bench/wiibench.py wait <id>
 
 Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
-[`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) and [`sdk/mboard`](sdk/mboard) are
-public domain so apps can include them freely, and
+[`sdk/hbc_netlog.h`](sdk/hbc_netlog.h), [`sdk/mboard`](sdk/mboard) and
+[`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
 [`sdk/wiispk`](sdk/wiispk) is under the zlib licence. The agent library (`sdk/hbc_agent`) is built from HBC's own
 sources and is GPL.

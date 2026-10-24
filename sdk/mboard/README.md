@@ -64,5 +64,7 @@ makes five examples.
   stationery.
 - [docs/messageboard.md](../../docs/messageboard.md): the play history.
 - [docs/mii.md](../../docs/mii.md): Mii data, and what makes a Mii valid.
+  [sdk/mii](../mii) builds, checks and stores Miis; `mii_pack()` gives the 74
+  bytes `m.face` takes.
 
 The Homebrew Channel's own play log is this library's writer.
