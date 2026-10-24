@@ -2,7 +2,7 @@
 // text are hex on the command line (Windows hands argv over in its own code
 // page). Each command prints one line per result.
 //   mii_host fields MII          every field as name=value, then pack=MII again
-//   mii_host check MII           the result code and why
+//   mii_host check MII [F=N]...  the result code and why (favorite=, local_only=, kind=)
 //   mii_host default SEX         a Mii
 //   mii_host random SEX AGE SEED N   N Miis, each with its check result
 //   mii_host name UTF8           units kept, and the name read back as UTF-8
@@ -10,10 +10,10 @@
 //   mii_host store MII           the 76-byte form
 //   mii_host import DATA         a 74- or 76-byte file's result and Mii
 //   mii_host db FILE OP...       RFL_DB.dat ops, written back if all attach:
-//     get S | put S MII | add MII | rm S | find ID | count | iso | home WORD
+//     get S | put S MII | add MII | rm S | find ID | count | iso | free | home WORD
 //     hput MII | hrm I | hget I | hlist | hfind ID
 //   mii_host remote IN OUT OP... a Remote's two copies: get S | put S MII |
-//     rm S | secret; OUT gets both copies of the built block
+//     rm S | secret HEX | free; OUT gets both copies of the built block
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -167,6 +167,8 @@ static int cmd_db(int argc, char **argv) {
 			printf("count %d %d\n", mii_db_count(&db), mii_hidden_count(&db));
 		} else if (!strcmp(op, "iso")) {
 			printf("iso %d\n", mii_db_isolated(&db));
+		} else if (!strcmp(op, "free")) {
+			printf("free %d\n", mii_db_free_slot(&db));
 		} else if (!strcmp(op, "home")) {
 			db.home = (uint32_t) strtoul(argv[++i], NULL, 16);
 			printf("home %08x\n", (unsigned) db.home);
@@ -181,7 +183,11 @@ static int cmd_db(int argc, char **argv) {
 			return 2;
 		}
 	}
-	printf("dirty %u %u\n", (unsigned) db.dirty_lo, (unsigned) db.dirty_hi);
+	printf("dirty");
+	for (i = 0; i < MII_HIDDEN_SLOTS; ++i)
+		if (db.dirty[i >> 3] >> (i & 7) & 1)
+			printf(" %d", i);
+	printf("\n");
 	return write_file(argv[0], file, size);
 }
 
@@ -215,6 +221,8 @@ static int cmd_remote(int argc, char **argv) {
 			printf("rm %d\n", mii_remote_remove(&rm, atoi(argv[++i])));
 		} else if (!strcmp(op, "secret")) {
 			rm.secret = (uint16_t) strtoul(argv[++i], NULL, 16);
+		} else if (!strcmp(op, "free")) {
+			printf("free %d\n", mii_remote_free_slot(&rm));
 		} else {
 			fprintf(stderr, "unknown op %s\n", op);
 			return 2;
@@ -232,8 +240,20 @@ int main(int argc, char **argv) {
 
 	if (!strcmp(cmd, "fields") && argc == 3)
 		return cmd_fields(argv[2]);
-	if (!strcmp(cmd, "check") && argc == 3) {
+	if (!strcmp(cmd, "check") && argc >= 3) {
+		int k;
+
 		mii_arg(argv[2], &m);
+		/* favorite=N, local_only=N, kind=N: values a packed Mii cannot hold */
+		for (k = 3; k < argc; ++k) {
+			unsigned v = 0;
+			if (sscanf(argv[k], "favorite=%u", &v) == 1)
+				m.favorite = (uint8_t) v;
+			else if (sscanf(argv[k], "local_only=%u", &v) == 1)
+				m.local_only = (uint8_t) v;
+			else if (sscanf(argv[k], "kind=%u", &v) == 1)
+				m.kind = (uint8_t) v;
+		}
 		print_check(&m);
 		printf("\n");
 		return 0;

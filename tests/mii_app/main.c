@@ -19,6 +19,9 @@
 //   mii_app.dol remote-remove ID   take it off the Remote again (creator
 //                                  "hbc-reborn" only)
 //   mii_app.dol remote-both ID     remote-add, then remote-remove
+//   mii_app.dol edit ID FIELD=N... change this test's Mii (creator
+//                                  "hbc-reborn"): any mii.h field, name=TEXT,
+//                                  birthday=M/D, mingle=0|1
 //   mii_app.dol remote-rewrite     write Wii Remote 1's own Miis back
 //                                  unchanged, after saving its memory to
 //                                  sd:/mii_test/remote_backup.bin
@@ -160,6 +163,16 @@ static void check(void) {
 		;
 	say("mii_get: first Mii in slot %d\n", i);
 	mac_check(i < MII_DB_SLOTS ? &m : NULL);
+	{
+		mii a, b;
+
+		memset(&a, 0, sizeof(a));
+		memset(&b, 0, sizeof(b));
+		r = mii_make_id(&a);
+		if (r >= 0)
+			r = mii_make_id(&b);
+		result("mii_make_id twice in a row", r < 0 ? r : mii_same_id(a.id, b.id) ? MII_E_EXISTS : MII_OK);
+	}
 
 	if (!wait_remote(0)) {
 		say("no Wii Remote 1 within 15 s\n");
@@ -385,6 +398,104 @@ static int sd_args(char **argv, int max) {
 	return argc;
 }
 
+/* The numeric fields edit can set, by name (mii.h). */
+static const struct {
+	const char *name;
+	size_t at;
+} fields[] = {
+#define FIELD(f) { #f, offsetof(mii, f) }
+	FIELD(sex), FIELD(birth_month), FIELD(birth_day), FIELD(fav_color), FIELD(favorite), FIELD(height),
+	FIELD(build), FIELD(face_type), FIELD(face_color), FIELD(face_tex), FIELD(local_only), FIELD(hair_type),
+	FIELD(hair_color), FIELD(hair_flip), FIELD(brow_type), FIELD(brow_rotate), FIELD(brow_color),
+	FIELD(brow_scale), FIELD(brow_y), FIELD(brow_x), FIELD(eye_type), FIELD(eye_rotate), FIELD(eye_y),
+	FIELD(eye_color), FIELD(eye_scale), FIELD(eye_x), FIELD(nose_type), FIELD(nose_scale), FIELD(nose_y),
+	FIELD(mouth_type), FIELD(mouth_color), FIELD(mouth_scale), FIELD(mouth_y), FIELD(glass_type),
+	FIELD(glass_color), FIELD(glass_scale), FIELD(glass_y), FIELD(mustache), FIELD(beard_type),
+	FIELD(beard_color), FIELD(beard_scale), FIELD(beard_y), FIELD(mole), FIELD(mole_scale), FIELD(mole_y),
+	FIELD(mole_x),
+#undef FIELD
+};
+
+/* Change this test's Mii in the database: FIELD=N for any field above,
+ * name=TEXT, birthday=M/D (0/0 for none), mingle=0|1 (local_only's
+ * opposite, as the Mii Channel shows it). Checked, saved, reloaded. */
+static void edit(const char *text, int n, char **sets) {
+	uint8_t id[MII_ID_SIZE], a[MII_SIZE], b[MII_SIZE];
+	mii_db db;
+	mii m, back;
+	const char *why = NULL;
+	int r, slot, i, k;
+
+	if (!parse_id(text, id)) {
+		result("bad id", MII_E_ARG);
+		return;
+	}
+	if ((r = mii_db_load(&db)) < 0) {
+		result("mii_db_load", r);
+		return;
+	}
+	slot = mii_db_find(&db, id);
+	if (slot < 0 || mii_db_get(&db, slot, &m) != MII_OK || !ours(&m)) {
+		result("not one of this test's Miis", slot < 0 ? slot : MII_E_ARG);
+		mii_db_free(&db);
+		return;
+	}
+	describe("before: slot", slot, &m);
+	for (i = 0; i < n; ++i) {
+		char *eq = strchr(sets[i], '=');
+		const char *key = sets[i], *val = eq ? eq + 1 : "";
+		unsigned mo, d;
+
+		if (!eq) {
+			result("not FIELD=VALUE", MII_E_ARG);
+			mii_db_free(&db);
+			return;
+		}
+		*eq = 0;
+		if (!strcmp(key, "name")) {
+			mii_set_name(m.name, val);
+		} else if (!strcmp(key, "birthday") && sscanf(val, "%u/%u", &mo, &d) == 2) {
+			m.birth_month = (uint8_t) mo;
+			m.birth_day = (uint8_t) d;
+		} else if (!strcmp(key, "mingle")) {
+			m.local_only = !atoi(val);
+		} else {
+			for (k = 0; k < (int) (sizeof(fields) / sizeof(fields[0])) && strcmp(fields[k].name, key); ++k)
+				;
+			if (k == (int) (sizeof(fields) / sizeof(fields[0]))) {
+				say("unknown field %s\n", key);
+				result("edit", MII_E_ARG);
+				mii_db_free(&db);
+				return;
+			}
+			((uint8_t *) &m)[fields[k].at] = (uint8_t) atoi(val);
+		}
+		say("set %s=%s\n", key, val);
+	}
+	r = mii_check(&m, &why);
+	if (r < 0)
+		say("mii_check: %s\n", why);
+	r = r < 0 ? r : mii_db_put(&db, slot, &m);
+	result("mii_db_put", r);
+	if (r >= 0)
+		result("mii_db_save", mii_db_save(&db));
+	mii_db_free(&db);
+	if (r < 0)
+		return;
+	if ((r = mii_db_load(&db)) < 0) {
+		result("reload", r);
+		return;
+	}
+	r = mii_db_get(&db, slot, &back);
+	mii_pack(&m, a);
+	mii_pack(&back, b);
+	result("reloaded, the same Mii", r < 0 ? r : memcmp(a, b, MII_SIZE) ? MII_E_VERIFY : MII_OK);
+	describe("after: slot", slot, &back);
+	say("height %u, build %u, birthday %u/%u, favorite %u, colour %u, mingle %u\n", back.height, back.build,
+		back.birth_month, back.birth_day, back.favorite, back.fav_color, !back.local_only);
+	mii_db_free(&db);
+}
+
 /* Write the Remote's own set back unchanged: the write path on a full Remote
  * whose Miis are not this test's. Its memory is saved to
  * sd:/mii_test/remote_backup.bin first. */
@@ -487,6 +598,8 @@ int main(int argc, char **argv) {
 	}
 	else if (argc == 2 && !strcmp(argv[1], "remote-rewrite"))
 		remote_rewrite();
+	else if (argc >= 4 && !strcmp(argv[1], "edit"))
+		edit(argv[2], argc - 3, argv + 3);
 	else
 		say("usage: check | add NAME SEED | remove ID | hidden SEED | remote-add ID | remote-remove ID\n");
 	say("failures %d\ndone\n", failures);

@@ -13,7 +13,7 @@ mii_app.dol: mii_app.elf
 	$(ELF2DOL) $< $@
 
 mii_app.elf: main.c ../../sdk/mii/mii.c ../../sdk/mii/mii.h
-	$(CC) $(CFLAGS) main.c ../../sdk/mii/mii.c $(LDFLAGS) -lfat -lwiiuse -lbte -logc -o $@
+	$(CC) $(CFLAGS) main.c ../../sdk/mii/mii.c $(LDFLAGS) -lfat -lwiiuse -lbte -logc -lm -o $@
 
 clean:
 	rm -f mii_app.elf mii_app.dol

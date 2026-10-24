@@ -115,6 +115,8 @@ at 0x12BA. Dolphin's `WiimoteEmu.h` has the same range.
   - It zeroes each Mii that fails the check below or has a temporary ID.
 - **Writing**:
   - Each Mii gets favourite 0, and local only 1 when isolation is set.
+    `sdk/mii`'s `mii_remote_put` clears favourite; the isolation rule is the
+    caller's (`mii_db_isolated`).
   - RFL writes a copy and reads it back, then does the same with the other.
 - **The 0x0FCA base comes from Dolphin and WiiBrew.** RFL itself passes face
   offsets 0 and 0x2F0 to `WPADReadFaceData`, which is not decompiled.
@@ -136,7 +138,7 @@ message header (`X-WiiFace`) carries the 74 bytes, with no CRC.
 | 0x16 | height (u8) |
 | 0x17 | build (u8) |
 | 0x18 | creation ID: 8 bytes (two `u32`, below) |
-| 0x20 | face type (3), face colour (3), face texture (4), padding (3), local only (1), type (2) |
+| 0x20 | face type (3), face colour (3), face texture (4), padding (3), local only (1), kind (2: `type` in RFL, never set) |
 | 0x22 | hair type (7), hair colour (3), hair flip (1), padding (5) |
 | 0x24 | eyebrow type (5), eyebrow rotation (5), padding (6) |
 | 0x26 | eyebrow colour (3), eyebrow scale (4), eyebrow Y (5), eyebrow X (4) |
@@ -289,18 +291,49 @@ face: the record held all 74 bytes at offset 0x1F8 (`tests/dolphin_mboard.py
 Its [README](../sdk/mii/README.md) has the API. These are the choices it
 makes:
 
-- **It refuses rather than repairs.** A database with a wrong CRC or size
-  is never written (`MII_E_FORMAT`), since RFL would already count it as
-  lost.
+- **It refuses rather than repairs.** Nothing is written to a database
+  (`MII_E_FORMAT`) when any of these is wrong, since RFL would already count
+  it as lost:
+  - the CRC or the size;
+  - the hidden database's links. Each next and prev must be -1 or a node.
+    The list must run from head to tail through used nodes only, each prev
+    must point back, no node may appear twice, and every used node must be
+    on the list.
+
+  A CRC does not cover a tool's bug in those links. Following one could loop
+  forever or write past the table.
 - **It writes as RFL does.**
   - `mii_db_save` first checks the file is the one it loaded
     (`MII_E_CHANGED`).
-  - It writes the hidden Miis' data first, then the 0x1F1E0-byte block at
-    offset 0, in one open, and reads both back.
+  - It writes the changed hidden Miis' data first, each run of them on its
+    own, then the 0x1F1E0-byte block at offset 0, in one open, and reads it
+    all back.
+  - A save that stops part way (`MII_E_IO`, `MII_E_VERIFY`) can be called
+    again. It then writes over its own half-written file instead of calling
+    it someone else's.
   - The file never changes size.
-- **It keeps a Remote whole.** `mii_remote_write` writes and reads back copy
-  0, then copy 1. If it stops part way, the other copy still holds a whole
-  set, and a reader takes that one.
+- **It keeps a Remote whole.**
+  - `mii_remote_write` reads the Remote first and writes the copy that is not
+    whole, then the other, each read back. If it stops part way, the other
+    copy still holds a whole set, and a reader takes that one.
+  - A Remote whose copies both have the magic but neither a right CRC reads
+    as `MII_E_FORMAT`, not as a new Remote's empty set, so a misread can never
+    lead to writing over its Miis. RFL fails its load there too.
+- **It makes each ID new.** RFL's creation time counts 4-second steps, so two
+  Miis made within 4 seconds would share an ID. `mii_make_id` keeps each ID
+  at least one step past the last one it made.
+- **It checks the flag bits.** `favorite` and `local_only` hold 1 bit each in
+  the record, and `kind` 2. `mii_check` refuses a larger value, which
+  `mii_pack` would otherwise cut to something else: local only 2 would be
+  stored as 0.
+- **It reads names strictly.** Bytes that are not UTF-8 become U+FFFD:
+  - bad lead bytes;
+  - short sequences;
+  - overlong forms;
+  - surrogates;
+  - anything past U+10FFFF.
+
+  A lone surrogate in a name is written back as U+FFFD too.
 - **It writes a Remote 8 bytes at a time.** A write report carries up to 16
   bytes, but libogc 3's `wiiuse_write_data` keeps only the low 4 bits of the
   length (`clrlwi r11,r6,28` before it stores the size byte). A 16-byte write
@@ -311,14 +344,20 @@ makes:
   starts just after an IOS reload. For the first seconds, opening
   `/dev/net/ncd/manage` fails with -6 (not found), and so does libogc's
   `net_get_mac_address`, because IOS's network module has not registered it
-  yet. `mii_wifi_mac` retries for up to 8 s, once, and keeps the answer.
+  yet. `mii_wifi_mac` retries for up to 8 s, once, and keeps the answer, or
+  the failure.
 - **Its random Miis follow RFL's proportions** (`RFLi_MakeRandomFace`): half
   men; children, adults and elders 4:4:2; parts lower for women and children;
   beards on a fifth of grown men; few glasses on children. Each part is
   chosen evenly, not from RFL's tables.
-- **It reaches the Remote through wiiuse.** libogc has no public call for a
-  Remote's memory. The library finds wiiuse's remote table the way
-  `sdk/wiispk` does, and calls `wiiuse_read_data` and `wiiuse_write_data`.
+- **It reaches the Remote through wiiuse.**
+  - libogc has no public call for a Remote's memory. The library finds
+    wiiuse's remote table the way `sdk/wiispk` does, and calls
+    `wiiuse_read_data` and `wiiuse_write_data`.
+  - Before `WPAD_Init` the table is not set yet; the library looks again on
+    the next call.
+  - On a libogc whose code does not match, the Remote calls return
+    `MII_E_UNSUPPORTED`.
 
 Tests:
 
@@ -326,7 +365,10 @@ Tests:
   - the fields against the table above;
   - every limit, names and IDs;
   - the CRCs, against Python's `binascii.crc_hqx`;
-  - the database and Remote layouts, built byte by byte.
+  - the database and Remote layouts, built byte by byte;
+  - each defect the 2026-10-24 audit found: flag bits out of range, a
+    temporary ID, names that are not UTF-8, hidden-database links a CRC does
+    not cover (7 kinds of break), a damaged Remote, and the free-slot calls.
 
   It also runs on a copy of the bench Wii's own `RFL_DB.dat`. Each Mii in it
   packs back to the same bytes and passes the check, and an add and a

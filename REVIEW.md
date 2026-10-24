@@ -161,6 +161,90 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.13: sdk/mii audit, robust and easy to use
+
+Two independent reviews (2026-10-24) covered `sdk/mii`. One checked the code
+against RFL's decompiled sources. The other read the docs as a new developer
+would, writing and compiling the code for six tasks.
+
+- **Fixed: data loss or corruption.**
+  - **A Remote write could lose every Mii.** `mii_remote_write` always wrote
+    copy 0 first. When copy 0 was the only whole copy (an earlier write
+    stopped in copy 1), a second interruption left neither whole. It now
+    reads the Remote and writes the copy that is not whole first.
+  - **A damaged Remote read as a new, empty one.** When both copies had the
+    magic and neither CRC was right, the read returned `MII_OK`, and the next
+    write erased its 10 Miis. That case is now `MII_E_FORMAT`.
+  - **Hidden-database links were trusted.** A file with a right CRC could
+    still carry a next or prev outside the table, a loop, a prev that does
+    not point back, a used node off the list, or a head or tail past the
+    table. Following such a link wrote past the table into the CRC and hidden
+    Mii data, or looped forever. `mii_db_attach` now checks every link and
+    refuses such a file, and an out-of-range link reads as -1.
+  - **A failed save could never be retried.** After `MII_E_IO` or
+    `MII_E_VERIFY` the file was half ours, and the next save called it
+    "changed by someone else". A save that did not finish may now write over
+    its own half-written file.
+  - **Hidden Miis saved too much.** The changed hidden Miis were kept as one
+    [first, last) range, so changing entries 0 and 9999 rewrote about 640 KB,
+    unrelated entries included. A bitmap now marks each changed Mii, and each
+    run is written and read back on its own.
+- **Fixed: wrong results.**
+  - **Flag fields.** `mii_check` did not range-check `favorite`, `local_only`
+    (1 bit each) or `kind` (2 bits), and `mii_pack` cut larger values. A
+    special-ID Mii with local only 2 passed the check and was stored with the
+    bit at 0, which RFL rejects.
+  - **Temporary IDs.** `mii_check` counted a temporary ID as "special"; RFL's
+    `RFLiIsSpecialID` does not.
+  - **Names.** `mii_set_name` accepted overlong forms (an embedded NUL),
+    surrogates, short sequences and code points past U+10FFFF. It now writes
+    U+FFFD for each. `mii_get_name` wrote a lone surrogate as invalid UTF-8,
+    and now writes U+FFFD.
+  - **Duplicate IDs.** IDs count 4-second steps, so two Miis made within 4
+    seconds got the same one: `mii_db_add` failed with `MII_E_EXISTS`, or
+    `mii_hidden_put` overwrote the first Mii. Each `mii_make_id` is now at
+    least one step past the last.
+  - **The Remote table before `WPAD_Init`.** A lookup made too early failed,
+    and the failure was kept: every later Remote call said
+    `MII_E_NO_REMOTE`. Now only a found table is kept, and a libogc whose
+    code does not match says `MII_E_UNSUPPORTED`.
+  - **The MAC read.** A non-zero NCD status counted as a good MAC, and each
+    failed call waited another 8 s. Both are fixed.
+  - **A missing database** (Mii Channel never opened) said "no Mii there".
+    It now says `MII_E_NO_FILE`.
+  - **A file of the wrong size** was `MII_E_IO` (load), or was read anyway
+    (`mii_get`). Both now give `MII_E_FORMAT`.
+- **For developers.**
+  - **Building.** The header says how: compile `mii.c` as C and link
+    `-lwiiuse -lbte -logc -lm`. libwiiuse needs `-lm`; the first build of the
+    example failed without it. `mii.c` now also compiles as C++.
+  - **New calls and names:**
+    - `mii_db_free_slot` and `mii_remote_free_slot`;
+    - `mii_color_name` and `MII_RED` ... `MII_BLACK`;
+    - `MII_NAME_UTF8_MAX` and `MII_VERSION`;
+    - `mii_db_free` in the PC build.
+  - **Every function's contract** is now in mii.h: what it changes, its
+    errors, how long it blocks, the Remote's setup, and ownership.
+  - **sdk/mii/README.md** is rewritten:
+    - each example now compiles; a harness built every snippet with devkitPPC
+      at `-Wall -Werror`. Before, they called `gettime()` without its header
+      and overwrote Remote slot 0;
+    - a table of errors and what to do about each.
+  - **`sdk/mii/example`** is a whole program, built in CI.
+  - **sdk/mboard's README** named a variable `mii`, which clashed with
+    mii.h's type. It is now `face`.
+- **Proof:**
+  - `tests/test_mii.py`: 24 tests, 6 of them new, one per defect class. Each
+    new test fails with its fix reverted: the link check, the damaged Remote
+    and the flag limits were checked that way.
+  - `tests/dolphin_mii.py`: all checks pass.
+  - The bench Wii (`tests/wii_mii.py`):
+    - `check`: the real database passes the new link check, and two IDs made
+      back to back differ.
+    - `hidden`: the table and slots end byte for byte as they were.
+    - `remote-rewrite`: the 10 Miis on Wii Remote 1, both copies, 8.2 s, byte for byte as
+      before.
+
 ### 1.10.12: sdk/mii on a real Wii Remote
 
 - `mii_remote_read_raw()` returns both copies as the Remote holds them, for a
@@ -319,6 +403,30 @@ From the 1.3.6 review, each verified in the code first:
   search call: the button is greyed out there.
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
+
+#### The monitor: a line, a card and a lane per Wii
+
+Tool work, no version of its own. Five designs were mocked up; the one built combines three:
+
+- **Every page:** one line holds every Wii, problems first (`✖ ▲ ▶ ● ○`). It has three
+  lengths, a sentence, a short form and only the times, and the monitor takes the longest
+  that fits.
+- **The queue page** has a card per Wii, as many across as fit: state and for how long, job,
+  id, who queued it, a progress bar against the timeout, the lease, the next two jobs, the
+  last job and its HBC, and the window's figures.
+- **The history page** has a lane per Wii over the window: jobs (ok or failed), the hold after
+  a freeze, waits for HBC, use outside the queue, and what runs now, with jobs, failures,
+  busy % and the longest wait on the right.
+- **How it's built:** `wii_board()` in the snapshot describes it all. The monitor sends its
+  width with each request, so the lanes fill the terminal. The bash side forks nothing.
+- **Fixes along the way:**
+  - The monitor picks a UTF-8 locale, so `${#s}` counts characters and the box-drawing
+    characters pad correctly.
+  - Events from before the pool count as the first Wii's.
+- **Checked:**
+  - `test_the_board_and_the_lanes`.
+  - The monitor's pages in `MonitorTest`.
+  - The real queue at 150, 100, 60 and 40 columns.
 
 #### The bench queue drives several Wiis
 

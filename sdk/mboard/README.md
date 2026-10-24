@@ -20,12 +20,12 @@ project.
 mboard_post("WiiStation", "Played Final Fantasy VII\nfor 42 minutes.");
 
 // The same with a Mii icon, a photo and a Reply button.
-static uint8_t mii[MBOARD_FACE_SIZE];
+static uint8_t face[MBOARD_FACE_SIZE];
 mboard_msg m = { 0 };
 m.title = "WiiStation";
 m.body = "Played Wii Sports\nfor 5 minutes.";
-if (mboard_mii(0, mii) == MBOARD_OK)
-    m.face = mii;
+if (mboard_mii(0, face) == MBOARD_OK)
+    m.face = face;
 m.jpeg = photo;
 m.jpeg_size = photo_size;
 m.reply = 1;
@@ -41,7 +41,7 @@ mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);
 // The Address Book: every contact, and changing one.
 mboard_friend list[MBOARD_FRIENDS];
 int n = mboard_friends(list, MBOARD_FRIENDS);
-mboard_friend_set(list[0].slot, "Living Room", mii);
+mboard_friend_set(list[0].slot, "Living Room", face);
 ```
 
 Each call returns a result of 0 or more, or a negative `MBOARD_E_*` code

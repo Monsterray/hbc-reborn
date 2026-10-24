@@ -418,20 +418,23 @@ Docs:
 
 ### Miis in your app
 
-[`sdk/mii`](sdk/mii) is two files that need only libogc, in the public
-domain. They give an app what the Wii's own Mii library gives games:
+[`sdk/mii`](sdk/mii) is two files, in the public domain. They give an app
+what the Wii's own Mii library gives games. Compile `mii.c` as C and link
+with `-lwiiuse -lbte -logc -lm`.
 
 ```c
+#include <gccore.h>
+#include <ogc/lwp_watchdog.h>   // gettime()
 #include "mii.h"
 
-mii_db db;
+mii_db db = { 0 };
 mii m;
-uint32_t seed = gettime();
+uint32_t seed = (uint32_t) gettime();
 
 mii_random(&m, MII_ANY, MII_ANY, &seed);   // or mii_default(), or edit any field
 mii_set_name(m.name, "Homebrew");
-mii_make_id(&m);
-if (mii_db_load(&db) == MII_OK) {
+m.height = 90;                             // 0 shortest .. 128 tallest
+if (mii_make_id(&m) == MII_OK && mii_db_load(&db) == MII_OK) {
     if (mii_db_add(&db, &m) >= 0)          // into the Mii Channel's plaza
         mii_db_save(&db);
     mii_db_free(&db);
@@ -446,8 +449,9 @@ if (mii_db_load(&db) == MII_OK) {
   them. It never writes a database whose CRC is wrong.
 - **A Wii Remote's 10 Miis**: `mii_remote_read()` and `mii_remote_write()`.
 
-[Its README](sdk/mii/README.md) has the API, and
-[`docs/mii.md`](docs/mii.md) the formats and their sources.
+[Its README](sdk/mii/README.md) has the API, worked examples and what each
+error means. [`sdk/mii/example`](sdk/mii/example) is a whole program, and
+[`docs/mii.md`](docs/mii.md) has the formats and their sources.
 
 ## Installing the channel on a Wii
 
@@ -576,7 +580,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Message Board library on the bench Wii: `backup`, `id`, `post`, `full`, `send WII`, `board`, `friends`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
 | Mii library (`sdk/mii`) on the PC: every field and limit, IDs, CRCs, the database, the hidden database and a Remote's Miis byte for byte (`MII_REAL_DB` adds a Wii's own `RFL_DB.dat`) | `python3 tests/test_mii.py` | C compiler |
 | Mii library in Dolphin: a database on its NAND (add, hidden, remove) and the emulated Wii Remote's Miis, each written and read back | `python3 tests/dolphin_mii.py` (build `tests/mii_app` first) | Dolphin |
-| Mii library on the bench Wii: `backup`, `check`, `add`, `remove ID`, `hidden`, `remote-add ID`, `remote-remove ID`, `remote-rewrite`, `restore` | queue `python tests/wii_mii.py STEP` (build `tests/mii_app`, `tests/nandget` and `tests/nandput` first; it refuses any other Wii) | the bench queue |
+| Mii library on the bench Wii: `backup`, `check`, `add`, `remove ID`, `edit ID FIELD=N...`, `hidden`, `remote-add ID`, `remote-remove ID`, `remote-rewrite`, `restore` | queue `python tests/wii_mii.py STEP` (build `tests/mii_app`, `tests/nandget` and `tests/nandput` first; it refuses any other Wii) | the bench queue |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent and MEM2: nothing written into HBC's records while an app runs, the log target kept as it stops, the agent's memory at the top of the MEM2 arena | `python3 tests/wii_agent_mem2.py WII-IP` (`--dol` for another build) | Wii in any HBC |
 | `hbc_agent_stop()` (then an IOS reload, a re-init, a crash) and `hbc_agent_listen()` (the app's own server on 4299) on a real Wii | `make -C tests/agent_app`, then `python3 tests/wii_agent_stop.py --wii WII-IP` (`--dol` for another build) | Wii in any HBC |

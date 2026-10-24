@@ -13,6 +13,7 @@
  * descriptions, not copied.
  */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "mii.h"
@@ -42,7 +43,7 @@ static void put32(uint8_t *p, uint32_t v) {
 /* CRC-16/XMODEM, bitwise: RFLiCalculateCRC run over data whose last two
  * bytes are its CRC gives 0, which is the same thing. */
 uint16_t mii_crc16(const void *data, size_t size) {
-	const uint8_t *p = data;
+	const uint8_t *p = (const uint8_t *) data;
 	uint16_t c = 0;
 	int k;
 
@@ -71,8 +72,19 @@ const char *mii_strerror(int result) {
 	case MII_E_VERIFY: return "what was read back differs from what was written";
 	case MII_E_CHANGED: return "the Mii database changed since it was loaded";
 	case MII_E_DENIED: return "IOS refused the file";
+	case MII_E_NO_FILE: return "no Mii database: the Mii Channel has never been opened";
+	case MII_E_UNSUPPORTED: return "this libogc's Wii Remote table was not found";
 	}
 	return result >= 0 ? "done" : "unknown error";
+}
+
+const char *mii_color_name(int fav_color) {
+	static const char *const names[12] = {
+		"red", "orange", "yellow", "light green", "green", "blue",
+		"light blue", "pink", "purple", "brown", "white", "black",
+	};
+
+	return fav_color >= 0 && fav_color < 12 ? names[fav_color] : "?";
 }
 
 /* ---- A Mii's bit fields ------------------------------------------------------
@@ -175,6 +187,9 @@ static const limit limits[] = {
 	L(mole, 1, "mole"), L(mole_scale, 8, "mole scale"), L(mole_x, 16, "mole X"), L(mole_y, 30, "mole Y"),
 	L(height, 128, "height"), L(build, 128, "build"),
 	L(fav_color, 11, "favourite colour"),
+	/* Bits RFL reads as flags: a value mii_pack would cut is refused here,
+	 * not stored as something else. */
+	L(favorite, 1, "favourite"), L(local_only, 1, "local only"), L(kind, 3, "kind"),
 };
 
 static int birthday_ok(int month, int day) {
@@ -204,7 +219,8 @@ int mii_check(const mii *m, const char **why) {
 		bad = "no name";
 	if (!bad && mii_id_empty(m->id))
 		bad = "no creation ID (mii_make_id)";
-	if (!bad && !(mii_id_flags(m->id) & MII_ID_NORMAL) && !m->local_only)
+	/* RFLiIsSpecialID: neither normal nor temporary. */
+	if (!bad && !(mii_id_flags(m->id) & (MII_ID_NORMAL | MII_ID_TEMP)) && !m->local_only)
 		bad = "a special creation ID on a Mii that is not local only";
 	if (why)
 		*why = bad;
@@ -213,20 +229,49 @@ int mii_check(const mii *m, const char **why) {
 
 /* ---- Names -------------------------------------------------------------------- */
 
+/* One character from UTF-8, strictly: a bad lead byte, a short sequence, an
+ * overlong form, a surrogate or anything past U+10FFFF gives U+FFFD, and
+ * moves on by the bytes it took. */
+static uint32_t utf8_next(const uint8_t **sp) {
+	const uint8_t *s = *sp;
+	uint32_t c = *s++, min;
+	int more;
+
+	if (c < 0x80) {
+		*sp = s;
+		return c;
+	}
+	if (c >= 0xc2 && c < 0xe0) {
+		more = 1, min = 0x80, c &= 0x1f;
+	} else if (c >= 0xe0 && c < 0xf0) {
+		more = 2, min = 0x800, c &= 0x0f;
+	} else if (c >= 0xf0 && c < 0xf5) {
+		more = 3, min = 0x10000, c &= 0x07;
+	} else {
+		*sp = s;
+		return 0xfffd;
+	}
+	while (more--) {
+		if ((*s & 0xc0) != 0x80) {
+			*sp = s;
+			return 0xfffd;
+		}
+		c = c << 6 | (*s++ & 0x3f);
+	}
+	*sp = s;
+	return c < min || c > 0x10ffff || (c >= 0xd800 && c < 0xe000) ? 0xfffd : c;
+}
+
 int mii_set_name(uint16_t name[MII_NAME_MAX], const char *utf8) {
 	const uint8_t *s = (const uint8_t *) (utf8 ? utf8 : "");
 	int n = 0;
 
+	if (!name)
+		return MII_E_ARG;
 	memset(name, 0, MII_NAME_MAX * sizeof(name[0]));
 	while (*s) {
-		uint32_t c = *s++;
-		int more = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : 0;
+		uint32_t c = utf8_next(&s);
 
-		if (c >= 0x80 && c < 0xc0)
-			continue;                      /* a stray continuation byte */
-		c &= more == 3 ? 0x07 : more == 2 ? 0x0f : more == 1 ? 0x1f : 0x7f;
-		while (more-- && (*s & 0xc0) == 0x80)
-			c = c << 6 | (*s++ & 0x3f);
 		if (c >= 0x10000) {
 			if (n + 2 > MII_NAME_MAX)
 				break;
@@ -246,9 +291,9 @@ int mii_get_name(const uint16_t name[MII_NAME_MAX], char *utf8, size_t size) {
 	size_t n = 0;
 	int i;
 
-	if (!size)
+	if (!utf8 || !size)
 		return 0;
-	for (i = 0; i < MII_NAME_MAX && name[i]; ++i) {
+	for (i = 0; name && i < MII_NAME_MAX && name[i]; ++i) {
 		uint32_t c = name[i];
 		uint8_t b[4];
 		size_t k, len;
@@ -256,6 +301,8 @@ int mii_get_name(const uint16_t name[MII_NAME_MAX], char *utf8, size_t size) {
 		if (c >= 0xd800 && c < 0xdc00 && i + 1 < MII_NAME_MAX && name[i + 1] >= 0xdc00 &&
 				name[i + 1] < 0xe000)
 			c = 0x10000 + ((c - 0xd800) << 10) + (name[++i] - 0xdc00);
+		else if (c >= 0xd800 && c < 0xe000)
+			c = 0xfffd;                  /* a lone surrogate */
 		if (c < 0x80) {
 			b[0] = (uint8_t) c;
 			len = 1;
@@ -437,7 +484,7 @@ void mii_store(const uint8_t raw[MII_SIZE], uint8_t out[MII_STORE_SIZE]) {
 }
 
 int mii_import(const void *file, size_t size, mii *m) {
-	const uint8_t *p = file;
+	const uint8_t *p = (const uint8_t *) file;
 
 	if (!p || !m || (size != MII_SIZE && size != MII_STORE_SIZE))
 		return MII_E_ARG;
@@ -485,12 +532,18 @@ static int s15(uint16_t w) {
 	return v & 0x4000 ? v - 0x8000 : v;
 }
 
+/* A link is -1 or a node: anything else (only a broken file has one) reads
+ * as -1, so nothing is followed out of the table. */
+static int in_table(int v) {
+	return v >= 0 && v < MII_HIDDEN_SLOTS ? v : -1;
+}
+
 static int node_next(const mii_db *db, int i) {
-	return s15(get16(node_at(db, i) + 8));
+	return in_table(s15(get16(node_at(db, i) + 8)));
 }
 
 static int node_prev(const mii_db *db, int i) {
-	return s15(get16(node_at(db, i) + 10));
+	return in_table(s15(get16(node_at(db, i) + 10)));
 }
 
 static void set_next(mii_db *db, int i, int next) {
@@ -523,9 +576,37 @@ static void seal(mii_db *db) {
 	put16(db->file + DB_CRC, mii_crc16(db->file, DB_CRC));
 }
 
-int mii_db_attach(mii_db *db, uint8_t *file, size_t size) {
-	int h, t;
+/* The hidden database's links, as RFL keeps them: head and tail -1 or a
+ * node, every next and prev -1 or a node, the list from head reaching tail
+ * through used nodes only, each prev the node before it, no node twice, and
+ * every used node on it. A file whose CRC is right can still break these (a
+ * bug in another tool); following such links would loop or write out of the
+ * table, so the library does not. */
+static int links_ok(const mii_db *db) {
+	static uint8_t seen[MII_HIDDEN_SLOTS / 8];
+	int h = (int16_t) get16(db->file + DB_HEAD), t = (int16_t) get16(db->file + DB_TAIL);
+	int i, prev = -1, n = 0, used = 0;
 
+	if (h < -1 || h >= MII_HIDDEN_SLOTS || t < -1 || t >= MII_HIDDEN_SLOTS)
+		return 0;
+	for (i = 0; i < MII_HIDDEN_SLOTS; ++i) {
+		int nx = s15(get16(node_at(db, i) + 8)), pv = s15(get16(node_at(db, i) + 10));
+		if (nx < -1 || nx >= MII_HIDDEN_SLOTS || pv < -1 || pv >= MII_HIDDEN_SLOTS)
+			return 0;
+		used += !mii_id_empty(node_at(db, i));
+	}
+	memset(seen, 0, sizeof(seen));
+	for (i = h; i >= 0; i = node_next(db, i)) {
+		if (mii_id_empty(node_at(db, i)) || (seen[i >> 3] >> (i & 7) & 1) || node_prev(db, i) != prev)
+			return 0;
+		seen[i >> 3] |= (uint8_t) (1 << (i & 7));
+		prev = i;
+		++n;
+	}
+	return prev == t && n == used;
+}
+
+int mii_db_attach(mii_db *db, uint8_t *file, size_t size) {
 	if (!db || !file)
 		return MII_E_ARG;
 	memset(db, 0, sizeof(*db));
@@ -533,15 +614,19 @@ int mii_db_attach(mii_db *db, uint8_t *file, size_t size) {
 			mii_crc16(file, DB_SIZE))
 		return MII_E_FORMAT;
 	db->file = file;
-	h = head(db);
-	t = tail(db);
-	if (h < -1 || h >= MII_HIDDEN_SLOTS || t < -1 || t >= MII_HIDDEN_SLOTS || (h < 0) != (t < 0)) {
+	if (!links_ok(db)) {
 		db->file = NULL;
 		return MII_E_FORMAT;
 	}
 	db->loaded_crc = get16(file + DB_CRC);
-	db->dirty_lo = db->dirty_hi = 0;
 	return MII_OK;
+}
+
+void mii_db_free(mii_db *db) {
+	if (db && db->owned && db->file)
+		free(db->file);
+	if (db)
+		memset(db, 0, sizeof(*db));
 }
 
 static int db_ok(const mii_db *db, int slot) {
@@ -645,11 +730,20 @@ int mii_db_add(mii_db *db, const mii *m) {
 		return MII_E_INVALID;
 	if (mii_db_find(db, m->id) >= 0)
 		return MII_E_EXISTS;
+	if ((i = mii_db_free_slot(db)) < 0)
+		return i;
+	r = mii_db_put(db, i, m);
+	return r < 0 ? r : i;
+}
+
+int mii_db_free_slot(const mii_db *db) {
+	int i;
+
+	if (!db || !db->file)
+		return MII_E_ARG;
 	for (i = 0; i < MII_DB_SLOTS; ++i)
-		if (mii_id_empty(slot_at(db, i) + 0x18)) {
-			r = mii_db_put(db, i, m);
-			return r < 0 ? r : i;
-		}
+		if (mii_id_empty(slot_at(db, i) + 0x18))
+			return i;
 	return MII_E_FULL;
 }
 
@@ -718,16 +812,8 @@ int mii_hidden_get(const mii_db *db, int index, mii *m) {
 	return MII_OK;
 }
 
-static void dirty(mii_db *db, uint32_t lo, uint32_t hi) {
-	if (db->dirty_hi <= db->dirty_lo) {
-		db->dirty_lo = lo;
-		db->dirty_hi = hi;
-	} else {
-		if (lo < db->dirty_lo)
-			db->dirty_lo = lo;
-		if (hi > db->dirty_hi)
-			db->dirty_hi = hi;
-	}
+static void dirty(mii_db *db, int i) {
+	db->dirty[i >> 3] |= (uint8_t) (1 << (i & 7));
 }
 
 /* RFLiOneDataToHiddenDB and writeData_ (RFL_HiddenDatabase.c). */
@@ -769,7 +855,7 @@ int mii_hidden_put(mii_db *db, const mii *m) {
 	h = db->file + DB_HDATA + i * HMII;
 	memcpy(h, raw, 0x36);
 	memset(h + 0x36, 0, HMII - 0x36);
-	dirty(db, DB_HDATA + i * HMII, DB_HDATA + (i + 1) * HMII);
+	dirty(db, i);
 
 	n = node_at(db, i);
 	memcpy(n, m->id, MII_ID_SIZE);
@@ -832,7 +918,23 @@ int mii_remote_parse(const uint8_t *mem, size_t size, mii_remote *r) {
 		}
 		return MII_OK;
 	}
-	return MII_OK;           /* neither copy: an empty set (r->copy -1) */
+	/* Neither copy whole. A new Remote has neither at all: an empty set. A
+	 * magic with a bad CRC is a set damaged or misread: never one to write
+	 * over (RFL fails its load too). */
+	if (get32(mem) == 0x524e4344 || get32(mem + MII_REMOTE_BLOCK) == 0x524e4344)
+		return MII_E_FORMAT;
+	return MII_OK;
+}
+
+int mii_remote_free_slot(const mii_remote *r) {
+	int i;
+
+	if (!r)
+		return MII_E_ARG;
+	for (i = 0; i < MII_REMOTE_SLOTS; ++i)
+		if (mii_id_empty(r->raw[i] + 0x18))
+			return i;
+	return MII_E_FULL;
 }
 
 void mii_remote_build(const mii_remote *r, uint8_t block[MII_REMOTE_BLOCK]) {
@@ -895,7 +997,7 @@ int mii_remote_remove(mii_remote *r, int slot) {
 static char db_path[] ATTRIBUTE_ALIGN(32) = "/shared2/menu/FaceLib/RFL_DB.dat";
 
 static int nand_error(s32 r) {
-	return r == -102 || r == -1 ? MII_E_DENIED : r == -106 ? MII_E_EMPTY : MII_E_IO;
+	return r == -102 || r == -1 ? MII_E_DENIED : r == -106 ? MII_E_NO_FILE : MII_E_IO;
 }
 
 #define BOUNCE (8 * 1024)
@@ -927,27 +1029,51 @@ static int nand_write(s32 fd, u32 off, const u8 *in, u32 len) {
 	return MII_OK;
 }
 
+/* RFL_DB.dat opened, its size checked: the size is part of the format, and
+ * a short file is one the Wii Menu would make again. */
+static s32 db_open(int mode, int *err) {
+	s32 fd;
+
+	ISFS_Initialize();
+	fd = IOS_Open(db_path, mode);
+	if (fd < 0) {
+		*err = nand_error(fd);
+		return -1;
+	}
+	if (IOS_Seek(fd, 0, SEEK_END) != (s32) MII_DB_FILE_SIZE) {
+		IOS_Close(fd);
+		*err = MII_E_FORMAT;
+		return -1;
+	}
+	return fd;
+}
+
 /* The Wi-Fi MAC, which RFL takes for its IDs (NCDGetWirelessMacAddress).
  * Through libogc's net_get_mac_address: the same NCD call (/dev/net/ncd/
  * manage, ioctlv 8), with the 6-byte answer in libogc's MEM2 net heap. With
  * the answer in a MEM1 buffer instead, the bench Wii's IOS returned the
- * last two bytes wrong, every time.
+ * last two bytes wrong, every time. It returns NCD's own status when that is
+ * not 0, and then the MAC is not good.
  * Right after an IOS reload (an app just launched from HBC) IOS's network
  * module has not registered /dev/net/ncd yet: it fails with -6 for a few
- * seconds. The MAC does not change, so it is read once. */
+ * seconds. The MAC does not change, so the answer is kept, and so is a
+ * failure: a second 8 s wait would find no more. */
 int mii_wifi_mac(uint8_t mac[6]) {
 	static u8 known[6];
-	static bool have;
-	u64 end = gettime() + secs_to_ticks(8);
+	static int state;          /* 0 not asked, 1 known, -1 failed */
+	u64 end;
 	s32 r;
 
-	if (!have) {
+	if (!mac)
+		return MII_E_ARG;
+	if (!state) {
+		end = gettime() + secs_to_ticks(8);
 		while ((r = net_get_mac_address(known)) == -6 && gettime() < end)
 			usleep(100 * 1000);
-		if (r < 0)
-			return MII_E_IO;
-		have = true;
+		state = r == 0 ? 1 : -1;
 	}
+	if (state < 0)
+		return MII_E_IO;
 	memcpy(mac, known, 6);
 	return MII_OK;
 }
@@ -957,7 +1083,11 @@ static uint32_t home_word(void) {
 	return mii_wifi_mac(mac) < 0 ? 0 : mii_id_home(mac);
 }
 
+/* RFL's ID counts 4-second steps, so two Miis made in the same 4 seconds
+ * would share one. Each ID made here is at least one step past the last. */
 int mii_make_id(mii *m) {
+	static uint32_t last;
+	uint32_t t;
 	u8 mac[6];
 	int r;
 
@@ -966,6 +1096,11 @@ int mii_make_id(mii *m) {
 	if ((r = mii_wifi_mac(mac)) < 0)
 		return r;
 	mii_id_make(m->id, gettime(), mac);
+	t = get32(m->id) & 0x0fffffffu;
+	if (last && t <= last)
+		t = (last + 1) & 0x0fffffffu;
+	last = t;
+	put32(m->id, (get32(m->id) & 0xf0000000u) | t);
 	return MII_OK;
 }
 
@@ -977,24 +1112,19 @@ int mii_is_home(const mii *m) {
 int mii_db_load(mii_db *db) {
 	u8 *file;
 	s32 fd;
-	int r;
+	int r = MII_OK;
 
 	if (!db)
 		return MII_E_ARG;
 	memset(db, 0, sizeof(*db));
-	ISFS_Initialize();
-	fd = IOS_Open(db_path, IPC_OPEN_READ);
-	if (fd < 0)
-		return nand_error(fd);
-	file = memalign(32, MII_DB_FILE_SIZE + 32);
+	if ((fd = db_open(IPC_OPEN_READ, &r)) < 0)
+		return r;
+	file = (u8 *) memalign(32, MII_DB_FILE_SIZE);
 	if (!file) {
 		IOS_Close(fd);
 		return MII_E_MEM;
 	}
 	r = nand_read(fd, 0, file, MII_DB_FILE_SIZE);
-	/* One byte more must not be there: the size is part of the format. */
-	if (r == MII_OK && IOS_Read(fd, bounce, 32) != 0)
-		r = MII_E_FORMAT;
 	IOS_Close(fd);
 	if (r == MII_OK)
 		r = mii_db_attach(db, file, MII_DB_FILE_SIZE);
@@ -1008,44 +1138,58 @@ int mii_db_load(mii_db *db) {
 	return MII_OK;
 }
 
-static int save(mii_db *db, u8 *check, u32 lo, u32 hi);
+static int dirty_at(const mii_db *db, int i) {
+	return db->dirty[i >> 3] >> (i & 7) & 1;
+}
 
-int mii_db_save(mii_db *db) {
-	u8 *check;
-	u32 lo, hi;
-	int r;
+/* Each run of changed hidden Miis: write it (verify 0) or compare it with
+ * what was read back (verify 1). */
+static int hidden_runs(mii_db *db, s32 fd, u8 *check, int verify) {
+	int i = 0, j, r = MII_OK;
 
-	if (!db || !db->file)
-		return MII_E_ARG;
-	lo = db->dirty_lo;
-	hi = db->dirty_hi > db->dirty_lo ? db->dirty_hi : 0;
-	check = malloc(DB_SIZE);
-	if (!check)
-		return MII_E_MEM;
-	r = save(db, check, lo, hi);
-	free(check);
+	while (r == MII_OK && i < MII_HIDDEN_SLOTS) {
+		if (!dirty_at(db, i)) {
+			++i;
+			continue;
+		}
+		for (j = i; j < MII_HIDDEN_SLOTS && dirty_at(db, j) && (j - i + 1) * HMII <= DB_SIZE; ++j)
+			;
+		if (!verify) {
+			r = nand_write(fd, DB_HDATA + i * HMII, db->file + DB_HDATA + i * HMII, (u32) (j - i) * HMII);
+		} else {
+			r = nand_read(fd, DB_HDATA + i * HMII, check, (u32) (j - i) * HMII);
+			if (r == MII_OK && memcmp(check, db->file + DB_HDATA + i * HMII, (size_t) (j - i) * HMII))
+				r = MII_E_VERIFY;
+		}
+		i = j;
+	}
 	return r;
 }
 
-static int save(mii_db *db, u8 *check, u32 lo, u32 hi) {
+static int save(mii_db *db, u8 *check) {
+	int any = 0, i, r = MII_OK;
 	s32 fd;
-	int r;
 
-	ISFS_Initialize();
-	fd = IOS_Open(db_path, IPC_OPEN_RW);
-	if (fd < 0)
-		return nand_error(fd);
-	/* Nobody else wrote it since we loaded it. */
+	for (i = 0; i < (int) sizeof(db->dirty) && !any; ++i)
+		any = db->dirty[i] != 0;
+	if ((fd = db_open(IPC_OPEN_RW, &r)) < 0)
+		return r;
 	r = nand_read(fd, 0, check, DB_SIZE);
-	if (r == MII_OK && (mii_crc16(check, DB_SIZE) || get16(check + DB_CRC) != db->loaded_crc))
+	/* Nobody else wrote it since it was loaded: its CRC is right and the one
+	 * loaded. After a save of ours that did not finish, the file may be half
+	 * ours, so then it is written again whatever it holds. */
+	if (r == MII_OK && !db->writing && (mii_crc16(check, DB_SIZE) || get16(check + DB_CRC) != db->loaded_crc))
 		r = MII_E_CHANGED;
-	if (r == MII_OK && !hi && !memcmp(check, db->file, DB_SIZE)) {
+	if (r == MII_OK && !any && !memcmp(check, db->file, DB_SIZE)) {
 		IOS_Close(fd);
+		db->writing = 0;
 		return MII_OK;           /* nothing to write */
 	}
 	/* The hidden Miis first, then the table and slots that point to them. */
-	if (r == MII_OK && hi)
-		r = nand_write(fd, lo, db->file + lo, hi - lo);
+	if (r == MII_OK) {
+		db->writing = 1;
+		r = hidden_runs(db, fd, check, 0);
+	}
 	if (r == MII_OK)
 		r = nand_write(fd, 0, db->file, DB_SIZE);
 	if (IOS_Close(fd) < 0 && r == MII_OK)
@@ -1054,56 +1198,58 @@ static int save(mii_db *db, u8 *check, u32 lo, u32 hi) {
 		return r;
 
 	/* Read it back. */
-	fd = IOS_Open(db_path, IPC_OPEN_READ);
-	if (fd < 0)
-		return nand_error(fd);
+	if ((fd = db_open(IPC_OPEN_READ, &r)) < 0)
+		return r;
 	r = nand_read(fd, 0, check, DB_SIZE);
 	if (r == MII_OK && memcmp(check, db->file, DB_SIZE))
 		r = MII_E_VERIFY;
-	while (r == MII_OK && lo < hi) {
-		u32 n = hi - lo < DB_SIZE ? hi - lo : DB_SIZE;
-		r = nand_read(fd, lo, check, n);
-		if (r == MII_OK && memcmp(check, db->file + lo, n))
-			r = MII_E_VERIFY;
-		lo += n;
-	}
+	if (r == MII_OK)
+		r = hidden_runs(db, fd, check, 1);
 	IOS_Close(fd);
 	if (r == MII_OK) {
 		db->loaded_crc = get16(db->file + DB_CRC);
-		db->dirty_lo = db->dirty_hi = 0;
+		db->writing = 0;
+		memset(db->dirty, 0, sizeof(db->dirty));
 	}
 	return r;
 }
 
-void mii_db_free(mii_db *db) {
-	if (db && db->owned && db->file)
-		free(db->file);
-	if (db)
-		memset(db, 0, sizeof(*db));
+int mii_db_save(mii_db *db) {
+	u8 *check;
+	int r;
+
+	if (!db || !db->file)
+		return MII_E_ARG;
+	check = (u8 *) malloc(DB_SIZE);
+	if (!check)
+		return MII_E_MEM;
+	r = save(db, check);
+	free(check);
+	return r;
 }
 
 int mii_get(int slot, mii *m) {
 	mii_db db;
 	u8 *head_part;
 	s32 fd;
-	int r;
+	int r = MII_OK;
 
 	if (slot < 0 || slot >= MII_DB_SLOTS || !m)
 		return MII_E_ARG;
-	ISFS_Initialize();
-	fd = IOS_Open(db_path, IPC_OPEN_READ);
-	if (fd < 0)
-		return nand_error(fd);
-	head_part = malloc(DB_SIZE);
+	if ((fd = db_open(IPC_OPEN_READ, &r)) < 0)
+		return r;
+	head_part = (u8 *) malloc(DB_SIZE);
 	if (!head_part) {
 		IOS_Close(fd);
 		return MII_E_MEM;
 	}
 	r = nand_read(fd, 0, head_part, DB_SIZE);
 	IOS_Close(fd);
-	if (r == MII_OK && (get32(head_part) != 0x524e4f44 || mii_crc16(head_part, DB_SIZE)))
+	if (r == MII_OK && (get32(head_part) != 0x524e4f44 || get32(head_part + DB_HIDDEN) != 0x524e4844 ||
+			mii_crc16(head_part, DB_SIZE)))
 		r = MII_E_FORMAT;
 	if (r == MII_OK) {
+		memset(&db, 0, sizeof(db));
 		db.file = head_part;     /* the slots are all this reads */
 		r = mii_db_get(&db, slot, m);
 	}
@@ -1121,7 +1267,7 @@ int mii_get(int slot, mii *m) {
 #define ST_CONNECTED 0x000010
 
 static struct wiimote_t **remotes;
-static bool looked;
+static bool unsupported;
 
 static bool plausible(const void *p) {
 	uintptr_t a = (uintptr_t) p;
@@ -1129,7 +1275,10 @@ static bool plausible(const void *p) {
 	return (a >= 0x80000000 && a < 0x81800000) || (a >= 0x90000000 && a < 0x94000000);
 }
 
-static struct wiimote_t **locate_remotes(void) {
+/* 1: found (in remotes). 0: the pattern is there but its table is not set
+ * yet (before WPAD_Init): try again later. -1: not this libogc's code, or a
+ * table that does not look right: never use it. */
+static int locate_remotes(void) {
 	const u32 *op = (const u32 *) WPAD_Rumble;
 	register u32 sda asm("r13");
 	int i, chan;
@@ -1143,21 +1292,23 @@ static struct wiimote_t **locate_remotes(void) {
 		if (!load_sda || !shift || !indexed)
 			continue;
 		table = *(struct wiimote_t ***) (sda + (s16) (op[i] & 0xffff));
+		if (!table)
+			return 0;
 		if (!plausible(table))
-			return NULL;
+			return -1;
 		for (chan = 0; chan < 4; ++chan)
 			if (table[chan] && (!plausible(table[chan]) || table[chan]->unid != chan))
-				return NULL;
-		return table;
+				return -1;
+		remotes = table;
+		return 1;
 	}
-	return NULL;
+	return -1;
 }
 
-static struct wiimote_t *remote(int chan) {
-	if (!looked) {
-		remotes = locate_remotes();
-		looked = true;
-	}
+static struct wiimote_t *remote(int chan, int *err) {
+	if (!remotes && !unsupported && locate_remotes() < 0)
+		unsupported = true;
+	*err = unsupported ? MII_E_UNSUPPORTED : MII_E_NO_REMOTE;
 	if (!remotes || chan < 0 || chan > 3 || !remotes[chan])
 		return NULL;
 	return (remotes[chan]->state & ST_CONNECTED) ? remotes[chan] : NULL;
@@ -1254,13 +1405,13 @@ static int rm_write(struct wiimote_t *wm, u32 addr, const u8 *data, u32 len) {
 }
 
 int mii_remote_read_raw(int chan, uint8_t mem[2 * MII_REMOTE_BLOCK]) {
-	struct wiimote_t *wm = remote(chan);
+	struct wiimote_t *wm;
 	int res;
 
 	if (!mem || chan < 0 || chan > 3)
 		return MII_E_ARG;
-	if (!wm)
-		return MII_E_NO_REMOTE;
+	if (!(wm = remote(chan, &res)))
+		return res;
 	if ((res = rm_read(wm, MII_REMOTE_ADDR, rm_mem, sizeof(rm_mem))) < 0)
 		return res;
 	memcpy(mem, rm_mem, sizeof(rm_mem));
@@ -1278,19 +1429,28 @@ int mii_remote_read(int chan, mii_remote *r) {
 	return mii_remote_parse(mem, sizeof(mem), r);
 }
 
-/* Each copy written, then read back, before the next is touched: whatever
- * happens part way, one copy is whole (old or new) and a reader takes it. */
+static int whole(const u8 *block) {
+	return get32(block) == 0x524e4344 && !mii_crc16(block, MII_REMOTE_BLOCK);
+}
+
+/* Each copy written, then read back, before the other is touched. The copy
+ * written first is the one that is not whole now (read again here, not taken
+ * from r): whatever happens part way, the other copy still holds a whole set,
+ * old or new, and a reader takes it. */
 int mii_remote_write(int chan, const mii_remote *r) {
-	struct wiimote_t *wm = remote(chan);
-	int c, res;
+	struct wiimote_t *wm;
+	int k, first, res;
 
 	if (!r || chan < 0 || chan > 3)
 		return MII_E_ARG;
-	if (!wm)
-		return MII_E_NO_REMOTE;
+	if (!(wm = remote(chan, &res)))
+		return res;
+	if ((res = rm_read(wm, MII_REMOTE_ADDR, rm_mem, sizeof(rm_mem))) < 0)
+		return res;
+	first = whole(rm_mem) && !whole(rm_mem + MII_REMOTE_BLOCK) ? 1 : 0;
 	mii_remote_build(r, rm_block);
-	for (c = 0; c < 2; ++c) {
-		u32 addr = MII_REMOTE_ADDR + c * MII_REMOTE_BLOCK;
+	for (k = 0; k < 2; ++k) {
+		u32 addr = MII_REMOTE_ADDR + (u32) (first ^ k) * MII_REMOTE_BLOCK;
 
 		if ((res = rm_write(wm, addr, rm_block, MII_REMOTE_BLOCK)) < 0)
 			return res;

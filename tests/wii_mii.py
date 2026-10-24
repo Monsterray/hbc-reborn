@@ -11,6 +11,10 @@
             and the CRC must be right. The new Mii's ID goes in mii_id.txt.
   remove ID take that Mii out again (only one this test made); before and
             after as for add
+  edit ID FIELD=N...
+            change a Mii this test made: any field of mii.h's struct
+            (height=, build=, favorite=, fav_color=, ...), name=TEXT,
+            birthday=M/D, mingle=0|1; only that slot and the CRC may change
   hidden    a random Mii into the hidden database and out again: afterwards
             the table and slots are as before, and only that Mii's 0x40 bytes
             of data may differ (RFL leaves them too)
@@ -25,7 +29,7 @@
             put a backup's RFL_DB.dat back (tests/nandput: same size only,
             read back and compared), then compare a new copy with it
 
-usage: tests/wii_mii.py backup | check | add [--name NAME] | remove ID | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
+usage: tests/wii_mii.py backup | check | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
 queue: wiibench.py add --wii dev --name mii-STEP --cwd REPO --timeout 1200 -- C:/Python312/python.exe tests/wii_mii.py STEP
 """
 
@@ -141,6 +145,11 @@ def main():
                       "only one hidden Mii's data differs")
     elif step in ("remote-add", "remote-remove") and len(sys.argv) > 2:
         ok = app_ok(run_app(out, step, sys.argv[2], label=step))
+    elif step == "edit" and len(sys.argv) > 3:
+        ok, before = db_copy(out, "before")
+        ok = wm.check(ok, app_ok(run_app(out, "edit", *sys.argv[2:], label="edit")), "mii_app edit")
+        ok2, after = db_copy(out, "after")
+        ok = slot_change(ok and ok2, before, after)
     elif step == "remote-rewrite":
         ok = app_ok(run_app(out, step, label=step))
         wm.tool("get", "sd:/mii_test/remote_backup.bin", str(out / "remote_backup.bin"), check=False)

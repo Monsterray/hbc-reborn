@@ -296,7 +296,7 @@ class MiiLibrary(unittest.TestCase):
                            "rm", 1, "rm", 1, "count", "put", 100, a.hex(), "add", encode(a, brow_y=1).hex())
         self.assertEqual(lines, ["attach 0", "add 0", "add 1", "find 0", f"put {E_EXISTS}", "put 0", "count 2 0",
                                  f"get 0 {b.hex()}", f"get {E_EMPTY} ", "rm 0", f"rm {E_EMPTY}", "count 1 0",
-                                 f"put {E_ARG}", f"add {E_INVALID}", "dirty 0 0"])
+                                 f"put {E_ARG}", f"add {E_INVALID}", "dirty"])
         self.assert_sealed(f)
         self.assertEqual(bytes(f[4:4 + 74]), a)
         self.assertEqual(bytes(f[4 + 74:4 + 148]), bytes(74), "a removed slot is all zero")
@@ -331,7 +331,7 @@ class MiiLibrary(unittest.TestCase):
                                        .replace(b[:2].hex(), struct.pack(">H", struct.unpack(">H", b[:2])[0]
                                                                         & ~0x3fe1).hex(), 1),
                                        "hfind 2", f"hput {E_INVALID}"])
-        self.assertEqual(lines[10], f"dirty {HDATA} {HDATA + 3 * 0x40}")
+        self.assertEqual(lines[10], "dirty 0 1 2")
         self.assert_sealed(f)
         self.assertEqual(struct.unpack_from(">hh", f, 0x1D04), (0, 2))
         self.assertEqual(node(f, 0), (a[0x18:0x20], 1, 1, -1))
@@ -420,6 +420,83 @@ class MiiLibrary(unittest.TestCase):
         self.assertEqual(lines, ["parse 0 copy 0 secret 001", f"get 0 {a.hex()}", f"get {E_EMPTY} ",
                                  f"get {E_EMPTY} ", "rm 0"])
         self.assertEqual(out[:BLOCK], self.built({}))
+
+    # ---- the 2026-10-24 audit: each defect it found -----------------------------
+
+    def test_flag_bits_are_checked_not_cut(self):
+        base = test_mii()
+        for args, why in ((["favorite=2"], "favourite above 1"), (["local_only=2"], "local only above 1"),
+                          (["kind=4"], "kind above 3")):
+            line = self.host("check", base.hex(), *args)[0]
+            self.assertEqual(line, f"{E_INVALID} {why}", args)
+        # A special ID with local_only 2 would pack as 0 and fail later: refused now.
+        special = encode(base, id=bytes.fromhex("0000000500000001"))
+        self.assertEqual(self.host("check", special.hex(), "local_only=2")[0].split()[0], str(E_INVALID))
+
+    def test_a_temporary_id_is_not_special(self):
+        # RFLiIsSpecialID excludes temporary IDs: RFL's check passes such a Mii.
+        temp = encode(test_mii(), id=bytes.fromhex("a000000500000001"))
+        self.assertEqual(self.check(temp), (OK, "-"))
+        lines, _ = self.db(empty_db(), "add", temp.hex(), "hput", temp.hex())
+        self.assertEqual(lines[1:3], [f"add {E_INVALID}", f"hput {E_INVALID}"], "never stored on a Wii")
+
+    def test_names_that_are_not_utf8(self):
+        fffd = "�"
+        for raw, kept, back in ((b"\xe3", 1, fffd), (b"A\xc0\x80B", 4, f"A{fffd}{fffd}B"),
+                                (b"\xed\xa0\x80", 1, fffd), (b"\xf4\x90\x80\x80", 1, fffd),
+                                (b"\xf8x", 2, f"{fffd}x"), (b"\xe3\x81x", 2, f"{fffd}x"),
+                                (b"\xe3\x81\x82", 1, "あ")):
+            n, h = (self.host("name", raw.hex())[0].split(" ") + [""])[:2]
+            self.assertEqual((int(n), bytes.fromhex(h).decode()), (kept, back), raw)
+
+    def test_free_slots(self):
+        lines, _ = self.db(empty_db(), "free", "add", mii_with(1).hex(), "free", "rm", 0, "free")
+        self.assertEqual(lines[1:6], ["free 0", "add 0", "free 1", "rm 0", "free 0"])
+        lines, _ = self.remote(self.built({0: mii_with(1), 2: mii_with(2)}) + bytes(BLOCK), "free")
+        self.assertEqual(lines[1], "free 1")
+        full = self.built({i: mii_with(i) for i in range(10)})
+        lines, _ = self.remote(full + bytes(BLOCK), "free")
+        self.assertEqual(lines[1], f"free {E_FULL}")
+
+    def test_a_damaged_remote_is_not_an_empty_one(self):
+        a = mii_with(1)
+        both_bad = self.built({0: a}, good_crc=False) + self.built({0: a}, good_crc=False)
+        lines, _ = self.remote(both_bad)
+        self.assertEqual(lines[0], f"parse {E_FORMAT} copy -1 secret 000")
+        lines, _ = self.remote(self.built({0: a}, good_crc=False) + bytes(BLOCK))
+        self.assertEqual(lines[0].split()[1], str(E_FORMAT))
+        lines, _ = self.remote(bytes(2 * BLOCK))
+        self.assertEqual(lines[0], "parse 0 copy -1 secret 000", "a new Remote: an empty set")
+
+    def broken_links(self, change):
+        """A database with three hidden Miis (0 <- 1 <- 2), then change(f)
+        breaks it, and the CRC is made right again."""
+        lines, f = self.db(empty_db(), "hput", mii_with(1).hex(), "hput", mii_with(2).hex(),
+                           "hput", mii_with(3).hex())
+        self.assertEqual(lines[1:4], ["hput 0", "hput 1", "hput 2"])
+        change(f)
+        struct.pack_into(">H", f, DB_CRC, crc(f[:DB_CRC]))
+        return f
+
+    def test_hidden_links_a_crc_does_not_cover(self):
+        def node_field(i, off, v):
+            return lambda f: struct.pack_into(">H", f, NODES + i * 12 + off, v)
+        cases = {
+            "prev past the table": node_field(0, 10, 10016),
+            "next past the table": node_field(2, 8, 12000),
+            "a loop": node_field(2, 8, 0),
+            "a prev that does not point back": node_field(1, 10, 2),
+            "a used node off the list": lambda f: struct.pack_into(">H", f, NODES + 1 * 12 + 8, 0x7fff),
+            "the tail not the list's end": lambda f: struct.pack_into(">h", f, 0x1D06, 1),
+            "head past the table": lambda f: struct.pack_into(">h", f, 0x1D04, 10000),
+        }
+        for what, change in cases.items():
+            f = self.broken_links(change)
+            lines, after = self.db(f, "hrm", 0, name="broken")
+            self.assertEqual(lines, [f"attach {E_FORMAT}"], what)
+            self.assertEqual(after, f, f"{what}: nothing written")
+        lines, _ = self.db(self.broken_links(lambda f: None), "hlist", "count")
+        self.assertEqual(lines[:3], ["attach 0", "hlist 0 1 2", "count 0 3"], "the unbroken file")
 
     # ---- real data -------------------------------------------------------------------
 
