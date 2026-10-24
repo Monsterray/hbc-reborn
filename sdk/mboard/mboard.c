@@ -1,10 +1,17 @@
 /*
- * mboard.c - post to the Wii Message Board from homebrew; see mboard.h and
+ * mboard.c - the Wii Message Board from homebrew; see mboard.h and
  * docs/mboard.md. Public domain.
  *
- * The receive-box post writes what the Revolution SDK's NWC24CommitMsg()
- * writes for a message a game addresses to its own Wii (its loop-back
- * delivery), field for field. The play-history writer is the one the
+ * In order: bytes, the VFF (FAT16 and FAT12 volumes in NAND files), the play
+ * history (cdb.vff), the mailboxes (posts and sends), the Address Book,
+ * text, and the libogc half (IOS, KD, the settings), which MBOARD_NO_OGC
+ * leaves out.
+ *
+ * A post writes what the Revolution SDK's NWC24CommitMsg() writes for a
+ * message a game addresses to its own Wii (its loop-back delivery), and a
+ * send what it writes for one to another Wii, field for field. The
+ * Address Book is written as NWC24WriteFriendInfo(), UpdateFriendInfo() and
+ * DeleteFriendInfo() write it. The play-history writer is the one the
  * Homebrew Channel logs with (playtime.c builds this file, its cores only),
  * checked byte for byte against the Wii Menu's accepted reference
  * (tests/test_cdblog.py, tests/test_mboard.py).
@@ -1436,7 +1443,7 @@ static void fl_set_bit(uint8_t *fl, int slot, int on) {
 	put32(fl + 0x10 + 4 * (slot >> 5), w);
 }
 
-int mboard_friends_parse(const uint8_t *fl, mboard_friend *out, int max) {
+int mboard_book_parse(const uint8_t *fl, mboard_friend *out, int max) {
 	int slot, n = 0, i;
 
 	if (!fl_ok(fl))
@@ -1476,7 +1483,7 @@ static void put_nick(uint8_t *e, const uint16_t *nick, int len) {
 		put16(e + 8 + 2 * i, nick[i]);
 }
 
-int mboard_friends_add(uint8_t *fl, uint64_t number, const uint16_t *nick, int nick_len,
+int mboard_book_add(uint8_t *fl, uint64_t number, const uint16_t *nick, int nick_len,
 					   const uint8_t *mii_id) {
 	int slot;
 	uint8_t *e;
@@ -1509,7 +1516,7 @@ int mboard_friends_add(uint8_t *fl, uint64_t number, const uint16_t *nick, int n
 	return slot;
 }
 
-int mboard_friends_set(uint8_t *fl, int slot, const uint16_t *nick, int nick_len,
+int mboard_book_set(uint8_t *fl, int slot, const uint16_t *nick, int nick_len,
 					   const uint8_t *mii_id) {
 	uint8_t *e;
 
@@ -1527,7 +1534,7 @@ int mboard_friends_set(uint8_t *fl, int slot, const uint16_t *nick, int nick_len
 	return slot;
 }
 
-int mboard_friends_remove(uint8_t *fl, int slot) {
+int mboard_book_remove(uint8_t *fl, int slot) {
 	if (!fl_ok(fl))
 		return MBOARD_E_FORMAT;
 	if (slot < 0 || slot >= MBOARD_FRIENDS || !get64(fl + 0x40 + 8 * slot))
@@ -1967,7 +1974,7 @@ static int fl_do(int (*change)(uint8_t *fl, void *arg), void *arg, mboard_friend
 	} else if (IOS_Read(fd, fl, MBOARD_FRIENDS_SIZE) != (s32) MBOARD_FRIENDS_SIZE) {
 		res = MBOARD_E_FORMAT;
 	} else {
-		res = change ? change(fl, arg) : mboard_friends_parse(fl, out, max);
+		res = change ? change(fl, arg) : mboard_book_parse(fl, out, max);
 		if (change && res >= 0 && (IOS_Seek(fd, 0, SEEK_SET) != 0 ||
 				IOS_Write(fd, fl, MBOARD_FRIENDS_SIZE) != (s32) MBOARD_FRIENDS_SIZE))
 			res = MBOARD_E_IO;
@@ -1993,10 +2000,10 @@ static int fl_apply(uint8_t *fl, void *arg) {
 	const uint8_t *id = c->mii ? c->mii + 0x18 : NULL;   /* its creation ID */
 
 	if (c->op == 0)
-		return mboard_friends_add(fl, c->number, c->nick, c->nick_len, id);
+		return mboard_book_add(fl, c->number, c->nick, c->nick_len, id);
 	if (c->op == 1)
-		return mboard_friends_set(fl, c->slot, c->nick_len < 0 ? NULL : c->nick, c->nick_len, id);
-	return mboard_friends_remove(fl, c->slot);
+		return mboard_book_set(fl, c->slot, c->nick_len < 0 ? NULL : c->nick, c->nick_len, id);
+	return mboard_book_remove(fl, c->slot);
 }
 
 int mboard_friends(mboard_friend *out, int max) {

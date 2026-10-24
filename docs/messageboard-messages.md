@@ -343,8 +343,14 @@ Book can find it by that ID.
 
 ## Doing it from homebrew
 
-Use sdk/mboard. `mboard_post()` sends text, and `mboard_post_msg()` adds a
-Mii, a JPEG, board data, Reply, a delay and a filing date ([mboard.md](mboard.md)).
+Use sdk/mboard ([mboard.md](mboard.md)):
+
+- **`mboard_post()`** posts text to the Wii's own board.
+- **`mboard_post_msg()`** adds a Mii, a JPEG, board data (stationery
+  from `tools/msgboard/stationery.py`, a channel button), Reply, a delay and
+  a filing date.
+- **`mboard_send_msg()`** sends the same message to another Wii.
+
 None of these needs the console key. The record and header layouts above are
 for reading existing board records, and for any later work on writing
 records straight into `cdb.vff`.

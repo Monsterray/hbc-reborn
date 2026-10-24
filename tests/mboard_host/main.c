@@ -215,7 +215,7 @@ static int friends(int argc, char **argv) {
 		for (i = 0; i < 8; ++i)
 			sscanf(argv[6] + 2 * i, "%2hhx", &id[i]);
 	if (!strcmp(argv[3], "list")) {
-		n = mboard_friends_parse(fl, list, MBOARD_FRIENDS);
+		n = mboard_book_parse(fl, list, MBOARD_FRIENDS);
 		printf("%d\n", n);
 		for (i = 0; i < n; ++i) {
 			printf("%d %d %d %016llu ", list[i].slot, list[i].type, list[i].confirmed,
@@ -231,12 +231,12 @@ static int friends(int argc, char **argv) {
 		return 0;
 	}
 	if (!strcmp(argv[3], "add") && argc > 5) {
-		res = mboard_friends_add(fl, strtoull(argv[4], NULL, 10), nick, nl, argc > 6 ? id : NULL);
+		res = mboard_book_add(fl, strtoull(argv[4], NULL, 10), nick, nl, argc > 6 ? id : NULL);
 	} else if (!strcmp(argv[3], "set") && argc > 5) {
-		res = mboard_friends_set(fl, atoi(argv[4]), strcmp(argv[5], "-") ? nick : NULL, nl,
+		res = mboard_book_set(fl, atoi(argv[4]), strcmp(argv[5], "-") ? nick : NULL, nl,
 								 argc > 6 ? id : NULL);
 	} else if (!strcmp(argv[3], "remove")) {
-		res = mboard_friends_remove(fl, atoi(argv[4]));
+		res = mboard_book_remove(fl, atoi(argv[4]));
 	} else {
 		fprintf(stderr, "unknown friends command %s\n", argv[3]);
 		return 2;

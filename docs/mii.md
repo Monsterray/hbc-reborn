@@ -162,6 +162,13 @@ face: the record held all 74 bytes at offset 0x1F8 (`tests/dolphin_mboard.py
   Wii Menu does the rest. A Mii read from the Wii's database already passes.
   A Mii an app builds itself must meet the ranges above, or it is dropped
   without any error.
+- **A contact's Mii in the Address Book** is only the Mii's creation ID (8
+  bytes in `nwc24fl.bin`). `mboard_friend_add` and `mboard_friend_set` take a
+  Mii and store its ID.
+  - The Wii Menu then shows the Mii with that ID: one of the Wii's own, or
+    one that came on a letter.
+  - The Mii the user chose for a contact in the Wii Menu was stored the same
+    way: Testorb's ID, on the bench Wii.
 - **`tests/dolphin_mboard.py`'s `test_mii()`** builds a valid Mii from the
   field table above. It is a worked example of packing the bit fields.
 

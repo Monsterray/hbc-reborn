@@ -387,14 +387,22 @@ mboard_post("WiiStation", "Played Final Fantasy VII\nfor 42 minutes.");
 mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);   // needs AHBPROT
 ```
 
-`mboard_post_msg()` adds what a game's message can carry: a Mii as its icon
-(`mboard_mii()` reads one from the Wii's Mii database), a photo, a button
-that opens a channel, a Reply button, a delay, and the date it is filed
-under, and stationery (`tools/msgboard/stationery.py` makes a border, a board
-icon and music). `mboard_send_msg()` sends the same message to another Wii by
-its Wii number, through the WiiConnect24 mail server (WiiLink's today), and
-`mboard_friends()` reads and edits the Address Book. Nothing needs
-the internet except sending, and nothing deletes what is already on the
+Beyond a simple post:
+
+- **`mboard_post_msg()`** adds what a game's message can carry:
+  - a Mii as its icon (`mboard_mii()` reads one from the Wii's Mii database);
+  - a photo;
+  - stationery (`tools/msgboard/stationery.py` makes a border, a board icon
+    and music);
+  - a button that opens a channel;
+  - a Reply button;
+  - a delay, and the date it is filed under.
+- **`mboard_send_msg()`** sends the same message to another Wii by its Wii
+  number, through the WiiConnect24 mail server (WiiLink's today).
+- **`mboard_friends()`** and `mboard_friend_add`, `_set` and `_remove` read
+  and edit the Address Book.
+
+Only sending needs the internet, and nothing deletes what is already on the
 board. HBC's own play log is this library's writer.
 
 Docs:
@@ -529,7 +537,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Message Board library (`sdk/mboard`) on the PC: posts, the full message, sending, play history, byte for byte | `python3 tests/test_mboard.py`, `python3 tests/test_cdblog.py` | C compiler |
 | Message Board library with the real Wii Menu 4.3U filing the post (`--full` for the Mii, photo and board data) | `python3 tests/dolphin_mboard.py --restore` (build `tests/mboard_app` first) | Dolphin, the Wii Menu profile |
 | Message Board stationery (a letter's border, board icon, music): every encoder read back, the five example themes | `python3 tests/test_stationery.py` | Pillow |
-| Message Board library on the bench Wii: `backup`, `post`, `full`, `send WII`, `board`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
+| Message Board library on the bench Wii: `backup`, `id`, `post`, `full`, `send WII`, `board`, `friends`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent and MEM2: nothing written into HBC's records while an app runs, the log target kept as it stops, the agent's memory at the top of the MEM2 arena | `python3 tests/wii_agent_mem2.py WII-IP` (`--dol` for another build) | Wii in any HBC |
 | `hbc_agent_stop()` (then an IOS reload, a re-init, a crash) and `hbc_agent_listen()` (the app's own server on 4299) on a real Wii | `make -C tests/agent_app`, then `python3 tests/wii_agent_stop.py --wii WII-IP` (`--dol` for another build) | Wii in any HBC |
