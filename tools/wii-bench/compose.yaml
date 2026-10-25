@@ -9,7 +9,9 @@ services:
       - ./history:/data          # events-*.jsonl, gzipped after 7 days, archive/YYYY-MM.tar
     environment:
       KEEP_MONTHS: "0"           # months of monthly archives to keep; 0 keeps them forever
-      # The Wiis, name=ip[:port] [pinned], comma-separated; the first takes the jobs of
-      # dispatchers from before 1.10.8. `pinned`: only jobs added with --wii NAME run there.
+      # The Wiis, name=ip[:port] [pinned] [lacks:PART ...], comma-separated; the first takes
+      # the jobs of dispatchers from before 1.10.8. `pinned`: only jobs added with --wii NAME
+      # run there. `lacks:disc`: no job added with --needs disc runs there (dev's drive reads
+      # no disc, 2026-10-24).
       # Empty: one Wii, at each workstation's WII_BENCH_IP. See README "Several Wiis".
-      WII_BENCH_WIIS: "dev=192.168.8.213, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"
+      WII_BENCH_WIIS: "dev=192.168.8.213 lacks:disc, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"

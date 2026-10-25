@@ -1307,6 +1307,36 @@ class MultiWiiTest(unittest.TestCase):
         self.assertEqual((lanes["one"]["jobs"], lanes["one"]["failed"], lanes["one"]["wait"]), (2, 1, "1m30s"))
         self.assertTrue(kv["lane_ticks"].endswith("now"))
 
+    def test_a_wii_that_lacks_a_part_takes_no_job_that_needs_it(self):
+        pool = self.wb.parse_pool("dev=10.0.0.1 lacks:disc lacks:usb, lr=10.0.0.2 pinned")
+        self.assertEqual([(w["name"], w["lacks"], w["pinned"]) for w in pool],
+                         [("dev", ["disc", "usb"], False), ("lr", [], True)])
+        l = self.wb.Leases(ttl=60, clock=lambda: 0.0, pool=pool)
+        l.grace_until = 0
+        r = l.acquire({"ticket": "a", "host": "h", "name": "dump", "want": "any", "needs": ["disc"]})
+        self.assertFalse(r["granted"])            # dev lacks a disc, lr is pinned-only
+        self.assertIn("no Wii here can take it", r["error_want"])
+        r = l.acquire({"ticket": "b", "host": "h", "name": "dump", "want": "lr", "needs": ["disc"]})
+        self.assertEqual((r["granted"], r["slot"]), (True, "lr"))
+        r = l.acquire({"ticket": "c", "host": "h", "name": "plain", "want": "any"})
+        self.assertEqual((r["granted"], r["slot"], r["lacks"]), (True, "dev", ["disc", "usb"]))
+        from unittest import mock
+        with mock.patch.object(self.wb, "LACKS", {"dev": {"disc"}}), mock.patch.object(self.wb, "PINNED", set()):
+            self.assertFalse(self.wb.may_use({"needs": ["disc"]}, "dev"))
+            self.assertTrue(self.wb.may_use({"needs": ["disc"]}, "two"))
+            self.assertTrue(self.wb.may_use({}, "dev"))
+            self.assertFalse(self.wb.startable({"needs": ["disc"]}, [], ["dev"]))
+        env = dict(self.env, WII_BENCH_WIIS="dev=127.0.0.1:9 lacks:disc")
+        add = lambda *a: subprocess.run([sys.executable, str(BENCH), "add", *a, "--", sys.executable, "-c", "0"],
+                                        env=env, capture_output=True, text=True, timeout=30)
+        r = add("--needs", "disc")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no Wii can take this job: it needs disc, and dev lacks disc", r.stderr)
+        r = add("--needs", "network")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        job = json.loads((self.home / "queue/pending" / f"{r.stdout.strip()}.json").read_text())
+        self.assertEqual(job["needs"], ["network"])
+
     def test_a_dispatcher_before_the_pool_only_gets_the_first_wii(self):
         l = self.leases()
         l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "any"})        # has one

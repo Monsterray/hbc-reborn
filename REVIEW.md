@@ -567,6 +567,27 @@ would, writing and compiling the code for six tasks.
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
 
+#### A Wii can lack a part: dev's broken disc drive
+
+Tool work, no version of its own. Main USBLoaderGX asked for this (2026-10-24).
+
+- **The finding:** dev's drive sees a disc, but every disc ID read fails, through d2x 249 and
+  251 and through stock IOS 58. The same disc reads on lrwii.
+- **The pool can now say what a Wii lacks:** `lacks:PART`, as in `dev=192.168.8.213 lacks:disc`
+  in `compose.yaml`.
+- **`add --needs PART`** (repeatable) keeps a job off every Wii that lacks that part:
+  - on the server, through `Leases._ok`;
+  - in the dispatcher, through `may_use` and `startable`.
+- **`add` refuses** such a job when no Wii in the pool can take it.
+- **Shown:** the monitor's card says what a Wii lacks ("takes any job · no disc"), and
+  `status` prints `[lacks disc]`.
+- **The faults are listed** in the README's Wii table: the disc drive, dev's SanDisk, and
+  lrwii's slot 249.
+- **Old dispatchers:** a dispatcher from before this change sends no `needs`, and the server
+  then treats its job as one that needs nothing.
+- **Checked:**
+  - `test_a_wii_that_lacks_a_part_takes_no_job_that_needs_it`.
+
 #### "Used outside the queue" needs two missed probes
 
 Tool work, no version of its own.

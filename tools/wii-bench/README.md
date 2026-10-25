@@ -368,18 +368,38 @@ server: `wiibench.py serve`, stdlib Python only, on TCP 4310.
 The queue can drive more than one Wii. Each Wii has its own lease, and a job runs on
 whichever Wii is free first, unless it names one.
 
-- **The pool** is a list of `name=ip[:port] [pinned]`, separated by commas or newlines, in
-  `$WII_BENCH_WIIS`. This bench's, in `compose.yaml`:
+- **The pool** is a list of `name=ip[:port] [pinned] [lacks:PART ...]`, separated by commas
+  or newlines, in `$WII_BENCH_WIIS`. This bench's, in `compose.yaml`:
 
   ```bash
-  WII_BENCH_WIIS="dev=192.168.8.213, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"
+  WII_BENCH_WIIS="dev=192.168.8.213 lacks:disc, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"
   ```
 
-  | Name | Address | Takes |
-  |---|---|---|
-  | `dev` | 192.168.8.213 | any job: the bench Wii |
-  | `lrwii` | 192.168.8.243 | only `add --wii lrwii`: the living-room Wii, real data |
-  | `prod` | 192.168.8.200 | only `add --wii prod`: the everyday Wii, real data |
+  | Name | Address | Takes | Lacks | Known faults |
+  |---|---|---|---|---|
+  | `dev` | 192.168.8.213 | any job: the bench Wii | `disc` | The disc drive is broken. Its USB flash drive (the SanDisk) is bad. |
+  | `lrwii` | 192.168.8.243 | only `add --wii lrwii`: the living-room Wii, real data | | Slot 249 holds d2x r65535: a USB write through it can hang. |
+  | `prod` | 192.168.8.200 | only `add --wii prod`: the everyday Wii, real data | | |
+
+  - **dev's disc drive** (USB Loader GX, 2026-10-24, jobs `20261024-224050-0fdbe5`,
+    `-225416-cf8733` and `-225416-7aa8eb`):
+    - The drive sees the disc: cover status 2, and DI reset succeeds.
+    - Every disc ID read fails: -2 through d2x cIOS 249 (v11.1.0-rc1) and through 251 (base
+      58), and -16 through stock IOS 58.
+    - The same disc (New Super Mario Bros. Wii, SMNE01) reads on `lrwii`.
+    - A failed disc read on `dev` says nothing about the code under test.
+  - **dev's SanDisk** is behind 20-second-to-minutes writes and sectors that landed as junk
+    (cIOS Research's finding). Don't trust USB writes there.
+  - **lrwii's slot 249** holds d2x r65535, which is old and has no backup: never overwrite it.
+    A USB write through it can stop answering. A disc dump froze there at 16.53 MB on
+    2026-10-24, and the Wii needed a reset.
+  - The shared wii-homebrew skill keeps the same list, under "Known hardware faults".
+  - **`lacks:PART`:** a part the Wii doesn't have, or that is broken. A job added with
+    `--needs PART` (repeatable, e.g. `--needs disc`) never runs on a Wii that lacks it, and
+    never waits for one. `add` refuses such a job when no Wii in the pool can take it. A job
+    that names no part may still land anywhere, so a job that uses the disc drive must say
+    `--needs disc`. The card on the monitor's queue page says what a Wii lacks, and `status`
+    prints `[lacks disc]`. The parts are free-form words: `disc` is the one in use.
 
   - **`pinned`:** a pinned Wii takes only jobs added with `--wii` and its name. A job for
     any Wii never lands there, and never waits for one. The production consoles are on the
