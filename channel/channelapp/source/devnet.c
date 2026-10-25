@@ -115,6 +115,12 @@ static const char *crash_kind(u32 kind) {
 	return kind < 6 ? names[kind] : "exception";
 }
 
+static const char *way_out_name(u32 way) {
+	static const char *names[] = { "not_checked", "stub", "es_launch", "reset", "stm_reset",
+								   "stub_anyway" };
+	return way < 6 ? names[way] : "unknown";
+}
+
 static const char *lastlog_why(u32 why) {
 	static const char *names[] = { "exit", "exception", "fatal", "hang", "abort", "stack",
 								   "power" };
@@ -153,7 +159,7 @@ static s32 crash_json(char *buf, size_t size) {
 			crash.sp, crash.uptime_ms);
 	for (i = 0; i < HBC_CRASH_FRAMES && crash.frames[i]; ++i)
 		n += snprintf(buf + n, size - n, "%s\"%08x\"", i ? "," : "", crash.frames[i]);
-	n += snprintf(buf + n, size - n, "]}");
+	n += snprintf(buf + n, size - n, "],\"way_out\":\"%s\"}", way_out_name(crash.way_out));
 	return n;
 }
 
@@ -485,6 +491,12 @@ void devnet_early_init(void) {
 	if (cb->magic == HBC_CRASH_MAGIC && cb->version == HBC_CRASH_VERSION &&
 			cb->check == hbc_crash_check(cb)) {
 		memcpy(&crash, cb, sizeof(crash));
+		have_crash = true;
+	} else if (cb->magic == HBC_CRASH_MAGIC && cb->version == 2 &&
+			((u32 *) cb)[HBC_CRASH_V2_WORDS] == hbc_check_words(cb, HBC_CRASH_V2_WORDS)) {
+		// An agent before 1.10.14: no way_out, so the stub, unchecked.
+		memset(&crash, 0, sizeof(crash));
+		memcpy(&crash, cb, 4 * HBC_CRASH_V2_WORDS);
 		have_crash = true;
 	} else if (cb->magic == HBC_CRASH_MAGIC && cb->version == 1 &&
 			((u32 *) cb)[HBC_CRASH_V1_WORDS] == hbc_check_words(cb, HBC_CRASH_V1_WORDS)) {

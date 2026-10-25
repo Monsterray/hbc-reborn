@@ -98,7 +98,7 @@
  * cover these addresses while it runs. */
 #define HBC_CRASH_ADDR 0x91800020
 #define HBC_CRASH_MAGIC 0x48424343 /* 'HBCC' */
-#define HBC_CRASH_VERSION 2
+#define HBC_CRASH_VERSION 3
 #define HBC_CRASH_FRAMES 12
 #define HBC_CRASH_REASON 64
 
@@ -110,6 +110,20 @@ enum {
 	HBC_CRASH_ASSERT = 3,    /* assert() failed; the reason is file:line: expression */
 	HBC_CRASH_ABORT = 4,     /* abort() */
 	HBC_CRASH_STACK = 5      /* the main thread overran its stack */
+};
+
+/* How the agent left the app (hbc_crash_block.way_out; see "The way out"
+ * below hbc_agent_fatal()). */
+enum {
+	HBC_WAY_NOT_CHECKED = 0, /* the reload stub, unchecked: an exception, a
+	                            check turned off, or an agent before 1.10.14 */
+	HBC_WAY_STUB = 1,        /* IOS closed every descriptor: the reload stub */
+	HBC_WAY_ES_LAUNCH = 2,   /* a descriptor's close got no reply (a module of
+	                            IOS stuck): HBC launched through ES directly */
+	HBC_WAY_RESET = 3,       /* a system reset through HW_RESETS (AHBPROT) */
+	HBC_WAY_STM_RESET = 4,   /* a system reset through /dev/stm/immediate */
+	HBC_WAY_STUB_ANYWAY = 5  /* nothing reset the Wii: the reload stub anyway,
+	                            which may wait for good */
 };
 
 typedef struct {
@@ -126,10 +140,13 @@ typedef struct {
 	u32 kind;        /* HBC_CRASH_* */
 	u32 code;        /* the app's own, for a fatal; never interpreted */
 	char reason[HBC_CRASH_REASON]; /* ASCII, NUL-terminated */
+	/* Version 3 on; a version 2 block had its check here. */
+	u32 way_out;     /* HBC_WAY_* */
 	u32 check;       /* hbc_crash_check() */
 } hbc_crash_block;
 
 #define HBC_CRASH_V1_WORDS 29 /* words before a version 1 block's check */
+#define HBC_CRASH_V2_WORDS 47 /* words before a version 2 block's check */
 
 static inline u32 hbc_check_words(const void *p, u32 words) {
 	const u32 *w = (const u32 *) p;
@@ -265,7 +282,10 @@ enum {
 	HBC_AGENT_NO_BUTTONS = 2,      /* Reset and Power stay libogc's */
 	HBC_AGENT_NO_FLUSH = 4,        /* leave SD and USB mounted at exit */
 	HBC_AGENT_NO_FRAMES = 8,       /* no frame pacing (a vertical blank callback) */
-	HBC_AGENT_NO_THREADS = 16      /* no thread list in the kept log */
+	HBC_AGENT_NO_THREADS = 16,     /* no thread list in the kept log */
+	HBC_AGENT_NO_IOS_CHECK = 32    /* leave through the reload stub unchecked,
+	                                  as agents before 1.10.14 did: no
+	                                  descriptor closes, no ES launch, no reset */
 };
 
 enum {
@@ -334,9 +354,43 @@ s32 hbc_agent_net_wait(u32 ms);
  * app's code (any number; HBC never interprets it) and the reason, a
  * printf-style message cut to 63 characters. The reason is also printed, so
  * it ends the kept log. hbc_agent_fatal() then calls exit(0), so the app's
- * own clean-up still runs (atexit, SD caches); hbc_agent_fatal_now() goes
- * straight back to HBC through the reload stub, for when the app's state
- * cannot be trusted (a lock may be held). Both work before hbc_agent_init(). */
+ * own clean-up still runs (atexit, SD caches), unless IOS does not open
+ * /dev/es within 3 s: then it leaves as hbc_agent_fatal_now() does, which
+ * goes straight back to HBC (the way out, below), for when the app's state
+ * cannot be trusted (a lock may be held, or IOS may be stuck). exit() needs
+ * the devices it writes back to answer: an app that may wedge one (a USB
+ * read through a cIOS) uses hbc_agent_fatal_now(), or HBC_AGENT_NO_FLUSH.
+ * Both work before hbc_agent_init().
+ *
+ * The way out. hbc_agent_fatal_now(), the hang watchdog, assert(), abort()
+ * and the stack guard's marker check all leave the same way. HBC's reload
+ * stub (0x80001800) closes every IOS descriptor and launches HBC through ES,
+ * waiting on each step for good, so an IOS that stopped answering used to
+ * leave the Wii frozen until someone pulled the power. The agent now does
+ * the stub's closes itself first, with interrupts off and a time limit on
+ * each (0.5 s for IOS's ack, 1 s for the reply), and then, in this order:
+ *   1. every close answered: the reload stub, as before (HBC_WAY_STUB);
+ *   2. IOS acked but a close got no reply, so one module is stuck (a DI read
+ *      through d2x cIOS, 2026-10-24): HBC launched through ES here, skipping
+ *      the closes; IOS reloads and the Wii is back in HBC, with the crash
+ *      block and kept log (HBC_WAY_ES_LAUNCH);
+ *   3. that failed, or IOS acked nothing: with AHBPROT open (the app's
+ *      meta.xml has <ahb_access/>, and any IOS it reloaded kept it), a system
+ *      reset through HW_RESETS bit 0, which needs no IOS (HBC_WAY_RESET);
+ *   4. while IOS still acks: /dev/stm/immediate's hot reset (HBC_WAY_STM_RESET);
+ *   5. the reload stub anyway, which may wait for good (HBC_WAY_STUB_ANYWAY).
+ * A reset reboots the whole console: boot2, then the System Menu, or
+ * Priiloader where it is installed; the agent writes Priiloader's magic word
+ * "Abra" at 0x817FEFF0 first, which runs its autoboot (HBC, if set). Without
+ * Priiloader the Wii stops in the System Menu: the resets are the last
+ * resort, for a Wii that would otherwise stay frozen. The kept log outlived
+ * an HW_RESETS reset on the bench Wii (2026-10-24); the crash block across a
+ * reset is not shown yet.
+ * Each step is written to the crash block's way_out and to the kept log
+ * before it is taken. A healthy IOS answers the 32 closes in about 25 ms.
+ * An exception still leaves through libogc's crash screen and the stub,
+ * unchecked: interrupts are off there. HBC_AGENT_NO_IOS_CHECK turns the
+ * check off. */
 void hbc_agent_fatal(u32 code, const char *fmt, ...)
 		__attribute__((noreturn, format(printf, 2, 3)));
 void hbc_agent_fatal_now(u32 code, const char *fmt, ...)
@@ -345,7 +399,7 @@ void hbc_agent_fatal_now(u32 code, const char *fmt, ...)
 /* The hang watchdog. The first call arms it: from then on, a gap of more
  * than hang_s seconds (default 60) between two calls is a hang, reported
  * like a crash (HBC_CRASH_HANG, with the backtrace of the thread that called
- * hbc_agent_alive()) before the agent returns to HBC through the reload stub.
+ * hbc_agent_alive()) before the agent returns to HBC (the way out, above).
  * Call it wherever the app makes progress, once a frame is fine: it stores a
  * time. The watchdog is a thread at the highest priority, so a spinning app
  * thread cannot hold it off; a hang with interrupts disabled stops it too.

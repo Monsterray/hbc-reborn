@@ -573,6 +573,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | What the agent costs on a real Wii (memory, CPU, frame time) | `python3 tests/agent_cost.py WII-IP` | Wii in any HBC |
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
+| The agent's way out past a stuck IOS ([docs](docs/devnet.md#the-way-out)): each fallback, from test bits | `make -C tests/agent_app` then `python3 tests/dolphin_way_out.py` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
 | The overlay with a MotionPlus remote: Test switches it on (the gyro, live), closing switches it back off | `python3 tests/wii_mplus.py WII-IP [--chan N] [--hbc]` (`--hbc`: HBC's own HOME menu) | Wii in any HBC, a MotionPlus remote |
 | What a Wii's DNS answers from a fresh network start (WiiLink's user agreement server, Pi-hole), read-only | queue `python tests/wii_dns.py [NAME...]` (build `tests/dnscheck` first) | the bench queue |

@@ -147,6 +147,7 @@ static devoptab_t log_dotab_err = { .name = "hbcagent", .write_r = log_write_err
 // ---- The kept log: the ring's end, in MEM2 for HBC after the reload -------
 
 static volatile bool lastlog_done;
+static u32 lastlog_why;
 
 // The app's name for a record, unless the app's crash took the pointer.
 static const char *record_name(void) {
@@ -166,6 +167,7 @@ static void lastlog_write(u32 why) {
 	if (lastlog_done)
 		return;
 	lastlog_done = true;
+	lastlog_why = why;
 	memset(b, 0, sizeof(*b));
 	b->magic = HBC_LASTLOG_MAGIC;
 	b->version = HBC_LASTLOG_VERSION;
@@ -181,6 +183,24 @@ static void lastlog_write(u32 why) {
 
 void agent_lastlog(u32 why) {
 	lastlog_write(why);
+}
+
+// way_out.c, with interrupts off: the step into the log ring (no stdout:
+// libogc's IPC is not to be used now), the crash block and the kept log.
+void agent_way_out_note(u32 way, const char *text) {
+	hbc_crash_block *b = (hbc_crash_block *) HBC_CRASH_ADDR;
+
+	agent_log_raw(text, strlen(text));
+	if (b->magic == HBC_CRASH_MAGIC && b->version == HBC_CRASH_VERSION &&
+			b->check == hbc_crash_check(b)) {
+		b->way_out = way;
+		b->check = hbc_crash_check(b);
+		DCFlushRange(b, sizeof(*b));
+	}
+	if (lastlog_done) {
+		lastlog_done = false;
+		lastlog_write(lastlog_why);
+	}
 }
 
 static void lastlog_at_exit(void) {
@@ -847,6 +867,12 @@ void hbc_agent_fatal(u32 code, const char *fmt, ...) {
 	va_start(ap, fmt);
 	fatal_record(code, fmt, ap, (u32) __builtin_return_address(0));
 	va_end(ap);
+	// exit() waits on IOS (unmounting, shutting libogc down): not when IOS
+	// has stopped answering.
+	if (!agent_ios_answers(3000)) {
+		printf("agent: IOS did not answer in 3 s: leaving without exit()\n");
+		agent_leave();
+	}
 	exit(0);
 }
 
@@ -856,7 +882,7 @@ void hbc_agent_fatal_now(u32 code, const char *fmt, ...) {
 	va_start(ap, fmt);
 	fatal_record(code, fmt, ap, (u32) __builtin_return_address(0));
 	va_end(ap);
-	__reload();
+	agent_leave();
 }
 
 // ---- The monitor: the hang watchdog and the safety tools' checks ----------
@@ -989,7 +1015,7 @@ static void *watchdog(void *arg) {
 			safety_on_death();
 			lastlog_write(HBC_LASTLOG_HANG);
 			(void) level;
-			__reload();
+			agent_leave();
 		}
 	}
 	monitor_ended = my;

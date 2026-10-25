@@ -161,6 +161,54 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.17: the agent leaves a wedged IOS without a power cycle
+
+On 2026-10-24 USB Loader GX's bench build hung IOS in its first encrypted
+`WDVD_Read` through d2x cIOS 249 (stock d2x and the fork alike). The agent's
+hang watchdog and GX's own guard thread both fired, and both ended in the
+reload stub, which waits on IOS with no time limit: three power cycles.
+
+- **The way out** (`sdk/hbc_agent/way_out.c`, `docs/devnet.md` "The way
+  out"). `hbc_agent_fatal_now()`, the hang watchdog, `assert()`, `abort()` and
+  the stack marker check now do the stub's descriptor closes first, polled
+  with interrupts off and a time limit on each. Every close answered: the
+  stub. A close without a reply: HBC launched through ES directly. IOS
+  silent, or the launch failed: a system reset through `HW_RESETS` bit 0
+  with AHBPROT open, else STM's hot reset while IOS acks, else the stub
+  anyway. The crash block (version 3) records the choice in `way_out`, and
+  the kept log has each step. `HBC_AGENT_NO_IOS_CHECK` turns it off.
+  `hbc_agent_fatal()` leaves the same way when IOS does not open `/dev/es`
+  within 3 s, instead of calling `exit()`.
+- **Evidence.** `tests/test_way_out.py` runs `way_out.c` on the PC against a
+  model of the IPC registers: 15 scenarios (healthy, stale reply, stuck and
+  late closes, silent IOS, refused launch, AHBPROT open and closed, no
+  reset) and a no-time-left check. Dolphin found two bugs the first model
+  missed, and the model now catches both: the time left for a reply read
+  the clock twice and wrapped to 71 minutes; and IOS acks or replies only
+  while Y1, Y2 and the PPC's IPC interrupt are all clear (Dolphin's
+  `WiiIPC::IsReady()`), so a late reply left in ARMMSG blocked every later
+  ack. The agent now takes such replies while it waits for an ack.
+  `tests/dolphin_way_out.py` runs the agent's test bits through this tree's
+  WAD in Dolphin. On the bench Wii (`tests/wii_way_out.py`, test bits):
+  the stub (closes in 25 ms), the ES launch back into HBC (19 s) and the
+  stub-anyway fallback all came back; one `HW_RESETS` reset rebooted the
+  console through BootMii's menu (8 s, on by itself) and Priiloader's
+  autoboot into HBC, 33 s after the reset, with the kept log intact; STM's
+  hot reset and `HW_RESETS` after a refused launch came back in 43 s and
+  36 s. After a later reset BootMii (boot2) waited at its menu despite
+  `AUTOBOOT=SYSMENU`, `BOOTDELAY=1`: a reset may need a button press on a
+  Wii with BootMii as boot2. Not yet proven: which way a real wedge takes
+  (is the kernel silent, or only DI?), whether ES can launch HBC past a
+  stuck DI, and the crash block across a reset (the bench's HBC 1.10.9
+  cannot read version 3).
+- **Next, with a trigger.** The stub itself still waits forever, for apps
+  without the agent and for an exception after a wedge (libogc's crash
+  screen calls `__reload()` with interrupts off). Trigger: a hardware run
+  that shows the ES launch or the reset works past a real wedge; then give
+  HBC's stub (`channel/channelapp/stub/ios.c`) the same time limits and the
+  `HW_RESETS` fallback, which covers every app. Its `ipc_wait_ack()` also
+  ignores a reply that comes first, which blocks IOS's ack as above.
+
 ### 1.10.16: audit of rename, move and attributes
 
 An independent review (2026-10-24) of 1.10.14 and 1.10.15 found these,

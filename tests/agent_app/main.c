@@ -6,6 +6,12 @@
 //   crash        a store to address 0x10 after 1 s, in agent_app_crash() (DSI)
 //   trap         a trap instruction after 1 s, in agent_app_trap() (program)
 //   fatal        hbc_agent_fatal(0x81, ...) after 1 s, in agent_app_fatal()
+//   wayout N     hbc_agent_fatal_now(0x82, ...) after 1 s, with the agent's
+//                way-out test bits N (way_out.c: 1 fd 3's close gets no reply,
+//                2 IOS acks nothing, 4 the ES launch fails, 8 AHBPROT reads
+//                closed, 16 no reset, the stub instead); tests/dolphin_way_out.py
+//                and the bench: 0 the stub, 1 HBC through ES, 21 the stub
+//                anyway; 2 or 5 reset the Wii (someone at the Wii)
 //   hang         arms the hang watchdog (5 s), then spins in agent_app_hang()
 //   exit         return at once
 //   assert       a failed assert() after 1 s, in agent_app_assert()
@@ -109,6 +115,16 @@ void __attribute__((noinline)) agent_app_crash(volatile u32 *where) {
 
 void __attribute__((noinline)) agent_app_fatal(void) {
 	hbc_agent_fatal(0x81, "test fatal, value %d", 42);
+}
+
+// sdk/hbc_agent/way_out.c's test bits.
+extern u32 hbc_agent_way_out_test;
+
+void __attribute__((noinline)) agent_app_wayout(u32 bits) {
+	printf("agent_app: way out test, bits %u, AHBPROT %s\n", (unsigned) bits,
+		   read32(0x0d800064) == 0xffffffff ? "open" : "closed");
+	hbc_agent_way_out_test = bits;
+	hbc_agent_fatal_now(0x82, "way out test, bits %u", (unsigned) bits);
 }
 
 void __attribute__((noinline)) agent_app_hang(void) {
@@ -355,6 +371,10 @@ int main(int argc, char **argv) {
 		sleep(1);
 		printf("agent_app: stopping (fatal)\n");
 		agent_app_fatal();
+	}
+	if (!strcmp(mode, "wayout")) {
+		sleep(1);
+		agent_app_wayout(argc > 2 ? strtoul(argv[2], NULL, 0) : 0);
 	}
 	if (!strcmp(mode, "hang")) {
 		hbc_agent_alive();

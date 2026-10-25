@@ -479,7 +479,7 @@ buffer count had gone below zero.
 ### Crash reports
 
 The agent installs a libogc panic handler. On a fatal exception it writes a
-192-byte block to MEM2 at `0x91800020`, then lets libogc show its crash
+196-byte block to MEM2 at `0x91800020`, then lets libogc show its crash
 screen for 3 s and return through the reload stub. `hbc_agent_fatal()` and
 the hang watchdog (`hbc_agent_alive()`, a thread at the highest priority)
 write the same block for the other ways an app stops. HBC takes the block in
@@ -490,7 +490,7 @@ write the same block for the other ways an app stops. HBC takes the block in
          "app":"agent_app","exception":3,"name":"DSI","pc":"80004cac",
          "lr":"800047a8","msr":"00009032","cr":"20002494","ctr":"00000000",
          "dar":"00000010","dsisr":"42000000","sp":"8008b160",
-         "uptime_ms":1002,"frames":["80004004"]}
+         "uptime_ms":1002,"frames":["80004004"],"way_out":"not_checked"}
 ```
 
 `kind` is `exception`, `fatal` (the app's `hbc_agent_fatal()`, with its own
@@ -509,13 +509,107 @@ goes straight to libogc's own crash screen, which shows that fault; the
 block keeps the app's crash, without the note.
 `frames` are return addresses found by walking the stack's back chain; a
 leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
-`sdk/hbc_agent.h`: magic `HBCC`, version 2, the exception number
+`sdk/hbc_agent.h`: magic `HBCC`, version 3, the exception number
 (`PPC_EXCPT_*`), `pc`, `msr`, `lr`, `cr`, `ctr`, `dar`, `dsisr`, `sp`,
 `uptime_ms`, twelve frames, the app name (20 bytes), `kind`, `code`, the
-reason (64 bytes), and a rotate-and-XOR check word over the rest. HBC still
-reads version 1 blocks (agents before 1.9.0), as exceptions. `hbc.py crash
---elf app.elf` adds function names and lines with `powerpc-eabi-addr2line`,
-then the last lines of the kept log.
+reason (64 bytes), `way_out` (below), and a rotate-and-XOR check word over
+the rest. HBC still reads version 2 blocks (agents before 1.10.14, with
+`way_out` `not_checked`) and version 1 blocks (agents before 1.9.0), as
+exceptions. `hbc.py crash --elf app.elf` adds function names and lines with
+`powerpc-eabi-addr2line`, then the last lines of the kept log.
+
+### The way out
+
+Every way an agent app stops ends in HBC's reload stub at `0x80001800`
+(libogc's `__reload()`). The stub turns interrupts off, closes IOS
+descriptors 0-31 and launches HBC through ES, waiting on each IPC with no
+time limit. When IOS, or one module of it, has stopped answering, the stub
+waits for good. On 2026-10-24 USB Loader GX's bench build hung IOS in its
+first `WDVD_Read` through d2x cIOS 249 (FRAG mode, stock d2x and the fork
+alike): neither the agent nor the app's own guard thread could return, and
+the Wii needed a power cycle three times.
+
+From 1.10.14, `hbc_agent_fatal_now()`, the hang watchdog, `assert()`,
+`abort()` and the stack guard's marker check run the stub's own steps first
+(`sdk/hbc_agent/way_out.c`): the same polled IPC with interrupts off, with
+0.5 s for IOS's ack of each request and 1 s for its reply. A late reply to
+a request that ran out of time is taken as it comes, since IOS acks and
+replies only while the PPC has nothing of its waiting (Y1, Y2 and the IPC
+interrupt clear; Dolphin's `WiiIPC::IsReady()`). What answered
+decides, and `way_out` in the crash block (and `HBCS`, and `hbc.py crash`'s
+`left` line) records it:
+
+| `way_out` | When | What the agent does |
+| --- | --- | --- |
+| `stub` | every close answered | the reload stub, as before |
+| `es_launch` | IOS acked, but a close got no reply (a stuck module), or no stub was found | opens `/dev/es`, reads HBC's ticket views and launches it, as the stub would but without the closes; IOS reloads and resets the PPC into HBC |
+| `reset` | that failed, or IOS acked nothing, and AHBPROT is open | clears bit 0 (RSTBINB) of `HW_RESETS` (`0x0d800194`): a system reset that needs no IOS |
+| `stm_reset` | AHBPROT closed, IOS still acks | `/dev/stm/immediate` ioctl `0x2001` (hot reset) |
+| `stub_anyway` | nothing reset the Wii within 2-3 s | the reload stub anyway, which may wait for good |
+| `not_checked` | an exception (interrupts are already off in libogc's crash screen), `hbc_agent_fatal()`'s `exit()`, `HBC_AGENT_NO_IOS_CHECK`, or an older agent | the reload stub |
+
+The kept log has an `agent: way out:` line for each step, with the time the
+closes took (a few ms on a healthy IOS) and the first descriptor that did
+not answer. `hbc_agent_fatal()` exits through `exit()` as before, unless
+IOS does not open `/dev/es` within 3 s: then it leaves the way
+`hbc_agent_fatal_now()` does. `exit()` still waits on every device it
+unmounts, so an app that may wedge one uses `hbc_agent_fatal_now()` or
+`HBC_AGENT_NO_FLUSH`.
+
+Sources for the hardware behaviour, and what is not proven:
+
+- `HW_RESETS` bit 0 is "System reset. Set to zero to reboot system" ([WiiBrew,
+  Hollywood Registers](https://wiibrew.org/wiki/Hardware/Hollywood_Registers));
+  HBC's own `channel/channelapp/source/panic.c` (upstream since 2008) reboots
+  this way, noting it needs AHBPROT. The PPC sees Hollywood's registers only
+  with AHBPROT open (`0x0d800064` reads `0xffffffff`): an app with
+  `<ahb_access/>` in its `meta.xml`, and an IOS reload that keeps it (USB
+  Loader GX patches ES for that). `HBCS` `safety.way_out.hw_reset` says
+  whether it is open now.
+- The PI reset register (`0xcc003024`) is the GameCube's hot reset (libogc's
+  `__reset`, `HW_DOL` only); on a Wii libogc resets through STM instead, and
+  Dolphin ignores writes to it on Wii. The agent does not use it.
+- STM's hot reset is "This will reset the Wii" ([WiiBrew,
+  /dev/stm/immediate](https://wiibrew.org/wiki//dev/stm/immediate)); libogc's
+  `STM_RebootSystem()` and `SYS_ResetSystem(SYS_HOTRESET)` use it. It needs
+  IOS's STM module to answer.
+- Either reset reboots the console through boot2 into the System Menu, or
+  Priiloader where installed. Priiloader picks autoboot or its "return to"
+  setting from the boot state in NAND, unless MEM1 holds its magic word
+  ([Priiloader `main.cpp`](https://github.com/DacoTaco/priiloader/blob/master/src/priiloader/source/main.cpp),
+  `CheckMagicWords()`): the agent writes `Abra` at `0x817feff0` first, which
+  runs its autoboot. A Wii without Priiloader lands in the System Menu,
+  where someone still has to start HBC: the resets are the last resort,
+  after the stub and the ES launch, for when the Wii would otherwise stay
+  frozen.
+- Dolphin models none of this: AHBPROT always reads open, `HW_RESETS` bit 0
+  and STM's hot reset do nothing, and its IPC always answers.
+  `tests/dolphin_way_out.py` shows the decisions with the agent's test bits,
+  and `tests/test_way_out.py` runs `way_out.c` against a model of the IPC
+  registers. Neither shows how a real IOS wedges.
+
+On the bench Wii (2026-10-24, `tests/wii_way_out.py`, HBC 1.10.9 installed,
+the agent's test bits): healthy closes took 25 ms and left through the stub;
+a close forced to get no reply launched HBC through ES, back in HBC in 19 s;
+a failed launch with resets off fell back on the stub. One `HW_RESETS` reset
+(IOS forced silent) rebooted the console with no IOS help: BootMii (boot2)
+showed its menu for about 8 s and went on by itself, Priiloader autobooted
+HBC, and HBC answered 33 s after the reset. The kept log at `0x91800100`
+survived the reset with the agent's steps in it. STM's hot reset (test bits
+13) and `HW_RESETS` after a refused launch (bits 5) came back the same way,
+in 43 s and 36 s, kept log intact.
+
+Where a reset lands depends on the boot chain, not on the agent. On the
+bench Wii BootMii is installed as boot2 and shows its menu after a reset;
+with `AUTOBOOT=SYSMENU` and `BOOTDELAY=1` in `sd:/bootmii/bootmii.ini` it
+still waited for a button after one reset (whether it autoboots on a cold
+boot was not checked). So on a Wii with BootMii as boot2, a reset may need
+a button press there; the ES launch (step 2) does not, and needs no
+Priiloader or BootMii either.
+
+Not yet shown: the crash block across a reset (HBC 1.10.9 does not read
+version 3), a Wii without Priiloader (a reset there ends in the System
+Menu), and a real wedge.
 
 ### Safety tools
 
@@ -524,6 +618,7 @@ then the last lines of the kept log.
 ```json
 "safety":{"stack_guard":"breakpoint","main_stack":{"size":131072,"deepest":2104},
           "reset":true,"power":true,"flush_at_exit":true,
+          "way_out":{"ios_check":true,"hw_reset":true},
           "frames":{"fps":60,"flips":347,"retraces":862,"worst_ms":16,"late":0,
                     "single_buffer":false},
           "stub":null,"mem_low":null,"alloc_failures":null,
@@ -538,6 +633,9 @@ then the last lines of the kept log.
   libogc's defaults). Reset exits to HBC like `HBCX`; Power runs `on_exit`
   and switches off. `flush_at_exit`: a libogc reset function unmounts SD and
   USB on `exit()` and `SYS_ResetSystem()`, after the app's `atexit` handlers.
+- `way_out`: `ios_check` unless `HBC_AGENT_NO_IOS_CHECK`; `hw_reset` when
+  AHBPROT is open now, so a wedged IOS can be left by a system reset (see
+  [The way out](#the-way-out)).
 - `frames`: framebuffer flips counted at each vertical blank. `fps` is the
   last second's; `worst_ms` the longest frame and `late` the frames half again
   as long as the average, neither counting time the overlay or a
