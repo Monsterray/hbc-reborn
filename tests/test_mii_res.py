@@ -41,7 +41,7 @@ def faceline():
 def nose():   # no texcoords: two indexes per vertex
     pos = table([(0, 0, 0), (1, 0, 0), (0, 1, 0)], 8)
     nrm = table([(0, 0, 1)], 14)
-    return b"nose" + pos + nrm + bytes([1, 3, 0x90, 0, 0, 1, 0, 2, 0])
+    return b"nose" + pos + nrm + bytes([2, 3, 0x90, 0, 0, 1, 0, 2, 0, 3, 0x98, 2, 0, 1, 0, 0, 0])
 
 
 def tex_header(fmt, w, h):
@@ -92,7 +92,8 @@ class MiiResTest(unittest.TestCase):
     def test_nose_and_empty(self):
         _, pos, _, txc, prims = mii_res.shape("nose", nose())
         self.assertEqual((len(pos), txc), (3, []))
-        self.assertEqual(prims[0][1], [(0, 0), (1, 0), (2, 0)])
+        self.assertEqual(prims, [("triangles", [(0, 0), (1, 0), (2, 0)]),
+                                 ("strip", [(2, 0), (1, 0), (0, 0)])])
         self.assertEqual(mii_res.shape("nose", b"nose\0\0")[1], [])
         with self.assertRaises(mii_res.ResError):
             mii_res.shape("beard", nose())

@@ -94,9 +94,11 @@ def shape(name, f):
         txc, at = table(at, 2, 13)
     per = 2 if name in NO_TEXCOORDS else 3
     prims = []
-    for _ in range(f[at]):
-        n, kind = f[at + 1], f[at + 2]
-        at += 3
+    count = f[at]
+    at += 1
+    for _ in range(count):
+        n, kind = f[at], f[at + 1]
+        at += 2
         verts = [tuple(f[at + per * v:at + per * v + per]) for v in range(n)]
         at += per * n
         prims.append((PRIMS.get(kind, f"{kind:#x}"), verts))

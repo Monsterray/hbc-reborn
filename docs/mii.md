@@ -21,7 +21,8 @@ says so.
 - **The face models** (`RFL_Res.dat`) are on each game's disc, or inside a
   U8 archive in one of the Wii Menu's own content files, not as a loose
   file. The bench Wii's `FaceLib` folder holds only `RFL_DB.dat`. An app
-  cannot read the Wii Menu's copy without NAND rights (below, and
+  cannot read the Wii Menu's copy without NAND rights: HBC's HOME >
+  HBC > Save Mii faces copies it to the SD card (below, and
   [research/mii-rendering.md](research/mii-rendering.md) for drawing Miis).
 
 ## RFL_DB.dat
@@ -412,6 +413,35 @@ Tests:
   Remote awake (a button pressed) as the job starts. `remote-add` stops
   with `MII_E_FULL` on a Remote with all 10 slots in use; it never
   overwrites a Mii.
+
+## The face models (RFL_Res.dat)
+
+A Mii's 74 bytes say which parts it has; drawing it needs the parts
+themselves: `RFL_Res.dat`, Nintendo's shapes and textures for every
+faceline, hair style, eye, mouth and so on. Games carry a copy on their disc
+(Mario Kart Wii's `/contents/RFLRes01.arc`); the Wii Menu keeps one in a U8
+archive in one of its contents. On the bench Wii (System Menu v513) that is
+its content 4, a shared content in `/shared1`: 686,372 bytes, version 0x39D.
+
+An app cannot read it: `ES_OpenTitleContent` refuses the Wii Menu's contents
+(-1026) and ISFS refuses `/shared1` and the title's content folder (-102)
+(`tests/mii_res_probe`, [research/mii-rendering.md](research/mii-rendering.md#62-finding-rfl_resdat)).
+So the user provides their own copy, and HBC makes that one press:
+
+- **HOME > HBC > Save Mii faces** (or `hbc.py mii-faces`, request `HBCM`)
+  copies it to `sd:/mii/RFL_Res.dat` (`channel/channelapp/source/miires.c`).
+  HBC lifts IOS's NAND permission check for the reads, as it does for the
+  Message Board's play log (`nandperm.c`; it needs HBC's IOS, with
+  AHBPROT), reads only the U8 header, its node table and the one file, and
+  puts the check back. It checks the file (18 archives, version 0x39D or
+  later) and writes it whole before renaming it into place. Under 2 s on
+  the bench Wii.
+- **Keep it on your own SD card.** The file is Nintendo's: an app reads it
+  from `sd:/mii/RFL_Res.dat` at run time and never ships it.
+- **`tools/mii_res.py`** lists a copy (`info`) and dumps every shape as OBJ
+  and every texture as PNG (`dump`), for study. Its layout is in the
+  research notes; `tests/test_mii_res.py` checks the tool on a synthetic
+  file.
 
 ## Sources
 

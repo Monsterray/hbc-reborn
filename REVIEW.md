@@ -161,6 +161,28 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.20: Save Mii faces (the user's own RFL_Res.dat on SD)
+
+Drawing a Mii needs Nintendo's face models, `RFL_Res.dat`, which an app
+cannot read (`tests/mii_res_probe`: ES -1026, ISFS -102 for every copy on
+the Wii; docs/research/mii-rendering.md). Games carry their own; homebrew
+gets the user's.
+
+- **HOME > HBC > Save Mii faces** and `hbc.py mii-faces` (`HBCM`) copy the
+  Wii Menu's copy to `sd:/mii/RFL_Res.dat` (`miires.c`): the NAND
+  permission check lifted for the reads only, the U8 node table and the one
+  file read (not the 686 KB content whole), the file checked, written to a
+  `.part` and renamed. `nandperm.c` now holds the lift for both it and the
+  play log, counted, so one cannot put the check back under the other.
+- **Evidence.** On the bench Wii (`tests/wii_mii_faces.py`, this tree's
+  HBC through the installed one): two saves each run, 0.5 to 1.5 s, 686,372
+  bytes, version 0x39D, every shape and texture parsed by
+  `tools/mii_res.py`; a software render of faceline 0 with hair, forehead,
+  nose and beard at the faceline's anchors is a Mii's head. Then the probe
+  from the same HBC was refused `/shared1` again: the check came back.
+- **Next, with a trigger.** The renderer in `sdk/mii` (research plan, 6.3):
+  the C parser, `mii_icon()`, the 3D head, a body. Trigger: started now.
+
 ### 1.10.18: the agent leaves a wedged IOS without a power cycle
 
 On 2026-10-24 USB Loader GX's bench build hung IOS in its first encrypted

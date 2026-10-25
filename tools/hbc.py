@@ -96,6 +96,16 @@ def recv_reply(conn, what="Wii returned"):
     return recv_exact(conn, length)
 
 
+def mii_faces(wii):
+    """HOME > HBC > Save Mii faces: (ok, HBC's message). The copy takes a
+    second or two; HBC says what happened, failure too."""
+    with connect(wii, 60) as conn:
+        conn.sendall(b"HBCM".ljust(16, b"\0"))
+        status, length = struct.unpack(">iI", recv_exact(conn, 8))
+        text = recv_exact(conn, length).decode("utf-8", "replace")
+    return status >= 0, text or wii_error(-status)
+
+
 def request(wii, header, payload=b"", timeout=TIMEOUT):
     """Send one 16-byte request (plus payload) and return the reply body."""
     with connect(wii, timeout) as conn:
@@ -385,6 +395,7 @@ FLAG_REPLACE = 0x02   # op R: replace a file at the destination
 PUT_MAX = 512 << 20    # the largest upload the Wii takes (devfile.c DEVFILE_PUT_MAX)
 MOVE_SINCE = (1, 10, 14)   # the first HBC with op R
 ATTR_SINCE = (1, 10, 15)   # the first with op A, and every attribute in a listing
+MII_FACES_SINCE = (1, 10, 20)   # the first with HBCM (Save Mii faces)
 # FAT's attributes, as op A's bits and the listing's letters (in this order).
 ATTR_BITS = {"r": 0x01, "h": 0x02, "s": 0x04, "a": 0x20}
 ATTR_NAMES = {"r": "read-only", "h": "hidden", "s": "system", "a": "archive"}
@@ -1249,6 +1260,7 @@ Commands
     status              what is running: version, IOS, memory, SD card, network
     hw                  the Wii's hardware and settings, as DEV > Info shows them
     transfer-style [S]  how HBC shows a long name it is moving (for testing)
+    mii-faces           copy the Wii Menu's Mii faces to sd:/mii/RFL_Res.dat
     version             just the version (ends in " agent" for an app, below)
     wait [SECONDS]      wait until HBC answers, after a reboot (default 90)
   Running apps
@@ -1475,6 +1487,16 @@ needs devkitPPC's powerpc-eabi-addr2line). --clear forgets the report.
 Besides exceptions, an app can stop itself with hbc_agent_fatal() (its own
 code and a reason), and the agent's watchdog reports a hang. The last lines
 of the app's output follow the report.""",
+    "mii-faces": """\
+hbc.py mii-faces
+
+The same as HOME > HBC > Save Mii faces: HBC copies the Mii face resource
+(RFL_Res.dat, the models and textures every Mii is drawn with) out of the
+Wii Menu to sd:/mii/RFL_Res.dat, for apps that draw Miis. The file is
+Nintendo's and comes from your own Wii: keep it on your SD card, and never
+ship it with an app. An app cannot read the Wii Menu's copy itself; HBC
+lifts IOS's NAND permission check for the read (it needs HBC's own IOS,
+with AHBPROT) and puts it back. HBC 1.10.20 on.""",
     "transfer-style": """\
 hbc.py transfer-style [scroll|bounce|truncate]
 
@@ -1657,6 +1679,12 @@ def main(argv=None):
                         print(f"    {line}")
             else:
                 print("no crash reported")
+        elif cmd == "mii-faces":
+            needs_version(wii, MII_FACES_SINCE, "save the Mii faces")
+            ok, text = mii_faces(wii)
+            print(text)
+            if not ok:
+                raise SystemExit(1)
         elif cmd == "transfer-style":
             if args:
                 set_transfer_style(wii, args[0])

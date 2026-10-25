@@ -60,6 +60,7 @@ class FakeHBC:
         self.version = "1.2.0"   # what HBCV answers
         self.attrs = {}          # path -> FAT attribute bits (op A, listings)
         self.full = set()        # paths whose put fails with ENOSPC
+        self.mii_faces = (0, b"Saved Mii faces to sd:/mii/RFL_Res.dat (671 KB)")  # HBCM's reply
         self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -125,6 +126,8 @@ class FakeHBC:
                           lastlog={"why": self.lastlog[0], "bytes": len(self.lastlog[3])}
                           if self.lastlog else None)
             self.reply(conn, 0, json.dumps(st).encode())
+        elif magic == b"HBCM":
+            self.reply(conn, *self.mii_faces)
         elif magic == b"HBCX" and self.agent:
             self.reply(conn, 0)
             self.agent = False  # the app exits to HBC
@@ -355,6 +358,23 @@ class HBCToolTest(unittest.TestCase):
 
     def remote(self, prefix):
         return {k: v for k, v in self.fake.files.items() if k.startswith(prefix)}
+
+    def test_mii_faces(self):
+        self.fake.version = "1.10.20"
+        self.assertEqual(self.cli("mii-faces"), "Saved Mii faces to sd:/mii/RFL_Res.dat (671 KB)\n")
+        # A failure prints HBC's own message and exits 1.
+        self.fake.mii_faces = (-13, b"Mii faces: needs AHBPROT (HBC's own IOS)")
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                self.cli("mii-faces")
+            self.assertEqual(caught.exception.code, 1)
+            self.assertEqual(hbc.mii_faces(WII), (False, "Mii faces: needs AHBPROT (HBC's own IOS)"))
+        finally:
+            self.fake.mii_faces = (0, b"Saved Mii faces to sd:/mii/RFL_Res.dat (671 KB)")
+        # An HBC before 1.10.20 has no HBCM: refused before asking.
+        self.fake.version = "1.10.19"
+        with self.assertRaises(SystemExit):
+            self.cli("mii-faces")
 
     def test_version_and_status(self):
         self.assertEqual(hbc.version(WII), "1.2.0")

@@ -23,6 +23,7 @@
 #include "devfile.h"
 #include "devnet.h"
 #include "loader.h"
+#include "miires.h"
 #include "tcp.h"
 #include "zmem.h"
 #include "usbmsd.h"
@@ -466,6 +467,16 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 				(unsigned) lastlog.uptime_ms, app);
 		memcpy(reply + n, lastlog.text, lastlog.len);
 		devfile_reply(s, 0, reply, n + lastlog.len);
+		return true;
+	}
+
+	if (!memcmp(hdr, "HBCM", 4)) {
+		// HOME > HBC > Save Mii faces, from the PC (`hbc.py mii-faces`): the
+		// reply is the toast's text, status 0 or the error.
+		char msg[64];
+		s32 res = miires_save(msg, sizeof(msg));
+
+		devfile_reply(s, res < 0 ? res : 0, msg, strlen(msg));
 		return true;
 	}
 

@@ -392,17 +392,22 @@ reaches none of these.
 The System Menu's 9 contents: index 0 (64 bytes) and 1 and 8 (6.2 and 3.7
 MiB) are its own; 2 to 7 are shared (TMD type 0x8001), so they live in
 `/shared1`. Index 4 is a shared content of 686,468 bytes. Which one holds
-`RFL_Res.dat` is still unproven.
+`RFL_Res.dat` was then shown by HBC 1.10.20's copy: content 4 (686,468
+bytes) is a U8 archive holding `RFL_Res.dat`, 686,372 bytes, version 0x39D.
 
-So an SDK app gets the file only by one of these, each a choice for the
-SDK's design:
+So an SDK app gets the file only by one of these:
 
 - **A file the user supplies** (step 1 above): copied off their own Wii or
   game disc by a tool with NAND or disc rights (a BootMii NAND backup and an
   extractor; Mario Kart Wii's `/contents/RFLRes01.arc`).
 - **NAND rights at run time**: an IOS with its ISFS permission check lifted
-  (with AHBPROT, as HBC's play log does, or a cIOS's patch). That is a
-  security decision for the SDK and its users, not taken here.
+  (with AHBPROT, as HBC's play log does, or a cIOS's patch).
+
+**Chosen (2026-10-24): the user supplies the file, and HBC makes that one
+press.** HOME > HBC > Save Mii faces (`hbc.py mii-faces`) lifts the check
+for its reads only, copies the file to `sd:/mii/RFL_Res.dat` and puts the
+check back ([../mii.md](../mii.md#the-face-models-rfl_resdat)). SDK apps
+read the SD copy and never lift the check themselves.
 - **No resource**: a placeholder or a renderer of our own (step 5).
 
 ### 6.3 Steps
