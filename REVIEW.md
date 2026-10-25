@@ -161,6 +161,34 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.24: the way out never hands a wedged IOS to the stub, and shows itself
+
+On 2026-10-25 the first real wedge reached the way out: USB Loader GX's
+bench build (agent 1.10.14) stalled IOS in a 1 MiB `WDVD_Read` through
+d2x cIOS 249's DIP, between two 32 KiB emulated sub-reads. GX's guard
+called `hbc_agent_fatal_now()`; 8 minutes later the TV still showed GX's
+last frame (no reset) and HBC never answered, so the user power-cycled.
+The power cycle took the kept log with it, so which step stopped is not
+known; the likeliest, since no reset came, is that IOS answered all 32
+closes and the agent handed over to the reload stub, whose ES launch has
+no time limit.
+
+- **No blind hand-over.** When IOS acks every close, the agent now
+  launches HBC through ES itself, with its time limits, whether or not
+  every close answered. Only when every close answered and ES refused every
+  title at once (no HBC installed) does the stub run. A launch that goes
+  unanswered, or acks and then brings no reset, moves on to the resets.
+- **The steps on the TV.** Each step is drawn in a black panel on the
+  framebuffer the VI shows (`TFBL`, as `panic.c` finds it), uncached and
+  integer-only (ov_draw's text, no floating point in the object code),
+  redrawn whole at each step. A power cycle cannot take it away.
+- **Evidence.** `tests/test_way_out.py`: 27 scenarios (four new: every
+  close answers and the launch hangs, answers late, or is refused with and
+  without a stub) and the no-time-left check. Dolphin's way-out test runs
+  the test bits through this tree's WAD. Not yet shown: the panel on a
+  real Wii, and a real wedge coming back. Both need someone at the bench
+  Wii (an IOS hang never runs unattended).
+
 ### 1.10.21: Miis drawn (sdk/mii/miidraw) and HBC's avatar
 
 `sdk/mii` now draws Miis, and HBC shows the user's beside the app list.

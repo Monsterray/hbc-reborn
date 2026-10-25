@@ -402,16 +402,37 @@ int main(void) {
 	m.dead_after = -1;
 	no_time_left();
 
-	scenario("healthy IOS: the reload stub", WANT(.end = END_NONE, .ret = HBC_WAY_STUB, .closes = 32),
-			 NOTES(HBC_WAY_STUB));
+	// Every close answered: HBC through ES all the same, with time limits.
+	// The stub's own launch has none, and a real wedge (2026-10-25) answered
+	// every close and then froze the stub.
+	scenario("healthy IOS: HBC through ES", WANT(.end = END_LAUNCHED, .closes = 32,
+			 .launched = OHBC), NOTES(ES));
 
 	m.stale_reply = true;
-	scenario("a reply libogc left pending: drained, then the stub",
-			 WANT(.end = END_NONE, .ret = HBC_WAY_STUB, .closes = 32), NOTES(HBC_WAY_STUB));
+	scenario("a reply libogc left pending: drained, then HBC through ES",
+			 WANT(.end = END_LAUNCHED, .closes = 32, .launched = OHBC), NOTES(ES));
 
+	m.refuse_launch = true;
+	scenario("every close answers, ES refuses every title at once: the reload stub",
+			 WANT(.end = END_NONE, .ret = HBC_WAY_STUB, .closes = 32), NOTES(ES, ES, ES, HBC_WAY_STUB));
+
+	m.refuse_launch = true;
 	m.trailing_reply = true;
-	scenario("a reply after the last close's: drained before the stub",
-			 WANT(.end = END_NONE, .ret = HBC_WAY_STUB, .closes = 32), NOTES(HBC_WAY_STUB));
+	scenario("the same, with a reply after the last close's: drained before the stub",
+			 WANT(.end = END_NONE, .ret = HBC_WAY_STUB, .closes = 32), NOTES(ES, ES, ES, HBC_WAY_STUB));
+
+	m.launch_hangs = true;
+	m.ahbprot = true;
+	scenario("every close answers, the launch acks twice and no reset comes (the real wedge's "
+			 "shape): STM, not the stub", WANT(.end = END_STM, .closes = 32), NOTES(ES, ES, STM));
+
+	m.launch_slow = true;
+	scenario("every close answers, ES answers the launch only after 10 s: STM, not the stub",
+			 WANT(.end = END_STM, .closes = 32), NOTES(ES, ES, STM));
+
+	m.refuse_launch = true;
+	scenario("every close answers, ES refuses, no stub: STM", WANT(.stub = false, .end = END_STM,
+			 .closes = 32), NOTES(ES, ES, ES, STM));
 
 	scenario("no reload stub: HBC through ES", WANT(.stub = false, .end = END_LAUNCHED, .closes = 32,
 			 .launched = OHBC), NOTES(ES));

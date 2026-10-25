@@ -8,7 +8,7 @@ and the kept log's steps.
     make -C tests/agent_app
     python tests/dolphin_way_out.py [channel/title/channel_retail.wad]
 
-  bits 0   IOS closes all 32 descriptors: the reload stub          -> stub
+  bits 0   IOS closes all 32 descriptors: HBC launched through ES  -> es_launch
   bits 1   fd 3's close gets no reply: HBC launched through ES      -> es_launch
   bits 5   that, and the launch fails: STM (IOS still acks), then
            HW_RESETS, then the stub anyway (Dolphin ignores both)   -> stub_anyway
@@ -34,7 +34,7 @@ from dolphin_smoke import hbc  # noqa: E402
 APP = root / "tests/agent_app/agent_app.dol"
 
 CASES = [
-    (0, "stub", ["IOS closed all 32 descriptors", "the reload stub"]),
+    (0, "es_launch", ["IOS closed all 32 descriptors", "HBC through ES"]),
     (1, "es_launch", ["no reply to the close of fd 3", "HBC through ES"]),
     (5, "stub_anyway", ["no reply to the close of fd 3", "launch refused (test)",
                         "STM hot reset", "system reset (HW_RESETS)",

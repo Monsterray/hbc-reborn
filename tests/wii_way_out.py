@@ -5,7 +5,7 @@ the agent's test bits; the app prints each step on the TV, and the kept log
 (any HBC) and the crash block's way-out words (HBC 1.10.18 on) say which way
 it left.
 
-  0    IOS closes all 32 descriptors: the reload stub              -> stub
+  0    IOS closes all 32 descriptors: HBC launched through ES      -> es_launch
   17   fd 3's close gets no reply: HBC launched through ES; if the
        launch fails, the stub (16: never a reset)                  -> es_launch
   21   that, and the launch fails: the stub anyway, no reset       -> stub_anyway
@@ -39,7 +39,7 @@ from wii_agent_safety import APP  # noqa: E402
 PRODUCTION = {"192.168.8.200", "192.168.8.243"}
 WIICAP = pathlib.Path("C:/tools/wii-capture/wiicap.py")
 CASES = {
-    0: ("stub", ["IOS closed all 32 descriptors", "the reload stub"]),
+    0: ("es_launch", ["IOS closed all 32 descriptors", "HBC through ES"]),
     17: ("es_launch", ["no reply to the close of fd 3", "HBC through ES"]),
     21: ("stub_anyway", ["no reply to the close of fd 3", "launch refused (test)",
                          "no reset (test): the reload stub anyway"]),

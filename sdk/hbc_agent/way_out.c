@@ -5,14 +5,18 @@
 // interrupts off, closes every IOS descriptor (0-31) and launches HBC through
 // ES, waiting on each IPC with no time limit. When IOS, or one module in it,
 // stops answering (USB Loader GX's DI read on d2x cIOS, 2026-10-24), the
-// stub waits for good and only a power cycle helps. So the agent first does
-// the stub's steps itself, the same polled IPC with interrupts off, but with
-// a time limit on each, and picks the way out from what answered:
+// stub waits for good and only a power cycle helps. So the agent does the
+// stub's steps itself, the same polled IPC with interrupts off, but with a
+// time limit on each:
 //
-//   every close answered      the reload stub, as before (HBC_WAY_STUB)
-//   IOS acked, but a close    one module is stuck: HBC through ES here,
-//   never replied             skipping the closes (HBC_WAY_ES_LAUNCH)
-//   nothing acked             IOS itself is stuck
+//   IOS acked every close     HBC through ES here (HBC_WAY_ES_LAUNCH), whether
+//                             every close answered or one module is stuck
+//   nothing acked             IOS itself is stuck: a reset, below
+//
+// A real wedge (USB Loader GX's 1 MiB DIP read on d2x, 2026-10-25) answered
+// all 32 closes, and the stub, given the Wii then, froze in its own launch:
+// so the stub runs only when every close answered and ES quickly refused
+// every title (HBC_WAY_STUB), when IOS is well.
 //
 // The launch tries the stub's title, then this HBC's and the original's
 // (OHBC, LULZ), so an app started by either comes back. When no launch goes
@@ -32,8 +36,9 @@
 // looping. Last, the stub anyway (HBC_WAY_STUB_ANYWAY).
 //
 // Each choice is written to the crash block's way_out and the kept log before
-// it is taken. tests/way_out_host runs this file on the PC against a model
-// of the IPC registers (WAY_OUT_HOST).
+// it is taken, and drawn on the TV (screen_note()), which a power cycle does
+// not lose: the capture card shows how far it got. tests/way_out_host runs
+// this file on the PC against a model of the IPC registers (WAY_OUT_HOST).
 
 #ifndef WAY_OUT_HOST
 #include <stdio.h>
@@ -48,6 +53,7 @@
 
 #include "../../channel/channelapp/config.h"
 #include "agent_int.h"
+#include "ov_draw.h"
 
 static inline u32 hw_read(u32 a) {
 	return read32(a);
@@ -471,23 +477,16 @@ static u32 way_out_run(u64 title, bool stub, bool may_reset,
 		}
 	}
 	ms = (now_us() - t0) / 1000;
-	if (acks && !stuck && stub) {
-		// A reply that came after the last close's (an app's transfer ending
-		// as its descriptor closed) would leave Y1 set, which the stub does
-		// not expect: taken first.
-		ipc_drain();
-		snprintf(text, sizeof(text), "agent: way out: IOS closed all 32 descriptors in %u ms: "
-				 "the reload stub\n", (unsigned) ms);
-		note(HBC_WAY_STUB, text);
-		return HBC_WAY_STUB;
-	}
 	if (acks) {
+		bool unsure = false;
+
 		if (stuck)
 			snprintf(text, sizeof(text), "agent: way out: no reply to the close of fd %u "
 					 "(%u stuck, %u ms): HBC through ES\n", (unsigned) first_stuck,
 					 (unsigned) stuck, (unsigned) ms);
 		else
-			snprintf(text, sizeof(text), "agent: way out: no reload stub: HBC through ES\n");
+			snprintf(text, sizeof(text), "agent: way out: IOS closed all 32 descriptors in %u "
+					 "ms: HBC through ES\n", (unsigned) ms);
 		note(HBC_WAY_ES_LAUNCH, text);
 		n = hbc_titles(title, titles);
 		for (i = 0; i < n; ++i) {
@@ -497,8 +496,21 @@ static u32 way_out_run(u64 title, bool stub, bool may_reset,
 			snprintf(text, sizeof(text), "agent: way out: %08x%08x: %s\n",
 					 (unsigned) (titles[i] >> 32), (unsigned) titles[i], why);
 			note(HBC_WAY_ES_LAUNCH, text);
-			if (e == LAUNCH_UNSURE)
+			if (e == LAUNCH_UNSURE) {
+				unsure = true;
 				break;
+			}
+		}
+		// Every close answered and ES said at once that no title launches
+		// (no HBC installed): IOS is well, so the stub, which another loader
+		// may have put there, runs as it would without the agent.
+		if (!stuck && !unsure && stub) {
+			// A reply that came after the last one taken (an app's transfer
+			// ending as its descriptor closed) would leave Y1 set, which the
+			// stub does not expect: taken first.
+			ipc_drain();
+			note(HBC_WAY_STUB, "agent: way out: ES launched no HBC title: the reload stub\n");
+			return HBC_WAY_STUB;
 		}
 	} else {
 		snprintf(text, sizeof(text), "agent: way out: IOS stopped answering after %u closes "
@@ -524,6 +536,64 @@ static u32 way_out_run(u64 title, bool stub, bool may_reset,
 }
 
 #ifndef WAY_OUT_HOST
+// ---- The steps on the TV ----------------------------------------------------
+//
+// Drawn into the framebuffer the VI shows (its TFBL register, as HBC's
+// panic.c finds it), through the uncached address, so nothing waits on the
+// cache or on libogc: the app may have stopped mid-GX or with a lock held.
+// With interrupts off no retrace flips to another buffer; the panel is drawn
+// whole for each step, so a frame the GPU finished copying since cannot keep
+// a step hidden. Integer code only (ov_draw's text and fills).
+
+#define VI_VTR 0x0c002000
+#define VI_TFBL 0x0c00201c
+#define SCREEN_W 640
+#define SCREEN_LINES 8
+#define SCREEN_TEXT 90
+
+static char screen_text[SCREEN_LINES][SCREEN_TEXT];
+static int screen_n;
+
+static void screen_note(const char *text) {
+	static const char prefix[] = "agent: way out: ";
+	u32 fb = read32(VI_TFBL) & 0x1fffffff, vtr = read32(VI_VTR) >> 16, lines, len, i;
+	ov_canvas c;
+	char *line;
+
+	if (!strncmp(text, prefix, sizeof(prefix) - 1))
+		text += sizeof(prefix) - 1;
+	if (screen_n == SCREEN_LINES) {   // the oldest goes
+		memmove(screen_text[0], screen_text[1], sizeof(screen_text[0]) * (SCREEN_LINES - 1));
+		--screen_n;
+	}
+	line = screen_text[screen_n++];
+	for (len = 0; text[len] && text[len] != '\n' && len < SCREEN_TEXT - 1; ++len)
+		line[len] = text[len];
+	line[len] = 0;
+
+	if (fb & 0x10000000)   // the address is in 32-byte units
+		fb <<= 5;
+	lines = (vtr & 0xf) > 10 ? vtr >> 4 : 2 * (vtr >> 4);
+	if (lines < 240 || lines > 576)
+		lines = 480;
+	if (!agent_ram(fb | 0x80000000, SCREEN_W * 2 * lines))
+		return;
+	c.fb = (u8 *) (fb | 0xc0000000);
+	c.w = SCREEN_W;
+	c.h = lines;
+	c.stride = SCREEN_W * 2;
+	ov_noclip(&c);
+	ov_fill(&c, 24, 24, SCREEN_W - 48, 36 + 20 * screen_n, ov_rgb(0, 0, 0), 255);
+	ov_text(&c, ov_th->bold, 36, 30, "HBC agent: leaving the app", ov_rgb(255, 255, 255));
+	for (i = 0; i < (u32) screen_n; ++i)
+		ov_text(&c, ov_th->regular, 36, 52 + 20 * i, screen_text[i], ov_rgb(255, 255, 255));
+}
+
+static void note_and_show(u32 way, const char *text) {
+	agent_way_out_note(way, text);
+	screen_note(text);
+}
+
 // A reload stub to jump into: the magic "STUBHAXX" at 4, and code at 0, an
 // unconditional branch over the header (HBC's is 0x48000010). Dolphin, booting
 // a DOL directly, leaves the magic with 0 at 0x80001800 and catches the jump
@@ -540,14 +610,14 @@ void agent_leave(void) {
 
 	if (checked) {
 		ints_off();
-		way_out_run(title, stub_found(), !agent_reset_recently(), agent_way_out_note);
+		way_out_run(title, stub_found(), !agent_reset_recently(), note_and_show);
 	}
 	// libogc's __reload() jumps to the stub, or without one asks STM to
 	// reboot through the IPC the way out has just left in its own state: a
 	// checked way out without a stub stops here instead, its kept log said.
 	if (!checked || stub_found())
 		__reload();
-	agent_way_out_note(HBC_WAY_STUB_ANYWAY, "agent: way out: no reload stub to go to: stopped\n");
+	note_and_show(HBC_WAY_STUB_ANYWAY, "agent: way out: no reload stub to go to: stopped\n");
 	for (;;)
 		;
 }

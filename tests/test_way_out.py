@@ -35,7 +35,7 @@ class WayOutTest(unittest.TestCase):
                            check=True, env=dict(os.environ, TMP=tmp, TEMP=tmp, TMPDIR=tmp))
             run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=120)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertEqual(run.stdout.count("  PASS:"), 25, run.stdout)
+        self.assertEqual(run.stdout.count("  PASS:"), 29, run.stdout)
         self.assertIn("all way-out scenarios passed", run.stdout)
 
 

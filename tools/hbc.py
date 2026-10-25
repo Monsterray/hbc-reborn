@@ -218,8 +218,8 @@ def lastlog(wii):
 # got the Wii back. not_checked prints nothing (the stub, as always before).
 WAYS_OUT = {
     "not_checked": None,
-    "stub": "through the reload stub (IOS closed every descriptor)",
-    "es_launch": "HBC launched through ES (a descriptor did not close, or no reload stub)",
+    "stub": "through the reload stub (IOS well, ES launched no HBC title)",
+    "es_launch": "HBC launched through ES (IOS acked every close)",
     "stm_reset": "system reset through STM (no launch went ahead; IOS still answered)",
     "reset": "system reset through HW_RESETS (no launch, or IOS did not answer)",
     "stub_anyway": "through the reload stub anyway (no launch or reset worked, or one came "

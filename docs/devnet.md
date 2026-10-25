@@ -555,8 +555,8 @@ What answered decides, and `way_out` in the crash block (and `HBCS`, and
 
 | `way_out` | When | What the agent does |
 | --- | --- | --- |
-| `stub` | every close answered | drains any late reply, then the reload stub, as before |
-| `es_launch` | IOS acked, but a close got no reply (a stuck module), or no stub was found | opens `/dev/es`, reads HBC's ticket views and launches it, as the stub would but without the closes. It tries the stub's title, then this HBC's (`OHBC`), then the original's (`LULZ`), moving on only when ES says a title is not there. IOS reloads and resets the PPC into HBC |
+| `es_launch` | IOS acked every close, whether or not each got its reply | opens `/dev/es`, reads HBC's ticket views and launches it, as the stub would but without the closes. It tries the stub's title, then this HBC's (`OHBC`), then the original's (`LULZ`), moving on only when ES says a title is not there. IOS reloads and resets the PPC into HBC. From 1.10.24 this is the way out even when every close answered: the stub's own launch has no time limit, and a real wedge (a 1 MiB DIP read through d2x cIOS, 2026-10-25) answered all 32 closes and then froze the stub |
+| `stub` | every close answered and ES refused every HBC title at once (no HBC installed) | IOS is well: drains any late reply, then the reload stub, which another loader may have put there |
 | `stm_reset` | no launch went ahead, and IOS still acks | `/dev/stm/immediate` ioctl `0x2001` (hot reset), first: IOS takes it, so it can end a NAND write |
 | `reset` | still here, or IOS acked nothing; AHBPROT is open; not a vWii | clears bit 0 (RSTBINB) of `HW_RESETS` (`0x0d800194`): a system reset that needs no IOS |
 | `stub_anyway` | nothing reset the Wii within 2-3 s, or a reset already came in the last 10 minutes | the reload stub anyway, which may wait for good |
@@ -565,6 +565,12 @@ What answered decides, and `way_out` in the crash block (and `HBCS`, and
 - **The kept log** has an `agent: way out:` line for each step: the time the
   closes took (a few ms on a healthy IOS), the first descriptor that did not
   answer, and each title the launch tried with ES's answer.
+- **On the TV** (1.10.24 on), the same steps in a black panel at the top left
+  of the picture, headed "HBC agent: leaving the app". The agent draws into
+  the framebuffer the VI shows (its `TFBL` register, as HBC's `panic.c` finds
+  it), uncached and integer-only, and draws the whole panel again for each
+  step. A power cycle loses the kept log in MEM2; the capture card still
+  shows how far the way out got.
 - **No stub.** Where no reload stub was found and nothing reset the Wii, the
   agent stops there, with its kept log written. It does not call libogc's
   `__reload()`, which would ask STM to reboot through the IPC the agent has

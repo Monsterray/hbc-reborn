@@ -117,9 +117,11 @@ enum {
 enum {
 	HBC_WAY_NOT_CHECKED = 0, /* the reload stub, unchecked: an exception, a
 	                            check turned off, or an agent before 1.10.18 */
-	HBC_WAY_STUB = 1,        /* IOS closed every descriptor: the reload stub */
-	HBC_WAY_ES_LAUNCH = 2,   /* a descriptor's close got no reply (a module of
-	                            IOS stuck): HBC launched through ES directly */
+	HBC_WAY_STUB = 1,        /* IOS closed every descriptor and ES refused every
+	                            HBC title at once: the reload stub */
+	HBC_WAY_ES_LAUNCH = 2,   /* IOS acked every close: HBC launched through ES
+	                            directly, with time limits (1.10.24 on; before,
+	                            only when a close got no reply) */
 	HBC_WAY_RESET = 3,       /* a system reset through HW_RESETS (AHBPROT;
 	                            needs no IOS) */
 	HBC_WAY_STM_RESET = 4,   /* a system reset through /dev/stm/immediate
@@ -383,12 +385,14 @@ s32 hbc_agent_net_wait(u32 ms);
  * leave the Wii frozen until someone pulled the power. The agent now does
  * the stub's closes itself first, with interrupts off and a time limit on
  * each (0.5 s for IOS's ack, 1 s for the reply), and then, in this order:
- *   1. every close answered: the reload stub, as before (HBC_WAY_STUB);
- *   2. IOS acked but a close got no reply, so one module is stuck (a DI read
- *      through d2x cIOS, 2026-10-24), or no stub was found: HBC launched
- *      through ES here, skipping the closes, by the stub's title, then
+ *   1. IOS acked every close, whether or not each got its reply: HBC
+ *      launched through ES here, with time limits, by the stub's title, then
  *      OHBC's, then LULZ's; IOS reloads and the Wii is back in HBC, with the
- *      crash block and kept log (HBC_WAY_ES_LAUNCH);
+ *      crash block and kept log (HBC_WAY_ES_LAUNCH). Not the stub: its own
+ *      launch has no time limit, and a real wedge (a 1 MiB DIP read through
+ *      d2x cIOS, 2026-10-25) answered every close and then froze it;
+ *   2. every close answered and ES refused every title at once (no HBC
+ *      installed): IOS is well, so the reload stub (HBC_WAY_STUB);
  *   3. no launch went ahead, while IOS still acks: /dev/stm/immediate's hot
  *      reset, which IOS takes, so it can end a NAND write (HBC_WAY_STM_RESET);
  *   4. still here, or IOS acked nothing: with AHBPROT open (the app's
@@ -407,7 +411,9 @@ s32 hbc_agent_net_wait(u32 ms);
  * Where no stub was found and nothing reset the Wii, the agent stops,
  * its kept log written.
  * Each step is written to the crash block's way_out and to the kept log
- * before it is taken. A healthy IOS answers the 32 closes in about 25 ms.
+ * before it is taken, and drawn on the TV in a black panel at the top left
+ * of the picture the VI shows, which a power cycle does not lose (1.10.24
+ * on). A healthy IOS answers the 32 closes in about 25 ms.
  * An exception still leaves through libogc's crash screen and the stub,
  * unchecked: interrupts are off there. HBC_AGENT_NO_IOS_CHECK turns the
  * check off. */
