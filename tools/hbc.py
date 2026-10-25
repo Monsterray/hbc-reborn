@@ -36,7 +36,7 @@ POLL_TIMEOUT = 2
 CHECKSUM_BYTES_PER_S = 1 << 20
 
 # newlib errno values the client acts on
-ENOENT, EEXIST, EXDEV, EISDIR, ENOSYS = 2, 17, 18, 21, 88
+ENOENT, EACCES, EEXIST, EXDEV, EISDIR, ENOSYS = 2, 13, 17, 18, 21, 88
 
 
 class HBCError(Exception):
@@ -50,7 +50,8 @@ WII_ERRNO = {1: "EPERM", 2: "ENOENT", 5: "EIO", 6: "ENXIO", 9: "EBADF", 11: "EAG
              12: "ENOMEM", 13: "EACCES", 16: "EBUSY", 17: "EEXIST", 18: "EXDEV", 20: "ENOTDIR",
              21: "EISDIR", 22: "EINVAL", 23: "ENFILE", 24: "EMFILE", 27: "EFBIG",
              28: "ENOSPC", 30: "EROFS", 71: "EPROTO", 77: "EBADMSG", 88: "ENOSYS",
-             90: "ENOTEMPTY", 91: "ENAMETOOLONG", 104: "ECONNRESET", 116: "ETIMEDOUT"}
+             90: "ENOTEMPTY", 91: "ENAMETOOLONG", 104: "ECONNRESET", 116: "ETIMEDOUT",
+             134: "ENOTSUP"}
 
 
 def wii_error(code):
@@ -364,6 +365,10 @@ FRAME = 64 * 1024
 FLAG_COMPRESS = 0x01
 FLAG_REPLACE = 0x02   # op R: replace a file at the destination
 MOVE_SINCE = (1, 10, 14)   # the first HBC with op R
+ATTR_SINCE = (1, 10, 15)   # the first with op A, and every attribute in a listing
+# FAT's attributes, as op A's bits and the listing's letters (in this order).
+ATTR_BITS = {"r": 0x01, "h": 0x02, "s": 0x04, "a": 0x20}
+ATTR_NAMES = {"r": "read-only", "h": "hidden", "s": "system", "a": "archive"}
 _proto = {}
 
 
@@ -525,12 +530,16 @@ LIST_VERSION = "#list 2"
 
 
 def parse_entry(line):
-    """One "<d|f> <size> <mtime> <flags> <name>" line (op L, S) as a dict:
+    """One "<d|f> <size> <mtime> <attrs> <name>" line (op L, S) as a dict:
     type, size, mtime (seconds by the Wii's clock, see wii_clock_offset),
-    readonly, name."""
+    attrs (FAT's attributes as letters, "rhsa" order; "" for none; before
+    HBC 1.10.15 only "r" was sent), readonly, hidden, system, archive,
+    name."""
     kind, size, mtime, flags, name = line.split(" ", 4)
-    return {"type": kind, "size": int(size), "mtime": int(mtime),
-            "readonly": flags == "r", "name": name}
+    attrs = "" if flags == "-" else flags
+    return {"type": kind, "size": int(size), "mtime": int(mtime), "attrs": attrs,
+            "readonly": "r" in attrs, "hidden": "h" in attrs, "system": "s" in attrs,
+            "archive": "a" in attrs, "name": name}
 
 
 def list_entries(wii, remote):
@@ -762,18 +771,19 @@ def get_tree(wii, remote, local, out=print):
     out(f"get: {len(files)} files ({total} bytes)")
 
 
-def remove_tree(wii, remote, out=print):
-    """Delete a remote tree: files first, then directories bottom-up."""
+def remove_tree(wii, remote, out=print, force=False):
+    """Delete a remote tree: files first, then directories bottom-up. force
+    clears read-only on each entry first."""
     refuse_protected(remote, "recursively delete")
     remote = remote_norm(remote)
     if not remote_is_dir(wii, remote):
-        file_request(wii, "D", remote)
+        remove_one(wii, remote, force)
         return 1
     dirs, files = remote_tree(wii, remote)
     for rel in sorted(files):
-        file_request(wii, "D", remote_join(remote, rel))
+        remove_one(wii, remote_join(remote, rel), force)
     for rel in bottom_up(dirs) + [""]:
-        file_request(wii, "D", remote_join(remote, rel))
+        remove_one(wii, remote_join(remote, rel), force)
     count = len(files) + len(dirs) + 1
     out(f"rm: {count} entries deleted")
     return count
@@ -789,6 +799,50 @@ def remote_exists(wii, remote):
         raise
 
 
+def needs_version(wii, since, what):
+    """Refuse, before sending anything, an HBC or agent older than since."""
+    found = re.match(r"(\d+)\.(\d+)\.(\d+)", version(wii))
+    if found and tuple(map(int, found.groups())) < since:
+        raise HBCError(f"this HBC or app agent ({found.group(0)}) cannot {what}: it needs HBC "
+                       f"{'.'.join(map(str, since))}, or an agent app built with it", ENOSYS)
+
+
+def set_attrs(wii, remote, add="", remove=""):
+    """Set (add) and clear (remove) FAT attributes, letters from "rhsa", on
+    one remote path (op A); returns its attributes after, as letters."""
+    value = sum(ATTR_BITS[c] for c in add)
+    mask = value | sum(ATTR_BITS[c] for c in remove)
+    letters = file_request(wii, "A", remote, value | mask << 8).decode("ascii", "replace")
+    return "" if letters == "-" else letters
+
+
+def attrib(wii, paths, add="", remove="", recursive=False, out=print):
+    """hbc.py attrib: print, or change and print, each path's attributes."""
+    needs_version(wii, ATTR_SINCE, "show or change attributes")
+    for top in paths:
+        targets = [remote_norm(top)]
+        if recursive and remote_is_dir(wii, top):
+            dirs, files = remote_tree(wii, top)
+            targets += [remote_join(remote_norm(top), rel) for rel in sorted(dirs) + sorted(files)]
+        for path in targets:
+            letters = set_attrs(wii, path, add, remove)
+            out(f"{''.join(c if c in letters else '-' for c in 'rhsa')}  {path}")
+
+
+def remove_one(wii, remote, force=False):
+    """Delete one file or empty folder; force clears read-only first, as
+    del /f does. A read-only entry otherwise gives EACCES, with a hint."""
+    if force:
+        set_attrs(wii, remote, remove="r")
+    try:
+        file_request(wii, "D", remote)
+    except HBCError as exc:
+        if exc.code == EACCES:
+            raise HBCError(f"{exc}: it is read-only (hbc.py attrib -r {remote}, or rm --force)",
+                           exc.code) from None
+        raise
+
+
 def move(wii, src, dst, replace=False, out=print):
     """Rename or move src to dst on the Wii (op R, HBC 1.10.14). A dst ending
     in "/", or a folder that is there, means "into that folder", keeping the
@@ -800,10 +854,7 @@ def move(wii, src, dst, replace=False, out=print):
     # Ask first: an older HBC or agent answers op R with ENOSYS without reading
     # the destination that follows the request, and closing on unread data
     # can reset the connection before its answer arrives.
-    found = re.match(r"(\d+)\.(\d+)\.(\d+)", version(wii))
-    if found and tuple(map(int, found.groups())) < MOVE_SINCE:
-        raise HBCError(f"this HBC or app agent ({found.group(0)}) cannot rename or move: it needs "
-                       "HBC 1.10.14, or an agent app built with it", ENOSYS)
+    needs_version(wii, MOVE_SINCE, "rename or move")
     payload = dst.encode("utf-8")
     try:
         with connect(wii) as conn:
@@ -1144,7 +1195,8 @@ Commands
     log                 print what apps started on the Wii print, until Ctrl+C
   Files (sd:/..., usb:/...)
     ls PATH             list a folder (sizes, dates)
-    stat PATH           one file or folder: size, date, read-only
+    stat PATH           one file or folder: size, date, attributes
+    attrib [+r|-r..] P  show or change attributes (read-only, hidden, ...)
     get PATH [LOCAL]    download (-r for a folder)
     put LOCAL PATH      upload (-r for a folder; missing folders are made)
     sync LOCAL PATH     upload only what changed (--delete removes extras)
@@ -1232,15 +1284,31 @@ HBC remembers the PC for later apps too, until log exits.""",
 hbc.py ls PATH
 
 Lists a folder: "d DATE TIME NAME" for folders, "f SIZE DATE TIME NAME" for
-files, the modification time as the Wii's clock had it, and "r" after it
-for a read-only one. --json gives each entry's type, size, mtime (seconds,
-by the Wii's clock), readonly and name. Paths look like sd:/apps or
+files, the modification time as the Wii's clock had it, and after it the
+FAT attributes set, if any: r (read-only), h (hidden), s (system), a
+(archive). --json gives each entry's type, size, mtime (seconds, by the
+Wii's clock), attrs, readonly, hidden, system, archive and name. Paths look like sd:/apps or
 usb:/data (devices: sd, usb, usb2, carda, cardb).""",
     "stat": """\
 hbc.py stat PATH
 
 One file or folder on the Wii: its size, when it was last changed (by the
-Wii's clock) and whether it is read-only. --json for scripts.""",
+Wii's clock) and its attributes (read-only, hidden, system, archive).
+--json for scripts.""",
+    "attrib": """\
+hbc.py attrib [--recursive] [+r|-r] [+h|-h] [+s|-s] [+a|-a] PATH...
+
+Shows a file's or folder's FAT attributes, as Windows' attrib does: r
+read-only, h hidden, s system, a archive. With + or - it sets or clears
+them first; letters combine (+rh). --recursive also changes everything
+inside a folder.
+
+    hbc.py attrib sd:/apps/myapp            show them
+    hbc.py attrib -r sd:/apps/myapp         make it writable
+    hbc.py attrib --recursive -r sd:/apps   every app, inside too
+
+A read-only file cannot be written over or deleted, and a read-only folder
+cannot be deleted, until -r. HBC 1.10.15 on, and agent apps built with it.""",
     "get": """\
 hbc.py get [-r] PATH [LOCAL]
 
@@ -1274,7 +1342,9 @@ itself. A file that fails is reported and the rest still sync.
 hbc.py rm [-r] PATH
 
 Deletes a file or an empty folder, or with -r a whole folder. Device roots
-(sd:/) and <device>:/apps itself are refused.""",
+(sd:/) and <device>:/apps itself are refused. A read-only entry is
+refused too, unless --force, which clears read-only first (as del /f
+does).""",
     "mkdir": """\
 hbc.py mkdir PATH
 
@@ -1381,11 +1451,12 @@ def print_help(topic=None):
 GLOBAL_FLAGS = {"--wii": ("wii", True), "--log-port": ("log_port", True),
                 "--timeout": ("timeout", True), "--json": ("json", False)}
 COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
-                 "--recursive": ("recursive", ("get", "put", "rm")),
+                 "--recursive": ("recursive", ("get", "put", "rm", "attrib")),
                  "--delete": ("delete", ("sync",)),
                  "--checksum": ("checksum", ("sync",)),
                  "--clear": ("clear", ("crash", "order")),
                  "--replace": ("replace", ("mv", "rename")),
+                 "--force": ("force", ("rm",)),
                  "--yes": ("yes", ("send", "run"))}
 VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
                "--name": ("name", ("send", "run"))}
@@ -1418,6 +1489,10 @@ def split_flags(cmd, args):
         if cmd in ("send", "run"):
             rest += args[i:]
             break
+        if cmd == "attrib" and re.fullmatch(r"[+-][rhsa]+", arg):
+            rest.append(arg)   # +r, -h ...: attributes, not options
+            i += 1
+            continue
         if arg.startswith("-") and len(arg) > 1:
             raise SystemExit(f"hbc.py: unknown option {arg!r} for {cmd}")
         rest.append(arg)
@@ -1584,7 +1659,7 @@ def main(argv=None):
                 print(json.dumps(entries))
             else:
                 for e in entries:
-                    when = wii_time_text(e["mtime"]) + (" r" if e["readonly"] else "")
+                    when = wii_time_text(e["mtime"]) + (f" {e['attrs']}" if e["attrs"] else "")
                     print(f"d {when} {e['name']}" if e["type"] == "d" else
                           f"f {e['size']} {when} {e['name']}")
             if truncated:
@@ -1599,7 +1674,7 @@ def main(argv=None):
                 print(f"{'folder' if e['type'] == 'd' else 'file'} {args[0]}: "
                       + (f"{e['size']} bytes, " if e["type"] == "f" else "")
                       + f"modified {wii_time_text(e['mtime'])} (the Wii's clock)"
-                      + (", read-only" if e["readonly"] else ""))
+                      + "".join(f", {ATTR_NAMES[c]}" for c in e["attrs"]))
         elif cmd == "get":
             need(1, "[-r] REMOTE [LOCAL]")
             base = remote_base(args[0]) or "root"
@@ -1631,11 +1706,22 @@ def main(argv=None):
             else:
                 upload(wii, local, remote)
         elif cmd == "rm":
-            need(1, "[-r] REMOTE")
+            need(1, "[-r] [--force] REMOTE")
+            force = bool(flags.get("force"))
+            if force:
+                needs_version(wii, ATTR_SINCE, "clear read-only (rm --force)")
             if recursive:
-                remove_tree(wii, args[0])
+                remove_tree(wii, args[0], force=force)
             else:
-                file_request(wii, "D", args[0])
+                remove_one(wii, args[0], force)
+        elif cmd == "attrib":
+            ops = [a for a in args if a[0] in "+-"]
+            paths = [a for a in args if a[0] not in "+-"]
+            if not paths:
+                need(len(args) + 1, "[--recursive] [+r|-r] [+h|-h] [+s|-s] [+a|-a] PATH...")
+            add = "".join(a[1:] for a in ops if a[0] == "+")
+            remove = "".join(a[1:] for a in ops if a[0] == "-")
+            attrib(wii, paths, add, remove, recursive)
         elif cmd == "mkdir":
             need(1, "REMOTE")
             file_request(wii, "M", args[0])

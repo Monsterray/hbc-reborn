@@ -327,6 +327,7 @@ def check_devnet(run, log_port=0):
 
     import agent_checks   # the rename checks, shared with the agent's
     agent_checks.check_move(wii, "sd:/hbcmv", apps=True)
+    agent_checks.check_attrs(wii, "sd:/hbcattr")
 
     app = root / "tests/netlog_app/netlog_app.dol"
     server = hbc.LogServer(log_port)

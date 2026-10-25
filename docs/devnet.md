@@ -63,7 +63,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 7 when the file op `R` (rename and move) exists, 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
+`proto` is 8 when the file op `A` and every FAT attribute in a listing exist, 7 when the file op `R` (rename and move) exists, 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
 `kind`, `code` and `reason` exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
 `crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
@@ -142,21 +142,50 @@ character, and paths of 256 bytes or more.
 | `g` | framed download; flags bit 0 allows zlib frames | reply header with the file size, then frames |
 | `P` | protocol 1 upload of `size` raw bytes, as `p` without checks | none |
 | `G` | protocol 1 download | the file |
-| `L` | list a directory | `#list 2`, then a line per entry: `<d\|f> <size> <mtime> <flags> <name>` (below); a listing that reached 256 KiB ends with `! truncated` |
+| `L` | list a directory | `#list 2`, then a line per entry: `<d\|f> <size> <mtime> <attrs> <name>` (below); a listing that reached 256 KiB ends with `! truncated` |
 | `S` | one file's or directory's entry | the same line, for that path |
 | `C` | checksum a file | u32 size, u32 CRC-32 |
-| `D` | delete a file or an empty directory | none |
+| `D` | delete a file or an empty directory: `ENOTEMPTY` for a folder that is not, `EACCES` for a read-only entry | none |
 | `M` | create a directory and its parents | none |
+| `A` | change FAT attributes: `size` bits 0-7 the values, bits 8-15 the mask of those to change (`r` 0x01, `h` 0x02, `s` 0x04, `a` 0x20; any other bit is `EINVAL`); a mask of 0 only reads (protocol 8, HBC 1.10.15) | the attributes after, as letters |
 | `R` | rename or move: `path` is the source, `size` the length of the destination path, which follows it; flags bit 1 replaces a file at the destination (protocol 7, HBC 1.10.14) | the destination as it ended up |
 
 An entry line's `mtime` is the time the entry last changed, in seconds since
 1970 by the Wii's clock: FAT keeps local time with no zone, and HBCS `time`
 (the Wii's clock now) is read the same way, so a client lines the two up by
-their difference (`hbc.py` does). `flags` is `r` for a read-only entry, else
-`-`; a directory's size is 0. HBC before 1.10.6 listed only `d <name>` and
+their difference (`hbc.py` does). `attrs` are the entry's FAT attributes as
+letters, in this order: `r` read-only, `h` hidden, `s` system, `a` archive;
+`-` for none. A directory's size is 0. Before 1.10.15 the field was only `r`
+or `-`, from `stat`, which showed a read-only folder as writable on the bench
+Wii. A client that looks for `r` in the field reads both. HBC before 1.10.6 listed only `d <name>` and
 `f <size> <name>`, with no version line; that format is gone. The FAT layers
 under HBC and the agent report these times (libogc 3's FatFs, libogc2's
 libfat) but none can set them, so an upload's time is when the Wii wrote it.
+
+### Attributes
+
+HBC and the agent read and set FAT's attributes as Windows does, and keep
+read-only as a normal file system does:
+
+- **Writes.** A put over a read-only file is refused with `EACCES` before any
+  data is read. A delete of a read-only file or folder is refused with
+  `EACCES`, and of a folder that is not empty with `ENOTEMPTY`. FatFs gives
+  `FR_DENIED` for both of those; HBC tells them apart. A rename keeps the
+  attributes and is allowed, as on any FAT.
+- **Reading** goes through libfat's `FAT_getAttr` on every libogc.
+- **Setting** differs by libogc:
+  - libogc2 and libogc 1.x write the attribute byte whole with `FAT_setAttr`,
+    the directory bit passed back unchanged.
+  - libogc 3.1.0's `FAT_setAttr` cannot clear a bit. It calls FatFs as
+    `f_chmod(fs, path, 0xff, attr)`, so its argument is taken as the mask:
+    `FAT_setAttr(path, 0)` changes nothing (seen in its disassembly).
+  - There `devfile.c` calls `f_chmod` itself, with value and mask, on the
+    FatFs object `FAT_setAttr` would use. It finds that object's offset in
+    the device data in `FAT_setAttr`'s own code (`lwz rX,deviceData(r3);
+    addi rY,rX,OFF`), and only when that code calls `f_chmod`. Otherwise
+    clearing a bit is `ENOTSUP`.
+- **Other volumes.** A volume without FAT attributes (or a device root) has
+  read-only from `stat`, and op `A` with a mask there is `ENOTSUP`.
 
 A put to a path ending in `/` is refused with `EISDIR`, and one larger than
 the device's free space (plus a cluster: the upload is written beside the

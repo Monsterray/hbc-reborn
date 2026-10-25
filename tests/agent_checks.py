@@ -37,6 +37,64 @@ def raw_move(wii, src, dst, flags=0):
             return hbc.WII_ERRNO.get(exc.code, str(exc.code)), ""
 
 
+def raw_attr(wii, path, value, mask):
+    """Op A without hbc.py's checks: (errno name or "ok", letters)."""
+    with socket.create_connection((wii, hbc.PORT), timeout=15) as conn:
+        conn.sendall(hbc.file_header("A", path, value | mask << 8))
+        try:
+            return "ok", hbc.recv_reply(conn).decode()
+        except hbc.HBCError as exc:
+            return hbc.WII_ERRNO.get(exc.code, str(exc.code)), ""
+
+
+def check_attrs(wii, base):
+    """FAT attributes (op A, the listing, HBC 1.10.15) on the Wii's own FAT
+    layer, under base (made and removed here): each one set and cleared,
+    read-only kept by writes and deletes, and the errors a normal FS gives."""
+    quiet = lambda *a: None
+
+    def attrs(path):
+        return hbc.stat_remote(wii, path)["attrs"]
+
+    hbc.put_file(wii, f"{base}/f.bin", b"F")
+    hbc.file_request(wii, "M", f"{base}/d")
+    hbc.put_file(wii, f"{base}/full/x.bin", b"X")
+    assert "a" in attrs(f"{base}/f.bin"), attrs(f"{base}/f.bin")   # FAT marks a new file archive
+    for letter in "rhsa":
+        on = hbc.set_attrs(wii, f"{base}/f.bin", add=letter)
+        assert letter in on and letter in attrs(f"{base}/f.bin"), (letter, on)
+        off = hbc.set_attrs(wii, f"{base}/f.bin", remove=letter)   # clearing: libogc 3's FAT_setAttr cannot
+        assert letter not in off and letter not in attrs(f"{base}/f.bin"), (letter, off)
+    # Read-only: kept, and named, by every write and delete.
+    hbc.set_attrs(wii, f"{base}/f.bin", add="r")
+    hbc.set_attrs(wii, f"{base}/d", add="rh")
+    assert attrs(f"{base}/d") == "rh", attrs(f"{base}/d")
+    entries = {e["name"]: e for e in hbc.list_entries(wii, base)[0]}
+    assert entries["f.bin"]["readonly"] and entries["d"]["hidden"], entries
+    for op, path, want in (("D", f"{base}/f.bin", "EACCES"), ("D", f"{base}/d", "EACCES"),
+                           ("D", f"{base}/full", "ENOTEMPTY")):
+        try:
+            hbc.file_request(wii, op, path)
+            raise AssertionError(f"{op} {path} was not refused")
+        except hbc.HBCError as exc:
+            assert hbc.WII_ERRNO.get(exc.code) == want, (path, exc)
+    try:
+        hbc.put_file(wii, f"{base}/f.bin", b"over")
+        raise AssertionError("a put over a read-only file was not refused")
+    except hbc.HBCError as exc:
+        assert exc.code == hbc.EACCES, exc
+    assert hbc.get_file(wii, f"{base}/f.bin") == b"F"
+    # A read-only entry can still be renamed, as on any FAT.
+    assert hbc.move(wii, f"{base}/f.bin", f"{base}/g.bin", out=quiet) == f"{base}/g.bin"
+    assert "r" in attrs(f"{base}/g.bin")
+    # Op A's own refusals.
+    assert raw_attr(wii, f"{base}/g.bin", 0x10, 0x10)[0] == "EINVAL"    # the directory bit
+    assert raw_attr(wii, f"{base}/nosuch", 1, 1)[0] == "ENOENT"
+    assert raw_attr(wii, "sd:/", 0, 0)[0] == "ok"                       # a root: read only
+    hbc.remove_tree(wii, base, out=quiet, force=True)
+    print("devnet attributes: PASS")
+
+
 def check_move(wii, base, apps=False):
     """Op R (rename and move, HBC 1.10.14) on the Wii's own FAT layer, under
     base (made and removed here). With apps, also that HBC's app list follows
@@ -230,6 +288,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
               f"agent stack {st['agent_stack_used']} of {st['agent_stack_size']}")
         print("agent files and status: PASS")
         check_move(wii, "sd:/hbcmv")
+        check_attrs(wii, "sd:/hbcattr")
 
         check_overlay(wii, log, st)
 

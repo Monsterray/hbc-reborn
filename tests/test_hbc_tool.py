@@ -58,6 +58,7 @@ class FakeHBC:
         self.keys = b""
         self.no_rename = False  # an HBC or agent before op R (1.10.14)
         self.version = "1.2.0"   # what HBCV answers
+        self.attrs = {}          # path -> FAT attribute bits (op A, listings)
         self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -83,9 +84,13 @@ class FakeHBC:
     def reply(self, conn, status, payload=b""):
         conn.sendall(struct.pack(">iI", status, len(payload)) + payload)
 
+    def letters(self, path):
+        bits = self.attrs.get(path, 0)
+        return "".join(c for c, b in (("r", 1), ("h", 2), ("s", 4), ("a", 0x20)) if bits & b) or "-"
+
     def entry(self, kind, path):
         size = len(self.files[path]) if kind == "f" else 0
-        return f"{kind} {size} {self.mtimes.get(path, 0)} - {path.rsplit('/', 1)[1]}\n"
+        return f"{kind} {size} {self.mtimes.get(path, 0)} {self.letters(path)} {path.rsplit('/', 1)[1]}\n"
 
     def make_dirs(self, path):
         while path not in self.dirs:
@@ -235,17 +240,28 @@ class FakeHBC:
                 else:
                     self.reply(conn, -ENOENT)
             elif op == "D":
-                if path in self.files:
+                if path in self.dirs and self.children(path):
+                    self.reply(conn, -ENOTEMPTY)
+                elif (path in self.files or path in self.dirs) and self.attrs.get(path, 0) & 1:
+                    self.reply(conn, -13)   # EACCES: read-only
+                elif path in self.files:
                     del self.files[path]
                     self.reply(conn, 0)
                 elif path in self.dirs:
-                    if self.children(path):
-                        self.reply(conn, -ENOTEMPTY)
-                    else:
-                        self.dirs.discard(path)
-                        self.reply(conn, 0)
+                    self.dirs.discard(path)
+                    self.reply(conn, 0)
                 else:
                     self.reply(conn, -ENOENT)
+            elif op == "A":
+                value, mask = size & 0xff, (size >> 8) & 0xff
+                if mask & ~0x27 or size >> 16:
+                    self.reply(conn, -EINVAL)
+                elif path not in self.files and path not in self.dirs:
+                    self.reply(conn, -ENOENT)
+                else:
+                    cur = self.attrs.get(path, 0)
+                    self.attrs[path] = (cur & ~mask) | (value & mask)
+                    self.reply(conn, 0, self.letters(path).encode())
             elif op == "M":
                 self.make_dirs(path)
                 self.reply(conn, 0)
@@ -311,6 +327,7 @@ class HBCToolTest(unittest.TestCase):
         self.fake.upload = None
         self.fake.no_rename = False
         self.fake.version = "1.2.0"
+        self.fake.attrs = {}
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = pathlib.Path(tmp.name)
@@ -888,6 +905,67 @@ class HBCToolTest(unittest.TestCase):
         self.fake.no_rename = True
         with self.assertRaisesRegex(hbc.HBCError, "cannot rename or move"):
             hbc.move(WII, "sd:/old.bin", "sd:/new.bin", out=lambda *a: None)
+
+    # ---- attributes: op A, listings, rm (HBC 1.10.15) ------------------------------
+
+    def test_parse_entry_attributes(self):
+        e = hbc.parse_entry("f 5 100 rha x.bin")
+        self.assertEqual((e["attrs"], e["readonly"], e["hidden"], e["system"], e["archive"]),
+                         ("rha", True, True, False, True))
+        e = hbc.parse_entry("d 0 100 - dir name")
+        self.assertEqual((e["attrs"], e["readonly"], e["name"]), ("", False, "dir name"))
+        self.assertTrue(hbc.parse_entry("f 1 1 r old.bin")["readonly"], "HBC 1.10.6-1.10.14")
+
+    def test_attrib_shows_and_changes(self):
+        self.fake.version = "1.10.15"
+        hbc.put_file(WII, "sd:/att/a.bin", b"a")
+        hbc.put_file(WII, "sd:/att/sub/b.bin", b"b")
+        self.fake.version = "1.10.15"
+        self.assertEqual(self.cli("attrib", "sd:/att/a.bin").strip(), "----  sd:/att/a.bin")
+        self.assertEqual(self.cli("attrib", "+rh", "+a", "sd:/att/a.bin").strip(), "rh-a  sd:/att/a.bin")
+        self.assertEqual(self.fake.attrs["sd:/att/a.bin"], 0x23)
+        self.assertEqual(self.cli("attrib", "-h", "sd:/att/a.bin").strip(), "r--a  sd:/att/a.bin")
+        # ls and stat show them; -r is an attribute here, not --recursive.
+        self.assertIn(" ra a.bin", self.cli("ls", "sd:/att"))
+        self.assertIn(", read-only, archive", self.cli("stat", "sd:/att/a.bin"))
+        listing = json.loads(self.cli("--json", "ls", "sd:/att"))
+        a = next(e for e in listing if e["name"] == "a.bin")
+        self.assertEqual((a["attrs"], a["readonly"], a["archive"], a["hidden"]), ("ra", True, True, False))
+        out = self.cli("attrib", "--recursive", "+s", "sd:/att")
+        self.assertEqual(sorted(line.split()[1] for line in out.splitlines()),
+                         ["sd:/att", "sd:/att/a.bin", "sd:/att/sub", "sd:/att/sub/b.bin"])
+        self.assertTrue(all(self.fake.attrs[p] & 4 for p in ("sd:/att", "sd:/att/sub/b.bin")))
+        self.cli("attrib", "--recursive", "-rhsa", "sd:/att")
+        self.assertFalse(any(self.fake.attrs.values()))
+        hbc.remove_tree(WII, "sd:/att", out=lambda *a: None)
+
+    def test_rm_read_only_and_force(self):
+        self.fake.version = "1.10.15"
+        hbc.put_file(WII, "sd:/ro/a.bin", b"a")
+        hbc.put_file(WII, "sd:/ro/sub/b.bin", b"b")
+        self.fake.version = "1.10.15"
+        self.cli("attrib", "+r", "sd:/ro/a.bin")
+        with self.assertRaisesRegex(SystemExit, "EACCES.*read-only.*attrib -r sd:/ro/a.bin"):
+            self.cli("rm", "sd:/ro/a.bin")
+        self.assertIn("sd:/ro/a.bin", self.fake.files)
+        self.cli("rm", "--force", "sd:/ro/a.bin")
+        self.assertNotIn("sd:/ro/a.bin", self.fake.files)
+        with self.assertRaisesRegex(SystemExit, "ENOTEMPTY"):
+            self.cli("rm", "sd:/ro/sub")
+        self.cli("attrib", "--recursive", "+r", "sd:/ro")
+        with self.assertRaisesRegex(SystemExit, "EACCES"):
+            self.cli("rm", "-r", "sd:/ro")
+        self.cli("rm", "-r", "--force", "sd:/ro")
+        self.assertNotIn("sd:/ro", self.fake.dirs)
+
+    def test_attrib_needs_a_new_enough_wii(self):
+        self.fake.version = "1.10.14"
+        start = len(self.fake.requests)
+        with self.assertRaisesRegex(SystemExit, r"\(1\.10\.14\) cannot show or change attributes.*1\.10\.15"):
+            self.cli("attrib", "-r", "sd:/x")
+        with self.assertRaisesRegex(SystemExit, "1\\.10\\.15"):
+            self.cli("rm", "--force", "sd:/x")
+        self.assertEqual(self.fake.requests[start:], [], "nothing sent")
 
 
 if __name__ == "__main__":

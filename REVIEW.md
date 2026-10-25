@@ -161,6 +161,48 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.15: FAT attributes, as a normal file system shows them
+
+- **Listings and stat** (`devfile.c`, HBC and the agent) carry every FAT
+  attribute: `r` read-only, `h` hidden, `s` system, `a` archive (`-` for
+  none). They come from libfat's `FAT_getAttr` on every libogc. Before, the
+  field held only `r`, from `stat`, which showed the card's read-only folders
+  (made on a Mac) as writable.
+- **Op `A`** sets and clears attributes (value and mask in `size`). Protocol 8.
+- **Errors a normal FS gives:**
+  - deleting a read-only entry: `EACCES`;
+  - deleting a folder that is not empty: `ENOTEMPTY` (FatFs says `FR_DENIED`
+    for both);
+  - a put over a read-only file: `EACCES`, before any data.
+- **libogc 3.1.0's `FAT_setAttr` cannot clear a bit.** It calls FatFs as
+  `f_chmod(fs, path, 0xff, attr)`: the attributes given become the mask, and
+  the value is all ones (disassembled from its libfat.a). So
+  `FAT_setAttr(path, 0)` changes nothing, and read-only can never come off.
+  - On libogc 3, `devfile.c` calls `f_chmod` itself, on the FatFs object
+    `FAT_setAttr` uses. It reads that object's offset from `FAT_setAttr`'s own
+    code, and uses it only when that code calls `f_chmod`.
+  - libogc2 and 1.x write the byte whole, the directory bit kept.
+- **`hbc.py`:**
+  - `attrib [--recursive] [+r|-r] [+h|-h] [+s|-s] [+a|-a] PATH...`, as
+    Windows' `attrib`;
+  - `ls` and `stat` show the attributes;
+  - `rm --force` clears read-only first, as `del /f` does;
+  - `rm` on a read-only entry says so, and how;
+  - `attrib` and `rm --force` refuse an HBC before 1.10.15 before sending
+    anything.
+- **Proof:**
+  - `tests/test_hbc_tool.py`: 4 new tests, on a fake Wii that has attributes.
+  - `agent_checks.check_attrs` sets and clears each attribute, checks the
+    refusals, and checks that read-only survives a rename.
+    - Dolphin: it passes on HBC and on the agent.
+    - The bench Wii (`wii_file_meta.py`, 2026-10-24): it passes on HBC, on
+      the libogc 3 agent app and on the libogc2 agent app. So clearing works
+      both ways: through `f_chmod` on libogc 3, through `FAT_setAttr` on
+      libogc2.
+- **Build note.** The libogc2 agent library and test app need devkitPPC
+  r41-2. With the default gcc 16 the app fails to link: `__stack_addr`,
+  `__gxregs` and others are undefined.
+
 ### 1.10.14: rename and move (HBCF op R, hbc.py mv)
 
 - **New op `R`** in `devfile.c`, which HBC and the agent share, so both have
@@ -198,14 +240,22 @@ From the 1.3.6 review, each verified in the code first:
   - The bench Wii: `wii_devnet.py` (this tree's DOL) passes everything, and
     `wii_agent.py` passes rename and move.
 - **Found on the bench Wii: `sd:/hbctest` and `sd:/hbcbench` would not
-  delete.** Both were empty-looking folders from 2026-10-12, and deleting
-  them gave `EACCES`.
-  - FatFs reports a folder that is not empty as `FR_DENIED` (`EACCES`, not
-    `ENOTEMPTY`), so it still holds an entry the listing does not show:
-    damage on that card.
-  - Op `R` renamed them to `sd:/hbctest-stuck-20261024` and
-    `sd:/hbcbench-stuck-20261024`, the first renames on a real Wii. Run
-    chkdsk on that card to clear them.
+  delete.** Both were empty folders from 2026-10-12, and deleting them gave
+  `EACCES`.
+  - They are not damaged: they have FAT's read-only attribute. The card was
+    filled from a Mac on 2026-10-12, and `apps`, `wii`, `screenshots` and
+    other folders made then are read-only too (`attrib`, or Windows' `dar--`).
+  - FatFs refuses to delete a read-only entry with `FR_DENIED`, which libogc
+    reports as `EACCES`. It reports a folder that is not empty the same way.
+  - HBC's listing showed these folders as writable (`-`). Its `r` flag comes
+    from `st_mode`, and libogc's `stat` does not carry a folder's read-only
+    bit, so a read-only folder looks writable over the network.
+  - Op `R` renamed them, which a read-only entry allows, to
+    `sd:/hbctest-stuck-20261024` and `sd:/hbcbench-stuck-20261024`. That was
+    the first rename on a real Wii.
+  - chkdsk also found 6 lost chains (192 KB), unrelated: another tool's
+    probe logs and "fs test" files from 2026-10-18, written before a power
+    loss or crash.
 - **Fixed in the tests** (both predate rename):
   - Two checks still read folder listings in the pre-1.10.6 format, so they
     never matched. `dolphin_smoke.py --devnet` failed on the blob listing.

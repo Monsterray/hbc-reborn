@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <malloc.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -111,6 +112,121 @@ static bool valid_path(const char *path) {
 			return false;
 
 	return true;
+}
+
+// ---- FAT attributes --------------------------------------------------------
+// Read-only, hidden, system and archive, as a FAT volume keeps them, for the
+// listing and op A. libfat's FAT_getAttr reads them on every libogc.
+//
+// FAT_setAttr does not work alike. libogc2's and libogc 1.x's libfat write
+// the attribute byte whole (so the directory bit must go back unchanged).
+// libogc 3's calls FatFs as f_chmod(fs, path, 0xff, attr): attr is taken as
+// the mask, so it can set bits but never clear one (FAT_setAttr(path, 0)
+// changes nothing; disassembled from libogc 3.1.0's libfat). There op A
+// calls f_chmod itself, with the volume FAT_setAttr would use: the FatFs
+// object at a fixed offset in the device's data, read from FAT_setAttr's
+// own code (lwz rX,deviceData(r3); addi rY,rX,OFF) and used only when that
+// code also calls f_chmod. Otherwise clearing a bit is ENOTSUP.
+
+#define FA_RO 0x01
+#define FA_HID 0x02
+#define FA_SYS 0x04
+#define FA_DIR 0x10
+#define FA_ARC 0x20
+#define FA_SETTABLE (FA_RO | FA_HID | FA_SYS | FA_ARC)
+
+int FAT_getAttr(const char *path);
+int FAT_setAttr(const char *path, unsigned attr);   // libfat's takes a uint8_t: the same register
+
+#if __has_include(<tuxedo/ppc/exception.h>)
+#include <sys/iosupport.h>
+int f_chmod(void *fs, const char *path, unsigned char attr, unsigned char mask);
+
+// The offset of the FatFs object in a FAT device's data, or -1.
+static int fatfs_offset(void) {
+	static int found = -2;
+	const u32 *op = (const u32 *) FAT_setAttr;
+	u32 want_lwz = (u32) offsetof(devoptab_t, deviceData);
+	int i, j, off = -1, calls = 0;
+
+	if (found != -2)
+		return found;
+	for (i = 0; i < 64 && op[i] != 0x4e800020; ++i) {   // to its blr
+		u32 in = op[i];
+		// lwz rX,deviceData(r3)
+		if ((in >> 26) == 32 && ((in >> 16) & 31) == 3 && (in & 0xffff) == want_lwz && off < 0) {
+			u32 rx = (in >> 21) & 31;
+			for (j = i + 1; j < i + 6; ++j)
+				if ((op[j] >> 26) == 14 && ((op[j] >> 16) & 31) == rx) {   // addi rY,rX,OFF
+					off = (s16) (op[j] & 0xffff);
+					break;
+				}
+		}
+		// bl f_chmod
+		if ((in >> 26) == 18 && (in & 3) == 1) {
+			s32 li = (s32) (in << 6) >> 6 & ~3;
+			if ((const u8 *) &op[i] + li == (const u8 *) f_chmod)
+				++calls;
+		}
+	}
+	found = off >= 0 && off < 4096 && calls == 1 ? off : -1;
+	return found;
+}
+#endif
+
+// The attributes as letters, in the order r h s a; "-" for none.
+static void attr_letters(int a, char out[5]) {
+	char *p = out;
+
+	if (a & FA_RO)
+		*p++ = 'r';
+	if (a & FA_HID)
+		*p++ = 'h';
+	if (a & FA_SYS)
+		*p++ = 's';
+	if (a & FA_ARC)
+		*p++ = 'a';
+	if (p == out)
+		*p++ = '-';
+	*p = 0;
+}
+
+// A path's attributes: FAT's own, or (on a volume that has none, or a
+// device root) read-only from stat.
+static int path_attr(const char *path, const struct stat *st) {
+	int a = FAT_getAttr(path);
+
+	if (a < 0)
+		a = (st->st_mode & S_IWUSR ? 0 : FA_RO) | (S_ISDIR(st->st_mode) ? FA_DIR : 0);
+	return a;
+}
+
+// Set the bits of mask (FA_SETTABLE only) to those of value. 0, or -errno.
+static s32 set_attr(const char *path, int value, int mask) {
+	int cur = FAT_getAttr(path), want;
+
+	if (cur < 0)
+		return -ENOTSUP;           // not FAT, or a device root
+	want = (cur & ~mask) | (value & mask);
+	if (want == cur)
+		return 0;
+#if __has_include(<tuxedo/ppc/exception.h>)
+	{
+		const devoptab_t *d = GetDeviceOpTab(path);
+		const char *rel = strchr(path, ':');
+		int off = fatfs_offset();
+
+		if (!d || !d->deviceData || !rel || off < 0)
+			return -ENOTSUP;
+		if (f_chmod((u8 *) d->deviceData + off, rel + 1, (unsigned char) want,
+					FA_SETTABLE))
+			return -EIO;
+	}
+#else
+	if (FAT_setAttr(path, (unsigned) want) < 0)   // the whole byte: the directory bit too
+		return errno ? -errno : -EIO;
+#endif
+	return FAT_getAttr(path) == want ? 0 : -EIO;
 }
 
 // Create each parent directory of path.
@@ -236,16 +352,20 @@ static void file_get_raw(s32 s, const char *path) {
 	fclose(f);
 }
 
-// One entry of a listing or a stat: "<d|f> <size> <mtime> <flags> <name>".
+// One entry of a listing or a stat: "<d|f> <size> <mtime> <attrs> <name>".
 // mtime is seconds since 1970 by the Wii's clock (FAT keeps local time
 // without a zone; HBCS "time" reads the same clock, so a client can line
-// them up); flags is "r" for read-only, else "-". A directory's size is 0.
-static int entry_line(char *out, size_t size, const struct stat *st, const char *name) {
+// them up); attrs are the FAT attributes as letters, r (read-only), h
+// (hidden), s (system) and a (archive), in that order, or "-" for none. A
+// directory's size is 0.
+static int entry_line(char *out, size_t size, const struct stat *st, const char *path,
+					  const char *name) {
 	bool dir = S_ISDIR(st->st_mode);
+	char attrs[5];
 
+	attr_letters(path_attr(path, st), attrs);
 	return snprintf(out, size, "%c %lld %lld %s %s\n", dir ? 'd' : 'f',
-					dir ? 0LL : (long long) st->st_size, (long long) st->st_mtime,
-					st->st_mode & S_IWUSR ? "-" : "r", name);
+					dir ? 0LL : (long long) st->st_size, (long long) st->st_mtime, attrs, name);
 }
 
 // Op S: the entry line for one path.
@@ -258,7 +378,7 @@ static void file_stat(s32 s, const char *path) {
 		devfile_reply(s, -errno, NULL, 0);
 		return;
 	}
-	devfile_reply(s, 0, line, entry_line(line, sizeof(line), &st, base ? base + 1 : path));
+	devfile_reply(s, 0, line, entry_line(line, sizeof(line), &st, path, base ? base + 1 : path));
 }
 
 static void file_list(s32 s, const char *path) {
@@ -296,7 +416,7 @@ static void file_list(s32 s, const char *path) {
 		if (snprintf(full, sizeof(full), "%s/%s", path, de->d_name) >= (int) sizeof(full) ||
 				stat(full, &st))
 			continue;
-		n += entry_line(buf + n, DEVFILE_LIST_MAX - n, &st, de->d_name);
+		n += entry_line(buf + n, DEVFILE_LIST_MAX - n, &st, full, de->d_name);
 	}
 	closedir(d);
 
@@ -333,6 +453,45 @@ static void file_checksum(s32 s, const char *path) {
 	put_u32(out, st.st_size);
 	put_u32(out + 4, crc);
 	devfile_reply(s, abort_requested ? -EINTR : 0, out, sizeof(out));
+}
+
+static bool dir_empty(const char *path) {
+	DIR *d = opendir(path);
+	struct dirent *de;
+	bool empty = true;
+
+	if (!d)
+		return true;            // the delete itself says
+	while (empty && (de = readdir(d)))
+		empty = !strcmp(de->d_name, ".") || !strcmp(de->d_name, "..");
+	closedir(d);
+	return empty;
+}
+
+// Op A: change attributes. size's low byte holds the values, its next byte
+// the mask of those to change: r 0x01, h 0x02, s 0x04, a 0x20 (FAT's own
+// bits; no others). The reply is the attributes after, as letters.
+static void file_attr(s32 s, const char *path, u32 size) {
+	int value = size & 0xff, mask = (size >> 8) & 0xff;
+	struct stat st;
+	char attrs[5];
+	s32 err;
+
+	if ((mask & ~FA_SETTABLE) || (size >> 16)) {
+		devfile_reply(s, -EINVAL, NULL, 0);
+		return;
+	}
+	if (stat(path, &st)) {
+		devfile_reply(s, -ENOENT, NULL, 0);
+		return;
+	}
+	err = mask ? set_attr(path, value, mask) : 0;
+	if (err) {
+		devfile_reply(s, err, NULL, 0);
+		return;
+	}
+	attr_letters(path_attr(path, &st), attrs);
+	devfile_reply(s, 0, attrs, strlen(attrs));
 }
 
 // Op R: rename or move. The request's path is the source; size is the length
@@ -480,7 +639,8 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 			devfile_reply(s, -EISDIR, NULL, 0);
 			break;
 		}
-		err = room_for(path, size);
+		// Over a read-only file: refused before any data, as a normal FS does.
+		err = !stat(path, &st) && (path_attr(path, &st) & FA_RO) ? -EACCES : room_for(path, size);
 		if (err) {
 			devfile_reply(s, err, NULL, 0);
 			break;
@@ -509,8 +669,14 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 		file_stat(s, path);
 		break;
 	case 'D':
+		// FatFs answers a folder that is not empty and a read-only entry
+		// alike (FR_DENIED, EACCES): say which, as a normal FS does.
 		if (stat(path, &st))
 			err = -ENOENT;
+		else if (S_ISDIR(st.st_mode) && !dir_empty(path))
+			err = -ENOTEMPTY;
+		else if (path_attr(path, &st) & FA_RO)
+			err = -EACCES;
 		else if (S_ISDIR(st.st_mode))
 			err = rmdir(path) ? -errno : 0;
 		else
@@ -526,6 +692,9 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 		break;
 	case 'R':
 		file_move(s, path, size, hdr[5], changed);
+		break;
+	case 'A':
+		file_attr(s, path, size);
 		break;
 	default:
 		devfile_reply(s, -ENOSYS, NULL, 0);

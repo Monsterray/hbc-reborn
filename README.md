@@ -76,12 +76,13 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `send FILE [ARG ...]` | Send a DOL, ELF, or ZIP over Wiiload. A ZIP is installed to the SD card after you confirm on the Wii, or at once with `--yes`. Fails with HBC's reason when the Wii cannot load it. |
 | `run FILE [ARG ...]` | Register for logs, send `FILE`, and print its output until it exits (`--timeout`, default 300 s). Fails at once with HBC's reason when the Wii cannot load it. |
 | `log` | Register for logs and print app output until Ctrl+C. Use it when you launch apps from the Wii itself. |
-| `ls REMOTE` | List a directory, e.g. `sd:/apps`. Lines are `d DATE TIME name` or `f size DATE TIME name` (when it last changed, by the Wii's clock; `r` after it for read-only). |
-| `stat REMOTE` | One file or directory: size, when it last changed, read-only or not. |
+| `ls REMOTE` | List a directory, e.g. `sd:/apps`. Lines are `d DATE TIME name` or `f size DATE TIME name` (when it last changed, by the Wii's clock), then the FAT attributes set: `r` read-only, `h` hidden, `s` system, `a` archive. |
+| `stat REMOTE` | One file or directory: size, when it last changed, its attributes. |
+| `attrib [--recursive] [+r\|-r] [+h\|-h] [+s\|-s] [+a\|-a] REMOTE...` | Show or change FAT attributes, as Windows' `attrib` does. A read-only file cannot be written over or deleted, nor a read-only folder deleted, until `-r`. HBC 1.10.15 and its agent. |
 | `get [-r] REMOTE [LOCAL]` | Download a file, or with `-r` a directory tree. |
 | `put [-r] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. |
 | `sync [--delete] [--checksum] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
-| `rm [-r] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused. |
+| `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted. An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |

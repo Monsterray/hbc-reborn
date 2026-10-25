@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""File times and flags from HBC and from an app's agent (libogc 3 and
+"""File times and attributes from HBC and from an app's agent (libogc 3 and
 libogc2 builds of tests/agent_app), on a Wii.
 
 Runs this tree's channel DOL through the installed HBC, then for it and each
@@ -7,7 +7,8 @@ agent_app build: uploads a file, and checks that its listed and stat'ed time
 (op L, S) is when it was written by the Wii's clock (HBCS "time"), give or
 take FAT's 2 s steps; then syncs a folder with a 50 MB file twice and checks
 the second sync takes the file as the same from its date, without the Wii
-reading it (no checksum request). Ends in the installed HBC.
+reading it (no checksum request); and sets and clears every FAT attribute
+(agent_checks.check_attrs), each libogc clearing them its own way. Ends in the installed HBC.
 
 usage: tests/wii_file_meta.py [WII-IP]
 """
@@ -22,6 +23,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tests"))
 sys.path.insert(0, str(root / "tools"))
+import agent_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 
@@ -45,6 +47,16 @@ def check_times(wii, who):
     if e["readonly"]:
         failed.append(f"{who}: a new file listed read-only")
     return failed
+
+
+def check_attributes(wii, who):
+    """FAT attributes (op A): every one set and cleared, read-only kept by
+    writes and deletes. Clearing goes another way on each libogc (devfile.c)."""
+    try:
+        agent_checks.check_attrs(wii, f"{DIR}/attrs")
+        return []
+    except (AssertionError, OSError, hbc.HBCError) as exc:
+        return [f"{who}: attributes: {exc!r}"]
 
 
 def check_sync(wii, who, work):
@@ -87,12 +99,12 @@ def main():
         hbc.relaunch_wait(wii, dolphin_smoke.expected)
         time.sleep(3)
         print("HBC:", flush=True)
-        failed += check_times(wii, "HBC") + check_sync(wii, "HBC", work)
+        failed += check_times(wii, "HBC") + check_sync(wii, "HBC", work) + check_attributes(wii, "HBC")
         for dol in (root / "tests/agent_app/agent_app.dol",
                     root / "tests/agent_app/agent_app-libogc2.dol"):
             run_app(wii, dol)
             print(f"{dol.name}:", flush=True)
-            failed += check_times(wii, dol.name)
+            failed += check_times(wii, dol.name) + check_attributes(wii, dol.name)
             hbc.exit_app(wii)
             hbc.hbc_wait(wii, 90)
     finally:
