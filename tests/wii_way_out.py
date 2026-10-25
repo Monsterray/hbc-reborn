@@ -13,7 +13,8 @@ All three come back to HBC by themselves. The resets (bits 2: IOS acks
 nothing, then HW_RESETS; 5: the launch fails, then HW_RESETS or STM) reboot
 the Wii, and where it lands depends on Priiloader: --reset 2, 5 or 13 (13:
 stuck, no launch, AHBPROT read as closed, so STM's hot reset)
-runs one, only with someone at the Wii, who brings it back to HBC.
+runs one, only with someone at the Wii (--someone-at-the-wii), who brings it
+back to HBC if BootMii waits at its menu. Queue it with --timeout 600.
 
     python C:/tools/wii-bench/wiibench.py add --wii dev --name "way out" \\
         --cwd <this tree> -- <python> tests/wii_way_out.py
@@ -102,9 +103,26 @@ def reset_run(wii, bits, seconds=240):
     out = pathlib.Path(os.environ.get("WII_BENCH_OUT", "."))
     video = None
     if WIICAP.is_file():
-        video = subprocess.Popen([sys.executable, str(WIICAP), "video", str(seconds),
-                                  "--out", str(out / f"reset-{bits}.mp4")])
+        # Its own log, never the job's: a recorder holding the job's log
+        # open kept the queue from filing the job as done (2026-10-24).
+        with open(out / f"reset-{bits}-video.log", "w") as vlog:
+            video = subprocess.Popen([sys.executable, str(WIICAP), "video", str(seconds),
+                                      "--out", str(out / f"reset-{bits}.mp4")],
+                                     stdin=subprocess.DEVNULL, stdout=vlog,
+                                     stderr=subprocess.STDOUT)
         time.sleep(5)   # the card's first frames are dark
+    try:
+        watch_reset(wii, bits, seconds)
+    finally:
+        if video:
+            try:
+                video.wait(timeout=seconds + 30)
+            except subprocess.TimeoutExpired:
+                video.kill()
+            print(f"TV recording: {out / f'reset-{bits}.mp4'}")
+
+
+def watch_reset(wii, bits, seconds):
     hbc.request(wii, b"HBCC")
     start = time.monotonic()
     hbc.send(wii, APP, ["wayout", str(bits)])
@@ -125,7 +143,10 @@ def reset_run(wii, bits, seconds=240):
         time.sleep(1)
     else:
         raise SystemExit(f"bits {bits}: HBC did not come back within {seconds} s")
-    st = hbc.status(wii)
+    try:
+        st = hbc.status(wii)
+    except (OSError, hbc.HBCError) as exc:
+        raise SystemExit(f"bits {bits}: HBC answered, then not: {exc!r}")
     print(f"HBC {st.get('version')} back; crash block: "
           f"{'kept' if st.get('crash') else 'none (lost, or an HBC before 1.10.14)'}")
     if st.get("crash"):
@@ -135,9 +156,6 @@ def reset_run(wii, bits, seconds=240):
     print(f"kept log: {'kept, why ' + kept['why'] if kept else 'none'}")
     for line in lines:
         print("   ", line)
-    if video:
-        video.wait()
-        print(f"TV recording: {out / f'reset-{bits}.mp4'}")
 
 
 def main():
@@ -145,6 +163,8 @@ def main():
     parser.add_argument("--wii")
     parser.add_argument("--reset", type=int, choices=(2, 5, 13),
                         help="one reset run; someone must be at the Wii")
+    parser.add_argument("--someone-at-the-wii", action="store_true",
+                        help="confirms someone is at the Wii for a --reset run")
     opts = parser.parse_args()
     wii = hbc.wii_address(opts.wii)
     if wii in PRODUCTION:
@@ -153,6 +173,9 @@ def main():
         raise SystemExit("run this as a wii-bench queue job (wiibench.py add --wii dev ...)")
     print(f"HBC {hbc.hbc_wait(wii, 90)} on {wii}")
     if opts.reset:
+        if not opts.someone_at_the_wii:
+            raise SystemExit("a reset run needs someone at the Wii (BootMii may wait at its "
+                             "menu): add --someone-at-the-wii, and queue it with --timeout 600")
         reset_run(wii, opts.reset)
         return
     failed = []
