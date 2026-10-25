@@ -204,13 +204,16 @@ def lastlog(wii):
             "text": text.decode("utf-8", "replace")}
 
 
+# The crash block's way_out (docs/devnet.md, "The way out"): how the agent
+# got the Wii back. not_checked prints nothing (the stub, as always before).
 WAYS_OUT = {
     "not_checked": None,
-    "stub": "through the reload stub (IOS answered)",
-    "es_launch": "HBC launched through ES (an IOS module did not answer)",
-    "reset": "system reset through HW_RESETS (IOS did not answer)",
-    "stm_reset": "system reset through STM (IOS did not answer)",
-    "stub_anyway": "through the reload stub, after the other ways failed",
+    "stub": "through the reload stub (IOS closed every descriptor)",
+    "es_launch": "HBC launched through ES (a descriptor did not close, or no reload stub)",
+    "stm_reset": "system reset through STM (no launch went ahead; IOS still answered)",
+    "reset": "system reset through HW_RESETS (no launch, or IOS did not answer)",
+    "stub_anyway": "through the reload stub anyway (no launch or reset worked, or one came "
+                   "in the last 10 minutes)",
 }
 
 
@@ -243,8 +246,9 @@ def crash_report(crash, elf=None):
         # An agent whose crash hook faulted too says where (HBC 1.10.2 on).
         if crash.get("reason"):
             lines[0] += f"; {crash['reason']}"
-    # How the agent got the Wii back (HBC 1.10.14 on; docs/devnet.md).
-    way = WAYS_OUT.get(crash.get("way_out", "not_checked"))
+    # How the agent got the Wii back (HBC 1.10.18 on; docs/devnet.md).
+    name = crash.get("way_out", "not_checked")
+    way = WAYS_OUT.get(name, f"{name} (a way out this hbc.py does not know)")
     if way:
         lines.append(f"  left  {way}")
     for label, key in (("pc", "pc"), ("lr", "lr")):

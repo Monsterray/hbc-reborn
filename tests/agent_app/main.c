@@ -10,8 +10,9 @@
 //                way-out test bits N (way_out.c: 1 fd 3's close gets no reply,
 //                2 IOS acks nothing, 4 the ES launch fails, 8 AHBPROT reads
 //                closed, 16 no reset, the stub instead); tests/dolphin_way_out.py
-//                and the bench: 0 the stub, 1 HBC through ES, 21 the stub
-//                anyway; 2 or 5 reset the Wii (someone at the Wii)
+//                and the bench: 0 the stub, 1 or 17 HBC through ES, 21 the
+//                stub anyway; 2 (HW_RESETS) or 5 (STM) reset the Wii
+//                (someone at the Wii)
 //   hang         arms the hang watchdog (5 s), then spins in agent_app_hang()
 //   exit         return at once
 //   assert       a failed assert() after 1 s, in agent_app_assert()

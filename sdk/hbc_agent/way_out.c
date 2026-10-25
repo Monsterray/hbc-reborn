@@ -14,14 +14,22 @@
 //   never replied             skipping the closes (HBC_WAY_ES_LAUNCH)
 //   nothing acked             IOS itself is stuck
 //
-// When the launch fails or IOS is stuck: a system reset through HW_RESETS
-// (bit 0, RSTBINB, "System reset. Set to zero to reboot system", WiiBrew
-// Hardware/Hollywood Registers; HBC's own panic.c does it), which the PPC can
-// write only with AHBPROT open (HBC_WAY_RESET); else /dev/stm/immediate's hot
-// reset, while IOS still acks (HBC_WAY_STM_RESET). Both reboot the console:
-// boot2, then the System Menu, or Priiloader where it is installed; the agent
-// first writes Priiloader's "Abra" at 0x817FEFF0, which asks for its autoboot.
-// Last, the stub anyway (HBC_WAY_STUB_ANYWAY).
+// The launch tries the stub's title, then this HBC's and the original's
+// (OHBC, LULZ), so an app started by either comes back. When no launch goes
+// ahead, or IOS is stuck, the console resets:
+//   - while IOS still acks, /dev/stm/immediate's hot reset first
+//     (HBC_WAY_STM_RESET): IOS takes it, so it can end a NAND write first;
+//   - then, with AHBPROT open and not on a vWii, a system reset through
+//     HW_RESETS (bit 0, RSTBINB, "System reset. Set to zero to reboot
+//     system", WiiBrew Hardware/Hollywood Registers; HBC's own panic.c does
+//     it), which needs no IOS at all (HBC_WAY_RESET).
+// A reset reboots the console as a power-on does: boot2, then the System
+// Menu, or Priiloader and whatever it is set to boot. The agent asks
+// Priiloader for nothing (its "Abra" word would force its autoboot, and an
+// autoboot of the app that wedged would loop). A reset is not tried again
+// within 10 minutes of the last one (the crash block's reset_s, when it
+// outlives the reset), so a Wii that wedges again at once stops instead of
+// looping. Last, the stub anyway (HBC_WAY_STUB_ANYWAY).
 //
 // Each choice is written to the crash block's way_out and the kept log before
 // it is taken. tests/way_out_host runs this file on the PC against a model
@@ -56,7 +64,6 @@ static inline u32 now_us(void) {
 #define flush(p, n) DCFlushRange(p, n)
 #define invalidate(p, n) DCInvalidateRange(p, n)
 #define phys(p) ((u32) (p) & 0x7fffffff)
-#define PRIILOADER_MAGIC ((vu32 *) 0x817feff0)
 
 static u32 ints_off(void) {
 	u32 level;
@@ -85,6 +92,7 @@ enum {
 #define IPC_IRQFLAG 0x0d000030
 #define HW_AHBPROT 0x0d800064
 #define HW_RESETS 0x0d800194
+#define HW_CHIPREVID 0x0d8005a0   // 0xcafe in the top half on a Wii U (vWii)
 
 #define ACK_US 500000      // IOS acks in microseconds
 #define REPLY_US 1000000   // a close or an open
@@ -98,8 +106,9 @@ typedef struct {
 	u32 user[8];
 } ipc_req;
 
-// A request whose reply never came stays IOS's: the next one takes another.
-#define SLOTS 6
+// A request whose reply never came stays IOS's: the next one takes another
+// (three stuck closes, an ES launch per title, STM's open and ioctl).
+#define SLOTS 10
 static ipc_req slot[SLOTS] __attribute__((aligned(64)));
 static u32 used;
 
@@ -190,8 +199,10 @@ static ipc_status send_req(ipc_req *r) {
 	flush(r, sizeof(*r));
 	hw_write(IPC_PPCMSG, phys(r));
 	bell(1);
-	if ((hbc_agent_way_out_test & WAY_TEST_NO_ACK) || !wait_ack())
+	if ((hbc_agent_way_out_test & WAY_TEST_NO_ACK) || !wait_ack()) {
+		++used;   // IOS may still take it, and answer into it
 		return POLL_NO_ACK;
+	}
 	udelay(100);
 	bell(2);
 	irq_ack();
@@ -288,77 +299,106 @@ static ipc_req *ioctlv_req(s32 fd, u32 n, u32 in, u32 out) {
 #define ES_GETVIEWS 0x13
 #define ES_LAUNCH 0x08
 
+typedef enum {
+	LAUNCH_NOT_HERE,    // ES answered that this title cannot launch: try the next
+	LAUNCH_UNSURE       // no answer, or one that left IOS busy: no next title
+} launch_end;
+
 // HBC through ES, as the stub does it after its closes. Returns only when
-// ES refused or did not answer; when it goes ahead, IOS reloads and resets
-// the PPC into HBC.
-static const char *launch_hbc(u64 title) {
+// ES refused or did not answer, with what happened in *why; when it goes
+// ahead, IOS reloads and resets the PPC into HBC.
+static launch_end launch_hbc(u64 title, const char **why) {
 	static u64 tid __attribute__((aligned(32)));
-	static u32 count __attribute__((aligned(32)));
+	static struct { u32 n, pad[7]; } count __attribute__((aligned(32)));   // a cache line of its own
 	static u8 views[0xd8 * 4] __attribute__((aligned(32)));
 	ipc_req *r;
 	s32 fd;
 	u32 t, status;
 
-	if (hbc_agent_way_out_test & WAY_TEST_NO_LAUNCH)
-		return "launch refused (test)";
-	if (ios_open("/dev/es", &fd) != POLL_OK || fd < 0)
-		return "ES did not open";
+	if (hbc_agent_way_out_test & WAY_TEST_NO_LAUNCH) {
+		*why = "launch refused (test)";
+		return LAUNCH_NOT_HERE;
+	}
+	if (ios_open("/dev/es", &fd) != POLL_OK || fd < 0) {
+		*why = "ES did not open";
+		return LAUNCH_UNSURE;
+	}
 	tid = title;
+	count.n = 0;
 	put_vec(0, &tid, 8);
 	put_vec(1, &count, 4);
 	r = ioctlv_req(fd, ES_GETVIEWCNT, 1, 1);
-	if (call(r, REPLY_US) != POLL_OK || r->result < 0)
-		return "no ticket view count";
-	invalidate(&count, 4);
-	if (count < 1 || count > 4)
-		return "no ticket views";
+	if (call(r, REPLY_US) != POLL_OK) {
+		*why = "no answer to the ticket view count";
+		return LAUNCH_UNSURE;
+	}
+	invalidate(&count, sizeof(count));
+	if (r->result < 0 || count.n < 1 || count.n > 4) {
+		*why = "no ticket for that title";
+		return LAUNCH_NOT_HERE;
+	}
 	put_vec(0, &tid, 8);
 	put_vec(1, &count, 4);
-	put_vec(2, views, 0xd8 * count);
+	put_vec(2, views, 0xd8 * count.n);
 	r = ioctlv_req(fd, ES_GETVIEWS, 2, 1);
-	if (call(r, REPLY_US) != POLL_OK || r->result < 0)
-		return "no ticket views";
+	if (call(r, REPLY_US) != POLL_OK) {
+		*why = "no answer to the ticket views";
+		return LAUNCH_UNSURE;
+	}
+	if (r->result < 0) {
+		*why = "no ticket views";
+		return LAUNCH_NOT_HERE;
+	}
 	invalidate(views, sizeof(views));
 	put_vec(0, &tid, 8);
 	put_vec(1, views, 0xd8);
 	r = ioctlv_req(fd, ES_LAUNCH, 2, 0);
-	if (!r || send_req(r) != POLL_OK)
-		return "launch not acked";
+	if (!r || send_req(r) != POLL_OK) {
+		*why = "launch not acked";
+		return LAUNCH_UNSURE;
+	}
 	// IOS acks a launch twice when it goes ahead, and replies when it refuses.
 	t = now_us();
 	while (now_us() - t < LAUNCH_US) {
 		status = hw_read(IPC_PPCCTRL);
 		if ((status & 0x22) == 0x22) {
+			// The second ack: taken as the stub's ipc_send_twoack() does,
+			// Y2 before the interrupt flag (clearing Y2 with IY2 set raises
+			// the flag again: Dolphin's WiiIPC), then X2.
 			udelay(100);
-			irq_ack();
 			bell(2);
+			irq_ack();
 			bell(8);
 			// Going ahead: the reset into HBC comes within a second or two.
 			t = now_us();
 			while (now_us() - t < LAUNCH_US)
 				;
-			return "launch acked, but no reset came";
+			++used;   // its reply, if one ever comes, is not ours to reuse
+			*why = "launch acked, but no reset came";
+			return LAUNCH_UNSURE;
 		}
 		// A reply: the launch's is a refusal; an earlier request's is late.
-		if ((status & 0x14) == 0x14 && take_reply() == phys(r))
-			return "launch refused";
+		if ((status & 0x14) == 0x14 && take_reply() == phys(r)) {
+			*why = "launch refused";
+			return LAUNCH_NOT_HERE;
+		}
 	}
-	return "launch not answered";
+	++used;
+	*why = "launch not answered";
+	return LAUNCH_UNSURE;
 }
 
 static bool ahbprot_open(void) {
 	return !(hbc_agent_way_out_test & WAY_TEST_AHBPROT) && hw_read(HW_AHBPROT) == 0xffffffff;
 }
 
-// Priiloader's magic word: "Abra" asks it for its autoboot after the reset.
-static void ask_priiloader(void) {
-	*PRIILOADER_MAGIC = 0x41627261;
-	flush((void *) PRIILOADER_MAGIC, 4);
+// On a Wii U, HW_RESETS is not shown to reboot into the vWii: STM only.
+static bool vwii(void) {
+	return (hw_read(HW_CHIPREVID) >> 16) == 0xcafe;
 }
 
 // Returns only when nothing happened (Dolphin ignores the bit).
 static void hw_reset(void) {
-	ask_priiloader();
 	hw_write(HW_RESETS, hw_read(HW_RESETS) & ~1u);
 	udelay(2000000);
 }
@@ -370,7 +410,6 @@ static void stm_reset(void) {
 	ipc_req *r;
 	s32 fd;
 
-	ask_priiloader();
 	if (ios_open("/dev/stm/immediate", &fd) != POLL_OK || fd < 0)
 		return;
 	r = req_new(6, fd);
@@ -383,17 +422,37 @@ static void stm_reset(void) {
 	r->arg[2] = sizeof(in);
 	r->arg[3] = phys(out);
 	r->arg[4] = sizeof(out);
-	if (send_req(r) == POLL_OK)
+	if (send_req(r) == POLL_OK) {
+		++used;
 		udelay(3000000);
+	}
 }
 
-// The whole decision, given the stub's title, and whether a stub is there.
-// Calls note() before each attempt. Returns only to fall back on the stub.
-static u32 way_out_run(u64 title, bool stub, void (*note)(u32 way, const char *text)) {
-	char text[160];
+// The titles to launch HBC by: the stub's (title, 0 if none), then OHBC and
+// LULZ, each once.
+static int hbc_titles(u64 title, u64 out[3]) {
+	static const u64 known[2] = { 0x000100014f484243ull, 0x000100014c554c5aull };
+	int n = 0, i;
+
+	if (title)
+		out[n++] = title;
+	for (i = 0; i < 2; ++i)
+		if (known[i] != title)
+			out[n++] = known[i];
+	return n;
+}
+
+// The whole decision, given the stub's title (0 if none), whether a stub is
+// there, and whether a reset may be tried. Calls note() before each attempt.
+// Returns only to fall back on the stub. Not reentrant: interrupts are off.
+static u32 way_out_run(u64 title, bool stub, bool may_reset,
+					   void (*note)(u32 way, const char *text)) {
+	static char text[160];
+	u64 titles[3];
 	u32 t0 = now_us(), answered = 0, stuck = 0, first_stuck = 0, ms;
-	bool acks = true;
+	bool acks = true, resets = may_reset && !(hbc_agent_way_out_test & WAY_TEST_NO_RESET);
 	s32 fd, res;
+	int i, n;
 
 	used = 0;
 	ipc_drain();
@@ -413,33 +472,52 @@ static u32 way_out_run(u64 title, bool stub, void (*note)(u32 way, const char *t
 	}
 	ms = (now_us() - t0) / 1000;
 	if (acks && !stuck && stub) {
+		// A reply that came after the last close's (an app's transfer ending
+		// as its descriptor closed) would leave Y1 set, which the stub does
+		// not expect: taken first.
+		ipc_drain();
 		snprintf(text, sizeof(text), "agent: way out: IOS closed all 32 descriptors in %u ms: "
 				 "the reload stub\n", (unsigned) ms);
 		note(HBC_WAY_STUB, text);
 		return HBC_WAY_STUB;
 	}
-	if (!acks)
+	if (acks) {
+		if (stuck)
+			snprintf(text, sizeof(text), "agent: way out: no reply to the close of fd %u "
+					 "(%u stuck, %u ms): HBC through ES\n", (unsigned) first_stuck,
+					 (unsigned) stuck, (unsigned) ms);
+		else
+			snprintf(text, sizeof(text), "agent: way out: no reload stub: HBC through ES\n");
+		note(HBC_WAY_ES_LAUNCH, text);
+		n = hbc_titles(title, titles);
+		for (i = 0; i < n; ++i) {
+			const char *why = "";
+			launch_end e = launch_hbc(titles[i], &why);
+
+			snprintf(text, sizeof(text), "agent: way out: %08x%08x: %s\n",
+					 (unsigned) (titles[i] >> 32), (unsigned) titles[i], why);
+			note(HBC_WAY_ES_LAUNCH, text);
+			if (e == LAUNCH_UNSURE)
+				break;
+		}
+	} else {
 		snprintf(text, sizeof(text), "agent: way out: IOS stopped answering after %u closes "
 				 "(%u ms)\n", (unsigned) answered, (unsigned) ms);
-	else if (stuck)
-		snprintf(text, sizeof(text), "agent: way out: no reply to the close of fd %u "
-				 "(%u stuck, %u ms): HBC through ES\n", (unsigned) first_stuck,
-				 (unsigned) stuck, (unsigned) ms);
-	else
-		snprintf(text, sizeof(text), "agent: way out: no reload stub: HBC through ES\n");
+		note(HBC_WAY_NOT_CHECKED, text);
+	}
+	if (!resets) {
+		note(HBC_WAY_STUB_ANYWAY, may_reset ? "agent: way out: no reset (test): the reload stub anyway\n" :
+			 "agent: way out: a reset already came in the last 10 minutes: no second one, "
+			 "the reload stub anyway\n");
+		return HBC_WAY_STUB_ANYWAY;
+	}
 	if (acks) {
-		note(HBC_WAY_ES_LAUNCH, text);
-		snprintf(text, sizeof(text), "agent: way out: %s\n", launch_hbc(title));
-	}
-	note(acks ? HBC_WAY_ES_LAUNCH : ahbprot_open() && !(hbc_agent_way_out_test & WAY_TEST_NO_RESET) ?
-		 HBC_WAY_RESET : HBC_WAY_STUB_ANYWAY, text);
-	if (ahbprot_open() && !(hbc_agent_way_out_test & WAY_TEST_NO_RESET)) {
-		note(HBC_WAY_RESET, "agent: way out: system reset (HW_RESETS)\n");
-		hw_reset();
-	}
-	if (acks && !(hbc_agent_way_out_test & WAY_TEST_NO_RESET)) {
 		note(HBC_WAY_STM_RESET, "agent: way out: STM hot reset\n");
 		stm_reset();
+	}
+	if (ahbprot_open() && !vwii()) {
+		note(HBC_WAY_RESET, "agent: way out: system reset (HW_RESETS)\n");
+		hw_reset();
 	}
 	note(HBC_WAY_STUB_ANYWAY, "agent: way out: nothing reset the Wii: the reload stub anyway\n");
 	return HBC_WAY_STUB_ANYWAY;
@@ -451,45 +529,20 @@ static bool stub_found(void) {
 }
 
 void agent_leave(void) {
-	u64 title = *STUB_ADDR_MAGIC == STUB_MAGIC && *STUB_ADDR_TITLE ? *STUB_ADDR_TITLE : MY_TITLEID;
+	u64 title = *STUB_ADDR_MAGIC == STUB_MAGIC ? *STUB_ADDR_TITLE : 0;
+	bool checked = !(agent_cfg()->no_safety & HBC_AGENT_NO_IOS_CHECK);
 
-	if (!(agent_cfg()->no_safety & HBC_AGENT_NO_IOS_CHECK)) {
+	if (checked) {
 		ints_off();
-		way_out_run(title, stub_found(), agent_way_out_note);
+		way_out_run(title, stub_found(), !agent_reset_recently(), agent_way_out_note);
 	}
-	__reload();
-}
-
-// For hbc_agent_fatal(), which still exits through exit(): whether IOS opens
-// /dev/es within ms, through libogc's own IPC (nothing is closed). Thread
-// context with interrupts on; returns true when it cannot tell.
-static volatile s32 probe_fd;
-static volatile bool probe_done;
-
-static s32 probe_cb(s32 result, void *user) {
-	(void) user;
-	probe_fd = result;
-	probe_done = true;
-	return 0;
-}
-
-bool agent_ios_answers(u32 ms) {
-	static const char path[] __attribute__((aligned(32))) = "/dev/es";
-	u32 t = now_us();
-
-	if (agent_cfg()->no_safety & HBC_AGENT_NO_IOS_CHECK)
-		return true;
-	if (!(mfmsr() & 0x8000))
-		return true;   // interrupts off (MSR[EE]): no IPC callback could come
-	probe_done = false;
-	if (IOS_OpenAsync(path, 0, probe_cb, NULL) < 0)
-		return true;
-	while (!probe_done && now_us() - t < ms * 1000)
-		usleep(10 * 1000);
-	if (!probe_done)
-		return false;
-	if (probe_fd >= 0)
-		IOS_CloseAsync(probe_fd, NULL, NULL);
-	return true;
+	// libogc's __reload() jumps to the stub, or without one asks STM to
+	// reboot through the IPC the way out has just left in its own state: a
+	// checked way out without a stub stops here instead, its kept log said.
+	if (!checked || stub_found())
+		__reload();
+	agent_way_out_note(HBC_WAY_STUB_ANYWAY, "agent: way out: no reload stub to go to: stopped\n");
+	for (;;)
+		;
 }
 #endif

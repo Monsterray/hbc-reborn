@@ -161,7 +161,7 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
-### 1.10.17: the agent leaves a wedged IOS without a power cycle
+### 1.10.18: the agent leaves a wedged IOS without a power cycle
 
 On 2026-10-24 USB Loader GX's bench build hung IOS in its first encrypted
 `WDVD_Read` through d2x cIOS 249 (stock d2x and the fork alike). The agent's
@@ -171,18 +171,24 @@ reload stub, which waits on IOS with no time limit: three power cycles.
 - **The way out** (`sdk/hbc_agent/way_out.c`, `docs/devnet.md` "The way
   out"). `hbc_agent_fatal_now()`, the hang watchdog, `assert()`, `abort()` and
   the stack marker check now do the stub's descriptor closes first, polled
-  with interrupts off and a time limit on each. Every close answered: the
-  stub. A close without a reply: HBC launched through ES directly. IOS
-  silent, or the launch failed: a system reset through `HW_RESETS` bit 0
-  with AHBPROT open, else STM's hot reset while IOS acks, else the stub
-  anyway. The crash block (version 3) records the choice in `way_out`, and
-  the kept log has each step. `HBC_AGENT_NO_IOS_CHECK` turns it off.
-  `hbc_agent_fatal()` leaves the same way when IOS does not open `/dev/es`
-  within 3 s, instead of calling `exit()`.
+  with interrupts off and a time limit on each. Every close answered: any
+  late reply drained, then the stub. A close without a reply, or no stub:
+  HBC launched through ES directly, by the stub's title, then OHBC's, then
+  LULZ's. No launch went ahead and IOS still acks: STM's hot reset, which
+  IOS takes, so a NAND write can end. Still here, or IOS silent: a system
+  reset through `HW_RESETS` bit 0, with AHBPROT open and not on a vWii.
+  Else the stub anyway. No reset within 10 minutes of the last one (the
+  crash block's `reset_s`, by the RTC), so a Wii whose autoboot wedges at
+  once stops instead of looping. Four words appended to the version 2 crash
+  block (`WAY1`, `way_out`, `reset_s`, their own check) record the choice,
+  so every installed HBC still reads the report; the kept log has each
+  step. `HBC_AGENT_NO_IOS_CHECK` turns it off. `hbc_agent_fatal()` still
+  calls `exit()`; if that has not finished in 15 s, the monitor thread
+  takes the way out.
 - **Evidence.** `tests/test_way_out.py` runs `way_out.c` on the PC against a
-  model of the IPC registers: 15 scenarios (healthy, stale reply, stuck and
-  late closes, silent IOS, refused launch, AHBPROT open and closed, no
-  reset) and a no-time-left check. Dolphin found two bugs the first model
+  model of the IPC registers (healthy, stale and trailing replies, stuck
+  and late closes, silent IOS, refused, hung and slow launches, AHBPROT
+  open and closed, vWii, no stub, a recent reset). Dolphin found two bugs the first model
   missed, and the model now catches both: the time left for a reply read
   the clock twice and wrapped to 71 minutes; and IOS acks or replies only
   while Y1, Y2 and the PPC's IPC interrupt are all clear (Dolphin's
@@ -197,10 +203,31 @@ reload stub, which waits on IOS with no time limit: three power cycles.
   hot reset and `HW_RESETS` after a refused launch came back in 43 s and
   36 s. After a later reset BootMii (boot2) waited at its menu despite
   `AUTOBOOT=SYSMENU`, `BOOTDELAY=1`: a reset may need a button press on a
-  Wii with BootMii as boot2. Not yet proven: which way a real wedge takes
-  (is the kernel silent, or only DI?), whether ES can launch HBC past a
-  stuck DI, and the crash block across a reset (the bench's HBC 1.10.9
-  cannot read version 3).
+  Wii with BootMii as boot2. Those bench runs were the first draft's order
+  (with `Abra`). Not yet proven: the fixed order and the guard on
+  hardware, which way a real wedge takes (is the kernel silent, or only
+  DI?), whether ES can launch HBC past a stuck DI, and the crash block's
+  way-out words across a reset.
+- **Review fixes before release** (the first draft, on branch
+  `claude/quizzical-haslett-3af2ed`): it wrote Priiloader's `Abra` word
+  at `0x817feff0` before a reset, which nothing showed was read, which
+  stayed in MEM1 when no reset came, and which would loop a Wii whose
+  autoboot is the app that wedged: removed, and the 10-minute guard added.
+  `HW_RESETS` came before STM's reset even while IOS answered, cutting off
+  a NAND write: STM first now. A request slot whose reply never came was
+  reused, so a late reply could be read as the next request's: such slots
+  are kept. The second launch ack cleared the interrupt flag before Y2,
+  which raises it again (Dolphin's `WiiIPC`). No drain before the stub; no
+  stub led to libogc's `__reload()` (now: the agent stops); a 3 s `/dev/es`
+  probe in `hbc_agent_fatal()` skipped the app's clean-up (now: the exit
+  deadline); OHBC was the only title; `HW_RESETS` was used on a vWii; and
+  the version 3 crash block was unreadable to every installed HBC.
+  `tests/test_way_out.py`'s model now raises the interrupt on a Y write
+  with IY set, checks each ES ioctlv's vectors, writes a result only as its
+  reply comes, holds a late launch reply until the next request, and looks
+  5 ms past a hand-over for anything left: 23 scenarios plus 2 no-time-left
+  checks, and reverting any one of those fixes (ack order, slot reuse,
+  drain, reset order, vWii, guard, title order) fails it.
 - **Next, with a trigger.** The stub itself still waits forever, for apps
   without the agent and for an exception after a wedge (libogc's crash
   screen calls `__reload()` with interrupts off). Trigger: a hardware run

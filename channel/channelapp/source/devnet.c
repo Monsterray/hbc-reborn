@@ -491,12 +491,9 @@ void devnet_early_init(void) {
 	if (cb->magic == HBC_CRASH_MAGIC && cb->version == HBC_CRASH_VERSION &&
 			cb->check == hbc_crash_check(cb)) {
 		memcpy(&crash, cb, sizeof(crash));
-		have_crash = true;
-	} else if (cb->magic == HBC_CRASH_MAGIC && cb->version == 2 &&
-			((u32 *) cb)[HBC_CRASH_V2_WORDS] == hbc_check_words(cb, HBC_CRASH_V2_WORDS)) {
-		// An agent before 1.10.14: no way_out, so the stub, unchecked.
-		memset(&crash, 0, sizeof(crash));
-		memcpy(&crash, cb, 4 * HBC_CRASH_V2_WORDS);
+		// The way out, from an agent of 1.10.18 on; before, the stub, unchecked.
+		if (crash.way_magic != HBC_CRASH_WAY_MAGIC || crash.way_check != hbc_crash_way_check(&crash))
+			crash.way_out = HBC_WAY_NOT_CHECKED;
 		have_crash = true;
 	} else if (cb->magic == HBC_CRASH_MAGIC && cb->version == 1 &&
 			((u32 *) cb)[HBC_CRASH_V1_WORDS] == hbc_check_words(cb, HBC_CRASH_V1_WORDS)) {

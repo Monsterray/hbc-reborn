@@ -10,8 +10,8 @@ and the kept log's steps.
 
   bits 0   IOS closes all 32 descriptors: the reload stub          -> stub
   bits 1   fd 3's close gets no reply: HBC launched through ES      -> es_launch
-  bits 5   that, and the launch fails: HW_RESETS, then STM, then
-           the stub anyway (Dolphin ignores both resets)            -> stub_anyway
+  bits 5   that, and the launch fails: STM (IOS still acks), then
+           HW_RESETS, then the stub anyway (Dolphin ignores both)   -> stub_anyway
   bits 2   IOS acks nothing: HW_RESETS (AHBPROT always reads open
            in Dolphin), then the stub anyway                         -> stub_anyway
   bits 21  stuck, the launch fails, no reset (16): the stub anyway   -> stub_anyway
@@ -37,12 +37,12 @@ CASES = [
     (0, "stub", ["IOS closed all 32 descriptors", "the reload stub"]),
     (1, "es_launch", ["no reply to the close of fd 3", "HBC through ES"]),
     (5, "stub_anyway", ["no reply to the close of fd 3", "launch refused (test)",
-                        "system reset (HW_RESETS)", "STM hot reset",
+                        "STM hot reset", "system reset (HW_RESETS)",
                         "nothing reset the Wii: the reload stub anyway"]),
     (2, "stub_anyway", ["IOS stopped answering after 0 closes", "system reset (HW_RESETS)",
                         "nothing reset the Wii: the reload stub anyway"]),
     (21, "stub_anyway", ["no reply to the close of fd 3", "launch refused (test)",
-                         "nothing reset the Wii: the reload stub anyway"]),
+                         "no reset (test): the reload stub anyway"]),
 ]
 
 

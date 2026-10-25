@@ -435,12 +435,14 @@ class HBCToolTest(unittest.TestCase):
         self.fake.crash = dict(base, kind="hang", code=0, reason="no hbc_agent_alive() for 60 s")
         self.assertIn("demo hung after 61.5 s: no hbc_agent_alive() for 60 s", self.cli("crash"))
         self.assertNotIn("  left ", self.cli("crash"))
-        # How the agent got the Wii back (HBC 1.10.14 on).
+        # How the agent got the Wii back (HBC 1.10.18 on).
         self.fake.crash["way_out"] = "es_launch"
-        self.assertIn("  left  HBC launched through ES (an IOS module did not answer)",
+        self.assertIn("  left  HBC launched through ES (a descriptor did not close, or no reload stub)",
                       self.cli("crash"))
         self.fake.crash["way_out"] = "stub"
-        self.assertIn("  left  through the reload stub (IOS answered)", self.cli("crash"))
+        self.assertIn("  left  through the reload stub (IOS closed every descriptor)", self.cli("crash"))
+        self.fake.crash["way_out"] = "warp"   # from a newer agent: said, not dropped
+        self.assertIn("  left  warp (a way out this hbc.py does not know)", self.cli("crash"))
 
     def test_lastlog(self):
         self.fake.crash = {}
