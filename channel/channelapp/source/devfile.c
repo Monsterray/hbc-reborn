@@ -2,6 +2,7 @@
 // HBC's loader thread and the in-app agent (sdk/hbc_agent). Framed transfers
 // run in devstream.c; this file validates paths and runs the other ops.
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -111,6 +112,17 @@ static bool valid_path(const char *path) {
 		if ((unsigned char) *p < 0x20)
 			return false;
 
+	// FAT drops a name's trailing dots and spaces, so "sd:/x." and "sd:/x "
+	// would name "sd:/x" (and "." the folder itself): refused, as Windows
+	// refuses them.
+	for (p = strchr(path, '/'); p; p = strchr(p + 1, '/')) {
+		const char *end = strchr(p + 1, '/');
+		size_t n = end ? (size_t) (end - p - 1) : strlen(p + 1);
+
+		if (n && (p[n] == '.' || p[n] == ' '))
+			return false;
+	}
+
 	return true;
 }
 
@@ -126,7 +138,8 @@ static bool valid_path(const char *path) {
 // calls f_chmod itself, with the volume FAT_setAttr would use: the FatFs
 // object at a fixed offset in the device's data, read from FAT_setAttr's
 // own code (lwz rX,deviceData(r3); addi rY,rX,OFF) and used only when that
-// code also calls f_chmod. Otherwise clearing a bit is ENOTSUP.
+// code also calls f_chmod. Without it, setting bits still goes through
+// FAT_setAttr, and clearing one is ENOTSUP.
 
 #define FA_RO 0x01
 #define FA_HID 0x02
@@ -216,13 +229,20 @@ static s32 set_attr(const char *path, int value, int mask) {
 		const char *rel = strchr(path, ':');
 		int off = fatfs_offset();
 
-		if (!d || !d->deviceData || !rel || off < 0)
+		if (off < 0 && !(cur & ~want & FA_SETTABLE)) {
+			// Only setting bits: FAT_setAttr does that (its argument is the
+			// mask of bits it sets), so only clearing needs f_chmod.
+			if (FAT_setAttr(path, (unsigned) (want & ~cur & FA_SETTABLE)) < 0)
+				return -EIO;
+		} else if (!d || !d->deviceData || !rel || off < 0) {
 			return -ENOTSUP;
-		if (f_chmod((u8 *) d->deviceData + off, rel + 1, (unsigned char) want,
-					FA_SETTABLE))
+		} else if (f_chmod((u8 *) d->deviceData + off, rel + 1, (unsigned char) want,
+						   FA_SETTABLE)) {
 			return -EIO;
+		}
 	}
 #else
+	errno = 0;
 	if (FAT_setAttr(path, (unsigned) want) < 0)   // the whole byte: the directory bit too
 		return errno ? -errno : -EIO;
 #endif
@@ -502,13 +522,64 @@ static void file_attr(s32 s, const char *path, u32 size) {
 // client does). An existing destination is EEXIST unless flags bit 1 asks to
 // replace it, and only a file is replaced. A folder cannot move into itself.
 // The reply's payload is the destination as it ended up.
+// Whether two stats are the same file or folder. FAT names it more ways than
+// a byte compare sees: in any case (non-ASCII too), so "Ete" and "ETE" or
+// "Été" and "été" are one entry. Same type, size and time (and inode, where
+// the FS gives one) is taken as the same: a false match only turns a replace
+// into a refused rename, never into a lost file.
+static bool same_entry(const struct stat *a, const struct stat *b) {
+	if (a->st_ino && b->st_ino && a->st_ino != b->st_ino)
+		return false;
+	return S_ISDIR(a->st_mode) == S_ISDIR(b->st_mode) && a->st_size == b->st_size &&
+		   a->st_mtime == b->st_mtime;
+}
+
+// Whether two paths could name one entry on FAT: the same length, ASCII
+// equal but for case, and only non-ASCII bytes free to differ (their case
+// too). With same_entry, this tells "Été" from "été" (one entry) apart from
+// two folders made in the same second (two entries, the same stat).
+static bool may_alias(const char *a, const char *b) {
+	if (strlen(a) != strlen(b))
+		return false;
+	for (; *a; ++a, ++b) {
+		unsigned char x = *a, y = *b;
+		if (x < 0x80 && y < 0x80 ? tolower(x) != tolower(y) : (x < 0x80) != (y < 0x80))
+			return false;
+	}
+	return true;
+}
+
+// Whether a folder (from) is dst or one of the folders above it.
+static bool inside_itself(const char *src, const struct stat *from, const char *dst) {
+	char up[DEVFILE_PATH_MAX];
+	struct stat st;
+	char *p;
+
+	strcpy(up, dst);
+	for (p = strrchr(up, '/'); p && p > strchr(up, '/'); p = strrchr(up, '/')) {
+		*p = 0;
+		if (may_alias(src, up) && !stat(up, &st) && same_entry(from, &st))
+			return true;
+	}
+	return false;
+}
+
+// Op R: rename or move. The request's path is the source; size is the length
+// of the destination path, which follows it. A destination ending in "/", or
+// one that is a folder already, means "into that folder", keeping the name.
+// Missing folders above the destination are made. Both must be on the same
+// device (EXDEV: a move between devices is a copy and a delete, which the
+// client does). An existing destination is EEXIST unless flags bit 1 asks to
+// replace it, and only a file that is not read-only is replaced. A folder
+// cannot move into itself, and neither a device root nor <device>:/apps
+// moves. The reply's payload is the destination as it ended up.
 static void file_move(s32 s, const char *src, u32 size, u8 flags, devfile_change_fn changed) {
 	char dst[DEVFILE_PATH_MAX];
 	const char *colon = strchr(src, ':');
 	const char *base = strrchr(src, '/');
 	struct stat from, to;
-	size_t n, srclen = strlen(src);
-	bool into;
+	size_t n;
+	bool into, there, alias;
 	s32 err = 0;
 
 	if (!size || size >= sizeof(dst) || !tcp_read(s, (u8 *) dst, size, NULL, NULL)) {
@@ -517,8 +588,8 @@ static void file_move(s32 s, const char *src, u32 size, u8 flags, devfile_change
 	}
 	dst[size] = 0;
 
-	// A device root ("sd:/") is not a thing to move.
-	if (!colon || !colon[2]) {
+	// A device root ("sd:/") or the apps folder itself is not a thing to move.
+	if (!colon || !colon[2] || !strcasecmp(colon + 1, "/apps")) {
 		devfile_reply(s, -EINVAL, NULL, 0);
 		return;
 	}
@@ -537,9 +608,11 @@ static void file_move(s32 s, const char *src, u32 size, u8 flags, devfile_change
 		devfile_reply(s, -EINVAL, NULL, 0);
 		return;
 	}
+	there = !stat(dst, &to);
+	alias = there && may_alias(src, dst) && same_entry(&from, &to);   // the source, by another name
 	// Into a folder: an explicit "/", or a folder that is there (and is not
-	// the source itself under another case: that is a rename).
-	if (into || (!stat(dst, &to) && S_ISDIR(to.st_mode) && strcasecmp(dst, src))) {
+	// the source itself: that is a rename).
+	if (into || (there && S_ISDIR(to.st_mode) && !alias)) {
 		if (n + 1 + strlen(base + 1) >= sizeof(dst)) {
 			devfile_reply(s, -ENAMETOOLONG, NULL, 0);
 			return;
@@ -551,23 +624,26 @@ static void file_move(s32 s, const char *src, u32 size, u8 flags, devfile_change
 			devfile_reply(s, -EINVAL, NULL, 0);
 			return;
 		}
+		there = !stat(dst, &to);
+		alias = there && may_alias(src, dst) && same_entry(&from, &to);
 	}
 
 	if (strncmp(src, dst, colon - src + 1))
 		err = -EXDEV;
-	else if (S_ISDIR(from.st_mode) && !strncasecmp(dst, src, srclen) && dst[srclen] == '/')
-		err = -EINVAL;              // a folder into itself
+	else if (S_ISDIR(from.st_mode) && inside_itself(src, &from, dst))
+		err = -EINVAL;              // a folder into itself, however it is spelt
 	else if (!strcmp(src, dst))
 		err = 0;                    // nothing to do
-	else if (strcasecmp(src, dst) && !stat(dst, &to)) {
-		// Something else is there. A case-only rename (FAT does not tell
-		// "Boot.dol" from "boot.dol") finds the source itself, and goes on.
+	else if (there && !alias) {
+		// Something else is there.
 		if (!(flags & DEVNET_FLAG_REPLACE))
 			err = -EEXIST;
 		else if (S_ISDIR(to.st_mode))
 			err = -EISDIR;
 		else if (S_ISDIR(from.st_mode))
 			err = -ENOTDIR;
+		else if (path_attr(dst, &to) & FA_RO)
+			err = -EACCES;          // read-only is kept, on every libogc
 		else if (unlink(dst))
 			err = -errno;
 	}
@@ -582,6 +658,20 @@ static void file_move(s32 s, const char *src, u32 size, u8 flags, devfile_change
 	}
 	gprintf("devnet: R %s -> %s: %d\n", src, dst, err);
 	devfile_reply(s, err, err ? NULL : dst, err ? 0 : strlen(dst));
+}
+
+// Read and drop n bytes the client sent after the request (op R's
+// destination), so a reply made before reading them is not lost to a reset
+// when the socket closes on unread data.
+static void drain(s32 s, u32 n) {
+	u8 junk[64];
+
+	while (n) {
+		u32 k = n < sizeof(junk) ? n : sizeof(junk);
+		if (!tcp_read(s, junk, k, NULL, NULL))
+			return;
+		n -= k;
+	}
 }
 
 static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
@@ -609,6 +699,8 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 	if (valid_path(path) && devfile_mount_hook)
 		devfile_mount_hook(path);
 	if (!valid_path(path)) {
+		if (op == 'R' && size < DEVFILE_PATH_MAX)
+			drain(s, size);
 		devfile_reply(s, -EINVAL, NULL, 0);
 		return;
 	}
@@ -712,6 +804,8 @@ void devfile_handle(s32 s, const u8 *hdr, s32 prio, s32 restore_prio,
 
 	chunk = memalign(32, DEVFILE_CHUNK);
 	if (!chunk) {
+		if (hdr[4] == 'R' && get_u16(hdr + 6) < DEVFILE_PATH_MAX && get_u32(hdr + 8) < DEVFILE_PATH_MAX)
+			drain(s, get_u16(hdr + 6) + get_u32(hdr + 8));
 		devfile_reply(s, -ENOMEM, NULL, 0);
 		return;
 	}

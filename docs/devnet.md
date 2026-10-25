@@ -147,7 +147,7 @@ character, and paths of 256 bytes or more.
 | `C` | checksum a file | u32 size, u32 CRC-32 |
 | `D` | delete a file or an empty directory: `ENOTEMPTY` for a folder that is not, `EACCES` for a read-only entry | none |
 | `M` | create a directory and its parents | none |
-| `A` | change FAT attributes: `size` bits 0-7 the values, bits 8-15 the mask of those to change (`r` 0x01, `h` 0x02, `s` 0x04, `a` 0x20; any other bit is `EINVAL`); a mask of 0 only reads (protocol 8, HBC 1.10.15) | the attributes after, as letters |
+| `A` | change FAT attributes: `size` bits 0-7 the values, bits 8-15 the mask of those to change (`r` 0x01, `h` 0x02, `s` 0x04, `a` 0x20; a mask bit outside those, or a `size` of 0x10000 or more, is `EINVAL`, and value bits outside the mask are ignored); a mask of 0 only reads (protocol 8, HBC 1.10.15) | the attributes after, as letters |
 | `R` | rename or move: `path` is the source, `size` the length of the destination path, which follows it; flags bit 1 replaces a file at the destination (protocol 7, HBC 1.10.14) | the destination as it ended up |
 
 An entry line's `mtime` is the time the entry last changed, in seconds since
@@ -206,7 +206,10 @@ Op `R` renames in place, so a file or folder of any size moves at once:
   - `EXDEV`: the source and destination are on different devices. A move
     between devices is a copy and a delete, which the client does: `hbc.py
     mv` copies each file, checks its CRC-32, and only then deletes the
-    source.
+    source. It refuses first, before writing anything, a source with a
+    read-only entry (which it could not delete afterwards) or a file over
+    512 MiB (the upload limit). A copy that fails is removed again, and the
+    source is kept. The copies are new files: new times, archive only.
   - `EEXIST`: something is at the destination, unless flags bit 1 asks to
     replace it. Even then only a file is replaced: a folder there gives
     `EISDIR`, and moving a folder onto a file gives `ENOTDIR`.
@@ -218,7 +221,30 @@ Op `R` renames in place, so a file or folder of any size moves at once:
 - **Apps.** Like a put or delete, a rename under `<device>:/apps/` reloads the
   app entries of both the old and the new name.
 
-An HBC or agent from before op `R` answers `ENOSYS`.
+An HBC or agent from before op `R` answers `ENOSYS`, but without reading the
+destination that follows the request, so closing on that unread data can
+reset the connection before the answer arrives. A client checks first:
+`proto` 7 or more in HBCS, or (for an agent, whose `proto` counts its own
+changes) the version, as `hbc.py` does.
+
+- **Names FAT reads as another.** FAT drops a name's trailing dots and
+  spaces and folds case, non-ASCII included, so `x.txt.`, `x.txt ` and (for
+  `Été.txt`) `été.txt` can all name one entry.
+  - HBC refuses any path with a `.` component or a name ending in `.` or a
+    space (`EINVAL`), as Windows does.
+  - Before replacing or moving into what is at the destination, HBC asks
+    whether it is the source itself: the same `stat` (type, size, time, and
+    inode where the FS gives one) under a name that differs only in case.
+    That is a rename, never a replace.
+  - A folder is refused (`EINVAL`) when the destination, or any folder above
+    it, is the folder itself, however it is spelt.
+- **Replacing.** A read-only file at the destination is not replaced
+  (`EACCES`), on every libogc.
+- **Protected.** Neither a device root nor `<device>:/apps` itself is
+  renamed (`EINVAL`), whatever the client.
+- **Early answers.** An answer to op `R`, an early refusal included, comes
+  after HBC has read the destination (one under 256 bytes, as any path is),
+  so the client gets the answer rather than a reset.
 
 If an app is launched from the Wii while a transfer runs, HBC stops the
 transfer first (an upload's partial file is deleted), and only then unmounts

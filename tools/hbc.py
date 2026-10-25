@@ -364,6 +364,7 @@ def file_request(wii, op, remote, size=0, payload=b"", timeout=TIMEOUT):
 FRAME = 64 * 1024
 FLAG_COMPRESS = 0x01
 FLAG_REPLACE = 0x02   # op R: replace a file at the destination
+PUT_MAX = 512 << 20    # the largest upload the Wii takes (devfile.c DEVFILE_PUT_MAX)
 MOVE_SINCE = (1, 10, 14)   # the first HBC with op R
 ATTR_SINCE = (1, 10, 15)   # the first with op A, and every attribute in a listing
 # FAT's attributes, as op A's bits and the listing's letters (in this order).
@@ -691,7 +692,14 @@ def bottom_up(dirs):
 
 
 def remote_is_dir(wii, remote):
-    """True for a directory, False for a file; raises if it is missing."""
+    """True for a directory, False for a file; raises if it is missing. Op S
+    (HBC 1.10.6) answers at once; an older HBC is asked with op C, which
+    reads a file whole (a big one can take longer than the timeout)."""
+    try:
+        return stat_remote(wii, remote)["type"] == "d"
+    except HBCError as exc:
+        if exc.code != ENOSYS:
+            raise HBCError(f"{remote}: {exc}", exc.code) from None
     try:
         checksum(wii, remote)
         return False
@@ -826,21 +834,27 @@ def attrib(wii, paths, add="", remove="", recursive=False, out=print):
             targets += [remote_join(remote_norm(top), rel) for rel in sorted(dirs) + sorted(files)]
         for path in targets:
             letters = set_attrs(wii, path, add, remove)
-            out(f"{''.join(c if c in letters else '-' for c in 'rhsa')}  {path}")
+            if out is None:
+                print(json.dumps({"path": path, "attrs": letters}))
+            else:
+                out(f"{''.join(c if c in letters else '-' for c in 'rhsa')}  {path}")
 
 
 def remove_one(wii, remote, force=False):
-    """Delete one file or empty folder; force clears read-only first, as
-    del /f does. A read-only entry otherwise gives EACCES, with a hint."""
-    if force:
-        set_attrs(wii, remote, remove="r")
+    """Delete one file or empty folder. A read-only one gives EACCES, with a
+    hint; force then clears read-only and deletes it, as del /f does (only
+    when the delete was refused for that: a folder that is not empty keeps
+    its read-only)."""
     try:
         file_request(wii, "D", remote)
     except HBCError as exc:
-        if exc.code == EACCES:
+        if exc.code != EACCES:
+            raise
+        if not force:
             raise HBCError(f"{exc}: it is read-only (hbc.py attrib -r {remote}, or rm --force)",
                            exc.code) from None
-        raise
+        set_attrs(wii, remote, remove="r")
+        file_request(wii, "D", remote)
 
 
 def move(wii, src, dst, replace=False, out=print):
@@ -856,6 +870,8 @@ def move(wii, src, dst, replace=False, out=print):
     # can reset the connection before its answer arrives.
     needs_version(wii, MOVE_SINCE, "rename or move")
     payload = dst.encode("utf-8")
+    if len(payload) >= 256:
+        raise HBCError(f"{dst}: a path on the Wii is under 256 bytes")
     try:
         with connect(wii) as conn:
             conn.sendall(file_header("R", src, len(payload), FLAG_REPLACE if replace else 0) + payload)
@@ -873,26 +889,54 @@ def move(wii, src, dst, replace=False, out=print):
 
 def move_across(wii, src, dst, replace):
     """A move between devices: copy every file, check its CRC-32, and only
-    then delete the source."""
+    then delete the source. Everything is checked first: a read-only entry
+    in the source (it could not be deleted after the copy) or a file over
+    the Wii's upload limit refuses the move before anything is written. If a
+    copy fails, what was copied is removed again and the source is kept."""
     src = remote_norm(src)
     if dst.endswith("/") or (remote_exists(wii, dst) and remote_is_dir(wii, dst)):
         dst = remote_join(remote_norm(dst), remote_base(src))
-    is_dir = remote_is_dir(wii, src)
+    top = stat_remote(wii, src)
+    is_dir = top["type"] == "d"
     if remote_exists(wii, dst) and (not replace or is_dir or remote_is_dir(wii, dst)):
         raise HBCError(f"{dst}: Wii returned {wii_error(EEXIST)}", EEXIST)
+    entries = {src: top}
     if is_dir:
         dirs, rels = remote_tree(wii, src)
         files = {rel: remote_join(src, rel) for rel in rels}
-        for rel in [""] + sorted(dirs):
-            file_request(wii, "M", remote_join(dst, rel) if rel else dst)
+        for rel in sorted(dirs) + sorted(rels):
+            entries[remote_join(src, rel)] = stat_remote(wii, remote_join(src, rel))
     else:
-        files = {"": src}
-    for rel, path in sorted(files.items()):
-        target = remote_join(dst, rel) if rel else dst
-        data = get_file(wii, path, progress=Progress(path))
-        put_file(wii, target, data, progress=Progress(target))
-        if checksum(wii, target) != (len(data), zlib.crc32(data)):
-            raise HBCError(f"{target}: the copy does not match {path}; {src} is kept")
+        dirs, files = [], {"": src}
+    for path, e in entries.items():
+        if e["readonly"]:
+            raise HBCError(f"{path} is read-only, so the move could not delete it after "
+                           f"copying; nothing was copied (hbc.py attrib --recursive -r {src})", EACCES)
+        if e["type"] == "f" and e["size"] > PUT_MAX:
+            raise HBCError(f"{path}: {e['size']} bytes, over the {PUT_MAX >> 20} MiB a move "
+                           "between devices can copy; nothing was copied", 27)
+    made = []
+    try:
+        if is_dir:
+            for rel in [""] + sorted(dirs):
+                file_request(wii, "M", remote_join(dst, rel) if rel else dst)
+            made.append(dst)
+        for rel, path in sorted(files.items()):
+            target = remote_join(dst, rel) if rel else dst
+            data = get_file(wii, path, progress=Progress(path))
+            put_file(wii, target, data, progress=Progress(target))
+            if not is_dir:
+                made.append(target)
+            if checksum(wii, target) != (len(data), zlib.crc32(data)):
+                raise HBCError(f"{target}: the copy does not match {path}")
+    except (OSError, HBCError) as exc:
+        for path in made:
+            try:
+                remove_tree(wii, path, out=lambda *a: None)
+            except (OSError, HBCError):
+                pass
+        raise HBCError(f"{exc}; the copy was removed again and {src} is kept",
+                       getattr(exc, "code", None)) from None
     if is_dir:
         remove_tree(wii, src, out=lambda *a: None)
     else:
@@ -1200,7 +1244,8 @@ Commands
     get PATH [LOCAL]    download (-r for a folder)
     put LOCAL PATH      upload (-r for a folder; missing folders are made)
     sync LOCAL PATH     upload only what changed (--delete removes extras)
-    rm PATH             delete a file or empty folder (-r for a whole folder)
+    rm PATH             delete a file or empty folder (-r a whole folder,
+                        --force read-only ones too)
     mkdir PATH          make a folder
     mv FROM TO          rename or move a file or folder (also between devices)
     order DIR [APP...]  HBC's Custom app order: show it, or set it (meta.xml)
@@ -1339,7 +1384,7 @@ itself. A file that fails is reported and the rest still sync.
 
     hbc.py sync dist/myapp sd:/apps/myapp""",
     "rm": """\
-hbc.py rm [-r] PATH
+hbc.py rm [-r] [--force] PATH
 
 Deletes a file or an empty folder, or with -r a whole folder. Device roots
 (sd:/) and <device>:/apps itself are refused. A read-only entry is
@@ -1357,13 +1402,16 @@ there, means "into that folder", keeping the name:
 
     hbc.py mv sd:/apps/old sd:/apps/new             rename a folder
     hbc.py mv sd:/boot.dol sd:/apps/myapp/          move a file into a folder
-    hbc.py mv sd:/game.iso usb:/games/              move to another device
+    hbc.py mv sd:/saves usb:/backup/                move to another device
 
 Missing folders above TO are made. If TO is already there, it is refused,
 unless --replace (which replaces a file, never a folder). A folder cannot go
 into itself. On one device the Wii renames in place, at once, whatever the
 size. Between devices hbc.py copies each file, checks its CRC-32, and
-deletes the source only after that. Device roots and <device>:/apps itself
+deletes the source only after that; a file there may be up to 512 MiB, a
+read-only one is refused before anything is copied, a failed copy is
+removed again, and the copies get new times and only the archive
+attribute. Device roots and <device>:/apps itself
 are refused. An app renamed under sd:/apps shows in HBC's list at once.
 Also "rename". HBC 1.10.14 on, and agent apps built with it.""",
     "order": """\
@@ -1489,7 +1537,7 @@ def split_flags(cmd, args):
         if cmd in ("send", "run"):
             rest += args[i:]
             break
-        if cmd == "attrib" and re.fullmatch(r"[+-][rhsa]+", arg):
+        if cmd == "attrib" and re.fullmatch(r"[+-][a-zA-Z]*", arg):   # attrib checks the letters
             rest.append(arg)   # +r, -h ...: attributes, not options
             i += 1
             continue
@@ -1715,19 +1763,25 @@ def main(argv=None):
             else:
                 remove_one(wii, args[0], force)
         elif cmd == "attrib":
+            bad = [a for a in args if a[0] in "+-" and not re.fullmatch(r"[+-][rhsa]+", a)]
+            if bad:
+                raise SystemExit(f"hbc.py: attrib: {bad[0]!r}: the attributes are +/- with r, h, s, a")
             ops = [a for a in args if a[0] in "+-"]
             paths = [a for a in args if a[0] not in "+-"]
             if not paths:
                 need(len(args) + 1, "[--recursive] [+r|-r] [+h|-h] [+s|-s] [+a|-a] PATH...")
             add = "".join(a[1:] for a in ops if a[0] == "+")
             remove = "".join(a[1:] for a in ops if a[0] == "-")
-            attrib(wii, paths, add, remove, recursive)
+            attrib(wii, paths, add, remove, recursive, out=None if opts.json else print)
         elif cmd == "mkdir":
             need(1, "REMOTE")
             file_request(wii, "M", args[0])
         elif cmd in ("mv", "rename"):
             need(2, "[--replace] FROM TO")
-            move(wii, args[0], args[1], bool(flags.get("replace")))
+            final = move(wii, args[0], args[1], bool(flags.get("replace")),
+                         out=(lambda *a: None) if opts.json else print)
+            if opts.json:
+                print(json.dumps({"from": args[0], "to": final}))
         elif cmd == "order":
             need(1, "[--clear] APPS [FOLDER ...]")
             if flags.get("clear"):

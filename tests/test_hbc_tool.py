@@ -59,6 +59,7 @@ class FakeHBC:
         self.no_rename = False  # an HBC or agent before op R (1.10.14)
         self.version = "1.2.0"   # what HBCV answers
         self.attrs = {}          # path -> FAT attribute bits (op A, listings)
+        self.full = set()        # paths whose put fails with ENOSPC
         self.lock = threading.Lock()
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -198,6 +199,11 @@ class FakeHBC:
             elif op == "C":
                 data = self.files[path]
                 self.reply(conn, 0, struct.pack(">II", len(data), zlib.crc32(data)))
+            elif op == "p" and path in self.full:
+                self.reply(conn, -28)   # ENOSPC, before any data; then read on, as HBC does
+                conn.shutdown(socket.SHUT_WR)
+                while conn.recv(65536):
+                    pass
             elif op == "p":
                 data, left = bytearray(), size
                 while left:
@@ -297,6 +303,8 @@ class FakeHBC:
                 return self.reply(conn, -EISDIR)
             if is_dir:
                 return self.reply(conn, -ENOTDIR)
+            if self.attrs.get(dst, 0) & 1:
+                return self.reply(conn, -13)   # EACCES: read-only kept
             del self.files[dst]
         self.make_dirs(parent(dst))
         if is_dir:
@@ -328,6 +336,7 @@ class HBCToolTest(unittest.TestCase):
         self.fake.no_rename = False
         self.fake.version = "1.2.0"
         self.fake.attrs = {}
+        self.fake.full = set()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = pathlib.Path(tmp.name)
@@ -795,7 +804,7 @@ class HBCToolTest(unittest.TestCase):
                      ("sync", "--delete", str(self.tmp), "sd:/apps/trunc")):
             with self.assertRaisesRegex(SystemExit, "truncated"):
                 self.cli(*argv)
-        self.assertEqual({op for op, _ in self.fake.requests[start:]}, {"L", "C"})
+        self.assertEqual({op for op, _ in self.fake.requests[start:]}, {"L", "S"})   # reads only
         self.assertIn("sd:/apps/trunc/a.bin", self.fake.files)
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):
@@ -819,7 +828,7 @@ class HBCToolTest(unittest.TestCase):
     # ---- mv: op R (HBC 1.10.14) ------------------------------------------------
 
     def put(self, files):
-        self.fake.version = "1.10.14"
+        self.fake.version = "1.10.15"
         for path, data in files.items():
             hbc.put_file(WII, path, data)
 
@@ -966,6 +975,65 @@ class HBCToolTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "1\\.10\\.15"):
             self.cli("rm", "--force", "sd:/x")
         self.assertEqual(self.fake.requests[start:], [], "nothing sent")
+
+    # ---- the 2026-10-24 audit of mv, attrib and rm --force ---------------------------
+
+    def test_mv_across_refuses_read_only_and_cleans_up(self):
+        self.put({"sd:/au/t/a.bin": b"a", "sd:/au/t/b.bin": b"b", "sd:/au/one.bin": b"1"})
+        self.fake.attrs["sd:/au/t/b.bin"] = 1
+        quiet = lambda *a: None
+        start = len(self.fake.requests)
+        with self.assertRaisesRegex(hbc.HBCError, "read-only.*nothing was copied"):
+            hbc.move(WII, "sd:/au/t", "usb:/au/", out=quiet)
+        self.assertFalse([op for op, _ in self.fake.requests[start:] if op in "pPMDR" and op != "R"])
+        self.assertIn("sd:/au/t/b.bin", self.fake.files)
+        # A copy that fails part way is removed again; the source stays.
+        self.fake.attrs.clear()
+        self.fake.full = {"usb:/au/t/b.bin"}
+        with self.assertRaisesRegex(hbc.HBCError, "ENOSPC.*removed again.*sd:/au/t is kept"):
+            hbc.move(WII, "sd:/au/t", "usb:/au/", out=quiet)
+        self.assertFalse([p for p in self.fake.files if p.startswith("usb:/au")])
+        self.assertNotIn("usb:/au/t", self.fake.dirs)
+        self.assertEqual(self.fake.files["sd:/au/t/a.bin"], b"a")
+        # A file over the Wii's upload limit is refused before anything moves.
+        self.fake.files["sd:/au/big.bin"] = b""
+        orig = self.fake.entry
+        self.fake.entry = lambda kind, path: (f"f {600 << 20} 0 a big.bin\n" if path == "sd:/au/big.bin"
+                                              else orig(kind, path))
+        try:
+            with self.assertRaisesRegex(hbc.HBCError, "512 MiB"):
+                hbc.move(WII, "sd:/au/big.bin", "usb:/au/", out=quiet)
+        finally:
+            self.fake.entry = orig
+
+    def test_mv_replace_keeps_read_only_and_json(self):
+        self.put({"sd:/aj/a.bin": b"a", "sd:/aj/b.bin": b"b"})
+        self.fake.attrs["sd:/aj/b.bin"] = 1
+        with self.assertRaisesRegex(SystemExit, "EACCES"):
+            self.cli("mv", "--replace", "sd:/aj/a.bin", "sd:/aj/b.bin")
+        self.assertEqual(self.fake.files["sd:/aj/b.bin"], b"b")
+        self.assertEqual(json.loads(self.cli("--json", "mv", "sd:/aj/a.bin", "sd:/aj/c/")),
+                         {"from": "sd:/aj/a.bin", "to": "sd:/aj/c/a.bin"})
+        with self.assertRaisesRegex(hbc.HBCError, "under 256 bytes"):
+            hbc.move(WII, "sd:/aj/c/a.bin", "sd:/" + "x" * 300, out=lambda *a: None)
+
+    def test_attrib_bad_letters_and_json(self):
+        self.put({"sd:/ab/a.bin": b"a"})
+        for bad in ("+x", "-rq", "+"):
+            with self.assertRaisesRegex(SystemExit, "attrib: .*r, h, s, a"):
+                self.cli("attrib", bad, "sd:/ab/a.bin")
+        self.assertEqual(json.loads(self.cli("--json", "attrib", "+h", "sd:/ab/a.bin")),
+                         {"path": "sd:/ab/a.bin", "attrs": "h"})
+
+    def test_rm_force_clears_read_only_only_when_needed(self):
+        self.put({"sd:/af/full/x.bin": b"x", "sd:/af/plain.bin": b"p"})
+        self.fake.attrs["sd:/af/full"] = 1
+        start = len(self.fake.requests)
+        self.cli("rm", "--force", "sd:/af/plain.bin")      # not read-only: no op A
+        self.assertEqual([op for op, _ in self.fake.requests[start:] if op == "A"], [])
+        with self.assertRaisesRegex(SystemExit, "ENOTEMPTY"):
+            self.cli("rm", "--force", "sd:/af/full")       # not empty: read-only kept
+        self.assertEqual(self.fake.attrs["sd:/af/full"], 1)
 
 
 if __name__ == "__main__":

@@ -161,6 +161,57 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.16: audit of rename, move and attributes
+
+An independent review (2026-10-24) of 1.10.14 and 1.10.15 found these,
+each now fixed and tested:
+
+- **Data loss: a name FAT reads as the source.** FatFs drops a name's
+  trailing dots and spaces and folds case, non-ASCII too.
+  - `mv --replace sd:/x.txt sd:/x.txt.`, or `Été.txt` to `été.txt`, found
+    the source at the destination. A byte compare saw "something else", so
+    it unlinked the source, then the rename failed.
+  - `mv sd:/a sd:/a.` moved a folder into itself.
+  - Now paths with a `.` component, or a name ending in `.` or a space, are
+    `EINVAL`.
+  - A destination with the source's `stat` (type, size, time, inode where
+    given) and a name that differs only in case is the source itself: a
+    rename, never a replace.
+  - A folder is refused when it is the destination or any folder above it,
+    however it is spelt.
+- **Moving a big file between devices failed.** `remote_is_dir` asked with
+  op C, a CRC of the whole file, which timed out on a large one. It now uses
+  op S. The help's ISO example was wrong too: the Wii takes uploads up to
+  512 MiB, so a move between devices refuses bigger files up front.
+- **A half-deleted source.** A read-only entry stopped a move between
+  devices after the copy, part way through deleting the source. It is now
+  refused before anything is copied, and a copy that fails is removed again.
+- **Read-only was replaced on libogc2 and 1.x.** `mv --replace` onto a
+  read-only file worked there, since libfat's `unlink` does not check. It is
+  now `EACCES` everywhere.
+- **Smaller fixes:**
+  - `attrib +x` crashed; it is now a usage error.
+  - Setting a bit on libogc 3 no longer needs the `f_chmod` offset.
+  - A stale `errno` is cleared before `FAT_setAttr`.
+  - An early op R answer drains the destination first, so the client gets
+    the answer, not a reset.
+  - The Wii refuses to rename `<device>:/apps` from any client.
+  - `rm --force` clears read-only only when a delete was refused for it.
+  - `mv` and `attrib` have `--json`.
+  - The rm help and the op A row are fixed.
+- **Proof:**
+  - `tests/test_hbc_tool.py`: 4 new tests, 48 in all.
+  - `check_move` adds trailing dots and spaces, a `.` component, a non-ASCII
+    case rename with `--replace` (the file survives), a folder into itself by
+    another case, `--replace` onto a read-only file, and `sd:/APPS`. It
+    passes in Dolphin on HBC and on the agent.
+  - On the bench Wii (2026-10-24), all pass:
+    - `wii_devnet.py`;
+    - `wii_file_meta.py`: attributes on HBC, and on the libogc 3 and libogc2
+      agent apps;
+    - `wii_agent.py`: the whole run, including the crash, fatal and exit
+      log checks that had lost their last lines twice under 1.10.14.
+
 ### 1.10.15: FAT attributes, as a normal file system shows them
 
 - **Listings and stat** (`devfile.c`, HBC and the agent) carry every FAT

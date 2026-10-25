@@ -139,7 +139,25 @@ def check_move(wii, base, apps=False):
     # --replace replaces a file.
     assert raw_move(wii, f"{base}/c.bin", f"{base}/moved/b.bin", 2) == ("ok", f"{base}/moved/b.bin")
     assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"C"
-    hbc.remove_tree(wii, base, out=quiet)
+    # Names FAT reads as another one, and names that are the source itself
+    # (the 2026-10-24 audit): never a lost file, never a folder inside itself.
+    hbc.put_file(wii, f"{base}/keep.bin", b"K")
+    for dst in (f"{base}/keep.bin.", f"{base}/keep.bin ", f"{base}/./x"):
+        got = raw_move(wii, f"{base}/keep.bin", dst, 2)[0]
+        assert got == "EINVAL", (dst, got)
+    assert hbc.get_file(wii, f"{base}/keep.bin") == b"K"
+    hbc.put_file(wii, f"{base}/\u00c9t\u00e9.bin", b"E")
+    got = raw_move(wii, f"{base}/\u00c9t\u00e9.bin", f"{base}/\u00e9t\u00e9.bin", 2)
+    survivors = [e["name"] for e in hbc.list_entries(wii, base)[0] if e["name"].lower().endswith("t\u00e9.bin")]
+    assert len(survivors) == 1, (got, survivors)   # renamed, or refused: never deleted
+    assert hbc.get_file(wii, f"{base}/{survivors[0]}") == b"E"
+    assert raw_move(wii, f"{base}/moved", f"{base}/MOVED/sub/in", 0)[0] == "EINVAL"
+    hbc.put_file(wii, f"{base}/ro.bin", b"R")
+    hbc.set_attrs(wii, f"{base}/ro.bin", add="r")
+    assert raw_move(wii, f"{base}/keep.bin", f"{base}/ro.bin", 2)[0] == "EACCES"   # read-only kept
+    assert hbc.get_file(wii, f"{base}/ro.bin") == b"R"
+    assert raw_move(wii, "sd:/APPS", "sd:/apps-moved", 0)[0] == "EINVAL"   # never the apps folder
+    hbc.remove_tree(wii, base, out=quiet, force=True)
 
     if apps:
         app = (root / "tests/netlog_app/netlog_app.dol").read_bytes()
