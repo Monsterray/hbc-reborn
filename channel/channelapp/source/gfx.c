@@ -435,6 +435,41 @@ static void plot_texture (const gfx_queue_entry *entry, Mtx v) {
 	GX_End ();
 }
 
+// After something drew with its own GX state between frames (the avatar's
+// offscreen Mii, avatar.c): HBC's pixel format, viewport, copies, projection,
+// vertex format and an unlit colour channel again. gfx_frame_start sets the
+// rest.
+void gfx_restore (void) {
+	Mtx44 p;
+
+	GX_SetPixelFmt (GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+	GX_SetViewport (0, 0, vmode->fbWidth+0.05, vmode->efbHeight+0.05, 0, 1);
+	GX_SetScissor (0, 0, vmode->fbWidth, vmode->efbHeight);
+	GX_SetCopyFilter (vmode->aa, vmode->sample_pattern, GX_TRUE,
+					  vmode->vfilter);
+	GX_SetCopyClear ((GXColor) { 0, 0, 0, 0xff }, 0x00ffffff);
+	GX_SetCullMode (GX_CULL_NONE);
+	GX_SetZCompLoc (GX_TRUE);
+	GX_SetAlphaCompare (GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+	GX_SetDstAlpha (GX_FALSE, 0);
+	GX_SetZMode (GX_TRUE, GX_LEQUAL, GX_TRUE);
+
+	guOrtho(p, view_height / 2, -(view_height / 2),
+			-(view_width / 2), view_width / 2, 100, 1000);
+	GX_LoadProjectionMtx (p, GX_ORTHOGRAPHIC);
+
+	GX_ClearVtxDesc ();
+	GX_SetVtxDesc (GX_VA_POS, GX_DIRECT);
+	GX_SetVtxDesc (GX_VA_CLR0, GX_DIRECT);
+	GX_SetVtxDesc (GX_VA_TEX0, GX_DIRECT);
+	GX_SetVtxAttrFmt (GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+	GX_SetVtxAttrFmt (GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+	GX_SetVtxAttrFmt (GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+	GX_SetChanCtrl (GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX,
+					GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+	GX_SetCurrentMtx (GX_PNMTX0);
+}
+
 // higher level frame functions
 
 void gfx_frame_start (void) {

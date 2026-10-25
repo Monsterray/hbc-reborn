@@ -24,6 +24,7 @@
 #include "cursors.h"
 #include "font.h"
 #include "widgets.h"
+#include "avatar.h"
 #include "view.h"
 #include "bubbles.h"
 #include "dialogs.h"
@@ -268,6 +269,7 @@ static void main_pre(void) {
 	widgets_init();
 	view_init();
 	dialogs_init();
+	avatar_init();
 	mark("widgets_views");
 }
 
@@ -856,6 +858,7 @@ void main_real(void) {
 	browser_deinit ();
 
 	dialogs_deinit ();
+	avatar_deinit ();
 	view_deinit ();
 	widgets_deinit ();
 	font_deinit ();

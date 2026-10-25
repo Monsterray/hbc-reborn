@@ -412,6 +412,13 @@ read the SD copy and never lift the check themselves.
 
 ### 6.3 Steps
 
+**Done in HBC 1.10.21** (`sdk/mii/miidraw.c`): steps 1 to 4, a little
+differently: the face is composited on the CPU (no EFB format change for
+it), the TEV-coloured parts are baked into plain textures, `mii_icon` and
+`mii_capture` copy RGBA8 with alpha, and each part is a display list.
+Step 5 (a placeholder) is left: without the file, HBC shows no avatar.
+The plan as first written:
+
 1. **Parser and PC tool** (`-DMII_NO_OGC`, like `sdk/mii`). Read the
    resource and print each archive's count. Decode one shape to OBJ and one
    texture to PNG. Test against a resource file the developer provides from

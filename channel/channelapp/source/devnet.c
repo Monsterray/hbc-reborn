@@ -24,6 +24,7 @@
 #include "devnet.h"
 #include "loader.h"
 #include "miires.h"
+#include "avatar.h"
 #include "tcp.h"
 #include "zmem.h"
 #include "usbmsd.h"
@@ -255,6 +256,18 @@ static s32 status_json(char *buf, size_t size) {
 	n += snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style());
 	// The Wii's clock, the one file times (op L, S) come from.
 	n += snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL));
+	{
+		// The Mii beside the app list (avatar.c).
+		avatar_info av;
+		char name[2 * sizeof(av.name)];
+
+		avatar_get_info(&av);
+		json_text(name, av.name, sizeof(name));
+		n += snprintf(buf + n, size - n, ",\"avatar\":{\"state\":\"%s\",\"mii\":\"%s\","
+					  "\"slot\":%d,\"frame_us\":%u,\"interval_us\":%u,\"frames\":%u}",
+					  av.state, name, av.slot, (unsigned) av.frame_us, (unsigned) av.interval_us,
+					  (unsigned) av.frames);
+	}
 	_CPU_ISR_Disable(level);
 	n += snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
 				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",
@@ -475,6 +488,9 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		// reply is the toast's text, status 0 or the error.
 		char msg[64];
 		s32 res = miires_save(msg, sizeof(msg));
+
+		if (res >= 0)
+			avatar_reload();
 
 		devfile_reply(s, res < 0 ? res : 0, msg, strlen(msg));
 		return true;

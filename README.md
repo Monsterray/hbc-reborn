@@ -459,6 +459,16 @@ if (mii_make_id(&m) == MII_OK && mii_db_load(&db) == MII_OK) {
 error means. [`sdk/mii/example`](sdk/mii/example) is a whole program, and
 [`docs/mii.md`](docs/mii.md) has the formats and their sources.
 
+`miidraw.c` and `miidraw.h` draw a Mii with GX: the head as the Wii draws
+it, from the user's own face models (`sd:/mii/RFL_Res.dat`, saved with HOME
+> HBC > Save Mii faces), all seven expressions, and a body, posed. Capture
+it into a texture with alpha, make a head icon, or draw it in your own 3D
+scene ([the SDK README](sdk/mii/README.md#drawing-miis-miidraw)). HBC's
+avatar is the worked example: your favourite Mii stands beside the app
+list, breathes, looks around, blinks, smiles and waves, looks at the Wii
+Remote's pointer, and A on it shows the next Mii
+([`avatar.c`](channel/channelapp/source/avatar.c)).
+
 ## Installing the channel on a Wii
 
 Run the DOL over Wiiload first (above). Install the WAD only after that works,
@@ -587,6 +597,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Message Board library on the bench Wii: `backup`, `id`, `post`, `full`, `send WII`, `board`, `friends`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
 | Mii library (`sdk/mii`) on the PC: every field and limit, IDs, CRCs, the database, the hidden database and a Remote's Miis byte for byte (`MII_REAL_DB` adds a Wii's own `RFL_DB.dat`) | `python3 tests/test_mii.py` | C compiler |
 | Mii library in Dolphin: a database on its NAND (add, hidden, remove) and the emulated Wii Remote's Miis, each written and read back | `python3 tests/dolphin_mii.py` (build `tests/mii_app` first) | Dolphin |
+| Mii drawing (`sdk/mii/miidraw.c`) on the PC: a synthetic face resource builds a Mii with every part and each expression's face where RFL puts it, a damaged one is refused (`MII_REAL_RES` and `MII_REAL_DB` add your own files: every Mii builds) | `python3 tests/test_miidraw.py` | C compiler |
+| HBC's avatar on the bench Wii: ready, 60 frames a second for a minute, ten TV pictures | queue `python tests/wii_avatar.py` | the bench queue |
+| Mii drawing on a Wii: `mii_icon` (normal, smiling) and a full-body `mii_capture`, saved to `sd:/mii_test` and checked | `mii_app.dol draw [SLOT]` (Dolphin: with `Graphics.Hacks.EFBToTextureEnable=False`) | Wii or Dolphin |
 | Mii library on the bench Wii: `backup`, `check`, `add`, `remove ID`, `edit ID FIELD=N...`, `hidden`, `remote-add ID`, `remote-remove ID`, `remote-rewrite`, `restore` | queue `python tests/wii_mii.py STEP` (build `tests/mii_app`, `tests/nandget` and `tests/nandput` first; it refuses any other Wii) | the bench queue |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent and MEM2: nothing written into HBC's records while an app runs, the log target kept as it stops, the agent's memory at the top of the MEM2 arena | `python3 tests/wii_agent_mem2.py WII-IP` (`--dol` for another build) | Wii in any HBC |

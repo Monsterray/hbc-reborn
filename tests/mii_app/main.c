@@ -22,6 +22,11 @@
 //   mii_app.dol edit ID FIELD=N... change this test's Mii (creator
 //                                  "hbc-reborn"): any mii.h field, name=TEXT,
 //                                  birthday=M/D, mingle=0|1
+//   mii_app.dol draw [SLOT]        sdk/mii's drawing: the Mii in SLOT (or the
+//                                  next one there) built from sd:/mii/
+//                                  RFL_Res.dat, its icon (normal, smiling)
+//                                  and a full-body capture, saved as
+//                                  sd:/mii_test/*.rgba and checked
 //   mii_app.dol remote-rewrite     write Wii Remote 1's own Miis back
 //                                  unchanged, after saving its memory to
 //                                  sd:/mii_test/remote_backup.bin
@@ -44,7 +49,10 @@
 #include <ogc/lwp_watchdog.h>
 #include <wiiuse/wpad.h>
 
+#include <malloc.h>
+
 #include "mii.h"
+#include "miidraw.h"
 
 extern void __exception_setreload(int t);
 
@@ -548,6 +556,103 @@ static void remote_rewrite(void) {
 		memcmp(after + MII_REMOTE_BLOCK, before + MII_REMOTE_BLOCK, MII_REMOTE_BLOCK) ? "no" : "yes");
 }
 
+/* ---- draw: sdk/mii's drawing (miidraw.h) ---------------------------------- */
+
+/* A GX_TF_RGBA8 texture (4x4 tiles: 32 bytes AR, then 32 GB) to
+ * sd:/mii_test/NAME.rgba, linear RGBA after a "W H 0 0" line; returns the
+ * pixels with alpha, and those of the four corners with alpha. */
+static int save_rgba8(const char *name, const u8 *tex, int w, int h, int *corner_alpha) {
+	char path[64];
+	FILE *f;
+	int x, y, n = 0;
+
+	snprintf(path, sizeof(path), "sd:/mii_test/%s.rgba", name);
+	f = fopen(path, "wb");
+	if (f)
+		fprintf(f, "%d %d 0 0\n", w, h);
+	*corner_alpha = 0;
+	for (y = 0; y < h; ++y)
+		for (x = 0; x < w; ++x) {
+			const u8 *t = tex + ((y / 4) * (w / 4) + x / 4) * 64;
+			int k = (y % 4) * 4 + x % 4;
+			u8 p[4] = { t[2 * k + 1], t[32 + 2 * k], t[33 + 2 * k], t[2 * k] };
+
+			if (f)
+				fwrite(p, 1, 4, f);
+			n += p[3] != 0;
+			if ((x < 4 || x >= w - 4) && (y < 4 || y >= h - 4))
+				*corner_alpha += p[3] != 0;
+		}
+	if (f)
+		fclose(f);
+	return n;
+}
+
+static void draw_test(int slot) {
+	static u8 fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
+	static mii_db db;
+	static mii_res res;
+	static mii_model model;
+	u8 *icon = memalign(32, 96 * 96 * 4), *body = memalign(32, 128 * 256 * 4);
+	mii m;
+	mii_pose pose;
+	u64 t0;
+	int r, n, corners, e;
+
+	GX_Init(fifo, sizeof(fifo));
+	if ((r = mii_res_load(&res, NULL)) < 0) {
+		result("mii_res_load sd:/mii/RFL_Res.dat (HOME > HBC > Save Mii faces)", r);
+		return;
+	}
+	say("RFL_Res.dat: version %#x, %u bytes\n", res.version, (unsigned) res.size);
+	if ((r = mii_db_load(&db)) < 0) {
+		result("mii_db_load", r);
+		return;
+	}
+	for (; slot < MII_DB_SLOTS && mii_db_get(&db, slot, &m) < 0; ++slot)
+		;
+	if (slot >= MII_DB_SLOTS) {
+		result("a Mii in the database", MII_E_EMPTY);
+		return;
+	}
+	say("slot %d\n", slot);
+	t0 = gettime();
+	r = mii_model_make(&res, &m, 128, &model);
+	result("mii_model_make", r);
+	if (r < 0)
+		return;
+	say("built in %llu ms\n", ticks_to_millisecs(gettime() - t0));
+	for (e = 0; e < 2; ++e) {
+		char name[16];
+		static const char *names[] = { "normal", "smile" };
+
+		r = mii_icon(&model, e ? MII_EXPR_SMILE : MII_EXPR_NORMAL, 96, (GXColor) { 0, 0, 0, 0 }, icon);
+		result("mii_icon", r);
+		GX_DrawDone();
+		snprintf(name, sizeof(name), "icon_%s", names[e]);
+		n = save_rgba8(name, icon, 96, 96, &corners);
+		say("%s: %d of %d pixels drawn, %d in the corners\n", name, n, 96 * 96, corners);
+		result("an icon with a head in it and clear corners",
+			   n > 96 * 96 / 4 && !corners ? MII_OK : MII_E_VERIFY);
+	}
+	memset(&pose, 0, sizeof(pose));
+	pose.arm_raise[0] = 2.3f;
+	pose.expression = MII_EXPR_SMILE;
+	t0 = gettime();
+	r = mii_capture(&model, &pose, 128, 256, 0.04f, 1, (GXColor) { 0, 0, 0, 255 }, body);
+	GX_DrawDone();
+	result("mii_capture", r);
+	say("captured in %llu us\n", ticks_to_microsecs(gettime() - t0));
+	n = save_rgba8("body", body, 128, 256, &corners);
+	say("body: %d of %d pixels drawn, %d in the corners\n", n, 128 * 256, corners);
+	result("a Mii in the capture and clear corners", n > 128 * 256 / 8 && !corners ? MII_OK : MII_E_VERIFY);
+	mii_model_free(&model);
+	mii_res_free(&res);
+	mii_db_free(&db);
+	free(icon);
+	free(body);
+}
+
 int main(int argc, char **argv) {
 	static char *sd_argv[8];
 	void *xfb;
@@ -598,6 +703,8 @@ int main(int argc, char **argv) {
 	}
 	else if (argc == 2 && !strcmp(argv[1], "remote-rewrite"))
 		remote_rewrite();
+	else if (argc >= 2 && argc <= 3 && !strcmp(argv[1], "draw"))
+		draw_test(argc == 3 ? atoi(argv[2]) : 0);
 	else if (argc >= 4 && !strcmp(argv[1], "edit"))
 		edit(argv[2], argc - 3, argv + 3);
 	else

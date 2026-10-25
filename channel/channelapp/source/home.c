@@ -26,6 +26,7 @@
 #include "gfx.h"
 #include "loader.h"
 #include "miires.h"
+#include "avatar.h"
 #include "panic.h"
 #include "title.h"
 #include "xml.h"
@@ -59,7 +60,8 @@ static void save_mii_faces(void *user) {
 
 	(void) user;
 	hbc_agent_toast("Saving Mii faces...");
-	miires_save(msg, sizeof(msg));
+	if (miires_save(msg, sizeof(msg)) >= 0)
+		avatar_reload();   // the avatar can stand now
 	hbc_agent_toast(msg);
 }
 

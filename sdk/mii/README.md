@@ -161,6 +161,71 @@ msg.face = face;
 mboard_post_msg(&msg);
 ```
 
+## Drawing Miis (miidraw)
+
+[miidraw.h](miidraw.h) and [miidraw.c](miidraw.c) draw a Mii with GX: its
+head as the Wii draws it, from the console's own face models, and a body to
+go with it. HBC's avatar ([channel/channelapp/source/avatar.c](../../channel/channelapp/source/avatar.c))
+is the worked example.
+
+```c
+#include "mii.h"
+#include "miidraw.h"
+
+static mii_res res;
+static mii_model model;
+static u8 tex[160 * 256 * 4] ATTRIBUTE_ALIGN(32);
+mii m;
+
+/* Once, outside the frame loop (about 0.1 s; any thread). */
+if (mii_res_load(&res, NULL) == MII_OK &&          /* sd:/mii/RFL_Res.dat */
+        mii_get(0, &m) == MII_OK &&                /* or any Mii you have */
+        mii_model_make(&res, &m, 128, &model) == MII_OK)
+    mii_res_free(&res);                            /* the model keeps what it needs */
+
+/* Each frame, before you draw anything: the Mii, posed, into a texture with
+ * alpha. Then set your GX state again and draw tex like any RGBA8 texture. */
+mii_pose pose = { 0 };
+pose.arm_raise[0] = 2.3f;                          /* the right arm up: a wave */
+pose.expression = MII_EXPR_SMILE;
+mii_capture(&model, &pose, 160, 256, 0.04f, 1, (GXColor) { 0, 0, 0, 255 }, tex);
+```
+
+- **The face models are the user's.** `RFL_Res.dat` is Nintendo's: never
+  ship it. HBC's HOME > HBC > Save Mii faces (or `hbc.py mii-faces`) copies
+  the Wii's own to `sd:/mii/RFL_Res.dat`, where `mii_res_load(&res, NULL)`
+  looks. An app cannot read the Wii Menu's copy itself. `MII_E_NO_FILE`
+  means: ask the user to save it.
+- **`mii_model_make`** builds everything once: the head's shapes placed as
+  RFL places them, the face composited for all seven expressions
+  (`MII_EXPR_*`), the parts RFL colours with TEV tricks baked into plain
+  textures, a body in the Mii's colours (shirt in the favourite colour,
+  trousers grey or gold for a special Mii) scaled by height and build, and
+  each part as a GX display list. About 1 MiB.
+- **Three ways to draw it:**
+  - `mii_capture()` into a texture with alpha, framed whole (or the head:
+    `pose.head_only`). It draws twice the size and box-filters down, so the
+    edges are smooth.
+  - `mii_icon()`: a head icon framed as the Wii Menu's.
+  - `mii_draw()` into your own 3D scene, with your projection and camera.
+- **`mii_pose`**: turn, head yaw/pitch/roll, arms out and forward, legs,
+  a bob, breathing, the expression. All zero stands still.
+- **Between frames.** `mii_capture` and `mii_icon` draw in the EFB's corner
+  (RGBA6 while they draw), copy it out and clear it: call them after your
+  last screen copy and before you draw the next frame, then set your GX
+  state again (pixel format, viewport, scissor, projection, copy filter,
+  vertex format, colour channel). `mii_draw` changes the vertex format,
+  lighting, TEV, Z, culling and blending.
+- **Testing in Dolphin**: an EFB copy stays on Dolphin's GPU unless
+  `Graphics.Hacks.EFBToTextureEnable=False`, so a CPU read of `mii_capture`'s
+  texture sees zeros there; drawing it works either way.
+- **On the PC**: with `-DMII_NO_OGC` everything but drawing builds
+  (`tests/miidraw_host` writes a Mii's meshes as OBJ and its faces as RGBA).
+
+The head's numbers come from RFL as the CC0 decompilations show it; the
+code is this library's own. [docs/research/mii-rendering.md](../../docs/research/mii-rendering.md)
+has the sources.
+
 ## Errors
 
 | Code | What to do |

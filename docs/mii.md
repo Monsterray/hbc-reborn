@@ -443,6 +443,26 @@ So the user provides their own copy, and HBC makes that one press:
   research notes; `tests/test_mii_res.py` checks the tool on a synthetic
   file.
 
+## Drawing a Mii (sdk/mii/miidraw)
+
+`miidraw.c` draws a Mii's head from `RFL_Res.dat` as RFL does, and a body
+of its own ([the SDK README](../sdk/mii/README.md#drawing-miis-miidraw),
+[research/mii-rendering.md](research/mii-rendering.md) for the sources).
+HBC 1.10.21's avatar is the first user.
+
+- **The head**: RFL's shapes placed by the faceline's anchors, its colour
+  tables, and the face (eyes, eyebrows, mouth, mustache, mole) composited
+  on the CPU for each expression, at RFL's positions. The shape textures
+  keep their own wrap: the glasses are one lens mirrored across.
+- **Shown on the bench Wii** (2026-10-24, `tests/wii_avatar.py`): HBC at 60
+  frames a second for a minute with the avatar, 19 us of CPU a frame. The
+  first build sent each vertex through the GX FIFO (about 240 KB a frame)
+  and overran HBC's 256 KB FIFO on the Wii: garbage triangles, then a hang
+  that needed a power cycle. Dolphin showed neither. Each part is now a
+  display list.
+- `tests/test_miidraw.py` checks the library on the PC, and
+  `mii_app.dol draw` its icon and capture on a Wii or in Dolphin.
+
 ## Sources
 
 The Wii Menu decompilation (koopthekoopa/wii-ipl):

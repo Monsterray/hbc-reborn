@@ -73,6 +73,7 @@ extern u16 view_height, view_width;
 void gfx_init_video (void);
 void gfx_init (void);
 void gfx_deinit (void);
+void gfx_restore (void);
 
 void gfx_get_efb_size(u16 *x, u16 *y);
 // The video mode HBC set up, for the HOME overlay (home.c).

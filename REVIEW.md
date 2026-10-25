@@ -161,6 +161,40 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.21: Miis drawn (sdk/mii/miidraw) and HBC's avatar
+
+`sdk/mii` now draws Miis, and HBC shows the user's beside the app list.
+
+- **The library** (`miidraw.c`, `miidraw.h`): RFL_Res.dat checked and
+  parsed; the head's shapes placed as RFL places them (faceline anchors,
+  nose and glasses scale and position, hair flipped); the face composited
+  on the CPU for seven expressions at RFL's positions, eye and mouth
+  channels coloured as RFL's TEV does; the face, cap, nose line and
+  glasses baked into plain textures with their own wrap; a body of its own
+  (lathed torso, hips, legs, shoes, arms, hands, neck), scaled by height
+  and build. `mii_draw`, `mii_capture` (2x supersampled, RGBA8 with alpha)
+  and `mii_icon` (RFLMakeIcon's camera).
+- **HBC** (`avatar.c`): a background thread loads the faces and the first
+  favourite Mii; each frame poses it (breathing, sway, look-around, blink,
+  a smile and a wave now and then, looking at the pointer, a wave when
+  pointed at) and captures it before the frame, as a sprite under the
+  views. A on it shows the next Mii. `gfx_restore()` puts HBC's GX state
+  back. HBCS `avatar` reports it.
+- **Found on the Wii, not in Dolphin.** The first build sent every vertex
+  through the GX FIFO, about 240 KB a frame into HBC's 256 KB: on the bench
+  Wii, garbage triangles and then a hang that needed a power cycle. Each
+  part is now a display list built as bytes (any thread can build it); the
+  FIFO carries about 2 KB a frame for the Mii.
+- **Evidence.** `tests/test_miidraw.py` (a synthetic resource; damaged
+  ones refused; every Mii of a real database with `MII_REAL_RES`/`_DB`).
+  In Dolphin: the avatar animating (look-around, wave, smile), 0.06 ms of
+  CPU a frame at 60 fps; `mii_app.dol draw` icons and capture with clear
+  corners. On the bench Wii (`tests/wii_avatar.py`): 60 frames a second
+  for a minute, 19 us of CPU a frame, ten clean pictures.
+- **Not shown**: A on the avatar (no scripted pointer on the bench yet),
+  widescreen framing, a Mii with a beard, mustache or cap on hardware
+  (they build on the PC and in the synthetic test).
+
 ### 1.10.20: Save Mii faces (the user's own RFL_Res.dat on SD)
 
 Drawing a Mii needs Nintendo's face models, `RFL_Res.dat`, which an app
