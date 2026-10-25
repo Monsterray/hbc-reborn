@@ -524,8 +524,14 @@ static u32 way_out_run(u64 title, bool stub, bool may_reset,
 }
 
 #ifndef WAY_OUT_HOST
+// A reload stub to jump into: the magic "STUBHAXX" at 4, and code at 0, an
+// unconditional branch over the header (HBC's is 0x48000010). Dolphin, booting
+// a DOL directly, leaves the magic with 0 at 0x80001800 and catches the jump
+// with its HBReload hook; with the MMU on it does not, and USB Loader GX's way
+// out ran 0x00000000. Without a stub, the way out launches HBC through ES.
 static bool stub_found(void) {
-	return *(u32 *) 0x80001804 == 0x53545542 && *(u32 *) 0x80001808 == 0x48415858;
+	return *(u32 *) 0x80001804 == 0x53545542 && *(u32 *) 0x80001808 == 0x48415858 &&
+		   (*(u32 *) 0x80001800 >> 26) == 18;
 }
 
 void agent_leave(void) {
