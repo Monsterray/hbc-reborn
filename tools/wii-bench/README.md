@@ -241,15 +241,18 @@ The two lines under the tabs, on every page:
 **The cards** (queue page) give one box per Wii, as many across as the terminal fits (three
 need about 140 columns; fewer stack). Each card shows:
 
-- its address, whether it takes any job or pinned jobs only, and its network-log port;
-- its state and for how long;
-- the job, its id, and the workstation and agent that queued it;
+- its name and address, its state, and for how long;
+- the job (its name wraps, up to three lines), its id, and the workstation and agent that
+  queued it;
 - a progress bar against the job's `--timeout` (for a job running here), or what the Wii is
   doing instead;
 - the lease: held how long, renewed how recently;
 - the next two jobs that may run on it;
 - the last job on it: exit, and the HBC it came back to (a stock HBC shows here);
-- the window's jobs, failures and how busy the Wii was.
+- the window's jobs, failures and how busy the Wii was;
+- at the bottom, notes: whether it takes any job or pinned jobs only, and its network-log port.
+
+Cards side by side keep the same height: a shorter one gets blank lines above its notes.
 
 **The lanes** (history page) give one line per Wii across the window, oldest on the left:
 

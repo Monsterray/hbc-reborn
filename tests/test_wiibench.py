@@ -1613,6 +1613,30 @@ class MonitorTest(unittest.TestCase):
         self.assertIn("It never contacts the Wii", r.stdout)
 
 
+class CardWrapTest(unittest.TestCase):
+    """monitor.sh's wrap_words, which wraps a job's name on its Wii's card."""
+
+    def test_wrap_words(self):
+        import re
+        b = bash_for_monitor()
+        if not b:
+            self.skipTest("no bash on PATH")
+        src = (root / "tools/wii-bench/monitor.sh").read_text(encoding="utf-8")
+        funcs = "".join(re.search(rf"^{n}\(\) \{{.*?^\}}\n", src, re.S | re.M).group(0) for n in ("fit", "wrap_words"))
+        script = funcs + "\n".join([
+            'for t in "GX USB bench launch (harness check 2: return path; reads only)" "short" '
+            '"a_word_longer_than_the_line_itself_by_far tail" "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20"; do',
+            '  wrap_words "$t" 20 3; printf "%s|" "${WRAP[@]}"; echo; done', ""])
+        r = subprocess.run([b, "-c", "LC_ALL=C.UTF-8; " + script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), [
+            "GX USB bench launch|(harness check 2:|return path; reads~|",
+            "short|",
+            "a_word_longer_than_t|he_line_itself_by_fa|r tail|",
+            "1 2 3 4 5 6 7 8 9 10|11 12 13 14 15 16 17|18 19 20|",
+        ])
+
+
 class ChecksTest(unittest.TestCase):
     """The HBC check after a job, a failed job's error line, and a lease server that is down."""
 

@@ -420,6 +420,30 @@ card_line() {
     CL+=("${c_gray}│${c_reset} ${c_gray}${lab}${c_reset}${col}${val}${c_reset}${pad} ${c_gray}│${c_reset}")
 }
 
+# wrap_words TEXT WIDTH MAX -- WRAP: TEXT in lines of at most WIDTH, broken between words (a
+# word longer than a line is cut), at most MAX lines (the last ends in ~ when there is more)
+wrap_words() {
+    local text="$1" w="$2" max="$3" line="" word
+    local -a words
+    WRAP=()
+    read -r -a words <<< "$text"
+    for word in "${words[@]}"; do
+        while (( ${#word} > w )); do               # a word longer than a line: cut it
+            [ -n "$line" ] && { WRAP+=("$line"); line=""; }
+            WRAP+=("${word:0:w}"); word="${word:w}"
+        done
+        if [ -z "$line" ]; then line="$word"
+        elif (( ${#line} + 1 + ${#word} <= w )); then line+=" $word"
+        else WRAP+=("$line"); line="$word"; fi
+    done
+    [ -n "$line" ] && WRAP+=("$line")
+    if (( ${#WRAP[@]} > max )); then
+        fit "${WRAP[$(( max - 1 ))]} ${WRAP[$max]}" "$w"; V="${V% ~}"; V="${V%\~}~"; WRAP[$(( max - 1 ))]="$V"
+        [ "${V: -1}" = "~" ] || WRAP[$(( max - 1 ))]="${V:0:$(( w - 1 ))}~"
+        WRAP=("${WRAP[@]:0:max}")
+    fi
+}
+
 # card <row> -- the card of one Wii, IW characters inside, into CL
 card() {
     local name ip state lab right left_ pad d bw fill el tm bar
@@ -429,8 +453,6 @@ card() {
     # ╭─ name ───── ip ─╮
     printf -v d '%*s' $(( IW - ${#name} - ${#ip} - 4 > 0 ? IW - ${#name} - ${#ip} - 4 : 1 )) ''
     CL+=("${c_gray}╭─${c_reset} ${c_bold}${name}${c_reset} ${c_gray}${d// /─}${c_reset} ${ip} ${c_gray}─╮${c_reset}")
-    f $WF_TAKES; lab="$V"; f $WF_LOGPORT; [ -n "$V" ] && lab+=" · log port $V"
-    card_line "" "$lab" "$c_gray"
     case "$state" in
         left) left_="LEFT OUT OF HBC" ;; waiting) left_="WAITING FOR HBC" ;; running) left_="RUNNING" ;;
         unknown) left_="UNKNOWN" ;; *) left_="FREE" ;;
@@ -440,7 +462,9 @@ card() {
     printf -v pad '%*s' $(( IW - ${#left_} - ${#right} )) ''
     CL+=("${c_gray}│${c_reset} ${COLOR}${left_}${c_reset}${pad}${c_gray}${right}${c_reset} ${c_gray}│${c_reset}")
     f $WF_JOB
-    if [ -n "$V" ]; then card_line "" "$V" "$c_bold"
+    if [ -n "$V" ]; then
+        wrap_words "$V" "$IW" 3
+        for lab in "${WRAP[@]}"; do card_line "" "$lab" "$c_bold"; done
     elif [ "${F[$WF_PINNED]}" = yes ]; then card_line "" "only jobs added with --wii $name" "$c_gray"
     elif [ "$state" = free ]; then card_line "" "ready for any job" "$c_gray"
     else card_line "" ""; fi
@@ -473,8 +497,10 @@ card() {
     else
         card_line "last" "no job in the window" "$c_gray"; card_line "" ""
     fi
-    f $WF_WINJOBS; lab="$V jobs · "; f $WF_WINFAILED; lab+="$V failed · "; f $WF_WINBUSY; lab+="$V busy"
+    f $WF_WINJOBS; lab="$V job"; [ "$V" = 1 ] || lab+="s"; lab+=" · "; f $WF_WINFAILED; lab+="$V failed · "; f $WF_WINBUSY; lab+="$V busy"
     f $WF_WIN; card_line "$V" "$lab" "$([ "${F[$WF_WINFAILED]}" != 0 ] && echo "$c_yellow")"
+    f $WF_TAKES; lab="$V"; f $WF_LOGPORT; [ -n "$V" ] && lab+=" · log port $V"
+    card_line "" "$lab" "$c_gray"
     printf -v d '%*s' $(( IW + 2 )) ''
     CL+=("${c_gray}╰${d// /─}╯${c_reset}")
 }
@@ -493,10 +519,23 @@ render_wii_cards() {
     IW=$(( wd - 4 ))
     heading "$c_cyan" "WIIS" "${n} on the queue; problems in red and yellow" wiis
     for (( i = 0; i < n; i += per )); do
-        local -a rows_=()
+        local -a rows_=() heights=()
+        local -A cardl=()
+        local tall=0 h blank
         for (( k = i; k < i + per && k < n; k++ )); do
             CL=(); card "$k"
-            for (( j = 0; j < ${#CL[@]}; j++ )); do rows_[$j]+="${CL[$j]} "; done
+            heights[$k]=${#CL[@]}; (( ${#CL[@]} > tall )) && tall=${#CL[@]}
+            for (( j = 0; j < ${#CL[@]}; j++ )); do cardl["$k:$j"]="${CL[$j]}"; done
+        done
+        printf -v blank '%*s' "$IW" ''
+        blank="${c_gray}│${c_reset} ${blank} ${c_gray}│${c_reset}"
+        for (( k = i; k < i + per && k < n; k++ )); do
+            h=${heights[$k]}
+            for (( j = 0; j < tall; j++ )); do
+                if (( j < h - 2 )); then rows_[$j]+="${cardl["$k:$j"]} "
+                elif (( j < tall - 2 )); then rows_[$j]+="$blank "
+                else rows_[$j]+="${cardl["$k:$(( j - tall + h ))"]} "; fi
+            done
         done
         for (( j = 0; j < ${#rows_[@]}; j++ )); do lines+=("  ${rows_[$j]% }"); done
     done
