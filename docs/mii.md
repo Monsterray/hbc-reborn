@@ -18,9 +18,11 @@ says so.
 - **Each Wii Remote** carries up to 10 Miis in its own memory (below).
 - **The six guests** (A to F) that games offer are built into RFL
   (`RFL_DefaultDatabase.c`) and are never in the file.
-- **The face models** (`RFL_Res.dat`) are on each game's disc, or in the Wii
-  Menu, not on the NAND. The bench Wii's `FaceLib` folder holds only
-  `RFL_DB.dat`.
+- **The face models** (`RFL_Res.dat`) are on each game's disc, or inside a
+  U8 archive in one of the Wii Menu's own content files, not as a loose
+  file. The bench Wii's `FaceLib` folder holds only `RFL_DB.dat`. An app
+  cannot read the Wii Menu's copy without NAND rights (below, and
+  [research/mii-rendering.md](research/mii-rendering.md) for drawing Miis).
 
 ## RFL_DB.dat
 

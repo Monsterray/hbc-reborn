@@ -204,10 +204,14 @@ reload stub, which waits on IOS with no time limit: three power cycles.
   36 s. After a later reset BootMii (boot2) waited at its menu despite
   `AUTOBOOT=SYSMENU`, `BOOTDELAY=1`: a reset may need a button press on a
   Wii with BootMii as boot2. Those bench runs were the first draft's order
-  (with `Abra`). Not yet proven: the fixed order and the guard on
-  hardware, which way a real wedge takes (is the kernel silent, or only
-  DI?), whether ES can launch HBC past a stuck DI, and the crash block's
-  way-out words across a reset.
+  (with `Abra`). The fixed order on the same Wii: the stub, the ES launch
+  and the stub anyway came back; IOS forced silent took `HW_RESETS`, and a
+  refused launch with IOS acking took STM's reset first; the crash block
+  and kept log survived both resets. Not yet proven: the 10-minute guard
+  (HBC clears the crash block as it starts, so only an autoboot straight
+  into an agent app can show it), which way a real wedge takes (is the
+  kernel silent, or only DI?), and whether ES can launch HBC past a stuck
+  DI.
 - **Review fixes before release** (the first draft, on branch
   `claude/quizzical-haslett-3af2ed`): it wrote Priiloader's `Abra` word
   at `0x817feff0` before a reset, which nothing showed was read, which

@@ -644,12 +644,24 @@ boot was not checked). So on a Wii with BootMii as boot2, a reset may need
 a button press there. The ES launch (step 2) does not, and needs no
 Priiloader or BootMii either.
 
+1.10.18's agent on the same Wii (2026-10-24, HBC 1.10.9 installed, someone
+pressing through BootMii's menu after each reset):
+
+- Bits 0, 17 and 21 left through the stub (closes in 25 ms), the ES launch
+  (back in HBC in 18 s) and the stub anyway (OHBC, then LULZ refused).
+- Bits 2 (IOS forced silent): `HW_RESETS`; HBC answered 52 s after the app
+  started. The crash block and the kept log both survived the reset.
+- Bits 5 (stuck, launches refused, IOS acking): STM's hot reset, not
+  `HW_RESETS`; HBC answered 183 s later (the BootMii press waited).
+
 Not yet shown:
 
-- **1.10.18's order and guard on hardware:** STM's reset first when IOS
-  acks, no `Abra`, and the 10-minute guard.
-- **The crash block across a reset.** HBC 1.10.9, installed on the bench
-  Wii, cannot read the way-out words.
+- **The 10-minute guard on hardware.** HBC clears the crash block as it
+  starts (`devnet_early_init()`), so a second reset run started from HBC
+  finds no earlier reset, and resets again (bits 5 above, 8 minutes after
+  bits 2). The guard is for a Wii that boots straight into an agent app;
+  showing it needs such an autoboot.
+- **The way-out words read back** by an installed 1.10.18 after a reset.
 - **Other consoles:** a Wii without Priiloader (a reset there ends in the
   System Menu), and a vWii or Wii mini.
 - **A real wedge.** Is the kernel silent, or only DI? Can ES launch HBC past
