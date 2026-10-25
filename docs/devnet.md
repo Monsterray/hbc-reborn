@@ -515,10 +515,21 @@ a failed launch with resets off fell back on the stub. One `HW_RESETS` reset
 (IOS forced silent) rebooted the console with no IOS help: BootMii (boot2)
 showed its menu for about 8 s and went on by itself, Priiloader autobooted
 HBC, and HBC answered 33 s after the reset. The kept log at `0x91800100`
-survived the reset with the agent's steps in it. Not yet shown: the crash
-block across a reset (HBC 1.10.9 does not read version 3), a Wii without
-Priiloader (a reset there ends in the System Menu), STM's hot reset, and a
-real wedge.
+survived the reset with the agent's steps in it. STM's hot reset (test bits
+13) and `HW_RESETS` after a refused launch (bits 5) came back the same way,
+in 43 s and 36 s, kept log intact.
+
+Where a reset lands depends on the boot chain, not on the agent. On the
+bench Wii BootMii is installed as boot2 and shows its menu after a reset;
+with `AUTOBOOT=SYSMENU` and `BOOTDELAY=1` in `sd:/bootmii/bootmii.ini` it
+still waited for a button after one reset (whether it autoboots on a cold
+boot was not checked). So on a Wii with BootMii as boot2, a reset may need
+a button press there; the ES launch (step 2) does not, and needs no
+Priiloader or BootMii either.
+
+Not yet shown: the crash block across a reset (HBC 1.10.9 does not read
+version 3), a Wii without Priiloader (a reset there ends in the System
+Menu), and a real wedge.
 
 ### Safety tools
 

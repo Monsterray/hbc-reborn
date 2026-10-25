@@ -193,10 +193,14 @@ reload stub, which waits on IOS with no time limit: three power cycles.
   the stub (closes in 25 ms), the ES launch back into HBC (19 s) and the
   stub-anyway fallback all came back; one `HW_RESETS` reset rebooted the
   console through BootMii's menu (8 s, on by itself) and Priiloader's
-  autoboot into HBC, 33 s after the reset, with the kept log intact. Not yet
-  proven: which way a real wedge takes (is the kernel silent, or only DI?),
-  whether ES can launch HBC past a stuck DI, the crash block across a reset
-  (the bench's HBC 1.10.9 cannot read version 3), and STM's hot reset.
+  autoboot into HBC, 33 s after the reset, with the kept log intact; STM's
+  hot reset and `HW_RESETS` after a refused launch came back in 43 s and
+  36 s. After a later reset BootMii (boot2) waited at its menu despite
+  `AUTOBOOT=SYSMENU`, `BOOTDELAY=1`: a reset may need a button press on a
+  Wii with BootMii as boot2. Not yet proven: which way a real wedge takes
+  (is the kernel silent, or only DI?), whether ES can launch HBC past a
+  stuck DI, and the crash block across a reset (the bench's HBC 1.10.9
+  cannot read version 3).
 - **Next, with a trigger.** The stub itself still waits forever, for apps
   without the agent and for an exception after a wedge (libogc's crash
   screen calls `__reload()` with interrupts off). Trigger: a hardware run

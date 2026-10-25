@@ -11,7 +11,8 @@ the agent's test bits; the app prints each step on the TV, and the kept log
 
 All three come back to HBC by themselves. The resets (bits 2: IOS acks
 nothing, then HW_RESETS; 5: the launch fails, then HW_RESETS or STM) reboot
-the Wii, and where it lands depends on Priiloader: --reset 2 or --reset 5
+the Wii, and where it lands depends on Priiloader: --reset 2, 5 or 13 (13:
+stuck, no launch, AHBPROT read as closed, so STM's hot reset)
 runs one, only with someone at the Wii, who brings it back to HBC.
 
     python C:/tools/wii-bench/wiibench.py add --wii dev --name "way out" \\
@@ -85,10 +86,11 @@ def check(wii, bits, way, steps):
     print(f"PASS way out, bits {bits}: {way}")
 
 
-def answers(wii):
+def hbc_answers(wii):
+    """HBC itself answers: not the test app's agent, which answers too
+    until the way out runs."""
     try:
-        hbc.version(wii, 3)
-        return True
+        return not hbc.is_agent(hbc.version(wii, 3))
     except (OSError, hbc.HBCError):
         return False
 
@@ -106,20 +108,23 @@ def reset_run(wii, bits, seconds=240):
     hbc.request(wii, b"HBCC")
     start = time.monotonic()
     hbc.send(wii, APP, ["wayout", str(bits)])
+    # HBC goes quiet while it starts the app; then nothing answers once the
+    # Wii resets; then HBC answers again, and keeps answering.
     gone = None
     while time.monotonic() - start < seconds:
-        up = answers(wii)
+        up = hbc_answers(wii)
         now = time.monotonic() - start
         if gone is None and not up and now > 2:
             gone = now
-            print(f"bits {bits}: HBC and the app stopped answering at {gone:.1f} s")
-        if gone is not None and up:
-            print(f"bits {bits}: HBC answered again at {now:.1f} s")
-            break
+            print(f"bits {bits}: HBC stopped answering at {gone:.1f} s")
+        if gone is not None and up and now > 15:
+            time.sleep(5)
+            if hbc_answers(wii):
+                print(f"bits {bits}: HBC answered again at {now:.1f} s")
+                break
         time.sleep(1)
     else:
         raise SystemExit(f"bits {bits}: HBC did not come back within {seconds} s")
-    time.sleep(3)
     st = hbc.status(wii)
     print(f"HBC {st.get('version')} back; crash block: "
           f"{'kept' if st.get('crash') else 'none (lost, or an HBC before 1.10.14)'}")
@@ -138,7 +143,7 @@ def reset_run(wii, bits, seconds=240):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--wii")
-    parser.add_argument("--reset", type=int, choices=(2, 5),
+    parser.add_argument("--reset", type=int, choices=(2, 5, 13),
                         help="one reset run; someone must be at the Wii")
     opts = parser.parse_args()
     wii = hbc.wii_address(opts.wii)
