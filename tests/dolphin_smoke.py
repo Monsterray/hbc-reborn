@@ -89,6 +89,20 @@ def host_address():
         return udp.getsockname()[0]
 
 
+def port_taken(address, port=hbc.PORT):
+    """What already answers on this PC's LAN address at the Wiiload port, or
+    None. Dolphin binds the guest's port 4299 there, so only one Dolphin on
+    this PC can run HBC or an agent app at a time: a second one's HBC never
+    binds it, and the test talks to the first one's guest instead."""
+    try:
+        with socket.create_connection((address, port), timeout=1) as conn:
+            conn.settimeout(2)
+            conn.sendall(b"HBCV" + bytes(12))
+            return conn.recv(64).split(b"\0")[0].decode(errors="replace").strip() or "something"
+    except OSError:
+        return None
+
+
 def wad_title(image):
     """The title ID in a WAD's TMD, as Dolphin's NAND path parts (e.g.
     00010001, 4f484243): OHBC by default, LULZ for a build made to replace
@@ -102,9 +116,17 @@ def wad_title(image):
 
 
 class Dolphin:
-    def __init__(self, image, sd=False, mmu=False, extra=(), files=None):
+    def __init__(self, image, sd=False, mmu=False, extra=(), files=None, net=True):
         """extra: more -C settings; files: {path in the profile: text}, such
-        as a controller mapping (tests/dolphin_meta.py)."""
+        as a controller mapping (tests/dolphin_meta.py). net=False for a run
+        that never talks to the guest over TCP, which may go beside another
+        Dolphin."""
+        if net:
+            taken = port_taken(host_address())
+            if taken:
+                raise SystemExit(f"port {hbc.PORT} on {host_address()} already answers "
+                                 f"({taken!r}): another Dolphin on this PC runs HBC or an "
+                                 "agent app, and only one can hold the port. Wait for it.")
         self.dolphin = find_dolphin()
         self.profile = pathlib.Path(tempfile.mkdtemp(prefix="hbc-dolphin-"))
         for rel, text in (files or {}).items():
