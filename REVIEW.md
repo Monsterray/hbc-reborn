@@ -161,6 +161,54 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.0: release; the memory audit and the Mii SDK's review
+
+1.11.0 releases what 1.10.17 to 1.10.26 built: the agent's way out
+(bounded, shown on the TV), the Mii SDK with the Wii's own bodies, HBC's
+avatar, and the GX FIFO back in MEM1.
+
+- **Memory audit.** What the hardware reads, and from where: the GX FIFO
+  (static .bss, MEM1), the XFB (`SYS_AllocateFramebuffer`, MEM1, which the
+  video interface needs), the HOME overlay's framebuffers (fixed low MEM1),
+  textures and the Mii's display lists (the heap, often MEM2: fine for the
+  GPU, and the 5-minute bench runs drew from them), the USB driver's IOS
+  buffers (MEM2, as IOS wants). HBC streams no audio. New
+  `tests/test_memory_layout.py` fails if `gp_fifo` stops being a 256 KiB,
+  32-byte aligned object in MEM1 (it reads the built ELF; CI builds first).
+- **Review of sdk/mii and the avatar** (an independent read, a fuzzer).
+  Fixed:
+  - A crafted or damaged `.brres` hung HBC for good: an infinite or huge
+    float rotation key never came within 180 of the last (`keys_at`'s
+    `vi -= 360` loop). Keys, constants, bind transforms and vertex
+    coordinates must now be finite and within 1e5, a track has at most a
+    key a frame, angles wrap with `remainderf`. 32,000 mutated bodies under
+    ASan and UBSan (WSL, gcc 13): no hang, no error; it hung within about
+    80 before.
+  - Launching an app or exiting in HBC's first minute waited up to 60 s
+    for the avatar's loader to give up retrying (every user without Save
+    Mii faces). It stops at once now (a flag, 100 ms sleeps), and does not
+    retry once the SD card is mounted and the file is simply missing.
+  - `nand_unlock` that found nothing to patch left MEM2_PROT at 2.
+  - Also: a vertex divisor over 15 (an undefined shift), a duplicate bone
+    index, a vertex count sum that could wrap, NULL checks in
+    `mii_body_pose`/`mii_body_skin`, the avatar's clock rebased hourly (a
+    float of seconds coarsens after a day), `mii_wifi_mac` keeps only a
+    success, `gfx_restore` no longer sets the pixel format mid-frame, a
+    U8 count check that could wrap in `miires.c`.
+  - Docs: `mii_draw`'s full list of the GX state it changes, what it
+    assumes, and one thread per model; `mii_body_attach`'s ownership; the
+    README example draws in place and frees on every path; your FIFO in
+    MEM1; `MIIDRAW_VERSION` 1.1.0.
+- **For WiiStation** (devkitPPC r41-2, libogc2): every public sdk/mii
+  function compiles (`-Wall -Wextra -Werror`) and links against libogc2.
+  Not yet run on a Wii with libogc2.
+- **CI** was red from 1.10.22: the container's newer libogc defines
+  `udelay`, which `way_out.c` also defined (now `wo_udelay`), and the
+  host test of miidraw did not link libm on Linux.
+- **Known:** `dolphin_smoke.py --agent` fails at its first agent step in
+  Dolphin (the app never answers) since at least 1.10.22; the same agent
+  suite passes on the bench Wii (`tests/wii_agent.py`, this build).
+
 ### 1.10.26: the Mii Channel's own bodies, and HBC's GX FIFO back in MEM1
 
 The 1.10.21 body was this library's own and did not look like a Mii. The

@@ -28,6 +28,7 @@
 #include <math.h>
 #include <malloc.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <ogcsys.h>
 #include <ogc/lwp_watchdog.h>
@@ -39,8 +40,8 @@
 #include "miidraw.h"
 #include "avatar.h"
 
-// The sprite: drawn at twice this size and box-filtered down (miidraw.c),
-// so 256 x 416 of the EFB while it draws.
+// The avatar's rectangle in view units (its width times WIDESCREEN_RATIO on
+// a 16:9 screen).
 #define AV_W 128
 #define AV_H 208
 #define AV_STACK (64 * 1024)
@@ -55,6 +56,7 @@ static mii_body body;                 // the Mii Channel's body, when saved
 static int anim_wait, anim_greet;     // 1 + its animations (0: none)
 static volatile int state = AV_NONE;
 static volatile bool reload_asked;
+static volatile bool stopping;   // avatar_deinit: the loader ends at once
 static int want_slot;           // the Mii to show: this slot or the next one there
 static int shown_slot = -1;
 static char shown_name[MII_NAME_UTF8_MAX + 1];
@@ -103,13 +105,26 @@ static void *loader(void *arg) {
 	char name[MII_NAME_UTF8_MAX + 1];
 
 	(void) arg;
-	// HBC mounts its devices as it starts: try for a minute.
-	for (tries = 0; tries < 30; ++tries) {
+	// HBC mounts its devices as it starts: while the card is not mounted yet,
+	// try for a minute. A mounted card without the file (no Save Mii faces
+	// yet) is an answer, not a wait. Every sleep checks for avatar_deinit,
+	// which launching an app or exiting calls right away.
+	for (tries = 0; tries < 30 && !stopping; ++tries) {
+		struct stat st;
+		int k;
+
 		app_entry_mount_for(MII_RES_PATH);
 		r = mii_res_load(&res, NULL);
-		if (r != MII_E_NO_FILE && r != MII_E_IO)
+		if ((r != MII_E_NO_FILE && r != MII_E_IO) || stat("sd:/", &st) == 0)
 			break;
-		usleep(2000 * 1000);
+		for (k = 0; k < 20 && !stopping; ++k)
+			usleep(100 * 1000);
+	}
+	if (stopping) {
+		if (r >= 0)
+			mii_res_free(&res);
+		state = AV_NONE;
+		return NULL;
 	}
 	if (r < 0) {
 		hlog("Avatar: no Mii faces (%s): HOME > HBC > Save Mii faces\n", mii_strerror(r));
@@ -164,8 +179,10 @@ void avatar_init(void) {
 
 void avatar_deinit(void) {
 	if (thread != LWP_THREAD_NULL) {
+		stopping = true;
 		LWP_JoinThread(thread, NULL);
 		thread = LWP_THREAD_NULL;
+		stopping = false;
 	}
 	if (state == AV_READY) {
 		mii_model_free(&model);
@@ -355,7 +372,20 @@ const gfx_queue_entry *avatar_frame(bool pointer, s32 px, s32 py, bool a_down) {
 		a.next_wave = 4;
 		a.wave_from = -100;
 	}
-	a.t = diff_msec(t0, gettime()) / 1000.0f;   // u32 ms: 49 days
+	a.t = diff_msec(t0, gettime()) / 1000.0f;
+	// Every hour, the clock and every time kept against it start over, so
+	// a float's step stays well under a frame however long HBC runs.
+	if (a.t >= 3600) {
+		t0 += secs_to_ticks(3600);
+		a.t -= 3600;
+		a.last -= 3600;
+		a.next_look -= 3600;
+		a.blink_at -= 3600;
+		a.smile_until -= 3600;
+		a.next_smile -= 3600;
+		a.wave_from -= 3600;
+		a.next_wave -= 3600;
+	}
 
 	// In the space left of the app list (320 wide, centred), feet just above
 	// the logo.

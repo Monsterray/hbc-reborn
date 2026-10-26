@@ -128,7 +128,7 @@ static void irq_ack(void) {
 	hw_write(IPC_IRQFLAG, 0x40000000);
 }
 
-static void udelay(u32 us) {
+static void wo_udelay(u32 us) {
 	u32 t = now_us();
 
 	while (now_us() - t < us)
@@ -151,7 +151,7 @@ static bool wait_bits(u32 bits, u32 us) {
 static u32 take_reply(void) {
 	u32 reply;
 
-	udelay(100);
+	wo_udelay(100);
 	reply = hw_read(IPC_ARMMSG);
 	bell(4);
 	irq_ack();
@@ -169,7 +169,7 @@ static void ipc_drain(void) {
 		if ((hw_read(IPC_PPCCTRL) & 0x14) == 0x14)
 			take_reply();
 		irq_ack();
-		udelay(1000);
+		wo_udelay(1000);
 	}
 }
 
@@ -209,7 +209,7 @@ static ipc_status send_req(ipc_req *r) {
 		++used;   // IOS may still take it, and answer into it
 		return POLL_NO_ACK;
 	}
-	udelay(100);
+	wo_udelay(100);
 	bell(2);
 	irq_ack();
 	return POLL_OK;
@@ -371,7 +371,7 @@ static launch_end launch_hbc(u64 title, const char **why) {
 			// The second ack: taken as the stub's ipc_send_twoack() does,
 			// Y2 before the interrupt flag (clearing Y2 with IY2 set raises
 			// the flag again: Dolphin's WiiIPC), then X2.
-			udelay(100);
+			wo_udelay(100);
 			bell(2);
 			irq_ack();
 			bell(8);
@@ -406,7 +406,7 @@ static bool vwii(void) {
 // Returns only when nothing happened (Dolphin ignores the bit).
 static void hw_reset(void) {
 	hw_write(HW_RESETS, hw_read(HW_RESETS) & ~1u);
-	udelay(2000000);
+	wo_udelay(2000000);
 }
 
 #define STM_HOTRESET 0x2001
@@ -430,7 +430,7 @@ static void stm_reset(void) {
 	r->arg[4] = sizeof(out);
 	if (send_req(r) == POLL_OK) {
 		++used;
-		udelay(3000000);
+		wo_udelay(3000000);
 	}
 }
 

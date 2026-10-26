@@ -490,13 +490,13 @@ static void plot_draw (const gfx_queue_entry *entry, Mtx v) {
 }
 
 // After something drew with its own GX state (a GFXE_DRAW entity, such as
-// the avatar's Mii, avatar.c): HBC's pixel format, viewport, copies, projection,
-// vertex format and an unlit colour channel again. gfx_frame_start sets the
-// rest.
+// the avatar's Mii, avatar.c): HBC's viewport, copies, projection, vertex
+// format and an unlit colour channel again; frame_state sets the rest. No
+// pixel format: nothing that draws in the frame changes it (a mid-frame
+// change would need GX_PixModeSync).
 void gfx_restore (void) {
 	Mtx44 p;
 
-	GX_SetPixelFmt (GX_PF_RGB8_Z24, GX_ZC_LINEAR);
 	GX_SetViewport (0, 0, vmode->fbWidth+0.05, vmode->efbHeight+0.05, 0, 1);
 	GX_SetScissor (0, 0, vmode->fbWidth, vmode->efbHeight);
 	GX_SetCopyFilter (vmode->aa, vmode->sample_pattern, GX_TRUE,
@@ -528,7 +528,7 @@ void gfx_restore (void) {
 
 #ifdef HBC_DIAG_GPU
 // Draw-sync tokens through the frame (BP 0x47: the pixel engine's token
-// register, no interrupt): 0x1001/0x1002 around the avatar's capture, then
+// register, no interrupt): 0x1001/0x1002 around the avatar's Mii, then
 // 0x8000 + n after the frame's nth entry. A hang report reads which step
 // the GPU last finished; seen[] says what came next.
 static u16 diag_n;

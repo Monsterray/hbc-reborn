@@ -85,7 +85,7 @@ static s32 find_in(const char *path, const char *name, u32 max, u8 **out, u32 *s
 	if (!read_at(fd, root, table, table_len))
 		goto done;
 	count = be32(table + 8);
-	if (count < 2 || count * 12 > table_len)
+	if (count < 2 || count > table_len / 12)   // no u32 wrap for a huge count
 		goto done;
 	for (i = 1; i < count; ++i) {
 		const u8 *n = table + i * 12;

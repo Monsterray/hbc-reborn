@@ -1056,8 +1056,8 @@ static s32 db_open(int mode, int *err) {
  * not 0, and then the MAC is not good.
  * Right after an IOS reload (an app just launched from HBC) IOS's network
  * module has not registered /dev/net/ncd yet: it fails with -6 for a few
- * seconds. The MAC does not change, so the answer is kept, and so is a
- * failure: a second 8 s wait would find no more. */
+ * seconds. The MAC does not change, so the answer is kept. A failure is
+ * not: the first call waits up to 8 s, later ones ask once more at once. */
 int mii_wifi_mac(uint8_t mac[6]) {
 	static u8 known[6];
 	static int state;          /* 0 not asked, 1 known, -1 failed */
@@ -1066,14 +1066,14 @@ int mii_wifi_mac(uint8_t mac[6]) {
 
 	if (!mac)
 		return MII_E_ARG;
-	if (!state) {
-		end = gettime() + secs_to_ticks(8);
+	if (state <= 0) {
+		end = gettime() + secs_to_ticks(state ? 0 : 8);
 		while ((r = net_get_mac_address(known)) == -6 && gettime() < end)
 			usleep(100 * 1000);
 		state = r == 0 ? 1 : -1;
+		if (state < 0)
+			return MII_E_IO;
 	}
-	if (state < 0)
-		return MII_E_IO;
 	memcpy(mac, known, 6);
 	return MII_OK;
 }

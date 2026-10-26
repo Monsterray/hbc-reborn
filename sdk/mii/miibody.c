@@ -138,6 +138,12 @@ static int sections(uint32_t ver, int *bones, int *verts, int *norms, int *objec
 	return 1;
 }
 
+/* A coordinate, or a key's frame, value or slope: finite, and within any body's reach (the
+ * Mii Channel's are within a few hundred). */
+static int sane(float v) {
+	return v == v && v > -1e5f && v < 1e5f;
+}
+
 /* A vertex or normal array as floats: count tuples of 3. */
 static float *array3(buf *b, uint32_t at, int normals, int *count) {
 	uint32_t data = at + rd32(b, at + 8), comp = rd32(b, at + 0x14), fmt = rd32(b, at + 0x18);
@@ -146,8 +152,8 @@ static float *array3(buf *b, uint32_t at, int normals, int *count) {
 	float *out;
 
 	*count = 0;
-	if ((normals ? comp != 0 : comp != 1) || fmt > 4 || b->bad || !in(b, data, stride * n) ||
-			stride < 3 * size[fmt])
+	if ((normals ? comp != 0 : comp != 1) || fmt > 4 || div > 15 || b->bad ||
+			!in(b, data, stride * n) || stride < 3 * size[fmt])
 		return NULL;
 	out = malloc(sizeof(float) * 3 * (n ? n : 1));
 	if (!out)
@@ -165,6 +171,10 @@ static float *array3(buf *b, uint32_t at, int normals, int *count) {
 			default: v = rdf(b, p);
 			}
 			out[3 * i + k] = fmt == 4 ? v : v / (float) (1u << div);
+			if (!sane(out[3 * i + k])) {
+				free(out);
+				return NULL;
+			}
 		}
 	*count = n;
 	return out;
@@ -181,7 +191,7 @@ static int bone_named(const mii_body *body, const char *name) {
 
 /* Bones: names, parents (by entry address), matrix ids, local transforms. */
 static int read_bones(buf *b, uint32_t grp, mii_body *body) {
-	uint32_t at[MII_BODY_BONES];
+	uint32_t at[MII_BODY_BONES], seen = 0;
 	int n = group_count(b, grp), i, j;
 
 	if (n <= 0 || n > MII_BODY_BONES)
@@ -192,8 +202,9 @@ static int read_bones(buf *b, uint32_t grp, mii_body *body) {
 		mii_bone *bn;
 
 		group_entry(b, grp, i, &name, &e);
-		if (rd32(b, e + 0x0C) >= (uint32_t) n)
-			return MII_E_FORMAT;
+		if (rd32(b, e + 0x0C) >= (uint32_t) n || seen >> rd32(b, e + 0x0C) & 1)
+			return MII_E_FORMAT;   /* each index once: at[] filled for all */
+		seen |= 1u << rd32(b, e + 0x0C);
 		bn = &body->bone[rd32(b, e + 0x0C)];   /* by the bone's own index */
 		at[rd32(b, e + 0x0C)] = e;
 		snprintf(bn->name, sizeof(bn->name), "%s", name);
@@ -202,6 +213,8 @@ static int read_bones(buf *b, uint32_t grp, mii_body *body) {
 			bn->s[j] = rdf(b, e + 0x20 + 4 * j);
 			bn->r[j] = rdf(b, e + 0x2C + 4 * j);
 			bn->t[j] = rdf(b, e + 0x38 + 4 * j);
+			if (!sane(bn->s[j]) || !sane(bn->r[j]) || !sane(bn->t[j]))
+				return MII_E_FORMAT;
 		}
 		bn->parent = (int) rd32(b, e + 0x5C);   /* an offset from e for now */
 	}
@@ -380,18 +393,20 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
 			r = MII_E_FORMAT;
 	}
 	if (r == MII_OK) {
-		int n = group_count(b, og), cap = 0;
+		int n = group_count(b, og);
+		uint32_t cap = 0;
 
-		for (i = 0; i < n; ++i) {
+		for (i = 0; i < n && cap <= 0x10000; ++i) {   /* stops before it can wrap */
 			const char *name;
-			uint32_t o;
+			uint32_t o, verts;
 
 			group_entry(b, og, i, &name, &o);
-			cap += (int) (rd32(b, o + 0x28) / 3) + 1;
+			verts = rd32(b, o + 0x28);
+			cap += verts > 0x30000 ? 0x10001 : verts / 3 + 1;
 		}
 		if (b->bad || cap > 0x10000)
 			r = MII_E_FORMAT;
-		body->vcap = cap;
+		body->vcap = (int) cap;
 		if (r == MII_OK) {
 			body->vbone = malloc(cap + 1);
 			body->vpos = malloc(sizeof(float) * 3 * (cap + 1));
@@ -435,6 +450,8 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
  * rotation, translation, 25-26 the rotation keys' format (2: u16 frame in
  * 32nds, s16 angle and slope in 65536ths of a turn; 3: f32 frame, value,
  * slope). Translation and scale keys are f32 frame, value, slope. */
+static float key_f(const uint8_t *p);
+
 static int read_anim(buf *b, uint32_t c, mii_body *body, const char *name, mii_anim *a) {
 	uint32_t grp = c + rd32(b, c + 0x10);
 	int n, i;
@@ -471,14 +488,23 @@ static int read_anim(buf *b, uint32_t c, mii_body *body, const char *name, mii_a
 
 				if (code >> (13 + 3 * comp + ax) & 1) {
 					a->track[bone].c[slot] = rdf(b, p);
+					if (!sane(a->track[bone].c[slot]))
+						return MII_E_FORMAT;
 				} else {
-					uint32_t k = e + rd32(b, p);
+					uint32_t k = e + rd32(b, p), j;
 					unsigned keys = rd16(b, k), fmt = comp == 1 ? (code >> 25 & 3) : 3;
 
 					if (comp == 1 && fmt != 2 && fmt != 3)
 						return MII_E_FORMAT;
-					if (!keys || !in(b, k + 8, keys * (fmt == 2 ? 6 : 12)))
+					/* At most a key a frame (keys_at reads them each draw). */
+					if (!keys || keys > (unsigned) a->frames + 1 ||
+							!in(b, k + 8, keys * (fmt == 2 ? 6 : 12)))
 						return MII_E_FORMAT;
+					/* Float keys finite and in reach: an infinite or huge
+					 * angle would never come within 180 of the last. */
+					for (j = 0; fmt == 3 && j < 3 * keys; ++j)
+						if (!sane(key_f(b->d + k + 8 + 4 * j)))
+							return MII_E_FORMAT;
 					a->track[bone].keys[slot] = b->d + k;
 				}
 			}
@@ -524,12 +550,8 @@ static float keys_at(const uint8_t *k, int rot6, int angle, float f) {
 		}
 		if (i == 0 && f <= fi)
 			return vi;
-		if (angle && i > 0) {
-			while (vi - v0 > 180)
-				vi -= 360;
-			while (vi - v0 < -180)
-				vi += 360;
-		}
+		if (angle && i > 0)
+			vi = v0 + remainderf(vi - v0, 360);   /* within 180 of the last */
 		if (i > 0 && f <= fi) {
 			float dt = fi - f0, s = dt > 0 ? (f - f0) / dt : 0, s2 = s * s, s3 = s2 * s;
 
@@ -681,10 +703,13 @@ int mii_body_anim(const mii_body *body, const char *name) {
 /* ---- Posing -------------------------------------------------------------------- */
 
 void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]) {
-	const mii_body *body = model->body;
+	const mii_body *body = model ? model->body : NULL;
 	int anim = pose ? pose->anim - 1 : -1, i, k;
 	const mii_anim *a;
 	float f = 0;
+
+	if (!body || !rot || !pos)
+		return;   /* no Wii body set on this model */
 
 	/* No animation: Wait's first frame, standing with the arms down. */
 	if (anim < 0 || anim >= body->nanims)
@@ -743,9 +768,12 @@ void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][
 }
 
 void mii_body_skin(mii_model *model, const mii_pose *pose) {
-	const mii_body *body = model->body;
+	const mii_body *body = model ? model->body : NULL;
 	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
 	int i, k;
+
+	if (!body || !model->skin_pos || !model->skin_nrm)
+		return;
 
 	mii_body_pose(model, pose, rot, pos);
 	for (i = 0; i < body->nverts; ++i) {

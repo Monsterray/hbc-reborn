@@ -49,7 +49,9 @@ static int patch(bool lifted) {
 			++n;
 		}
 	}
-	if (!lifted)
+	// Put back with the check, or now if the unlock found nothing to patch
+	// (no nand_relock follows a failed nand_unlock).
+	if (!lifted || !n)
 		write16(MEM2_PROT, mem2_prot);
 	return n;
 }

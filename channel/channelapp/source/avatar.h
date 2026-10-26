@@ -16,8 +16,8 @@ void avatar_deinit(void);
 // Loads it again (after Save Mii faces, or a new SD card).
 void avatar_reload(void);
 
-// Call before gfx_frame_start: poses the Mii for this frame and draws it
-// into its texture. Returns the queue entry to push after the background,
+// Call before gfx_frame_start: poses the Mii for this frame. Returns the
+// queue entry (a GFXE_DRAW: the Mii draws in place) to push after the background,
 // or NULL while there is no avatar. pointer: the Wii Remote points at the
 // screen, at (x, y).
 // A pressed on it shows the next Mii.

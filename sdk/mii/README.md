@@ -174,21 +174,34 @@ is the worked example.
 
 static mii_res res;
 static mii_model model;
-static u8 tex[160 * 256 * 4] ATTRIBUTE_ALIGN(32);
+static mii_body body;
 mii m;
+int ok;
 
 /* Once, outside the frame loop (about 0.1 s; any thread). */
-if (mii_res_load(&res, NULL) == MII_OK &&          /* sd:/mii/RFL_Res.dat */
-        mii_get(0, &m) == MII_OK &&                /* or any Mii you have */
-        mii_model_make(&res, &m, 128, &model) == MII_OK)
-    mii_res_free(&res);                            /* the model keeps what it needs */
+ok = mii_res_load(&res, NULL) == MII_OK;           /* sd:/mii/RFL_Res.dat */
+ok = ok && mii_get(0, &m) == MII_OK;               /* or any Mii you have */
+ok = ok && mii_model_make(&res, &m, 128, &model) == MII_OK;
+mii_res_free(&res);                                /* the model keeps what it needs */
+if (ok && mii_body_load(&body, m.sex == MII_FEMALE ? MII_BODY_FEMALE_PATH
+                                                   : MII_BODY_MALE_PATH) == MII_OK)
+    mii_model_set_body(&model, &body);             /* the Wii's own; else the library's */
 
-/* Each frame, before you draw anything: the Mii, posed, into a texture with
- * alpha. Then set your GX state again and draw tex like any RGBA8 texture. */
-mii_pose pose = { 0 };
-pose.arm_raise[0] = 2.3f;                          /* the right arm up: a wave */
-pose.expression = MII_EXPR_SMILE;
-mii_capture(&model, &pose, 160, 256, 0.04f, 1, (GXColor) { 0, 0, 0, 255 }, tex);
+/* Each frame, in your 3D pass: a viewport where the Mii stands, the camera
+ * that frames it there, then draw. Set your GX state again after. */
+if (ok) {
+    Mtx44 proj;
+    Mtx view;
+    mii_pose pose = { 0 };
+
+    pose.anim = 1 + mii_body_anim(&body, "bodyWait");   /* 0: stand still */
+    pose.frame = seconds * 60;
+    pose.expression = MII_EXPR_SMILE;
+    GX_SetViewport(x, y, 128, 208, 0, 1);
+    mii_view(&model, &pose, 128.0f / 208, 0.04f, proj, view);
+    GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+    mii_draw(&model, &pose, view, NULL);
+}
 ```
 
 - **The face models are the user's.** `RFL_Res.dat` is Nintendo's: never
@@ -232,6 +245,15 @@ mii_capture(&model, &pose, 160, 256, 0.04f, 1, (GXColor) { 0, 0, 0, 255 }, tex);
   pose.anim = 1 + mii_body_anim(&body, "bodyWait");
   pose.frame = seconds * 60;
   ```
+- **Your GX FIFO in MEM1.** Make it a static array
+  (`static u8 fifo[SIZE] ATTRIBUTE_ALIGN(32);`), not `memalign` from the
+  heap: once MEM1's part of the heap runs out, the heap gives MEM2, and a
+  GPU fed its commands from MEM2 stalled at random on a real Wii (never in
+  Dolphin). HBC lost days to this when linking this library grew its .bss
+  (REVIEW.md, 1.10.26). A Mii adds about 54 KB of commands a frame; keep a
+  frame well under the FIFO's size.
+- **Builds with libogc 3 and libogc2.** HBC uses libogc 3; every function
+  here also compiles and links with devkitPPC r41-2 and libogc2.
 - **Between frames.** `mii_capture` and `mii_icon` draw in the EFB's corner
   (RGBA6 while they draw), copy it out and clear it: call them after your
   last screen copy and before you draw the next frame, then set your GX

@@ -465,7 +465,7 @@ avatar (1.10.21, the Wii's bodies from 1.10.26) is the first user.
   the CHR0 animations (cubic Hermite keys; rotations the short way
   round, or the right ankle in bodyWait spins), skinned on the CPU (about
   1,000 vertices, 0.8 ms) and sent through the FIFO as `GX_Begin`
-  vertices. Height and build scale each bone along its own axis, not
+  triangles (about 2,200 corners, 54 KB a frame). Height and build scale each bone along its own axis, not
   inherited. The head rides the head bone.
 - **Drawn in place**: `mii_view` gives the camera for any viewport, and
   `mii_draw` draws into the frame you are building (HBC's avatar does this

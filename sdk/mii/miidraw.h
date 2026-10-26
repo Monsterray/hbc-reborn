@@ -22,9 +22,12 @@
  *     RFL colours with TEV tricks (skin under make-up, the cap) are baked
  *     into plain textures. So drawing needs only "texture times light":
  *     no EFB format change, no TEV state beyond one stage.
- *   - The body is this library's own: RFL has none, and every game draws
- *     its own. A shirt in the favourite colour, trousers grey (gold for a
- *     special Mii), skin-coloured hands, scaled by height and build.
+ *   - The body: RFL has none. With the Mii Channel's own (maleBody.brres,
+ *     femaleBody.brres, which Save Mii faces copies beside RFL_Res.dat:
+ *     mii_body_load, mii_model_set_body) it is the Wii's, posed by the Mii
+ *     Channel's animations; without, this library's own. Either way a shirt
+ *     in the favourite colour, trousers grey (gold for a special Mii), and
+ *     scaled by height and build.
  *   - Units: the head's (a faceline is about 50 tall). Y is up, +Z is the
  *     way the Mii faces, the feet stand on Y = 0.
  *
@@ -60,7 +63,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.0.0"   /* sdk/mii's drawing, as of HBC 1.10.21 */
+#define MIIDRAW_VERSION "1.1.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -132,7 +135,9 @@ typedef struct {
 	mii_anim anim[MII_BODY_ANIMS];
 } mii_body;
 
-/* Checks and parses a copy in memory (taken over: freed by mii_body_free). */
+/* Checks and parses a copy in memory. On success it is taken over and
+ * mii_body_free free()s it, so it must come from malloc or memalign; on
+ * failure the caller still owns it. */
 int mii_body_attach(mii_body *body, void *data, size_t size);
 /* Reads one (path NULL: the male body). MII_E_NO_FILE without it. */
 int mii_body_load(mii_body *body, const char *path);
@@ -253,11 +258,21 @@ void mii_model_bounds(const mii_model *model, int head_only, float *top, float *
 
 /* Draws the Mii with your projection already loaded and `view` the camera
  * (the Mii stands at the world's origin; move it with `place`, or NULL).
- * Lit by one white light from the front-left-above, in view space. It sets
- * the vertex format (VTXFMT0: position, normal, one texture coordinate, all
- * F32), one colour channel lit by GX_LIGHT0, one TEV stage, Z (compare and
- * update), culling, blending (source alpha) and the alpha compare; restore
- * yours after. */
+ * Lit by one white light from the front-left-above, in view space.
+ *
+ * It changes, so set yours again after: the vertex descriptor and the
+ * formats of GX_VTXFMT0 (position, normal, texture coordinate, F32) and,
+ * with a Wii body, GX_VTXFMT1 (position, normal); GX_LIGHT0; one colour
+ * channel (COLOR0 lit by GX_LIGHT0, ALPHA0 unlit) and its ambient and
+ * material colours; one texture coordinate generation (TEXCOORD0 from TEX0,
+ * identity); one TEV stage, its order and operation; GX_TEXMAP0; GX_PNMTX0's
+ * position and normal matrices and the current matrix (GX_PNMTX0); Z (on,
+ * LEQUAL, update) and its compare after texturing (GX_SetZCompLoc false);
+ * blending (source alpha) and the alpha compare (alpha > 0); culling.
+ * It assumes the default TEV swap tables, no indirect stages and no fog.
+ *
+ * It writes the model's skinning arrays: draw one model from one thread at
+ * a time. */
 void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place);
 
 /* A camera for drawing the Mii straight into your frame: the projection and

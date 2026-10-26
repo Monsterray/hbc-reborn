@@ -393,8 +393,8 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 		}
 	}
 
-	// The avatar draws its Mii offscreen first, while the EFB is free
-	// (avatar.c), and draws as a sprite over the background and bubbles.
+	// The avatar poses its Mii now; it draws in place, over the background
+	// and bubbles, when the frame reaches its entry (avatar.c).
 #ifdef HBC_HANG_DIAG
 	hbc_agent_alive ();
 #endif

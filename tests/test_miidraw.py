@@ -105,7 +105,8 @@ class MiiDrawTest(unittest.TestCase):
         subprocess.run([CC, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
                         "-D_CRT_SECURE_NO_WARNINGS", "-DMII_NO_OGC", "-I", str(root / "sdk/mii"),
                         str(root / "sdk/mii/mii.c"), str(root / "sdk/mii/miidraw.c"), str(root / "sdk/mii/miibody.c"),
-                        str(root / "tests/miidraw_host/main.c"), "-o", str(cls.exe)],
+                        str(root / "tests/miidraw_host/main.c"), "-o", str(cls.exe)]
+                       + ([] if os.name == "nt" else ["-lm"]),
                        check=True, env=dict(os.environ, TMP=cls.tmp.name, TEMP=cls.tmp.name))
 
     @classmethod
