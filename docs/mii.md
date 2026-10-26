@@ -18,9 +18,12 @@ says so.
 - **Each Wii Remote** carries up to 10 Miis in its own memory (below).
 - **The six guests** (A to F) that games offer are built into RFL
   (`RFL_DefaultDatabase.c`) and are never in the file.
-- **The face models** (`RFL_Res.dat`) are on each game's disc, or in the Wii
-  Menu, not on the NAND. The bench Wii's `FaceLib` folder holds only
-  `RFL_DB.dat`.
+- **The face models** (`RFL_Res.dat`) are on each game's disc, or inside a
+  U8 archive in one of the Wii Menu's own content files, not as a loose
+  file. The bench Wii's `FaceLib` folder holds only `RFL_DB.dat`. An app
+  cannot read the Wii Menu's copy without NAND rights: HBC's HOME >
+  HBC > Save Mii faces copies it to the SD card (below, and
+  [research/mii-rendering.md](research/mii-rendering.md) for drawing Miis).
 
 ## RFL_DB.dat
 
@@ -410,6 +413,77 @@ Tests:
   Remote awake (a button pressed) as the job starts. `remote-add` stops
   with `MII_E_FULL` on a Remote with all 10 slots in use; it never
   overwrites a Mii.
+
+## The face models (RFL_Res.dat)
+
+A Mii's 74 bytes say which parts it has; drawing it needs the parts
+themselves: `RFL_Res.dat`, Nintendo's shapes and textures for every
+faceline, hair style, eye, mouth and so on. Games carry a copy on their disc
+(Mario Kart Wii's `/contents/RFLRes01.arc`); the Wii Menu keeps one in a U8
+archive in one of its contents. On the bench Wii (System Menu v513) that is
+its content 4, a shared content in `/shared1`: 686,372 bytes, version 0x39D.
+
+An app cannot read it: `ES_OpenTitleContent` refuses the Wii Menu's contents
+(-1026) and ISFS refuses `/shared1` and the title's content folder (-102)
+(`tests/mii_res_probe`, [research/mii-rendering.md](research/mii-rendering.md#62-finding-rfl_resdat)).
+So the user provides their own copy, and HBC makes that one press:
+
+- **HOME > HBC > Save Mii faces** (or `hbc.py mii-faces`, request `HBCM`)
+  copies it to `sd:/mii/RFL_Res.dat` (`channel/channelapp/source/miires.c`).
+  HBC lifts IOS's NAND permission check for the reads, as it does for the
+  Message Board's play log (`nandperm.c`; it needs HBC's IOS, with
+  AHBPROT), reads only the U8 header, its node table and the one file, and
+  puts the check back. It checks the file (18 archives, version 0x39D or
+  later) and writes it whole before renaming it into place. Under 2 s on
+  the bench Wii.
+- **The bodies too** (1.10.26): the same press copies the Mii Channel's
+  (title 00010002-48414341) `maleBody.brres` and `femaleBody.brres` out of
+  `Channel/Character.szs` (Yaz0, in a U8 archive in its content
+  `00000019.app` on the bench Wii) to `sd:/mii`: Nintendo's skeleton, the
+  skinned shirt and trousers, and 21 animations
+  ([research/mii-bodies.md](research/mii-bodies.md#3-the-mii-channels-body-model)).
+  0.7 to 0.9 s for faces and bodies on the bench Wii. Without a Mii Channel
+  the faces are still saved, and the toast says so.
+- **Keep them on your own SD card.** The files are Nintendo's: an app
+  reads them from `sd:/mii` at run time and never ships them.
+- **`tools/mii_res.py`** lists a copy (`info`) and dumps every shape as OBJ
+  and every texture as PNG (`dump`), for study. Its layout is in the
+  research notes; `tests/test_mii_res.py` checks the tool on a synthetic
+  file.
+
+## Drawing a Mii (sdk/mii/miidraw)
+
+`miidraw.c` draws a Mii's head from `RFL_Res.dat` as RFL does;
+`miibody.c` puts it on the Mii Channel's own body, animated, or
+`miidraw.c` builds a body of its own when the bodies are not saved
+([the SDK README](../sdk/mii/README.md#drawing-miis-miidraw),
+[research/mii-rendering.md](research/mii-rendering.md) and
+[research/mii-bodies.md](research/mii-bodies.md) for the sources). HBC's
+avatar (1.10.21, the Wii's bodies from 1.10.26) is the first user.
+
+- **The body**: the MDL0's 20 bones and two skinned meshes, posed from
+  the CHR0 animations (cubic Hermite keys; rotations the short way
+  round, or the right ankle in bodyWait spins), skinned on the CPU (about
+  1,000 vertices, 0.8 ms) and sent through the FIFO as `GX_Begin`
+  triangles (about 2,200 corners, 54 KB a frame). Height and build scale each bone along its own axis, not
+  inherited. The head rides the head bone.
+- **Drawn in place**: `mii_view` gives the camera for any viewport, and
+  `mii_draw` draws into the frame you are building (HBC's avatar does this
+  each frame). `mii_capture` (into a texture, through RGBA6 and a copy) is
+  for icons and stills.
+
+- **The head**: RFL's shapes placed by the faceline's anchors, its colour
+  tables, and the face (eyes, eyebrows, mouth, mustache, mole) composited
+  on the CPU for each expression, at RFL's positions. The shape textures
+  keep their own wrap: the glasses are one lens mirrored across.
+- **Shown on the bench Wii** (2026-10-24, `tests/wii_avatar.py`): HBC at 60
+  frames a second for a minute with the avatar, 19 us of CPU a frame. The
+  first build sent each vertex through the GX FIFO (about 240 KB a frame)
+  and overran HBC's 256 KB FIFO on the Wii: garbage triangles, then a hang
+  that needed a power cycle. Dolphin showed neither. Each part is now a
+  display list.
+- `tests/test_miidraw.py` checks the library on the PC, and
+  `mii_app.dol draw` its icon and capture on a Wii or in Dolphin.
 
 ## Sources
 

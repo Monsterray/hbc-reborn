@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.10.7**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.11.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -85,6 +85,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted (files up to 512 MiB; a read-only source is refused first; the copies get new times). An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
+| `mii-faces` | The same as HOME > HBC > Save Mii faces (`HBCM`): HBC copies the Wii Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's bodies (`maleBody.brres`, `femaleBody.brres`) to `sd:/mii`, for apps that draw Miis. The files are Nintendo's: keep them on your own SD card, never ship them. HBC 1.10.20 (bodies 1.10.26). |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |
 | `order [--clear] APPS [FOLDER ...]` | HBC's Custom app order (see [Your own app order](#your-own-app-order)): with only `APPS` (e.g. `sd:/apps`), print the apps in that order with their `<sort_id>`; with folders, give them 10, 20, 30... in the order named, editing or making each `meta.xml`; `--clear` removes every `<sort_id>`. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
@@ -315,7 +316,11 @@ framebuffers and handling Exit through HBC's own shutdown. Its HBC slot
 holds what the old HOME menu had: HBC's and IOS's versions, the Wii's IP,
 About, Launch BootMii, Exit to System Menu, and Shutdown, plus Restart
 network, which shuts the network down and joins it again (for a Wi-Fi
-connection that went stale).
+connection that went stale), and Save Mii faces, which copies the Wii
+Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's male and
+female bodies with their animations (`maleBody.brres`,
+`femaleBody.brres`) to `sd:/mii` for apps that draw Miis
+([docs/mii.md](docs/mii.md#the-face-models-rfl_resdat)).
 
 Point a Wii Remote at the screen and HBC's hand cursor follows it, turning as you twist the remote: the
 button under it lights up and A presses it, and pointing at a bar button
@@ -456,6 +461,16 @@ if (mii_make_id(&m) == MII_OK && mii_db_load(&db) == MII_OK) {
 error means. [`sdk/mii/example`](sdk/mii/example) is a whole program, and
 [`docs/mii.md`](docs/mii.md) has the formats and their sources.
 
+`miidraw.c` and `miidraw.h` draw a Mii with GX: the head as the Wii draws
+it, from the user's own face models (`sd:/mii/RFL_Res.dat`, saved with HOME
+> HBC > Save Mii faces), all seven expressions, and a body, posed. Capture
+it into a texture with alpha, make a head icon, or draw it in your own 3D
+scene ([the SDK README](sdk/mii/README.md#drawing-miis-miidraw)). HBC's
+avatar is the worked example: your favourite Mii stands beside the app
+list, breathes, looks around, blinks, smiles and waves, looks at the Wii
+Remote's pointer, and A on it shows the next Mii
+([`avatar.c`](channel/channelapp/source/avatar.c)).
+
 ## Installing the channel on a Wii
 
 Run the DOL over Wiiload first (above). Install the WAD only after that works,
@@ -573,6 +588,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | What the agent costs on a real Wii (memory, CPU, frame time) | `python3 tests/agent_cost.py WII-IP` | Wii in any HBC |
 | Overlay layout on the PC, every page | `python3 tests/overlay_preview/preview.py` (needs a C compiler and Pillow; writes PNGs) | C compiler |
 | In-app agent in Dolphin: status, files, overlay, exit, Wiiload, crash report | `make -C tests/agent_app` then `python3 tests/dolphin_smoke.py --agent channel/title/channel_retail.wad 120` | Dolphin, WAD |
+| The agent's way out past a stuck IOS ([docs](docs/devnet.md#the-way-out)): each fallback, from test bits | `make -C tests/agent_app` then `python3 tests/dolphin_way_out.py` | Dolphin, WAD |
 | Developer network on a real Wii | `python3 tests/wii_devnet.py WII-IP` | Wii in any HBC |
 | The overlay with a MotionPlus remote: Test switches it on (the gyro, live), closing switches it back off | `python3 tests/wii_mplus.py WII-IP [--chan N] [--hbc]` (`--hbc`: HBC's own HOME menu) | Wii in any HBC, a MotionPlus remote |
 | What a Wii's DNS answers from a fresh network start (WiiLink's user agreement server, Pi-hole), read-only | queue `python tests/wii_dns.py [NAME...]` (build `tests/dnscheck` first) | the bench queue |
@@ -583,6 +599,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Message Board library on the bench Wii: `backup`, `id`, `post`, `full`, `send WII`, `board`, `friends`, `restore` | queue `python tests/wii_mboard.py STEP` (it refuses any other Wii) | the bench queue |
 | Mii library (`sdk/mii`) on the PC: every field and limit, IDs, CRCs, the database, the hidden database and a Remote's Miis byte for byte (`MII_REAL_DB` adds a Wii's own `RFL_DB.dat`) | `python3 tests/test_mii.py` | C compiler |
 | Mii library in Dolphin: a database on its NAND (add, hidden, remove) and the emulated Wii Remote's Miis, each written and read back | `python3 tests/dolphin_mii.py` (build `tests/mii_app` first) | Dolphin |
+| Mii drawing (`sdk/mii/miidraw.c`) on the PC: a synthetic face resource builds a Mii with every part and each expression's face where RFL puts it, a damaged one is refused (`MII_REAL_RES` and `MII_REAL_DB` add your own files: every Mii builds) | `python3 tests/test_miidraw.py` | C compiler |
+| HBC's avatar on the bench Wii: ready, 60 frames a second for a minute, ten TV pictures | queue `python tests/wii_avatar.py` | the bench queue |
+| Mii drawing on a Wii: `mii_icon` (normal, smiling) and a full-body `mii_capture`, saved to `sd:/mii_test` and checked | `mii_app.dol draw [SLOT]` (Dolphin: with `Graphics.Hacks.EFBToTextureEnable=False`) | Wii or Dolphin |
 | Mii library on the bench Wii: `backup`, `check`, `add`, `remove ID`, `edit ID FIELD=N...`, `hidden`, `remote-add ID`, `remote-remove ID`, `remote-rewrite`, `restore` | queue `python tests/wii_mii.py STEP` (build `tests/mii_app`, `tests/nandget` and `tests/nandput` first; it refuses any other Wii) | the bench queue |
 | Upload popups close themselves and report back (bad file, unanswered ZIP, `--yes`) | `python3 tests/wii_upload_popups.py WII-IP` | Wii in any HBC |
 | The agent and MEM2: nothing written into HBC's records while an app runs, the log target kept as it stops, the agent's memory at the top of the MEM2 arena | `python3 tests/wii_agent_mem2.py WII-IP` (`--dol` for another build) | Wii in any HBC |

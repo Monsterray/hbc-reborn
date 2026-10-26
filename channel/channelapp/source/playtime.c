@@ -25,6 +25,7 @@
 #include "mboard.h"
 #include "devnet.h"
 #include "isfs.h"
+#include "nandperm.h"
 #include "playtime.h"
 #include "title.h"
 
@@ -44,7 +45,6 @@ static char wiiid_path[] __attribute__((aligned(32))) =
 // No app session is logged as longer than this: the clock was likely changed.
 #define MAX_SESSION_TICKS (24 * 3600 * MBOARD_TICKS_PER_SEC)
 
-#define MEM2_PROT 0x0D8B420A
 #define STATE_MAGIC 0x4842504c  // 'HBPL'
 
 typedef struct {
@@ -60,38 +60,6 @@ static void folder_id(char *id, const char *dir);
 static lwp_t pt_thread = LWP_THREAD_NULL;
 static u8 pt_stack[PLAYTIME_STACK] ATTRIBUTE_ALIGN(32);
 static u64 hbc_boot, session_start;
-
-// ---- IOS's NAND permission check ------------------------------------------
-
-// In IOS's FS module: `cmp r3, r1; beq allowed`. The patch makes the branch
-// unconditional (beq -> b). The same signature is patched by other homebrew
-// (libruntimeiospatch); HBC writes it only around its own cdb.vff access.
-static const u8 perm_check[] = { 0x42, 0x8B, 0xD0, 0x01, 0x25, 0x66 };
-
-static bool ahbprot(void) {
-	return read32(0x0d800064) == 0xffffffff;
-}
-
-// Returns how many sites changed.
-static int fs_permissions(bool lifted) {
-	u8 *p = (u8 *) *(u32 *) 0x80003134, *end = (u8 *) 0x94000000;
-	u8 from = lifted ? 0xD0 : 0xE0, to = lifted ? 0xE0 : 0xD0;
-	int n = 0;
-
-	if (!ahbprot() || (u32) p < 0x93000000 || (u32) p >= 0x94000000)
-		return 0;
-	write16(MEM2_PROT, 2);
-	for (; p < end - sizeof(perm_check); ++p) {
-		if (p[0] == perm_check[0] && p[1] == perm_check[1] && p[2] == from &&
-				!memcmp(p + 3, perm_check + 3, sizeof(perm_check) - 3)) {
-			p[2] = to;
-			DCFlushRange((void *) ((u32) p & ~31), 64);
-			ICInvalidateRange((void *) ((u32) p & ~31), 64);
-			++n;
-		}
-	}
-	return n;
-}
 
 // ---- cdb.vff through IOS --------------------------------------------------
 
@@ -149,9 +117,9 @@ static void log_session(const mboard_session *s) {
 	int patched, res;
 	s32 fd;
 
-	if (!ahbprot() || !title_get_path()[0] || s->end <= s->start)
+	if (!nand_ahbprot() || !title_get_path()[0] || s->end <= s->start)
 		return;
-	patched = fs_permissions(true);
+	patched = nand_unlock();
 	fd = IOS_Open(wiiid_path, IPC_OPEN_READ);
 	if (fd >= 0) {
 		have_id = IOS_Read(fd, wiiid, sizeof(wiiid)) >= 8;
@@ -171,7 +139,7 @@ static void log_session(const mboard_session *s) {
 			 result_name(res));
 	}
 	if (patched)
-		fs_permissions(false);
+		nand_relock();
 	devnet_boot_mark(res >= 0 ? "playlog_logged" : "playlog_failed");
 }
 
@@ -341,7 +309,7 @@ void playtime_leave(const char *app_name, const char *app_dir) {
 	state st;
 
 	playtime_wait();
-	if (!ahbprot() || !title_get_path()[0])
+	if (!nand_ahbprot() || !title_get_path()[0])
 		return;
 	memset(&hbc, 0, sizeof(hbc));
 	utf8_to_name(hbc.name, "Homebrew Channel");

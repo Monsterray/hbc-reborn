@@ -161,6 +161,300 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.0: release; the memory audit and the Mii SDK's review
+
+1.11.0 releases what 1.10.17 to 1.10.26 built: the agent's way out
+(bounded, shown on the TV), the Mii SDK with the Wii's own bodies, HBC's
+avatar, and the GX FIFO back in MEM1.
+
+- **Memory audit.** What the hardware reads, and from where: the GX FIFO
+  (static .bss, MEM1), the XFB (`SYS_AllocateFramebuffer`, MEM1, which the
+  video interface needs), the HOME overlay's framebuffers (fixed low MEM1),
+  textures and the Mii's display lists (the heap, often MEM2: fine for the
+  GPU, and the 5-minute bench runs drew from them), the USB driver's IOS
+  buffers (MEM2, as IOS wants). HBC streams no audio. New
+  `tests/test_memory_layout.py` fails if `gp_fifo` stops being a 256 KiB,
+  32-byte aligned object in MEM1 (it reads the built ELF; CI builds first).
+- **Review of sdk/mii and the avatar** (an independent read, a fuzzer).
+  Fixed:
+  - A crafted or damaged `.brres` hung HBC for good: an infinite or huge
+    float rotation key never came within 180 of the last (`keys_at`'s
+    `vi -= 360` loop). Keys, constants, bind transforms and vertex
+    coordinates must now be finite and within 1e5, a track has at most a
+    key a frame, angles wrap with `remainderf`. 32,000 mutated bodies under
+    ASan and UBSan (WSL, gcc 13): no hang, no error; it hung within about
+    80 before.
+  - Launching an app or exiting in HBC's first minute waited up to 60 s
+    for the avatar's loader to give up retrying (every user without Save
+    Mii faces). It stops at once now (a flag, 100 ms sleeps), and does not
+    retry once the SD card is mounted and the file is simply missing.
+  - `nand_unlock` that found nothing to patch left MEM2_PROT at 2.
+  - Also: a vertex divisor over 15 (an undefined shift), a duplicate bone
+    index, a vertex count sum that could wrap, NULL checks in
+    `mii_body_pose`/`mii_body_skin`, the avatar's clock rebased hourly (a
+    float of seconds coarsens after a day), `mii_wifi_mac` keeps only a
+    success, `gfx_restore` no longer sets the pixel format mid-frame, a
+    U8 count check that could wrap in `miires.c`.
+  - Docs: `mii_draw`'s full list of the GX state it changes, what it
+    assumes, and one thread per model; `mii_body_attach`'s ownership; the
+    README example draws in place and frees on every path; your FIFO in
+    MEM1; `MIIDRAW_VERSION` 1.1.0.
+- **For WiiStation** (devkitPPC r41-2, libogc2): every public sdk/mii
+  function compiles (`-Wall -Wextra -Werror`) and links against libogc2.
+  Not yet run on a Wii with libogc2.
+- **CI** was red from 1.10.22: the container's newer libogc defines
+  `udelay`, which `way_out.c` also defined (now `wo_udelay`), and the
+  host test of miidraw did not link libm on Linux.
+- **Known:** `dolphin_smoke.py --agent` fails at its first agent step in
+  Dolphin (the app never answers) since at least 1.10.22; the same agent
+  suite passes on the bench Wii (`tests/wii_agent.py`, this build).
+
+### 1.10.26: the Mii Channel's own bodies, and HBC's GX FIFO back in MEM1
+
+The 1.10.21 body was this library's own and did not look like a Mii. The
+Wii's own bodies are on every Wii, in the Mii Channel. And from 1.10.21 on,
+HBC hung its GPU on a real Wii: not the avatar, but where the GX FIFO was.
+
+- **Found** (docs/research/mii-bodies.md, section 3): the Mii Channel's
+  `Channel/Character.szs` holds `maleBody.brres` and `femaleBody.brres`:
+  a 20-bone skeleton, two skinned meshes (shirt with hands, trousers) and
+  21 CHR0 v3 animations. No decompilation shows how a Wii title scales a
+  body; the per-bone rules reversed from the Wii U/Switch fit this
+  skeleton (each bone long by height, thick by build, along its own X).
+- **Save Mii faces** now also copies the two bodies to `sd:/mii`
+  (`miires.c`: the Mii Channel's TMD, its content's U8, Yaz0, U8).
+- **`sdk/mii/miibody.c`**: BRRES/MDL0/CHR0 read with every offset checked;
+  Hermite keys in both rotation formats this file uses (format 1, used by
+  two animations, is skipped); rotations the short way round (the right
+  ankle in bodyWait, 179.1 to -179.2 degrees, spun the foot a whole turn:
+  the user saw it); per-bone scale; skinning on the CPU, the posed
+  triangles sent through the FIFO; the head on the head bone.
+- **Drawn in place**: `mii_view` (new) frames the Mii for any viewport;
+  HBC's avatar is a `GFXE_DRAW` entity (gfx.c `plot_draw`) that draws the
+  Mii into HBC's frame in its rectangle and a thin band of depth, so it
+  stands under the app list and dialogs with no texture capture, copy or
+  pixel-format change. `mii_capture` stays for icons, with a
+  `GX_PixModeSync()` after each pixel-format change.
+- **HBC's avatar** plays the body's bodyWait and bodyGreeting (the wave),
+  smaller on screen (128 x 208).
+- **The GPU hang, and its cause.** From 1.10.21 the bench Wii froze every
+  few minutes with the avatar on (10 s to 300 s in; HBC's main thread in
+  `GX_DrawDone`; never in Dolphin). Changing how the Mii was drawn
+  (indexed arrays, display lists, `GX_Begin` vertices, no texgen for the
+  untextured body, a sync after each pixel-format change, drawing in
+  place) moved the odds but never removed it; short runs of a random hang
+  misled more than once. What settled it:
+  - The hang watchdog (`HBC_HANG_DIAG`: 6 s, crash report, back to HBC)
+    and a GPU dump (`HBC_DIAG_GPU`: CP, PE and PI FIFO registers 2 s and
+    4 s into a stuck `GX_DrawDone`, draw-sync tokens per frame entry):
+    the GPU had stopped itself, partway through HBC's own quads after the
+    avatar, the draw-done never reaching the pixel engine.
+  - On the Wii, every posed vertex checked each frame, and each frame
+    re-skinned with interrupts off and compared: all finite, in range,
+    identical. The data was never wrong.
+  - A stress hook made it show in seconds: 20 `GX_DrawDone` in the middle
+    of each frame hung HBC 1.10.26 with the avatar off, every run; 1.10.9
+    and 1.10.20 never. Bisected: 1.10.21 (58e878e), with the avatar off.
+    1.10.20 with nothing but 76 KiB more .bss (what linking sdk/mii added)
+    hung the same way.
+  - HBC took its 256 KiB GX FIFO from the heap; past MEM1's part it came
+    from MEM2 (0x90002020 in every dump). Now a static, 32-byte aligned
+    array in .bss: MEM1. Under the same stress, avatar on: 3 runs of 3
+    clean, where every run had hung. Then the release code (only the
+    watchdog added), avatar on, Wii body: 3 runs of 5 minutes at 60 frames
+    a second, no hang, back to HBC after each.
+- **MEM2_PROT put back.** `nandperm.c` (the play log and Save Mii faces)
+  wrote 2 to MEM2_PROT (0x0D8B420A) to patch IOS and never put it back. It
+  was the first suspect for the hang and was not its cause, but the PPC
+  could write IOS's memory until IOS reloaded; the register is now saved
+  before the first lift and restored with the check.
+- **Evidence.** `tests/test_miidraw.py`: a non-BRRES or damaged body is
+  refused; with `MII_REAL_BODIES`, both bodies load (20 bones, 19
+  animations), Wait, Greeting, Walk and Run pose, every truncation is
+  refused, and Wait stays within 12 units of its first frame (the spinning
+  foot reached 22.6), and Wait and Greeting pose finite and in range at
+  3,000 frames each. 762 truncated or byte-flipped bodies under ASan and
+  UBSan (WSL, gcc 13): no error. Dolphin: 150 s at 60 frames a second.
+  The bench Wii: faces and bodies saved in 0.7 to 0.9 s; the avatar 3
+  minutes at 60 frames a second with each body, 0.77 ms of CPU a frame.
+
+### 1.10.24: the way out never hands a wedged IOS to the stub, and shows itself
+
+On 2026-10-25 the first real wedge reached the way out: USB Loader GX's
+bench build (agent 1.10.14) stalled IOS in a 1 MiB `WDVD_Read` through
+d2x cIOS 249's DIP, between two 32 KiB emulated sub-reads. GX's guard
+called `hbc_agent_fatal_now()`; 8 minutes later the TV still showed GX's
+last frame (no reset) and HBC never answered, so the user power-cycled.
+The power cycle took the kept log with it, so which step stopped is not
+known; the likeliest, since no reset came, is that IOS answered all 32
+closes and the agent handed over to the reload stub, whose ES launch has
+no time limit.
+
+- **No blind hand-over.** When IOS acks every close, the agent now
+  launches HBC through ES itself, with its time limits, whether or not
+  every close answered. Only when every close answered and ES refused every
+  title at once (no HBC installed) does the stub run. A launch that goes
+  unanswered, or acks and then brings no reset, moves on to the resets.
+- **The steps on the TV.** Each step is drawn in a black panel on the
+  framebuffer the VI shows (`TFBL`, as `panic.c` finds it), uncached and
+  integer-only (ov_draw's text, no floating point in the object code),
+  redrawn whole at each step. A power cycle cannot take it away.
+- **Evidence.** `tests/test_way_out.py`: 27 scenarios (four new: every
+  close answers and the launch hangs, answers late, or is refused with and
+  without a stub) and the no-time-left check. Dolphin's way-out test runs
+  the test bits through this tree's WAD. Not yet shown: the panel on a
+  real Wii, and a real wedge coming back. Both need someone at the bench
+  Wii (an IOS hang never runs unattended).
+### 1.10.22: the agent links without f_chmod and refuses a stub it can't run
+
+- `f_chmod` is weak (devfile.c): an app on libogc 3 with a FAT library of
+  its own (USB Loader GX: libcustomfat) has no FatFs and failed to link;
+  it sets attributes the whole-byte way through `FAT_setAttr`, as on
+  libogc2 and libogc 1.8.
+- The way out jumps into the reload stub only if 0x80001800 holds an
+  unconditional branch (HBC's stub starts 0x48000010). Dolphin, booting a
+  DOL directly, leaves the STUBHAXX magic with a zero word there and
+  catches the jump with its HBReload hook; with the MMU on it does not,
+  and USB Loader GX's way out ran 0x00000000. Without a stub the way out
+  launches HBC through ES.
+- Built for libogc 3, libogc2 and libogc 1.8.23; `tests/agent_app`; the
+  way-out model.
+
+### 1.10.21: Miis drawn (sdk/mii/miidraw) and HBC's avatar
+
+`sdk/mii` now draws Miis, and HBC shows the user's beside the app list.
+
+- **The library** (`miidraw.c`, `miidraw.h`): RFL_Res.dat checked and
+  parsed; the head's shapes placed as RFL places them (faceline anchors,
+  nose and glasses scale and position, hair flipped); the face composited
+  on the CPU for seven expressions at RFL's positions, eye and mouth
+  channels coloured as RFL's TEV does; the face, cap, nose line and
+  glasses baked into plain textures with their own wrap; a body of its own
+  (lathed torso, hips, legs, shoes, arms, hands, neck), scaled by height
+  and build. `mii_draw`, `mii_capture` (2x supersampled, RGBA8 with alpha)
+  and `mii_icon` (RFLMakeIcon's camera).
+- **HBC** (`avatar.c`): a background thread loads the faces and the first
+  favourite Mii; each frame poses it (breathing, sway, look-around, blink,
+  a smile and a wave now and then, looking at the pointer, a wave when
+  pointed at) and captures it before the frame, as a sprite under the
+  views. A on it shows the next Mii. `gfx_restore()` puts HBC's GX state
+  back. HBCS `avatar` reports it.
+- **Found on the Wii, not in Dolphin.** The first build sent every vertex
+  through the GX FIFO, about 240 KB a frame into HBC's 256 KB: on the bench
+  Wii, garbage triangles and then a hang that needed a power cycle. Each
+  part is now a display list built as bytes (any thread can build it); the
+  FIFO carries about 2 KB a frame for the Mii.
+- **Evidence.** `tests/test_miidraw.py` (a synthetic resource; damaged
+  ones refused; every Mii of a real database with `MII_REAL_RES`/`_DB`).
+  In Dolphin: the avatar animating (look-around, wave, smile), 0.06 ms of
+  CPU a frame at 60 fps; `mii_app.dol draw` icons and capture with clear
+  corners. On the bench Wii (`tests/wii_avatar.py`): 60 frames a second
+  for a minute, 19 us of CPU a frame, ten clean pictures.
+- **Not shown**: A on the avatar (no scripted pointer on the bench yet),
+  widescreen framing, a Mii with a beard, mustache or cap on hardware
+  (they build on the PC and in the synthetic test).
+
+### 1.10.20: Save Mii faces (the user's own RFL_Res.dat on SD)
+
+Drawing a Mii needs Nintendo's face models, `RFL_Res.dat`, which an app
+cannot read (`tests/mii_res_probe`: ES -1026, ISFS -102 for every copy on
+the Wii; docs/research/mii-rendering.md). Games carry their own; homebrew
+gets the user's.
+
+- **HOME > HBC > Save Mii faces** and `hbc.py mii-faces` (`HBCM`) copy the
+  Wii Menu's copy to `sd:/mii/RFL_Res.dat` (`miires.c`): the NAND
+  permission check lifted for the reads only, the U8 node table and the one
+  file read (not the 686 KB content whole), the file checked, written to a
+  `.part` and renamed. `nandperm.c` now holds the lift for both it and the
+  play log, counted, so one cannot put the check back under the other.
+- **Evidence.** On the bench Wii (`tests/wii_mii_faces.py`, this tree's
+  HBC through the installed one): two saves each run, 0.5 to 1.5 s, 686,372
+  bytes, version 0x39D, every shape and texture parsed by
+  `tools/mii_res.py`; a software render of faceline 0 with hair, forehead,
+  nose and beard at the faceline's anchors is a Mii's head. Then the probe
+  from the same HBC was refused `/shared1` again: the check came back.
+- **Next, with a trigger.** The renderer in `sdk/mii` (research plan, 6.3):
+  the C parser, `mii_icon()`, the 3D head, a body. Trigger: started now.
+
+### 1.10.18: the agent leaves a wedged IOS without a power cycle
+
+On 2026-10-24 USB Loader GX's bench build hung IOS in its first encrypted
+`WDVD_Read` through d2x cIOS 249 (stock d2x and the fork alike). The agent's
+hang watchdog and GX's own guard thread both fired, and both ended in the
+reload stub, which waits on IOS with no time limit: three power cycles.
+
+- **The way out** (`sdk/hbc_agent/way_out.c`, `docs/devnet.md` "The way
+  out"). `hbc_agent_fatal_now()`, the hang watchdog, `assert()`, `abort()` and
+  the stack marker check now do the stub's descriptor closes first, polled
+  with interrupts off and a time limit on each. Every close answered: any
+  late reply drained, then the stub. A close without a reply, or no stub:
+  HBC launched through ES directly, by the stub's title, then OHBC's, then
+  LULZ's. No launch went ahead and IOS still acks: STM's hot reset, which
+  IOS takes, so a NAND write can end. Still here, or IOS silent: a system
+  reset through `HW_RESETS` bit 0, with AHBPROT open and not on a vWii.
+  Else the stub anyway. No reset within 10 minutes of the last one (the
+  crash block's `reset_s`, by the RTC), so a Wii whose autoboot wedges at
+  once stops instead of looping. Four words appended to the version 2 crash
+  block (`WAY1`, `way_out`, `reset_s`, their own check) record the choice,
+  so every installed HBC still reads the report; the kept log has each
+  step. `HBC_AGENT_NO_IOS_CHECK` turns it off. `hbc_agent_fatal()` still
+  calls `exit()`; if that has not finished in 15 s, the monitor thread
+  takes the way out.
+- **Evidence.** `tests/test_way_out.py` runs `way_out.c` on the PC against a
+  model of the IPC registers (healthy, stale and trailing replies, stuck
+  and late closes, silent IOS, refused, hung and slow launches, AHBPROT
+  open and closed, vWii, no stub, a recent reset). Dolphin found two bugs the first model
+  missed, and the model now catches both: the time left for a reply read
+  the clock twice and wrapped to 71 minutes; and IOS acks or replies only
+  while Y1, Y2 and the PPC's IPC interrupt are all clear (Dolphin's
+  `WiiIPC::IsReady()`), so a late reply left in ARMMSG blocked every later
+  ack. The agent now takes such replies while it waits for an ack.
+  `tests/dolphin_way_out.py` runs the agent's test bits through this tree's
+  WAD in Dolphin. On the bench Wii (`tests/wii_way_out.py`, test bits):
+  the stub (closes in 25 ms), the ES launch back into HBC (19 s) and the
+  stub-anyway fallback all came back; one `HW_RESETS` reset rebooted the
+  console through BootMii's menu (8 s, on by itself) and Priiloader's
+  autoboot into HBC, 33 s after the reset, with the kept log intact; STM's
+  hot reset and `HW_RESETS` after a refused launch came back in 43 s and
+  36 s. After a later reset BootMii (boot2) waited at its menu despite
+  `AUTOBOOT=SYSMENU`, `BOOTDELAY=1`: a reset may need a button press on a
+  Wii with BootMii as boot2. Those bench runs were the first draft's order
+  (with `Abra`). The fixed order on the same Wii: the stub, the ES launch
+  and the stub anyway came back; IOS forced silent took `HW_RESETS`, and a
+  refused launch with IOS acking took STM's reset first; the crash block
+  and kept log survived both resets. Not yet proven: the 10-minute guard
+  (HBC clears the crash block as it starts, so only an autoboot straight
+  into an agent app can show it), which way a real wedge takes (is the
+  kernel silent, or only DI?), and whether ES can launch HBC past a stuck
+  DI.
+- **Review fixes before release** (the first draft, on branch
+  `claude/quizzical-haslett-3af2ed`): it wrote Priiloader's `Abra` word
+  at `0x817feff0` before a reset, which nothing showed was read, which
+  stayed in MEM1 when no reset came, and which would loop a Wii whose
+  autoboot is the app that wedged: removed, and the 10-minute guard added.
+  `HW_RESETS` came before STM's reset even while IOS answered, cutting off
+  a NAND write: STM first now. A request slot whose reply never came was
+  reused, so a late reply could be read as the next request's: such slots
+  are kept. The second launch ack cleared the interrupt flag before Y2,
+  which raises it again (Dolphin's `WiiIPC`). No drain before the stub; no
+  stub led to libogc's `__reload()` (now: the agent stops); a 3 s `/dev/es`
+  probe in `hbc_agent_fatal()` skipped the app's clean-up (now: the exit
+  deadline); OHBC was the only title; `HW_RESETS` was used on a vWii; and
+  the version 3 crash block was unreadable to every installed HBC.
+  `tests/test_way_out.py`'s model now raises the interrupt on a Y write
+  with IY set, checks each ES ioctlv's vectors, writes a result only as its
+  reply comes, holds a late launch reply until the next request, and looks
+  5 ms past a hand-over for anything left: 23 scenarios plus 2 no-time-left
+  checks, and reverting any one of those fixes (ack order, slot reuse,
+  drain, reset order, vWii, guard, title order) fails it.
+- **Next, with a trigger.** The stub itself still waits forever, for apps
+  without the agent and for an exception after a wedge (libogc's crash
+  screen calls `__reload()` with interrupts off). Trigger: a hardware run
+  that shows the ES launch or the reset works past a real wedge; then give
+  HBC's stub (`channel/channelapp/stub/ios.c`) the same time limits and the
+  `HW_RESETS` fallback, which covers every app. Its `ipc_wait_ack()` also
+  ignores a reply that comes first, which blocks IOS's ack as above.
+
 ### 1.10.16: audit of rename, move and attributes
 
 An independent review (2026-10-24) of 1.10.14 and 1.10.15 found these,

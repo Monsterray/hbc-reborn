@@ -161,6 +161,118 @@ msg.face = face;
 mboard_post_msg(&msg);
 ```
 
+## Drawing Miis (miidraw)
+
+[miidraw.h](miidraw.h) and [miidraw.c](miidraw.c) draw a Mii with GX: its
+head as the Wii draws it, from the console's own face models, and a body to
+go with it. HBC's avatar ([channel/channelapp/source/avatar.c](../../channel/channelapp/source/avatar.c))
+is the worked example.
+
+```c
+#include "mii.h"
+#include "miidraw.h"
+
+static mii_res res;
+static mii_model model;
+static mii_body body;
+mii m;
+int ok;
+
+/* Once, outside the frame loop (about 0.1 s; any thread). */
+ok = mii_res_load(&res, NULL) == MII_OK;           /* sd:/mii/RFL_Res.dat */
+ok = ok && mii_get(0, &m) == MII_OK;               /* or any Mii you have */
+ok = ok && mii_model_make(&res, &m, 128, &model) == MII_OK;
+mii_res_free(&res);                                /* the model keeps what it needs */
+if (ok && mii_body_load(&body, m.sex == MII_FEMALE ? MII_BODY_FEMALE_PATH
+                                                   : MII_BODY_MALE_PATH) == MII_OK)
+    mii_model_set_body(&model, &body);             /* the Wii's own; else the library's */
+
+/* Each frame, in your 3D pass: a viewport where the Mii stands, the camera
+ * that frames it there, then draw. Set your GX state again after. */
+if (ok) {
+    Mtx44 proj;
+    Mtx view;
+    mii_pose pose = { 0 };
+
+    pose.anim = 1 + mii_body_anim(&body, "bodyWait");   /* 0: stand still */
+    pose.frame = seconds * 60;
+    pose.expression = MII_EXPR_SMILE;
+    GX_SetViewport(x, y, 128, 208, 0, 1);
+    mii_view(&model, &pose, 128.0f / 208, 0.04f, proj, view);
+    GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+    mii_draw(&model, &pose, view, NULL);
+}
+```
+
+- **The face models are the user's.** `RFL_Res.dat` is Nintendo's: never
+  ship it. HBC's HOME > HBC > Save Mii faces (or `hbc.py mii-faces`) copies
+  the Wii's own to `sd:/mii/RFL_Res.dat`, where `mii_res_load(&res, NULL)`
+  looks. An app cannot read the Wii Menu's copy itself. `MII_E_NO_FILE`
+  means: ask the user to save it.
+- **`mii_model_make`** builds everything once: the head's shapes placed as
+  RFL places them, the face composited for all seven expressions
+  (`MII_EXPR_*`), the parts RFL colours with TEV tricks baked into plain
+  textures, a body in the Mii's colours (shirt in the favourite colour,
+  trousers grey or gold for a special Mii) scaled by height and build, and
+  each part as a GX display list. About 1 MiB.
+- **Ways to draw it:**
+  - In place, each frame: `mii_view()` gives the projection and camera
+    that frame the Mii in a viewport of the aspect you pass; set your
+    viewport (and a depth range) there and `mii_draw()`. HBC's avatar does
+    this (channel/channelapp/source/avatar.c).
+  - `mii_capture()` into a texture with alpha, framed whole (or the head:
+    `pose.head_only`). It draws twice the size and box-filters down, so the
+    edges are smooth. For icons and stills.
+  - `mii_icon()`: a head icon framed as the Wii Menu's.
+  - `mii_draw()` into your own 3D scene, with your projection and camera.
+- **`mii_pose`**: turn, head yaw/pitch/roll, arms out and forward, legs,
+  a bob, breathing, the expression. All zero stands still.
+- **The Wii's own bodies.** With `sd:/mii/maleBody.brres` and
+  `femaleBody.brres` (Save Mii faces copies them from the Mii Channel too),
+  `mii_body_load` reads one and `mii_model_set_body` puts it under a model:
+  Nintendo's skeleton, the shirt and trousers skinned on the CPU, and the
+  Mii Channel's animations. Pose it with `pose.anim = 1 +
+  mii_body_anim(&body, "bodyWait")` (or `bodyGreeting`, `bodyWalk`,
+  `bodyRun`, `bodyTalk`, ...) and `pose.frame` at 60 a second; 0 stands
+  still. Height and build scale each bone as Nintendo's later libraries do.
+  Without the files the model keeps a body of the library's own.
+
+  ```c
+  static mii_body body;
+  if (mii_body_load(&body, m.sex == MII_FEMALE ? MII_BODY_FEMALE_PATH
+                                               : MII_BODY_MALE_PATH) == MII_OK)
+      mii_model_set_body(&model, &body);           /* body outlives model */
+  pose.anim = 1 + mii_body_anim(&body, "bodyWait");
+  pose.frame = seconds * 60;
+  ```
+- **Your GX FIFO in MEM1.** Make it a static array
+  (`static u8 fifo[SIZE] ATTRIBUTE_ALIGN(32);`), not `memalign` from the
+  heap: once MEM1's part of the heap runs out, the heap gives MEM2, and a
+  GPU fed its commands from MEM2 stalled at random on a real Wii (never in
+  Dolphin). HBC lost days to this when linking this library grew its .bss
+  (REVIEW.md, 1.10.26). A Mii adds about 54 KB of commands a frame; keep a
+  frame well under the FIFO's size.
+- **Builds with libogc 3 and libogc2.** HBC uses libogc 3; every function
+  here also compiles and links with devkitPPC r41-2 and libogc2.
+- **Between frames.** `mii_capture` and `mii_icon` draw in the EFB's corner
+  (RGBA6 while they draw), copy it out and clear it: call them after your
+  last screen copy and before you draw the next frame, then set your GX
+  state again (pixel format, viewport, scissor, projection, copy filter,
+  vertex format, colour channel). `mii_draw` changes the vertex format,
+  lighting, TEV, Z, culling and blending.
+- **Testing in Dolphin**: an EFB copy stays on Dolphin's GPU unless
+  `Graphics.Hacks.EFBToTextureEnable=False`, so a CPU read of `mii_capture`'s
+  texture sees zeros there; drawing it works either way.
+- **On the PC**: with `-DMII_NO_OGC` everything but drawing builds
+  (`tests/miidraw_host` writes a Mii's meshes as OBJ and its faces as RGBA;
+  with `MII_BODY`, a Wii body posed by `MII_ANIM` and `MII_FRAME`).
+- **Files**: `miidraw.c` (faces, the built body, drawing) and `miibody.c`
+  (the Wii's bodies) with `mii.c`.
+
+The head's numbers come from RFL as the CC0 decompilations show it; the
+code is this library's own. [docs/research/mii-rendering.md](../../docs/research/mii-rendering.md)
+has the sources.
+
 ## Errors
 
 | Code | What to do |

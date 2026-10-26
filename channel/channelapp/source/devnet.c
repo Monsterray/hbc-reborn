@@ -23,6 +23,8 @@
 #include "devfile.h"
 #include "devnet.h"
 #include "loader.h"
+#include "miires.h"
+#include "avatar.h"
 #include "tcp.h"
 #include "zmem.h"
 #include "usbmsd.h"
@@ -115,6 +117,12 @@ static const char *crash_kind(u32 kind) {
 	return kind < 6 ? names[kind] : "exception";
 }
 
+static const char *way_out_name(u32 way) {
+	static const char *names[] = { "not_checked", "stub", "es_launch", "reset", "stm_reset",
+								   "stub_anyway" };
+	return way < 6 ? names[way] : "unknown";
+}
+
 static const char *lastlog_why(u32 why) {
 	static const char *names[] = { "exit", "exception", "fatal", "hang", "abort", "stack",
 								   "power" };
@@ -153,7 +161,7 @@ static s32 crash_json(char *buf, size_t size) {
 			crash.sp, crash.uptime_ms);
 	for (i = 0; i < HBC_CRASH_FRAMES && crash.frames[i]; ++i)
 		n += snprintf(buf + n, size - n, "%s\"%08x\"", i ? "," : "", crash.frames[i]);
-	n += snprintf(buf + n, size - n, "]}");
+	n += snprintf(buf + n, size - n, "],\"way_out\":\"%s\"}", way_out_name(crash.way_out));
 	return n;
 }
 
@@ -248,6 +256,19 @@ static s32 status_json(char *buf, size_t size) {
 	n += snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style());
 	// The Wii's clock, the one file times (op L, S) come from.
 	n += snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL));
+	{
+		// The Mii beside the app list (avatar.c).
+		avatar_info av;
+		char name[2 * sizeof(av.name)];
+
+		avatar_get_info(&av);
+		json_text(name, av.name, sizeof(name));
+		n += snprintf(buf + n, size - n, ",\"avatar\":{\"state\":\"%s\",\"mii\":\"%s\","
+					  "\"slot\":%d,\"frame_us\":%u,\"interval_us\":%u,\"frames\":%u,\"bad\":%u,"
+					  "\"bad_at\":\"%s\"}",
+					  av.state, name, av.slot, (unsigned) av.frame_us, (unsigned) av.interval_us,
+					  (unsigned) av.frames, (unsigned) av.bad, av.bad_at);
+	}
 	_CPU_ISR_Disable(level);
 	n += snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
 				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",
@@ -463,6 +484,19 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		return true;
 	}
 
+	if (!memcmp(hdr, "HBCM", 4)) {
+		// HOME > HBC > Save Mii faces, from the PC (`hbc.py mii-faces`): the
+		// reply is the toast's text, status 0 or the error.
+		char msg[64];
+		s32 res = miires_save(msg, sizeof(msg));
+
+		if (res >= 0)
+			avatar_reload();
+
+		devfile_reply(s, res < 0 ? res : 0, msg, strlen(msg));
+		return true;
+	}
+
 	if (!memcmp(hdr, "HBCN", 4)) {
 		u16 port = get_u16(hdr + 4);
 
@@ -485,6 +519,9 @@ void devnet_early_init(void) {
 	if (cb->magic == HBC_CRASH_MAGIC && cb->version == HBC_CRASH_VERSION &&
 			cb->check == hbc_crash_check(cb)) {
 		memcpy(&crash, cb, sizeof(crash));
+		// The way out, from an agent of 1.10.18 on; before, the stub, unchecked.
+		if (crash.way_magic != HBC_CRASH_WAY_MAGIC || crash.way_check != hbc_crash_way_check(&crash))
+			crash.way_out = HBC_WAY_NOT_CHECKED;
 		have_crash = true;
 	} else if (cb->magic == HBC_CRASH_MAGIC && cb->version == 1 &&
 			((u32 *) cb)[HBC_CRASH_V1_WORDS] == hbc_check_words(cb, HBC_CRASH_V1_WORDS)) {

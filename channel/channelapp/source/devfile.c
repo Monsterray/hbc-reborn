@@ -140,6 +140,10 @@ static bool valid_path(const char *path) {
 // own code (lwz rX,deviceData(r3); addi rY,rX,OFF) and used only when that
 // code also calls f_chmod. Without it, setting bits still goes through
 // FAT_setAttr, and clearing one is ENOTSUP.
+//
+// f_chmod is weak: an app on libogc 3 that links a FAT library of its own
+// (USB Loader GX's libcustomfat, libfat 1.1.5) has no FatFs, and its
+// FAT_setAttr writes the byte whole, as libogc2's does: that way, then.
 
 #define FA_RO 0x01
 #define FA_HID 0x02
@@ -153,7 +157,7 @@ int FAT_setAttr(const char *path, unsigned attr);   // libfat's takes a uint8_t:
 
 #if __has_include(<tuxedo/ppc/exception.h>)
 #include <sys/iosupport.h>
-int f_chmod(void *fs, const char *path, unsigned char attr, unsigned char mask);
+int f_chmod(void *fs, const char *path, unsigned char attr, unsigned char mask) __attribute__((weak));
 
 // The offset of the FatFs object in a FAT device's data, or -1.
 static int fatfs_offset(void) {
@@ -164,6 +168,8 @@ static int fatfs_offset(void) {
 
 	if (found != -2)
 		return found;
+	if (!f_chmod)
+		return found = -1;
 	for (i = 0; i < 64 && op[i] != 0x4e800020; ++i) {   // to its blr
 		u32 in = op[i];
 		// lwz rX,deviceData(r3)
@@ -224,7 +230,7 @@ static s32 set_attr(const char *path, int value, int mask) {
 	if (want == cur)
 		return 0;
 #if __has_include(<tuxedo/ppc/exception.h>)
-	{
+	if (f_chmod) {
 		const devoptab_t *d = GetDeviceOpTab(path);
 		const char *rel = strchr(path, ':');
 		int off = fatfs_offset();
@@ -240,12 +246,12 @@ static s32 set_attr(const char *path, int value, int mask) {
 						   FA_SETTABLE)) {
 			return -EIO;
 		}
+		return FAT_getAttr(path) == want ? 0 : -EIO;
 	}
-#else
+#endif
 	errno = 0;
 	if (FAT_setAttr(path, (unsigned) want) < 0)   // the whole byte: the directory bit too
 		return errno ? -errno : -EIO;
-#endif
 	return FAT_getAttr(path) == want ? 0 : -EIO;
 }
 

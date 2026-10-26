@@ -446,6 +446,11 @@ def check_stop(mode, crash, kept):
         return
     assert crash and crash["app"] == "agent_app", crash
     addrs = [int(crash["pc"], 16), int(crash["lr"], 16)] + [int(f, 16) for f in crash["frames"]]
+    # HBC 1.10.18 on: a fatal leaves through exit() (libogc's own way, not
+    # checked); the hang watchdog checks IOS first, which answers here, and
+    # from 1.10.24 launches HBC through ES itself rather than through the stub.
+    if "way_out" in crash:
+        assert crash["way_out"] == ("not_checked" if mode == "fatal" else "es_launch"), crash
     if mode == "fatal":
         assert crash["kind"] == "fatal" and crash["code"] == 0x81, crash
         assert crash["reason"] == "test fatal, value 42", crash

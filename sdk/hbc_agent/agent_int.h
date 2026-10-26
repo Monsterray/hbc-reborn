@@ -44,6 +44,13 @@ void agent_lastlog(u32 why);
 void agent_request_exit(void) __attribute__((noreturn));
 void agent_power_off(void) __attribute__((noreturn));
 extern void __reload(void) __attribute__((noreturn));
+/* way_out.c: leaves for HBC once the crash block and kept log are written,
+ * checking IOS answers first (../hbc_agent.h, "The way out"). */
+void agent_leave(void) __attribute__((noreturn));
+/* agent.c: a way out into the log, the crash block and the kept log; and
+ * whether the last agent chose a reset under 10 minutes ago. */
+void agent_way_out_note(u32 way, const char *text);
+bool agent_reset_recently(void);
 /* The overlay is open, or the app holds the hang watchdog (a load). */
 bool agent_paused(void);
 /* The 1 s monitor thread (the hang watchdog's): starts it if it is not

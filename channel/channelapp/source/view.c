@@ -16,6 +16,8 @@
 #include "widgets.h"
 #include "bubbles.h"
 #include "panic.h"
+#include "avatar.h"
+#include "../../../sdk/hbc_agent.h"
 #include "view.h"
 
 #define FOCUS_FLAGS (WF_VISIBLE | WF_ENABLED | WF_FOCUSABLE)
@@ -324,6 +326,7 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 	f32 roll;
 	s8 w, c;
 	cursor_type ct;
+	const gfx_queue_entry *av;
 #ifdef ENABLE_SCREENSHOTS
 	u16 ss_x, ss_y;
 	u32 *ss_buf = NULL;
@@ -390,12 +393,22 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 		}
 	}
 
+	// The avatar poses its Mii now; it draws in place, over the background
+	// and bubbles, when the frame reaches its entry (avatar.c).
+#ifdef HBC_HANG_DIAG
+	hbc_agent_alive ();
+#endif
+	av = avatar_frame (wm, x, y, (bd & PADS_A) != 0);
+
 	gfx_frame_start ();
 
 	gfx_frame_push (&entry_bg, 1);
 
 	if (view_bubbles)
 		bubble_update(wm, x, y);
+
+	if (av)
+		gfx_frame_push (av, 1);
 
 	gfx_frame_push (&entry_logo, 1);
 

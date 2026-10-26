@@ -361,8 +361,9 @@ int mii_get(int slot, mii *m);
 
 /* This Wii's Wi-Fi MAC address, which RFL builds its IDs from. Just after
  * an IOS reload (an app launched from HBC) IOS's network module takes a few
- * seconds to start: this waits for it, up to 8 s. The answer is kept, and so
- * is a failure (MII_E_IO). */
+ * seconds to start: the first call waits for it, up to 8 s. The answer is
+ * kept; after a failure (MII_E_IO) the next call asks once more, at once.
+ * It needs no net_init(). */
 int mii_wifi_mac(uint8_t mac[6]);
 /* A new creation ID on m, from this Wii's clock and Wi-Fi MAC. Each call
  * gives a new ID, even within the same 4 seconds. */

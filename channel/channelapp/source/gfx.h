@@ -18,8 +18,19 @@ typedef enum {
 
 typedef enum {
 	GFXE_GRADIENT,
-	GFXE_TEXTURE
+	GFXE_TEXTURE,
+	GFXE_DRAW
 } gfx_entity_type;
+
+// Where a GFXE_DRAW entity draws itself: its w x h in EFB pixels, the
+// depths HBC's own drawing has around it (a thin band just in front of
+// where a sprite at its z would be), and its width over its height as the
+// TV shows it.
+typedef struct {
+	f32 x, y, w, h;
+	f32 z_near, z_far;
+	f32 aspect;
+} gfx_rect;
 
 typedef struct {
 	gfx_entity_type type;
@@ -35,6 +46,13 @@ typedef struct {
 			gfx_tex_type type;
 			GXTexObj obj;
 		} texture;
+
+		// Draws with its own GX state inside the rectangle; HBC's state is
+		// put back afterwards (gfx_restore()).
+		struct {
+			void (*fn) (void *ctx, const gfx_rect *r);
+			void *ctx;
+		} draw;
 	};
 } gfx_entity;
 
@@ -73,6 +91,7 @@ extern u16 view_height, view_width;
 void gfx_init_video (void);
 void gfx_init (void);
 void gfx_deinit (void);
+void gfx_restore (void);
 
 void gfx_get_efb_size(u16 *x, u16 *y);
 // The video mode HBC set up, for the HOME overlay (home.c).
@@ -93,6 +112,9 @@ void gfx_qe_entity (gfx_queue_entry *entry, gfx_entity *entity, f32 x, f32 y,
 void gfx_frame_start (void);
 void gfx_frame_push (const gfx_queue_entry *entries, int count);
 void gfx_frame_end (void);
+#ifdef HBC_DIAG_GPU
+void gfx_diag_token (u16 token);
+#endif
 
 #endif
 

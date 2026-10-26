@@ -25,6 +25,8 @@
 #include "controls.h"
 #include "gfx.h"
 #include "loader.h"
+#include "miires.h"
+#include "avatar.h"
 #include "panic.h"
 #include "title.h"
 #include "xml.h"
@@ -50,6 +52,19 @@ static void pick(void *user) {
 	picked = (home_action) (u32) user;
 }
 
+// Save Mii faces: a button without HBC_AGENT_ITEM_CLOSE runs while the
+// overlay is still up, so its toast can say how the copy went (a second or
+// two; the overlay waits). See miires.c.
+static void save_mii_faces(void *user) {
+	char msg[64];
+
+	(void) user;
+	hbc_agent_toast("Saving Mii faces...");
+	if (miires_save(msg, sizeof(msg)) >= 0)
+		avatar_reload();   // the avatar can stand now
+	hbc_agent_toast(msg);
+}
+
 // Info rows first, then buttons, which the overlay pairs two to a row.
 // HBC_AGENT_ITEM_CLOSE closes the overlay before calling pick(): every one
 // of these hands control to HBC's own screens or shutdown path, which must
@@ -63,6 +78,7 @@ static hbc_agent_item hbc_items[] = {
 	{ "Exit to System Menu", NULL, pick, (void *) HOME_SYSTEM_MENU, HBC_AGENT_ITEM_CLOSE },
 	{ "Shutdown", NULL, pick, (void *) HOME_SHUTDOWN, HBC_AGENT_ITEM_CLOSE },
 	{ "Restart network", NULL, pick, (void *) HOME_NETWORK, HBC_AGENT_ITEM_CLOSE },
+	{ "Save Mii faces", NULL, save_mii_faces, NULL, 0 },
 };
 #define BOOTMII_ITEM 4
 
@@ -168,6 +184,12 @@ void home_init(void) {
 	// when told to each frame. Keep telling it, so hbc.py and file
 	// transfers still work with the HOME menu up.
 	cfg.on_frame = signal_loader;
+#ifdef HBC_HANG_DIAG
+	// A diagnostic build: HBC's main loop stuck 6 s is reported as a hang,
+	// with its backtrace, and the agent takes the way out (view.c calls
+	// hbc_agent_alive() each frame).
+	cfg.hang_s = 6;
+#endif
 	hbc_agent_init(&cfg);
 
 	if (!bootmii_is_installed(TITLEID_BOOTMII))

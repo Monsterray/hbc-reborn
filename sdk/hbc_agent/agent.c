@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/iosupport.h>
 
@@ -73,6 +74,12 @@ static hbc_agent_config cfg;
 static lwp_t thread = LWP_THREAD_NULL;
 static u8 *stack;
 static u64 start_ticks;
+
+#define EXIT_S 15   // hbc_agent_fatal()'s exit() may take this long
+
+// Set by hbc_agent_fatal() as it calls exit(): the time by which exit() has
+// reloaded HBC, or the monitor takes the way out.
+static volatile u64 exit_by;
 static volatile bool exit_requested;
 
 // hbc_agent_stop(). Each agent thread runs while the generation it started
@@ -147,6 +154,7 @@ static devoptab_t log_dotab_err = { .name = "hbcagent", .write_r = log_write_err
 // ---- The kept log: the ring's end, in MEM2 for HBC after the reload -------
 
 static volatile bool lastlog_done;
+static u32 lastlog_why;
 
 // The app's name for a record, unless the app's crash took the pointer.
 static const char *record_name(void) {
@@ -166,6 +174,7 @@ static void lastlog_write(u32 why) {
 	if (lastlog_done)
 		return;
 	lastlog_done = true;
+	lastlog_why = why;
 	memset(b, 0, sizeof(*b));
 	b->magic = HBC_LASTLOG_MAGIC;
 	b->version = HBC_LASTLOG_VERSION;
@@ -181,6 +190,65 @@ static void lastlog_write(u32 why) {
 
 void agent_lastlog(u32 why) {
 	lastlog_write(why);
+}
+
+_Static_assert(HBC_CRASH_ADDR + sizeof(hbc_crash_block) <= HBC_LASTLOG_ADDR,
+			   "the crash block runs into the kept log");
+
+// The Wii's clock in seconds, for the crash block's reset_s. The time base
+// starts over at a reset, so it is anchored to the RTC (time()) once, at
+// hbc_agent_init(); the way out, with interrupts off, reads only the time base.
+static u32 clock_base;
+
+static u32 clock_s(void) {
+	return clock_base + (u32) ticks_to_secs(gettime());
+}
+
+// way_out.c, with interrupts off: the step into the log ring (no stdout:
+// libogc's IPC is not to be used now), the crash block's way out (after its
+// version 2 check, which it leaves alone) and the kept log. A reset also
+// records when, for the next agent's reset-loop guard.
+void agent_way_out_note(u32 way, const char *text) {
+	hbc_crash_block *b = (hbc_crash_block *) HBC_CRASH_ADDR;
+
+	agent_log_raw(text, strlen(text));
+	if (b->magic == HBC_CRASH_MAGIC && b->version == HBC_CRASH_VERSION &&
+			b->check == hbc_crash_check(b)) {
+		b->way_magic = HBC_CRASH_WAY_MAGIC;
+		b->way_out = way;
+		if (way == HBC_WAY_RESET || way == HBC_WAY_STM_RESET)
+			b->reset_s = clock_s();
+		b->way_check = hbc_crash_way_check(b);
+		DCFlushRange(b, sizeof(*b));
+	}
+	if (lastlog_done) {
+		lastlog_done = false;
+		lastlog_write(lastlog_why);
+	}
+}
+
+// The reset-loop guard. A crash block that outlived a reset the last agent
+// chose is still there when the app the console booted next starts (HBC
+// takes it as it starts, so this is an autoboot into another agent app):
+// if that reset was under 10 minutes ago, this agent tries no reset of its
+// own, so a Wii whose autoboot wedges at once stops instead of looping.
+// Read at hbc_agent_init(), before the app's MEM2 may cover the block.
+static bool reset_recent;
+
+static void note_last_reset(void) {
+	const hbc_crash_block *b = (const hbc_crash_block *) HBC_CRASH_ADDR;
+	u32 now = clock_s();
+
+	DCInvalidateRange((void *) b, sizeof(*b));
+	reset_recent = b->magic == HBC_CRASH_MAGIC && b->version == HBC_CRASH_VERSION &&
+				   b->check == hbc_crash_check(b) && b->way_magic == HBC_CRASH_WAY_MAGIC &&
+				   b->way_check == hbc_crash_way_check(b) &&
+				   (b->way_out == HBC_WAY_RESET || b->way_out == HBC_WAY_STM_RESET) &&
+				   now - b->reset_s < 600;
+}
+
+bool agent_reset_recently(void) {
+	return reset_recent;
 }
 
 static void lastlog_at_exit(void) {
@@ -847,6 +915,12 @@ void hbc_agent_fatal(u32 code, const char *fmt, ...) {
 	va_start(ap, fmt);
 	fatal_record(code, fmt, ap, (u32) __builtin_return_address(0));
 	va_end(ap);
+	// exit() flushes SD and USB and shuts libogc down, all through IOS. If
+	// a device has wedged it, it never returns: the monitor then leaves the
+	// way out (watchdog(), exit_by). No monitor (before hbc_agent_init()):
+	// exit() alone, as before.
+	if (agent_monitor_start() || agent_monitor_running())
+		exit_by = gettime() + secs_to_ticks(EXIT_S);
 	exit(0);
 }
 
@@ -856,7 +930,7 @@ void hbc_agent_fatal_now(u32 code, const char *fmt, ...) {
 	va_start(ap, fmt);
 	fatal_record(code, fmt, ap, (u32) __builtin_return_address(0));
 	va_end(ap);
-	__reload();
+	agent_leave();
 }
 
 // ---- The monitor: the hang watchdog and the safety tools' checks ----------
@@ -951,6 +1025,17 @@ static void *watchdog(void *arg) {
 		if (my != gen)
 			break;
 		safety_poll(true);
+		if (exit_by && gettime() > exit_by) {
+			// hbc_agent_fatal()'s exit() is stuck (a device unmount waiting
+			// on a wedged IOS). The crash block and kept log are written.
+			static const char text[] = "agent: exit() did not finish in 15 s: the way out\n";
+			u32 level;
+
+			_CPU_ISR_Disable(level);
+			(void) level;
+			agent_log_raw(text, sizeof(text) - 1);
+			agent_leave();
+		}
 		if (!alive_thread)
 			continue;   // not armed: the safety checks alone
 		if (hold_count > 0 || agent_overlay_open) {
@@ -989,7 +1074,7 @@ static void *watchdog(void *arg) {
 			safety_on_death();
 			lastlog_write(HBC_LASTLOG_HANG);
 			(void) level;
-			__reload();
+			agent_leave();
 		}
 	}
 	monitor_ended = my;
@@ -1150,6 +1235,8 @@ s32 hbc_agent_init(const hbc_agent_config *config) {
 	if (!cfg.exit_grace_ms)
 		cfg.exit_grace_ms = 5000;
 	start_ticks = gettime();
+	clock_base = (u32) time(NULL) - (u32) ticks_to_secs(start_ticks);
+	note_last_reset();
 	exit_requested = false;
 	agent_listen_enabled = true;
 	state = AGENT_RUNNING;
