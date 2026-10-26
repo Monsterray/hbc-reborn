@@ -1492,11 +1492,12 @@ hbc.py mii-faces
 
 The same as HOME > HBC > Save Mii faces: HBC copies the Mii face resource
 (RFL_Res.dat, the models and textures every Mii is drawn with) out of the
-Wii Menu to sd:/mii/RFL_Res.dat, for apps that draw Miis. The file is
-Nintendo's and comes from your own Wii: keep it on your SD card, and never
-ship it with an app. An app cannot read the Wii Menu's copy itself; HBC
-lifts IOS's NAND permission check for the read (it needs HBC's own IOS,
-with AHBPROT) and puts it back. HBC 1.10.20 on.""",
+Wii Menu, and the Mii Channel's bodies (maleBody.brres, femaleBody.brres:
+skeleton, meshes, animations; HBC 1.10.26 on), to sd:/mii, for apps that
+draw Miis. The files are Nintendo's and come from your own Wii: keep them
+on your SD card, and never ship them with an app. An app cannot read
+them itself; HBC lifts IOS's NAND permission check for the reads (it
+needs HBC's own IOS, with AHBPROT) and puts it back. HBC 1.10.20 on.""",
     "transfer-style": """\
 hbc.py transfer-style [scroll|bounce|truncate]
 

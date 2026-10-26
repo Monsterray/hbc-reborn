@@ -24,7 +24,14 @@ static u32 *xfb;
 static GXRModeObj *vmode;
 
 static float px_width, px_height;
-static u8 *gp_fifo;
+// The GPU's command FIFO, in .bss: MEM1. Taken from the heap, it went to
+// MEM2 once MEM1's part ran out: HBC 1.10.21's 76 KiB more .bss did that
+// (sdk/mii linked in). Fed from MEM2, the bench Wii's GPU stalled at random,
+// seconds to minutes into a run, more often the more each frame was broken
+// up (the avatar, or GX_DrawDone mid-frame), HBC stuck in GX_DrawDone.
+// Dolphin never did. 1.10.20 with nothing but that much more .bss hung the
+// same way; with the FIFO here, the same stress ran clean.
+static u8 gp_fifo[DEFAULT_FIFO_SIZE] ATTRIBUTE_ALIGN(32);
 
 static Mtx view;
 
@@ -103,7 +110,6 @@ void gfx_init_video (void) {
 	VIDEO_SetBlack (TRUE);
 	VIDEO_Flush ();
 
-	gp_fifo = (u8 *) pmemalign (32, DEFAULT_FIFO_SIZE);
 
 	for (i = 0; i < 4; ++i)
 		VIDEO_WaitVSync();
@@ -293,6 +299,9 @@ static void get_origin (s16 *x, s16 *y, s16 *z, u8 m) {
 	}
 }
 
+static u16 scissor[4];   // as set_scissor() last set it
+static void frame_state (void);
+
 static void set_scissor (const gfx_queue_entry *entry) {
 	s16 x, y, z, w, h;
 
@@ -306,8 +315,12 @@ static void set_scissor (const gfx_queue_entry *entry) {
 		h = roundf ((float) entry->scissor.h * px_height);
 
 		GX_SetScissor (x, y, w, h);
+		scissor[0] = x; scissor[1] = y; scissor[2] = w; scissor[3] = h;
 	} else {
 		GX_SetScissor (0, 0, vmode->fbWidth, vmode->efbHeight);
+		scissor[0] = scissor[1] = 0;
+		scissor[2] = vmode->fbWidth;
+		scissor[3] = vmode->efbHeight;
 	}
 }
 
@@ -435,8 +448,49 @@ static void plot_texture (const gfx_queue_entry *entry, Mtx v) {
 	GX_End ();
 }
 
-// After something drew with its own GX state between frames (the avatar's
-// offscreen Mii, avatar.c): HBC's pixel format, viewport, copies, projection,
+// A GFXE_DRAW entity: where plot_texture() would put a sprite of its size,
+// through HBC's view and orthographic projection, in EFB pixels, with a
+// depth band just in front of that sprite's depth; it draws itself there
+// with its own GX state, and HBC's is put back.
+static void plot_draw (const gfx_queue_entry *entry, Mtx v) {
+	const gfx_entity *e = entry->entity.entity;
+	f32 xf = origin_current.x + entry->entity.coords.x;
+	f32 yf = origin_current.y - entry->entity.coords.y;
+	f32 zf = origin_current.z + entry->entity.coords.z;
+	guVector c[2] = { { xf, yf, zf }, { xf + e->w, yf + e->h, zf } }, ev;
+	f32 px[2], py[2], depth = 0;
+	Mtx44 p;
+	gfx_rect r;
+	int i;
+
+	guOrtho (p, view_height / 2, -(view_height / 2),
+			 -(view_width / 2), view_width / 2, 100, 1000);
+	for (i = 0; i < 2; ++i) {
+		guVecMultiply (v, &c[i], &ev);
+		px[i] = (p[0][0] * ev.x + p[0][3] + 1) / 2 * vmode->fbWidth;
+		py[i] = (1 - (p[1][1] * ev.y + p[1][3])) / 2 * vmode->efbHeight;
+		depth = 1 + p[2][2] * ev.z + p[2][3];   // GX: far + (far - near) * z
+	}
+	r.x = px[0] < px[1] ? px[0] : px[1];
+	r.y = py[0] < py[1] ? py[0] : py[1];
+	r.w = fabsf (px[1] - px[0]);
+	r.h = fabsf (py[1] - py[0]);
+	if (r.w < 1 || r.h < 1 || r.x >= vmode->fbWidth || r.y >= vmode->efbHeight ||
+			r.x + r.w <= 0 || r.y + r.h <= 0)
+		return;
+	r.z_far = depth < 0 ? 0 : depth > 1 ? 1 : depth;
+	r.z_near = r.z_far > 0.0005f ? r.z_far - 0.0005f : 0;
+	r.aspect = (f32) e->w / e->h;
+
+	e->draw.fn (e->draw.ctx, &r);
+
+	gfx_restore ();
+	frame_state ();
+	GX_SetScissor (scissor[0], scissor[1], scissor[2], scissor[3]);
+}
+
+// After something drew with its own GX state (a GFXE_DRAW entity, such as
+// the avatar's Mii, avatar.c): HBC's pixel format, viewport, copies, projection,
 // vertex format and an unlit colour channel again. gfx_frame_start sets the
 // rest.
 void gfx_restore (void) {
@@ -472,19 +526,26 @@ void gfx_restore (void) {
 
 // higher level frame functions
 
-void gfx_frame_start (void) {
-	origin_stack_size = 0;
-	origin_current.x = -view_width / 2;
-	origin_current.y = view_height / 2;
-	origin_current.z = VIEW_Z_ORIGIN;
+#ifdef HBC_DIAG_GPU
+// Draw-sync tokens through the frame (BP 0x47: the pixel engine's token
+// register, no interrupt): 0x1001/0x1002 around the avatar's capture, then
+// 0x8000 + n after the frame's nth entry. A hang report reads which step
+// the GPU last finished; seen[] says what came next.
+static u16 diag_n;
+static struct { const void *pixels; u16 w, h; u8 kind, tex; } seen[512];
 
-	GX_InvVtxCache ();
-	GX_InvalidateTexAll ();
+void gfx_diag_token (u16 token) {
+	*(volatile u8 *) 0xCC008000 = 0x61;
+	*(volatile u32 *) 0xCC008000 = 0x47000000 | token;
+}
+#endif
 
+// The TEV, texture coordinate and blend state every entity draws with.
+static void frame_state (void) {
 	GX_SetNumChans (1);
 	GX_SetNumTexGens (1);
 	GX_SetTexCoordGen (GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
-
+	GX_SetNumTevStages (1);
 	GX_SetTevOp (GX_TEVSTAGE0, GX_MODULATE);
 	GX_SetTevOrder (GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
 
@@ -492,8 +553,37 @@ void gfx_frame_start (void) {
 						GX_LO_NOOP);
 }
 
+void gfx_frame_start (void) {
+#ifdef HBC_DIAG_GPU
+	diag_n = 0;
+	gfx_diag_token (0x8000);
+#endif
+	origin_stack_size = 0;
+	origin_current.x = -view_width / 2;
+	origin_current.y = view_height / 2;
+	origin_current.z = VIEW_Z_ORIGIN;
+
+	GX_InvVtxCache ();
+	GX_InvalidateTexAll ();
+	frame_state ();
+	scissor[0] = scissor[1] = 0;
+	scissor[2] = vmode->fbWidth;
+	scissor[3] = vmode->efbHeight;
+}
+
 void gfx_frame_push (const gfx_queue_entry *entries, int count) {
 	while (count--) {
+#ifdef HBC_DIAG_GPU
+		if (entries->type == GFXQ_ENTITY && diag_n < 512) {
+			const gfx_entity *e = entries->entity.entity;
+
+			seen[diag_n].pixels = e->type == GFXE_TEXTURE ? e->texture.pixels : NULL;
+			seen[diag_n].w = e->w;
+			seen[diag_n].h = e->h;
+			seen[diag_n].kind = e->type;
+			seen[diag_n].tex = e->type == GFXE_TEXTURE ? e->texture.type : 0;
+		}
+#endif
 		switch (entries->type) {
 		case GFXQ_ORIGIN:
 			if (entries->origin.coords) {
@@ -531,6 +621,10 @@ void gfx_frame_push (const gfx_queue_entry *entries, int count) {
 			case GFXE_TEXTURE:
 				plot_texture (entries, view);
 				break;
+
+			case GFXE_DRAW:
+				plot_draw (entries, view);
+				break;
 			}
 		case GFXQ_NULL:
 			break;
@@ -538,12 +632,80 @@ void gfx_frame_push (const gfx_queue_entry *entries, int count) {
 			gprintf("Unknown queue entry type 0x%x\n", entries->type);
 			break;
 		}
+#ifdef HBC_DIAG_GPU
+		if (entries->type == GFXQ_ENTITY)
+			gfx_diag_token (0x8000 | ++diag_n);
+#endif
 		entries++;
 	}
 }
 
+#ifdef HBC_DIAG_GPU
+// The draw-done wait, timed: if the GPU has not said it finished in 2 s,
+// print what the command processor, pixel engine and PI FIFO hold (the
+// hang report keeps the last output), again 2 s on, then wait as before
+// for the agent's hang watchdog. GP idle with the FIFO drained means the
+// GPU finished and the CPU missed it; anything else, the GPU stopped.
+static volatile bool frame_drawn;
+
+static void frame_drawn_cb (void) {
+	frame_drawn = true;
+}
+
+static void gpu_regs (const char *when) {
+	volatile u16 *cp = (volatile u16 *) 0xCC000000;
+	volatile u16 *pe = (volatile u16 *) 0xCC001000;
+	volatile u32 *pi = (volatile u32 *) 0xCC003000;
+	u32 rd = (cp[0x1c] | (cp[0x1d] << 16)) & ~31u, i;
+	volatile u32 *f = (volatile u32 *) ((rd & 0x1fffffff) | 0xc0000000);
+
+	printf ("gpu %s: cp sr %04x cr %04x base %04x%04x end %04x%04x hi %04x%04x lo %04x%04x\n",
+			when, cp[0], cp[1], cp[0x11], cp[0x10], cp[0x13], cp[0x12], cp[0x15], cp[0x14],
+			cp[0x17], cp[0x16]);
+	printf ("gpu %s: dist %04x%04x wr %04x%04x rd %08x bp %04x%04x pe %04x tok %04x pi %08x/%08x %08x-%08x wr %08x\n",
+			when, cp[0x19], cp[0x18], cp[0x1b], cp[0x1a], rd, cp[0x1f], cp[0x1e], pe[5], pe[7],
+			pi[0], pi[1], pi[3], pi[4], pi[5]);
+	if (pe[7] & 0x8000) {
+		u16 n = pe[7] & 0x7fff;
+
+		printf ("gpu %s: finished entry %u of %u\n", when, n, diag_n);
+		for (i = n; i < n + 2 && i < diag_n && i < 512; ++i)
+			printf ("gpu %s: entry %u: kind %u tex %u %ux%u pixels %p\n", when, (unsigned) i + 1,
+					seen[i].kind, seen[i].tex, seen[i].w, seen[i].h, seen[i].pixels);
+	}
+	if (rd >= 0x40)
+		for (i = 0; i < 2; ++i)
+			printf ("gpu %s: fifo %08x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+					when, rd - 64 + 32 * i, f[8 * i - 16], f[8 * i - 15], f[8 * i - 14],
+					f[8 * i - 13], f[8 * i - 12], f[8 * i - 11], f[8 * i - 10], f[8 * i - 9]);
+}
+
+static void frame_wait (void) {
+	u64 since;
+	int n = 0;
+
+	frame_drawn = false;
+	GX_SetDrawDoneCallback (frame_drawn_cb);
+	GX_SetDrawDone ();
+	since = gettime ();
+	while (!frame_drawn) {
+		usleep (500);
+		if (diff_msec (since, gettime ()) >= 2000 * (n + 1)) {
+			gpu_regs (n ? "4 s" : "2 s");
+			if (++n == 2)
+				break;
+		}
+	}
+	GX_WaitDrawDone ();
+}
+#endif
+
 void gfx_frame_end (void) {
+#ifdef HBC_DIAG_GPU
+	frame_wait ();
+#else
 	GX_DrawDone ();
+#endif
 
 #ifdef ENABLE_SCREENSHOTS
 	if (efb_buffer) {

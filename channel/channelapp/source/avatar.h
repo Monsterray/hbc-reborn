@@ -30,6 +30,8 @@ typedef struct {
 	char name[32];
 	int slot;
 	u32 frame_us, interval_us, frames;
+	u32 bad;              // frames whose posed body had a wild vertex (HBC_DIAG_GPU)
+	char bad_at[96];      // the first: animation, frame, vertex, value
 } avatar_info;
 
 void avatar_get_info(avatar_info *info);

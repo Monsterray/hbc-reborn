@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """HOME > HBC > Save Mii faces on a Wii, as a queue job: this tree's HBC
 (channel DOL, through the installed HBC) copies the Wii Menu's RFL_Res.dat
-to sd:/mii/RFL_Res.dat (`hbc.py mii-faces`, the button's request), twice;
+to sd:/mii/RFL_Res.dat and the Mii Channel's maleBody.brres and
+femaleBody.brres beside it (`hbc.py mii-faces`, the button's request), twice;
 the copy is fetched to the job's run folder, checked with tools/mii_res.py
 and dumped there (OBJ, PNG). Then tests/mii_res_probe shows IOS's NAND
 permission check is back: an app is refused /shared1 again.
@@ -59,6 +60,17 @@ def main():
                 mii_res.dump(data, out / "dump")
             except (mii_res.ResError, ValueError) as exc:
                 failed.append(f"the copy does not parse: {exc}")
+            # The Mii Channel's bodies, saved beside the faces (HBC 1.10.26 on).
+            for name in ("maleBody.brres", "femaleBody.brres"):
+                try:
+                    body = hbc.get_file(wii, f"sd:/mii/{name}")
+                except hbc.HBCError as exc:
+                    failed.append(f"{name}: {exc}")
+                    continue
+                (out / name).write_bytes(body)
+                print(f"{name}: {len(body)} bytes, sha1 {hashlib.sha1(body).hexdigest()}", flush=True)
+                if body[:4] != b"bres" or len(body) < 100000:
+                    failed.append(f"{name} is not a body model")
     finally:
         # The probe, from this HBC: ends in the installed one through the stub.
         wm.launch(PROBE)

@@ -10,6 +10,7 @@
 
 import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -103,7 +104,7 @@ class MiiDrawTest(unittest.TestCase):
         cls.exe = cls.dir / ("miidraw_host.exe" if os.name == "nt" else "miidraw_host")
         subprocess.run([CC, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
                         "-D_CRT_SECURE_NO_WARNINGS", "-DMII_NO_OGC", "-I", str(root / "sdk/mii"),
-                        str(root / "sdk/mii/mii.c"), str(root / "sdk/mii/miidraw.c"),
+                        str(root / "sdk/mii/mii.c"), str(root / "sdk/mii/miidraw.c"), str(root / "sdk/mii/miibody.c"),
                         str(root / "tests/miidraw_host/main.c"), "-o", str(cls.exe)],
                        check=True, env=dict(os.environ, TMP=cls.tmp.name, TEMP=cls.tmp.name))
 
@@ -153,6 +154,80 @@ class MiiDrawTest(unittest.TestCase):
             r, _ = self.run_host(res)
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertTrue(r.stdout.startswith("res: ") or r.stdout.count("model: "), r.stdout)
+
+    def run_body(self, body, anim=None, frame=0, **extra):
+        res = self.dir / "RFL_Res.dat"
+        res.write_bytes(resource())
+        env = dict(os.environ, MII_BODY=str(body), MII_FRAME=str(frame), **extra)
+        if anim:
+            env["MII_ANIM"] = anim
+        out = self.dir / "out"
+        out.mkdir(exist_ok=True)
+        return subprocess.run([str(self.exe), str(res), "-d", "0", "64", "64", "5", str(out)],
+                              capture_output=True, text=True, timeout=120, env=env)
+
+    def test_body_refused(self):
+        # Not a BRRES, a BRRES header with nothing behind it, random bytes.
+        for data in (b"not a model at all" * 10, b"bres\xfe\xff\0\0" + bytes(56),
+                     b"bres\xfe\xff\0\0\0\0\x10\0\0\x10\0\x01" + os.urandom(4000)):
+            body = self.dir / "body.brres"
+            body.write_bytes(data)
+            r = self.run_body(body)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("body: ", r.stdout)
+
+    @unittest.skipUnless(os.environ.get("MII_REAL_BODIES"),
+                         "set MII_REAL_BODIES to a folder with your own maleBody.brres and femaleBody.brres")
+    def test_real_bodies(self):
+        folder = pathlib.Path(os.environ["MII_REAL_BODIES"])
+        for name in ("maleBody.brres", "femaleBody.brres"):
+            body = folder / name
+            r = self.run_body(body)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            self.assertIn("body: 20 bones", r.stdout)
+            anims = [line for line in r.stdout.splitlines() if line.startswith("anim ")]
+            self.assertGreaterEqual(len(anims), 19, r.stdout)
+            # HBC's two animations at thousands of frames: every posed
+            # vertex finite and near the body (the GPU is fed them as they
+            # are). Not every animation: bodySlap_03 throws the body 2737
+            # units.
+            for anim in ("bodyWait", "bodyGreeting"):
+                r = self.run_body(body, anim, MII_SWEEP="1")
+                self.assertEqual(r.returncode, 0, r.stdout)
+                m = re.search(r"sweep: (\d+) poses, (\d+) non-finite, largest position ([\d.]+), "
+                              r"normal ([\d.]+)", r.stdout)
+                self.assertTrue(m, r.stdout)
+                self.assertEqual(int(m.group(2)), 0, (anim, m.group(0)))
+                self.assertLess(float(m.group(3)), 300, (anim, m.group(0)))
+                self.assertLess(float(m.group(4)), 1.01, (anim, m.group(0)))
+            for anim, frame in (("bodyWait", 37), ("bodyGreeting", 45), ("bodyWalk", 10), ("bodyRun", 7)):
+                r = self.run_body(body, anim, frame)
+                self.assertEqual(r.returncode, 0, (anim, r.stdout))
+            # Idle stays put: through bodyWait no vertex of the shirt or
+            # trousers strays far from where it starts (7.9 at most). Read
+            # raw, the right ankle's X (179.1, -179.2, 179.1 degrees) swung
+            # the foot a whole turn: 22.6.
+            first, worst = None, 0
+            for frame in range(0, 120, 4):
+                r = self.run_body(body, "bodyWait", frame)
+                self.assertEqual(r.returncode, 0, r.stdout)
+                vs, on = [], False
+                for line in (self.dir / "out" / "mii.obj").read_text().splitlines():
+                    if line.startswith("o "):
+                        on = line.startswith("o body_")
+                    elif on and line.startswith("v "):
+                        vs.append(tuple(map(float, line.split()[1:4])))
+                if first is None:
+                    first = vs
+                worst = max(worst, max(sum((a - b) ** 2 for a, b in zip(p, q)) ** 0.5 for p, q in zip(first, vs)))
+            self.assertLess(worst, 12, (name, worst))
+            # Cut short anywhere: refused, never a crash.
+            data = body.read_bytes()
+            cut = self.dir / "cut.brres"
+            for size in range(64, len(data), len(data) // 23):
+                cut.write_bytes(data[:size])
+                r = self.run_body(cut)
+                self.assertIn(r.returncode, (0, 1), (size, r.stdout, r.stderr))
 
     @unittest.skipUnless(os.environ.get("MII_REAL_RES") and os.environ.get("MII_REAL_DB"),
                          "set MII_REAL_RES and MII_REAL_DB to your own files")

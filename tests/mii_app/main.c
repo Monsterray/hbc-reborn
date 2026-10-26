@@ -24,7 +24,8 @@
 //                                  birthday=M/D, mingle=0|1
 //   mii_app.dol draw [SLOT]        sdk/mii's drawing: the Mii in SLOT (or the
 //                                  next one there) built from sd:/mii/
-//                                  RFL_Res.dat, its icon (normal, smiling)
+//                                  RFL_Res.dat, its icon (normal, smiling;
+//                                  and 256 px)
 //                                  and a full-body capture, saved as
 //                                  sd:/mii_test/*.rgba and checked
 //   mii_app.dol remote-rewrite     write Wii Remote 1's own Miis back
@@ -634,6 +635,21 @@ static void draw_test(int slot) {
 		say("%s: %d of %d pixels drawn, %d in the corners\n", name, n, 96 * 96, corners);
 		result("an icon with a head in it and clear corners",
 			   n > 96 * 96 / 4 && !corners ? MII_OK : MII_E_VERIFY);
+	}
+	/* A large one, as an app would show a Mii picked from a list. */
+	{
+		u8 *big = memalign(32, 256 * 256 * 4);
+
+		r = big ? mii_icon(&model, MII_EXPR_SMILE, 256, (GXColor) { 0, 0, 0, 0 }, big) : MII_E_MEM;
+		GX_DrawDone();
+		result("mii_icon 256", r);
+		if (big) {
+			n = save_rgba8("icon_large", big, 256, 256, &corners);
+			say("icon_large: %d of %d pixels drawn, %d in the corners\n", n, 256 * 256, corners);
+			result("a large icon with a head in it and clear corners",
+				   n > 256 * 256 / 4 && !corners ? MII_OK : MII_E_VERIFY);
+			free(big);
+		}
 	}
 	memset(&pose, 0, sizeof(pose));
 	pose.arm_raise[0] = 2.3f;

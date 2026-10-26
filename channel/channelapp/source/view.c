@@ -17,6 +17,7 @@
 #include "bubbles.h"
 #include "panic.h"
 #include "avatar.h"
+#include "../../../sdk/hbc_agent.h"
 #include "view.h"
 
 #define FOCUS_FLAGS (WF_VISIBLE | WF_ENABLED | WF_FOCUSABLE)
@@ -394,6 +395,9 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 
 	// The avatar draws its Mii offscreen first, while the EFB is free
 	// (avatar.c), and draws as a sprite over the background and bubbles.
+#ifdef HBC_HANG_DIAG
+	hbc_agent_alive ();
+#endif
 	av = avatar_frame (wm, x, y, (bd & PADS_A) != 0);
 
 	gfx_frame_start ();

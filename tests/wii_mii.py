@@ -18,6 +18,9 @@
   hidden    a random Mii into the hidden database and out again: afterwards
             the table and slots are as before, and only that Mii's 0x40 bytes
             of data may differ (RFL leaves them too)
+  draw [SLOT] sdk/mii's drawing: the Mii's icons (96 and 256 px, normal and
+            smiling) and a full-body capture, checked by mii_app and saved
+            as PNGs in the run folder (needs sd:/mii/RFL_Res.dat)
   remote-add ID / remote-remove ID
             copy the database's Mii with that ID to Wii Remote 1, or take it
             off; written and read back
@@ -29,7 +32,7 @@
             put a backup's RFL_DB.dat back (tests/nandput: same size only,
             read back and compared), then compare a new copy with it
 
-usage: tests/wii_mii.py backup | check | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
+usage: tests/wii_mii.py backup | check | draw [SLOT] | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
 queue: wiibench.py add --wii dev --name mii-STEP --cwd REPO --timeout 1200 -- C:/Python312/python.exe tests/wii_mii.py STEP
 """
 
@@ -43,6 +46,8 @@ import sys
 root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tests"))
 import wii_mboard as wm  # noqa: E402  (bench_wii, tool, launch, snapshot, check)
+sys.path.insert(0, str(root / "tools"))
+import mii_res  # noqa: E402  (png)
 
 APP = root / "tests" / "mii_app" / "mii_app.dol"
 NANDPUT = root / "tests" / "nandput" / "nandput.dol"
@@ -150,6 +155,20 @@ def main():
         ok = wm.check(ok, app_ok(run_app(out, "edit", *sys.argv[2:], label="edit")), "mii_app edit")
         ok2, after = db_copy(out, "after")
         ok = slot_change(ok and ok2, before, after)
+    elif step == "draw":
+        # sdk/mii's drawing on the Wii: icons (96 and 256 px) and a capture,
+        # from sd:/mii/RFL_Res.dat (Save Mii faces), as PNGs in the run folder.
+        ok = app_ok(run_app(out, "draw", *sys.argv[2:3], label="draw"))
+        for name in ("icon_normal", "icon_smile", "icon_large", "body"):
+            raw = out / f"{name}.rgba"
+            if wm.tool("get", f"sd:/mii_test/{name}.rgba", str(raw), check=False).returncode:
+                ok = False
+                continue
+            head, body = raw.read_bytes().split(b"\n", 1)
+            w, h = map(int, head.split()[:2])
+            rows = [[tuple(body[4 * (y * w + x):4 * (y * w + x) + 4]) for x in range(w)] for y in range(h)]
+            (out / f"{name}.png").write_bytes(mii_res.png(w, h, rows))
+            print(f"{name}.png: {w} x {h}", flush=True)
     elif step == "remote-rewrite":
         ok = app_ok(run_app(out, step, label=step))
         wm.tool("get", "sd:/mii_test/remote_backup.bin", str(out / "remote_backup.bin"), check=False)

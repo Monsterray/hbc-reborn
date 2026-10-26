@@ -19,6 +19,11 @@ static const u8 perm_check[] = { 0x42, 0x8B, 0xD0, 0x01, 0x25, 0x66 };
 
 static mutex_t lock = LWP_MUTEX_NULL;
 static int users;
+// MEM2_PROT as it was before the first unlock: put back with the check. Left
+// at 2 (the PPC may write IOS's memory), it outlived HBC until IOS reloaded,
+// and on the bench Wii HBC 1.10.22 with its avatar then hung 20 to 50 s into
+// the next run (twice, right after Save Mii faces; never after a power cycle).
+static u16 mem2_prot;
 
 bool nand_ahbprot(void) {
 	return read32(0x0d800064) == 0xffffffff;
@@ -32,6 +37,8 @@ static int patch(bool lifted) {
 
 	if (!nand_ahbprot() || (u32) p < 0x93000000 || (u32) p >= 0x94000000)
 		return 0;
+	if (lifted)
+		mem2_prot = read16(MEM2_PROT);
 	write16(MEM2_PROT, 2);
 	for (; p < end - sizeof(perm_check); ++p) {
 		if (p[0] == perm_check[0] && p[1] == perm_check[1] && p[2] == from &&
@@ -42,6 +49,8 @@ static int patch(bool lifted) {
 			++n;
 		}
 	}
+	if (!lifted)
+		write16(MEM2_PROT, mem2_prot);
 	return n;
 }
 

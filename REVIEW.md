@@ -161,6 +161,75 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.10.26: the Mii Channel's own bodies, and HBC's GX FIFO back in MEM1
+
+The 1.10.21 body was this library's own and did not look like a Mii. The
+Wii's own bodies are on every Wii, in the Mii Channel. And from 1.10.21 on,
+HBC hung its GPU on a real Wii: not the avatar, but where the GX FIFO was.
+
+- **Found** (docs/research/mii-bodies.md, section 3): the Mii Channel's
+  `Channel/Character.szs` holds `maleBody.brres` and `femaleBody.brres`:
+  a 20-bone skeleton, two skinned meshes (shirt with hands, trousers) and
+  21 CHR0 v3 animations. No decompilation shows how a Wii title scales a
+  body; the per-bone rules reversed from the Wii U/Switch fit this
+  skeleton (each bone long by height, thick by build, along its own X).
+- **Save Mii faces** now also copies the two bodies to `sd:/mii`
+  (`miires.c`: the Mii Channel's TMD, its content's U8, Yaz0, U8).
+- **`sdk/mii/miibody.c`**: BRRES/MDL0/CHR0 read with every offset checked;
+  Hermite keys in both rotation formats this file uses (format 1, used by
+  two animations, is skipped); rotations the short way round (the right
+  ankle in bodyWait, 179.1 to -179.2 degrees, spun the foot a whole turn:
+  the user saw it); per-bone scale; skinning on the CPU, the posed
+  triangles sent through the FIFO; the head on the head bone.
+- **Drawn in place**: `mii_view` (new) frames the Mii for any viewport;
+  HBC's avatar is a `GFXE_DRAW` entity (gfx.c `plot_draw`) that draws the
+  Mii into HBC's frame in its rectangle and a thin band of depth, so it
+  stands under the app list and dialogs with no texture capture, copy or
+  pixel-format change. `mii_capture` stays for icons, with a
+  `GX_PixModeSync()` after each pixel-format change.
+- **HBC's avatar** plays the body's bodyWait and bodyGreeting (the wave),
+  smaller on screen (128 x 208).
+- **The GPU hang, and its cause.** From 1.10.21 the bench Wii froze every
+  few minutes with the avatar on (10 s to 300 s in; HBC's main thread in
+  `GX_DrawDone`; never in Dolphin). Changing how the Mii was drawn
+  (indexed arrays, display lists, `GX_Begin` vertices, no texgen for the
+  untextured body, a sync after each pixel-format change, drawing in
+  place) moved the odds but never removed it; short runs of a random hang
+  misled more than once. What settled it:
+  - The hang watchdog (`HBC_HANG_DIAG`: 6 s, crash report, back to HBC)
+    and a GPU dump (`HBC_DIAG_GPU`: CP, PE and PI FIFO registers 2 s and
+    4 s into a stuck `GX_DrawDone`, draw-sync tokens per frame entry):
+    the GPU had stopped itself, partway through HBC's own quads after the
+    avatar, the draw-done never reaching the pixel engine.
+  - On the Wii, every posed vertex checked each frame, and each frame
+    re-skinned with interrupts off and compared: all finite, in range,
+    identical. The data was never wrong.
+  - A stress hook made it show in seconds: 20 `GX_DrawDone` in the middle
+    of each frame hung HBC 1.10.26 with the avatar off, every run; 1.10.9
+    and 1.10.20 never. Bisected: 1.10.21 (58e878e), with the avatar off.
+    1.10.20 with nothing but 76 KiB more .bss (what linking sdk/mii added)
+    hung the same way.
+  - HBC took its 256 KiB GX FIFO from the heap; past MEM1's part it came
+    from MEM2 (0x90002020 in every dump). Now a static, 32-byte aligned
+    array in .bss: MEM1. Under the same stress, avatar on: 3 runs of 3
+    clean, where every run had hung. Then the release code (only the
+    watchdog added), avatar on, Wii body: 3 runs of 5 minutes at 60 frames
+    a second, no hang, back to HBC after each.
+- **MEM2_PROT put back.** `nandperm.c` (the play log and Save Mii faces)
+  wrote 2 to MEM2_PROT (0x0D8B420A) to patch IOS and never put it back. It
+  was the first suspect for the hang and was not its cause, but the PPC
+  could write IOS's memory until IOS reloaded; the register is now saved
+  before the first lift and restored with the check.
+- **Evidence.** `tests/test_miidraw.py`: a non-BRRES or damaged body is
+  refused; with `MII_REAL_BODIES`, both bodies load (20 bones, 19
+  animations), Wait, Greeting, Walk and Run pose, every truncation is
+  refused, and Wait stays within 12 units of its first frame (the spinning
+  foot reached 22.6), and Wait and Greeting pose finite and in range at
+  3,000 frames each. 762 truncated or byte-flipped bodies under ASan and
+  UBSan (WSL, gcc 13): no error. Dolphin: 150 s at 60 frames a second.
+  The bench Wii: faces and bodies saved in 0.7 to 0.9 s; the avatar 3
+  minutes at 60 frames a second with each body, 0.77 ms of CPU a frame.
+
 ### 1.10.24: the way out never hands a wedged IOS to the stub, and shows itself
 
 On 2026-10-25 the first real wedge reached the way out: USB Loader GX's
@@ -188,6 +257,20 @@ no time limit.
   the test bits through this tree's WAD. Not yet shown: the panel on a
   real Wii, and a real wedge coming back. Both need someone at the bench
   Wii (an IOS hang never runs unattended).
+### 1.10.22: the agent links without f_chmod and refuses a stub it can't run
+
+- `f_chmod` is weak (devfile.c): an app on libogc 3 with a FAT library of
+  its own (USB Loader GX: libcustomfat) has no FatFs and failed to link;
+  it sets attributes the whole-byte way through `FAT_setAttr`, as on
+  libogc2 and libogc 1.8.
+- The way out jumps into the reload stub only if 0x80001800 holds an
+  unconditional branch (HBC's stub starts 0x48000010). Dolphin, booting a
+  DOL directly, leaves the STUBHAXX magic with a zero word there and
+  catches the jump with its HBReload hook; with the MMU on it does not,
+  and USB Loader GX's way out ran 0x00000000. Without a stub the way out
+  launches HBC through ES.
+- Built for libogc 3, libogc2 and libogc 1.8.23; `tests/agent_app`; the
+  way-out model.
 
 ### 1.10.21: Miis drawn (sdk/mii/miidraw) and HBC's avatar
 

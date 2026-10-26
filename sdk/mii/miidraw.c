@@ -783,80 +783,105 @@ static void ellipse_profile(float (*prof)[2], int n, float y0, float ry, float r
 	}
 }
 
-/* Body proportions, head units, at the middle height and build. Feet on 0. */
-#define BODY_TORSO_TOP 62.0f
-#define BODY_SHOULDER_X 15.5f
-#define BODY_SHOULDER_Y 55.0f
-#define BODY_HIP_X 7.0f
-#define BODY_HIP_Y 24.0f
-#define BODY_ARM_LEN 25.0f
+/* Body proportions, in head units, at the middle height and build, after
+ * the Mii Channel's plaza: below the chin the body is about 2.3 heads; the
+ * shirt is a near-straight column from the shoulders to the waist, about
+ * 0.8 of the head's width; the trousers start at that same width; the legs
+ * are as long as the torso; thin arms reach mid-thigh; small round hands
+ * and feet. Feet on Y = 0. */
+#define BODY_WAIST_Y 94.0f        /* where shirt and trousers meet */
+#define BODY_WAIST_R 18.5f        /* the waist's half width, shirt and trousers alike */
+#define BODY_TORSO_TOP 158.0f
+#define BODY_CROTCH_Y 80.0f
+#define BODY_LEG_X 9.6f
+#define BODY_ARM_Y 150.0f
+#define BODY_ARM_LEN 72.0f
 
 static int make_body(mii_model *model) {
 	const mii *m = &model->m;
+	int female = m->sex == MII_FEMALE;
 	float prof[12][2];
 	uint32_t shirt = rgba(fav_colors[pick(m->fav_color, 12)]);
 	uint32_t skin = rgba(skin_colors[pick(m->face_color, 6)]);
-	/* Trousers: grey, gold for a special Mii (no MII_ID_NORMAL), as the Wii. */
-	uint32_t pants = mii_id_flags(m->id) & MII_ID_NORMAL ? 0x60606aFF : 0xC09838FF;
-	uint32_t shoe = 0x3a3a40FF;
+	/* Trousers: grey, gold for a special Mii (an ID without MII_ID_NORMAL),
+	 * as the Wii. A Mii with no ID yet is an ordinary one. */
+	uint32_t pants = !mii_id_empty(m->id) && !(mii_id_flags(m->id) & MII_ID_NORMAL) ?
+					 0xC09838FF : 0x5c5c66FF;
+	uint32_t shoe = 0x34343aFF;
 	float h = m->height, b = m->build, sx, sy;
+	/* Women: shoulders a little narrower, legs and arms a little slimmer. */
+	float sh = female ? 18.2f : 20.0f, leg_r = female ? 6.4f : 7.0f, arm_r = female ? 3.9f : 4.3f;
 	int r;
+
+	model->shirt = shirt;
+	model->pants = pants;
 
 	/* Width and height from the Mii's height and build, as later Mii
 	 * libraries scale bodies, over their value at the middle (64, 64). */
 	sx = (b * (h * 0.47f / 128 + 0.4f)) / 128 + h * 0.23f / 128 + 0.4f;
 	sy = h * 0.77f / 128 + 0.5f;
-	model->body_scale[0] = sx / 0.8325f;
+	/* The width's range is narrowed (x^0.6: 0.64 to 1.42 of the middle):
+	 * the formula's own made a tiny Mii a stick and a large one a box. */
+	model->body_scale[0] = powf(sx / 0.8325f, 0.6f);
 	model->body_scale[1] = sy / 0.885f;
 
-	{   /* the torso: a rounded bell, flatter front to back */
-		static const float t[][2] = {
-			{ 26, 0 }, { 26, 13.5f }, { 30, 15.5f }, { 38, 16.5f }, { 47, 16.0f },
-			{ 53, 14.5f }, { 58, 11.5f }, { 61, 7.5f }, { BODY_TORSO_TOP, 0 }
+	{   /* the shirt: waist to shoulders, its bottom inside the trousers' top */
+		const float t[][2] = {
+			{ BODY_WAIST_Y - 2, 0 }, { BODY_WAIST_Y - 2, BODY_WAIST_R },
+			{ 110, BODY_WAIST_R + 0.3f }, { 128, (BODY_WAIST_R + sh) / 2 + 0.3f },
+			{ 146, sh }, { 152, sh - 0.6f }, { 155.5f, sh - 2.6f }, { 157.5f, sh - 7 },
+			{ BODY_TORSO_TOP, 0 }
 		};
-		if ((r = lathe(&model->part[MII_BODY_TORSO], t, 9, 20, 0.78f, shirt)) < 0)
+		if ((r = lathe(&model->part[MII_BODY_TORSO], t, 9, 22, 0.66f, shirt)) < 0)
 			return r;
 	}
-	{   /* the hips, in the trousers */
-		static const float t[][2] = {
-			{ 17, 0 }, { 17, 11.5f }, { 21, 13.5f }, { 27, 14.0f }, { 29, 13.5f }, { 30, 0 }
+	{   /* the trousers' top: the waist, as wide as the shirt, down to the legs */
+		const float t[][2] = {
+			{ BODY_CROTCH_Y - 4, 0 }, { BODY_CROTCH_Y - 4, BODY_LEG_X + leg_r - 1.5f },
+			{ BODY_CROTCH_Y, BODY_LEG_X + leg_r - 0.4f }, { BODY_CROTCH_Y + 6, BODY_WAIST_R - 0.6f },
+			{ BODY_WAIST_Y, BODY_WAIST_R }, { BODY_WAIST_Y + 1, BODY_WAIST_R - 0.2f },
+			{ BODY_WAIST_Y + 1.2f, 0 }
 		};
-		if ((r = lathe(&model->part[MII_BODY_HIPS], t, 6, 20, 0.8f, pants)) < 0)
+		if ((r = lathe(&model->part[MII_BODY_HIPS], t, 7, 22, 0.66f, pants)) < 0)
 			return r;
 	}
-	{   /* one leg, from the hip down, at the origin */
-		static const float t[][2] = {
-			{ -21, 0 }, { -21, 4.6f }, { -10, 5.0f }, { 0, 5.4f }, { 2, 0 }
+	{   /* one leg, from the crotch down to the ankle, at the origin */
+		const float t[][2] = {
+			{ -BODY_CROTCH_Y + 3, 0 }, { -BODY_CROTCH_Y + 3, leg_r - 0.6f },
+			{ -BODY_CROTCH_Y + 6, leg_r }, { -2, leg_r + 0.2f }, { 2, 0 }
 		};
-		if ((r = lathe(&model->part[MII_BODY_LEG], t, 5, 14, 1.0f, pants)) < 0)
+		if ((r = lathe(&model->part[MII_BODY_LEG], t, 5, 14, 0.95f, pants)) < 0)
 			return r;
 	}
-	ellipse_profile(prof, 8, 0, 3.2f, 5.6f);   /* a shoe, at the origin, long */
-	if ((r = lathe(&model->part[MII_BODY_SHOE], (const float (*)[2]) prof, 8, 14, 1.7f, shoe)) < 0)
+	ellipse_profile(prof, 8, 0, 3.4f, leg_r);   /* a shoe: small, a little long */
+	if ((r = lathe(&model->part[MII_BODY_SHOE], (const float (*)[2]) prof, 8, 14, 1.45f, shoe)) < 0)
 		return r;
 	{   /* one arm, hanging from the shoulder at the origin */
-		static const float t[][2] = {
-			{ -BODY_ARM_LEN, 0 }, { -BODY_ARM_LEN, 3.4f }, { -BODY_ARM_LEN + 1.5f, 4.0f },
-			{ -6, 4.6f }, { -1.5f, 4.6f }, { 1.5f, 3.2f }, { 3, 0 }
+		const float t[][2] = {
+			{ -BODY_ARM_LEN, 0 }, { -BODY_ARM_LEN, arm_r - 0.6f }, { -BODY_ARM_LEN + 2, arm_r - 0.3f },
+			{ -20, arm_r }, { -3, arm_r + 0.4f }, { 1.5f, arm_r }, { 4, 0 }
 		};
 		if ((r = lathe(&model->part[MII_BODY_ARM], t, 7, 14, 1.0f, shirt)) < 0)
 			return r;
 	}
-	ellipse_profile(prof, 9, 0, 4.6f, 4.6f);   /* a hand */
-	if ((r = lathe(&model->part[MII_BODY_HAND], (const float (*)[2]) prof, 9, 14, 0.85f, skin)) < 0)
+	ellipse_profile(prof, 9, 0, arm_r + 1.8f, arm_r + 1.8f);   /* a hand: a small ball */
+	if ((r = lathe(&model->part[MII_BODY_HAND], (const float (*)[2]) prof, 9, 14, 0.9f, skin)) < 0)
 		return r;
 	{
-		static const float t[][2] = { { 0, 5.2f }, { 9, 5.0f } };
+		static const float t[][2] = { { 0, 6.0f }, { 14, 5.6f } };
 		if ((r = lathe(&model->part[MII_BODY_NECK], t, 2, 12, 1.0f, skin)) < 0)
 			return r;
 	}
-	model->head_y = (BODY_TORSO_TOP - 4) * model->body_scale[1];
-	model->shoulder[0] = BODY_SHOULDER_X * model->body_scale[0];
-	model->shoulder[1] = BODY_SHOULDER_Y * model->body_scale[1];
+	model->head_y = (BODY_TORSO_TOP + 2) * model->body_scale[1];
+	model->shoulder[0] = (sh + arm_r + 0.8f) * model->body_scale[0];
+	model->shoulder[1] = BODY_ARM_Y * model->body_scale[1];
 	model->shoulder[2] = 0;
-	model->hip[0] = BODY_HIP_X * model->body_scale[0];
-	model->hip[1] = BODY_HIP_Y * model->body_scale[1];
+	model->hip[0] = BODY_LEG_X * model->body_scale[0];
+	model->hip[1] = BODY_CROTCH_Y * model->body_scale[1];
 	model->hip[2] = 0;
+	model->arm_len = BODY_ARM_LEN;
+	model->shoe[0] = 3.0f;
+	model->shoe[1] = 2.5f;
 	return MII_OK;
 }
 
@@ -1071,6 +1096,8 @@ void mii_model_free(mii_model *model) {
 		tex_free(&model->tex[i]);
 	for (i = 0; i < MII_EXPR_COUNT; ++i)
 		tex_free(&model->mask[i]);
+	free(model->skin_pos);
+	free(model->skin_nrm);
 	memset(model, 0, sizeof(*model));
 }
 
@@ -1084,7 +1111,12 @@ void mii_model_bounds(const mii_model *model, int head_only, float *top, float *
 		return;
 	}
 	*top = model->head_y + head_top;
-	*half_width = model->shoulder[0] + 10;
+	/* Room for an arm raised out to the side (the built body's wave); the
+	 * Wii body's bodyGreeting raises the hand beside the head. */
+	if (model->body)
+		*half_width = model->shoulder[0] + 10;
+	else
+		*half_width = model->shoulder[0] + 0.8f * model->arm_len * model->body_scale[1] + 6;
 	if (*half_width < head_half)
 		*half_width = head_half;
 }
@@ -1218,6 +1250,89 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 	GX_SetCullMode(GX_CULL_BACK);
 }
 
+/* A Wii body (miibody.c): skinned on the CPU into the model's arrays, the
+ * triangles then sent through the FIFO like every other part; the head on
+ * the head bone, its bind pose upright, the pose's look on top. (About
+ * 2,200 vertices, 54 KB through the FIFO a frame. While this was written
+ * HBC's GPU hung on the bench Wii whichever way the body was drawn: the
+ * cause was HBC's GX FIFO in MEM2, not the drawing; REVIEW.md, 1.10.26.) */
+static void body_prepare(mii_model *mm, const mii_pose *pose) {
+	mii_body_skin(mm, pose);
+	mm->body_ready = 1;
+}
+
+static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mtx root) {
+	mii_model *mm = (mii_model *) model;   /* the skin arrays are scratch */
+	const mii_body *body = model->body;
+	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
+	const float (*b)[3] = body->bone[body->head].bind_rot;
+	Mtx head, t;
+	int i, j, k;
+
+	if (!mm->body_ready)
+		body_prepare(mm, pose);
+	mm->body_ready = 0;
+	GX_ClearVtxDesc();
+	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+	GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
+	GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+	GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
+	/* No texture: no texture coordinate generated either. setup()'s texgen
+	 * reads TEX0, which these vertices do not carry; the transform unit
+	 * told to generate a coordinate from an input the vertex lacks is not
+	 * a valid setup (Dolphin quietly reads a default). */
+	GX_SetNumTexGens(0);
+	GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+	GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+	load(view, root);
+	for (i = 0; i < 2; ++i) {
+		uint32_t col = i ? model->pants : model->shirt;
+		int n = 3 * body->ntris[i], done, c;
+
+		GX_SetChanMatColor(GX_COLOR0A0, (GXColor) { col >> 24, col >> 16, col >> 8, 255 });
+		for (done = 0; done < n; done += c) {
+			int v;
+
+			c = n - done > 65535 ? 65535 - 65535 % 3 : n - done;   /* whole triangles */
+			GX_Begin(GX_TRIANGLES, GX_VTXFMT1, (u16) c);
+			for (v = done; v < done + c; ++v) {
+				const float *q = mm->skin_pos + 3 * body->tris[i][v];
+				const float *r = mm->skin_nrm + 3 * body->tris[i][v];
+
+				GX_Position3f32(q[0], q[1], q[2]);
+				GX_Normal3f32(r[0], r[1], r[2]);
+			}
+			GX_End();
+		}
+	}
+	GX_ClearVtxDesc();
+	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+	GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
+	GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+	GX_SetNumTexGens(1);
+
+	mii_body_pose(model, pose, rot, pos);
+	guMtxIdentity(head);
+	for (i = 0; i < 3; ++i) {
+		for (j = 0; j < 3; ++j) {
+			float v = 0;
+
+			for (k = 0; k < 3; ++k)
+				v += rot[body->head][i][k] * b[j][k];   /* R_head times the bind's transpose */
+			head[i][j] = v;
+		}
+		head[i][3] = pos[body->head][i];
+	}
+	mtx_mul(head, root, head);
+	mtx_rot(t, 'y', pose->head_yaw);
+	mtx_mul(head, head, t);
+	mtx_rot(t, 'x', -pose->head_pitch);
+	mtx_mul(head, head, t);
+	mtx_rot(t, 'z', pose->head_roll);
+	mtx_mul(head, head, t);
+	draw_head(model, pose->expression, view, head);
+}
+
 void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place) {
 	static const mii_pose still = { 0 };
 	Mtx root, m, t, s, part;
@@ -1242,6 +1357,10 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
 		draw_head(model, pose->expression, view, root);
 		return;
 	}
+	if (model->body) {
+		draw_body(model, pose, view, root);
+		return;
+	}
 	sx = model->body_scale[0];
 	sy = model->body_scale[1];
 
@@ -1257,7 +1376,7 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
 		mtx_mul(part, m, s);
 		load(view, part);
 		draw_mesh(&model->part[MII_BODY_LEG], NULL);
-		mtx_trans(t, 0, -model->hip[1] + 3.2f * sy, 2.5f);
+		mtx_trans(t, 0, -model->hip[1] + model->shoe[0] * sy, model->shoe[1]);
 		mtx_mul(part, m, t);
 		mtx_scale(s, sx, sy, sx);
 		mtx_mul(part, part, s);
@@ -1285,13 +1404,13 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
 		mtx_mul(m, m, t);
 		mtx_rot(t, 'x', -pose->arm_swing[side]);
 		mtx_mul(m, m, t);
-		mtx_scale(s, sy, sy, sy);
+		mtx_scale(s, sx, sy, sx);
 		mtx_mul(part, m, s);
 		load(view, part);
 		draw_mesh(&model->part[MII_BODY_ARM], NULL);
-		mtx_trans(t, 0, -(BODY_ARM_LEN + 3.0f) * sy, 0);
+		mtx_trans(t, 0, -model->arm_len * sy, 0);
 		mtx_mul(part, m, t);
-		mtx_scale(s, sy, sy, sy);
+		mtx_scale(s, (sx + sy) / 2, (sx + sy) / 2, (sx + sy) / 2);
 		mtx_mul(part, part, s);
 		load(view, part);
 		draw_mesh(&model->part[MII_BODY_HAND], NULL);
@@ -1326,7 +1445,14 @@ static int capture(const mii_model *model, const mii_pose *pose, int w, int h, f
 	if (!model || !dst || w <= 0 || h <= 0 || w % 4 || h % 4 || ew > 640 || eh > 528 ||
 			((uintptr_t) dst & 31))
 		return MII_E_ARG;
+	/* The body's CPU work (about 1 ms) before any GX command of the
+	 * capture, not in the middle of them. */
+	if (model->body && pose && !pose->head_only)
+		body_prepare((mii_model *) model, pose);
+	/* The capture needs alpha: RGBA6. A pixel-format change takes effect
+	 * only after GX_PixModeSync(), so one follows each change. */
 	GX_SetPixelFmt(GX_PF_RGBA6_Z24, GX_ZC_LINEAR);
+	GX_PixModeSync();
 	GX_SetCopyFilter(GX_FALSE, NULL, GX_FALSE, NULL);
 	GX_SetViewport(0, 0, ew, eh, 0, 1);
 	GX_SetScissor(0, 0, ew, eh);
@@ -1355,33 +1481,53 @@ static int capture(const mii_model *model, const mii_pose *pose, int w, int h, f
 	GX_CopyTex(dst, GX_TRUE);
 	GX_PixModeSync();
 	GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+	GX_PixModeSync();   /* back to the caller's format before it draws again */
 	GX_InvalidateTexAll();
+	return MII_OK;
+}
+
+/* The whole Mii in view, from the front: fovy 20 degrees, the distance that
+ * fits its height and width (with margin on each side) in aspect. */
+static void frame(const mii_model *model, const mii_pose *pose, float aspect, float margin,
+				  guVector *eye, guVector *target) {
+	float top, half, t = tanf(20 * (float) M_PI / 360), need_h, need_w;
+
+	mii_model_bounds(model, pose->head_only, &top, &half);
+	need_h = top * (1 + 2 * margin) / 2;
+	need_w = half * (1 + 2 * margin) / aspect;
+	target->x = 0;
+	target->y = top / 2;
+	target->z = 0;
+	*eye = *target;
+	eye->z = (need_h > need_w ? need_h : need_w) / t;
+}
+
+int mii_view(const mii_model *model, const mii_pose *pose, float aspect, float margin, Mtx44 proj,
+			 Mtx view) {
+	static const mii_pose still = { 0 };
+	guVector eye, target, up = { 0, 1, 0 };
+
+	if (!model || !proj || !view || !(aspect > 0))
+		return MII_E_ARG;
+	frame(model, pose ? pose : &still, aspect, margin, &eye, &target);
+	guPerspective(proj, 20, aspect, 10, 4000);
+	guLookAt(view, &eye, &up, &target);
 	return MII_OK;
 }
 
 int mii_capture(const mii_model *model, const mii_pose *pose, int w, int h, float margin,
 				float stretch_x, GXColor clear, void *dst) {
 	static const mii_pose still = { 0 };
-	float top, half, fovy = 20, t, d, need_h, need_w;
 	guVector eye, target;
 
-	if (!model)
+	if (!model || w <= 0 || h <= 0)
 		return MII_E_ARG;
 	if (!pose)
 		pose = &still;
 	if (stretch_x <= 0)
 		stretch_x = 1;
-	mii_model_bounds(model, pose->head_only, &top, &half);
-	t = tanf(fovy * (float) M_PI / 360);
-	need_h = top * (1 + 2 * margin) / 2;
-	need_w = half * (1 + 2 * margin) / ((float) w * stretch_x / h);
-	d = (need_h > need_w ? need_h : need_w) / t;
-	target.x = 0;
-	target.y = top / 2;
-	target.z = 0;
-	eye = target;
-	eye.z = d;
-	return capture(model, pose, w, h, fovy, eye, target, stretch_x,
+	frame(model, pose, (float) w * stretch_x / h, margin, &eye, &target);
+	return capture(model, pose, w, h, 20, eye, target, stretch_x,
 				   (GXColor) { 0, 0, 0, 0 }, clear, dst);
 }
 

@@ -85,7 +85,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted (files up to 512 MiB; a read-only source is refused first; the copies get new times). An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
-| `mii-faces` | The same as HOME > HBC > Save Mii faces (`HBCM`): HBC copies the Wii Menu's Mii face models (`RFL_Res.dat`) to `sd:/mii/RFL_Res.dat`, for apps that draw Miis. The file is Nintendo's: keep it on your own SD card, never ship it. HBC 1.10.20. |
+| `mii-faces` | The same as HOME > HBC > Save Mii faces (`HBCM`): HBC copies the Wii Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's bodies (`maleBody.brres`, `femaleBody.brres`) to `sd:/mii`, for apps that draw Miis. The files are Nintendo's: keep them on your own SD card, never ship them. HBC 1.10.20 (bodies 1.10.26). |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |
 | `order [--clear] APPS [FOLDER ...]` | HBC's Custom app order (see [Your own app order](#your-own-app-order)): with only `APPS` (e.g. `sd:/apps`), print the apps in that order with their `<sort_id>`; with folders, give them 10, 20, 30... in the order named, editing or making each `meta.xml`; `--clear` removes every `<sort_id>`. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
@@ -317,7 +317,9 @@ holds what the old HOME menu had: HBC's and IOS's versions, the Wii's IP,
 About, Launch BootMii, Exit to System Menu, and Shutdown, plus Restart
 network, which shuts the network down and joins it again (for a Wi-Fi
 connection that went stale), and Save Mii faces, which copies the Wii
-Menu's Mii face models to `sd:/mii/RFL_Res.dat` for apps that draw Miis
+Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's male and
+female bodies with their animations (`maleBody.brres`,
+`femaleBody.brres`) to `sd:/mii` for apps that draw Miis
 ([docs/mii.md](docs/mii.md#the-face-models-rfl_resdat)).
 
 Point a Wii Remote at the screen and HBC's hand cursor follows it, turning as you twist the remote: the

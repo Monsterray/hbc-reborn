@@ -436,8 +436,16 @@ So the user provides their own copy, and HBC makes that one press:
   puts the check back. It checks the file (18 archives, version 0x39D or
   later) and writes it whole before renaming it into place. Under 2 s on
   the bench Wii.
-- **Keep it on your own SD card.** The file is Nintendo's: an app reads it
-  from `sd:/mii/RFL_Res.dat` at run time and never ships it.
+- **The bodies too** (1.10.26): the same press copies the Mii Channel's
+  (title 00010002-48414341) `maleBody.brres` and `femaleBody.brres` out of
+  `Channel/Character.szs` (Yaz0, in a U8 archive in its content
+  `00000019.app` on the bench Wii) to `sd:/mii`: Nintendo's skeleton, the
+  skinned shirt and trousers, and 21 animations
+  ([research/mii-bodies.md](research/mii-bodies.md#3-the-mii-channels-body-model)).
+  0.7 to 0.9 s for faces and bodies on the bench Wii. Without a Mii Channel
+  the faces are still saved, and the toast says so.
+- **Keep them on your own SD card.** The files are Nintendo's: an app
+  reads them from `sd:/mii` at run time and never ships them.
 - **`tools/mii_res.py`** lists a copy (`info`) and dumps every shape as OBJ
   and every texture as PNG (`dump`), for study. Its layout is in the
   research notes; `tests/test_mii_res.py` checks the tool on a synthetic
@@ -445,10 +453,24 @@ So the user provides their own copy, and HBC makes that one press:
 
 ## Drawing a Mii (sdk/mii/miidraw)
 
-`miidraw.c` draws a Mii's head from `RFL_Res.dat` as RFL does, and a body
-of its own ([the SDK README](../sdk/mii/README.md#drawing-miis-miidraw),
-[research/mii-rendering.md](research/mii-rendering.md) for the sources).
-HBC 1.10.21's avatar is the first user.
+`miidraw.c` draws a Mii's head from `RFL_Res.dat` as RFL does;
+`miibody.c` puts it on the Mii Channel's own body, animated, or
+`miidraw.c` builds a body of its own when the bodies are not saved
+([the SDK README](../sdk/mii/README.md#drawing-miis-miidraw),
+[research/mii-rendering.md](research/mii-rendering.md) and
+[research/mii-bodies.md](research/mii-bodies.md) for the sources). HBC's
+avatar (1.10.21, the Wii's bodies from 1.10.26) is the first user.
+
+- **The body**: the MDL0's 20 bones and two skinned meshes, posed from
+  the CHR0 animations (cubic Hermite keys; rotations the short way
+  round, or the right ankle in bodyWait spins), skinned on the CPU (about
+  1,000 vertices, 0.8 ms) and sent through the FIFO as `GX_Begin`
+  vertices. Height and build scale each bone along its own axis, not
+  inherited. The head rides the head bone.
+- **Drawn in place**: `mii_view` gives the camera for any viewport, and
+  `mii_draw` draws into the frame you are building (HBC's avatar does this
+  each frame). `mii_capture` (into a texture, through RGBA6 and a copy) is
+  for icons and stills.
 
 - **The head**: RFL's shapes placed by the faceline's anchors, its colour
   tables, and the face (eyes, eyebrows, mouth, mustache, mole) composited

@@ -264,9 +264,10 @@ static s32 status_json(char *buf, size_t size) {
 		avatar_get_info(&av);
 		json_text(name, av.name, sizeof(name));
 		n += snprintf(buf + n, size - n, ",\"avatar\":{\"state\":\"%s\",\"mii\":\"%s\","
-					  "\"slot\":%d,\"frame_us\":%u,\"interval_us\":%u,\"frames\":%u}",
+					  "\"slot\":%d,\"frame_us\":%u,\"interval_us\":%u,\"frames\":%u,\"bad\":%u,"
+					  "\"bad_at\":\"%s\"}",
 					  av.state, name, av.slot, (unsigned) av.frame_us, (unsigned) av.interval_us,
-					  (unsigned) av.frames);
+					  (unsigned) av.frames, (unsigned) av.bad, av.bad_at);
 	}
 	_CPU_ISR_Disable(level);
 	n += snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",

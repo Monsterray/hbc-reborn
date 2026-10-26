@@ -86,7 +86,7 @@ FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
 FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
-		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o \
+		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o \
 		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
@@ -218,6 +218,10 @@ $(DIR_BUILD)/mii.o: $(MII)/mii.c
 	@$(CC) $(CFLAGS) -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
 $(DIR_BUILD)/miidraw.o: $(MII)/miidraw.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
+$(DIR_BUILD)/miibody.o: $(MII)/miibody.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 

@@ -184,6 +184,12 @@ void home_init(void) {
 	// when told to each frame. Keep telling it, so hbc.py and file
 	// transfers still work with the HOME menu up.
 	cfg.on_frame = signal_loader;
+#ifdef HBC_HANG_DIAG
+	// A diagnostic build: HBC's main loop stuck 6 s is reported as a hang,
+	// with its backtrace, and the agent takes the way out (view.c calls
+	// hbc_agent_alive() each frame).
+	cfg.hang_s = 6;
+#endif
 	hbc_agent_init(&cfg);
 
 	if (!bootmii_is_installed(TITLEID_BOOTMII))

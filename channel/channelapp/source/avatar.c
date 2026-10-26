@@ -4,19 +4,23 @@
 //
 // This file doubles as the worked example of sdk/mii's drawing
 // (sdk/mii/miidraw.h): load the face models, load a Mii, build it once, and
-// each frame pose it and capture it into a texture that draws like any
-// other picture.
+// each frame pose it and draw it in its place in the frame.
 //
 //   1. mii_res_load: the face models, RFL_Res.dat. They are Nintendo's, so
 //      HBC never ships them: the user saves the Wii's own copy to the SD card
 //      with HOME > HBC > Save Mii faces (miires.c), and every app reads that.
 //   2. mii_db_load and mii_db_get: the Mii, from the Mii Channel's database.
-//   3. mii_model_make: shapes, face textures for each expression, a body.
-//      About 0.1 s and 0.7 MiB, so a background thread does 1 to 3.
-//   4. Each frame, before HBC draws anything: mii_capture poses it and draws
-//      it into the EFB's corner, copies that out with alpha, and clears the
-//      corner; gfx_restore puts HBC's GX state back. The texture then draws
-//      as a sprite, under the app list and any dialog.
+//   3. mii_model_make: shapes, face textures for each expression, a body;
+//      then mii_body_load and mii_model_set_body: the Mii Channel's own body
+//      for the Mii's sex (saved beside the faces), with its animations. About
+//      0.1 s and 1 MiB, so a background thread does 1 to 3.
+//   4. Each frame avatar_frame poses it and queues a GFXE_DRAW entity where
+//      a sprite would go. When HBC's frame reaches it, avatar_draw sets the
+//      viewport to that rectangle and a thin band of depth (gfx.c's
+//      plot_draw), mii_view frames the Mii, and mii_draw draws it; HBC's GX
+//      state is then put back. So it stands under the app list and any
+//      dialog, with no copy and no pixel-format change (1.10.21 captured it
+//      into a texture each frame with mii_capture instead).
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +31,7 @@
 
 #include <ogcsys.h>
 #include <ogc/lwp_watchdog.h>
+#include <ogc/machine/processor.h>
 
 #include "../config.h"
 #include "appentry.h"
@@ -35,9 +40,9 @@
 #include "avatar.h"
 
 // The sprite: drawn at twice this size and box-filtered down (miidraw.c),
-// so 320 x 512 of the EFB while it draws.
-#define AV_W 160
-#define AV_H 256
+// so 256 x 416 of the EFB while it draws.
+#define AV_W 128
+#define AV_H 208
 #define AV_STACK (64 * 1024)
 #define AV_PRIO 40
 
@@ -46,17 +51,19 @@ enum { AV_LOADING, AV_READY, AV_NONE };
 
 static mii_res res;
 static mii_model model;
+static mii_body body;                 // the Mii Channel's body, when saved
+static int anim_wait, anim_greet;     // 1 + its animations (0: none)
 static volatile int state = AV_NONE;
 static volatile bool reload_asked;
 static int want_slot;           // the Mii to show: this slot or the next one there
 static int shown_slot = -1;
 static char shown_name[MII_NAME_UTF8_MAX + 1];
-static u32 frame_us, interval_us, frames;   // averaged over the last 64 frames
+static u32 frame_us, draw_us, interval_us, frames;   // averaged over the last 64 frames
 static u64 last_frame;
 static lwp_t thread = LWP_THREAD_NULL;
 static u8 stack[AV_STACK] ATTRIBUTE_ALIGN(32);
-static u8 *pixels;
 static gfx_entity entity;
+static mii_pose pose;   // this frame's, from avatar_frame() for avatar_draw()
 static gfx_queue_entry entry;
 
 // ---- Loading --------------------------------------------------------------
@@ -123,6 +130,17 @@ static void *loader(void *arg) {
 		state = AV_NONE;
 		return NULL;
 	}
+	// The Wii's own body for this Mii, if Save Mii faces saved them; else
+	// the library's.
+	anim_wait = anim_greet = 0;
+	r = mii_body_load(&body, m.sex == MII_FEMALE ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH);
+	if (r >= 0 && (r = mii_model_set_body(&model, &body)) >= 0) {
+		anim_wait = 1 + mii_body_anim(&body, "bodyWait");
+		anim_greet = 1 + mii_body_anim(&body, "bodyGreeting");
+	} else {
+		hlog("Avatar: no Mii Channel body (%s): the built one\n", mii_strerror(r));
+		mii_body_free(&body);
+	}
 	mii_get_name(m.name, name, sizeof(name));
 	hlog("Avatar: %s (slot %d)\n", name, slot);
 	strcpy(shown_name, name);
@@ -132,20 +150,6 @@ static void *loader(void *arg) {
 }
 
 static void start(void) {
-	if (!pixels) {
-		pixels = memalign(32, AV_W * AV_H * 4);
-		if (!pixels)
-			return;
-		// The GPU writes it (mii_capture's copy); the CPU never touches it.
-		DCInvalidateRange(pixels, AV_W * AV_H * 4);
-		entity.type = GFXE_TEXTURE;
-		entity.w = AV_W;
-		entity.h = AV_H;
-		entity.texture.pixels = pixels;
-		entity.texture.type = GFXT_RGBA8;
-		GX_InitTexObj(&entity.texture.obj, pixels, AV_W, AV_H, GX_TF_RGBA8, GX_CLAMP, GX_CLAMP,
-					  GX_FALSE);
-	}
 	state = AV_LOADING;
 	if (LWP_CreateThread(&thread, loader, NULL, stack, AV_STACK, AV_PRIO) < 0) {
 		thread = LWP_THREAD_NULL;
@@ -163,8 +167,10 @@ void avatar_deinit(void) {
 		LWP_JoinThread(thread, NULL);
 		thread = LWP_THREAD_NULL;
 	}
-	if (state == AV_READY)
+	if (state == AV_READY) {
 		mii_model_free(&model);
+		mii_body_free(&body);
+	}
 	state = AV_NONE;
 }
 
@@ -244,13 +250,21 @@ static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float 
 		a.next_wave = t + 18 + rnd() * 20;
 		a.smile_until = t + 2.6f;
 	}
-	if (t - a.wave_from < 2.4f)
+	if (t - a.wave_from < (anim_greet ? body.anim[anim_greet - 1].frames / 60.0f : 2.4f))
 		wave = t - a.wave_from;
 	a.raise = approach(a.raise, wave >= 0 ? 2.35f : 0.1f, 7, dt);
 	p->arm_raise[0] = a.raise + (wave >= 0 ? 0.28f * sinf(wave * 2 * (float) M_PI * 2.2f) : 0);
 	p->arm_raise[1] = 0.1f;
 	p->arm_swing[0] = wave >= 0 ? 0.35f : 0.05f * sinf(t * 0.9f);
 	p->arm_swing[1] = -0.05f * sinf(t * 0.9f);
+
+	// A Wii body plays its own animations, 60 frames a second: Wait, and
+	// Greeting for the wave.
+	if (anim_wait) {
+		p->anim = wave >= 0 && anim_greet ? anim_greet : anim_wait;
+		p->frame = (wave >= 0 && anim_greet ? wave : t) * 60;
+		p->bob = 0;
+	}
 
 	// The face: smiles now and then; blinks every few seconds.
 	if (t >= a.next_smile) {
@@ -268,11 +282,62 @@ static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float 
 
 // ---- Each frame -----------------------------------------------------------
 
+static u32 bad;
+static char bad_at[96];
+
+#ifdef HBC_DIAG_GPU
+// The posed body as the GPU was just sent it: every value finite, every
+// position within the body's reach, every normal about unit length. The
+// first wild one is kept for the status reply and printed (the kept log).
+static void check_pose(const mii_pose *pose) {
+	int i;
+
+	if (!model.body)
+		return;
+	for (i = 0; i < 3 * model.body->nverts; ++i) {
+		float p = model.skin_pos[i], n = model.skin_nrm[i];
+
+		if (p == p && n == n && p < 400 && p > -400 && n <= 1.01f && n >= -1.01f)
+			continue;
+		if (!bad++) {
+			snprintf(bad_at, sizeof(bad_at), "anim %d frame %d.%03d vertex %d pos %d nrm %d",
+					 pose->anim, (int) pose->frame, (int) (pose->frame * 1000) % 1000, i / 3,
+					 p == p ? (int) p : -999999, n == n ? (int) (n * 1000) : -999999);
+			printf("Avatar: wild vertex: %s\n", bad_at);
+		}
+		return;
+	}
+}
+#endif
+
+// HBC's frame reached the avatar: the Mii in its rectangle, a 3D scene of
+// its own in a thin band of depth just in front of where a sprite would be.
+static void avatar_draw(void *ctx, const gfx_rect *r) {
+	u64 t = gettime();
+	Mtx44 proj;
+	Mtx view;
+
+	(void) ctx;
+	if (state != AV_READY || mii_view(&model, &pose, r->aspect, 0.04f, proj, view) < 0)
+		return;
+	GX_SetViewport(r->x, r->y, r->w, r->h, r->z_near, r->z_far);
+	GX_SetScissor((u32) r->x, (u32) r->y, (u32) (r->w + 0.5f), (u32) (r->h + 0.5f));
+	GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+#ifdef HBC_DIAG_GPU
+	gfx_diag_token(0x1001);
+#endif
+	mii_draw(&model, &pose, view, NULL);
+#ifdef HBC_DIAG_GPU
+	gfx_diag_token(0x1002);
+	check_pose(&pose);
+#endif
+	draw_us = draw_us - draw_us / 64 + diff_usec(t, gettime()) / 64;
+}
+
 const gfx_queue_entry *avatar_frame(bool pointer, s32 px, s32 py, bool a_down) {
 	u64 start_ticks = gettime();
 	float stretch = widescreen ? WIDESCREEN_RATIO : 1.0f;
 	float w = AV_W * stretch, h = AV_H, x, y;
-	mii_pose pose;
 
 	if (reload_asked && state != AV_LOADING) {
 		reload_asked = false;
@@ -305,12 +370,14 @@ const gfx_queue_entry *avatar_frame(bool pointer, s32 px, s32 py, bool a_down) {
 		reload_asked = true;
 	}
 	pose_for(&pose, pointer, px, py, x, y, w, h);
-	if (mii_capture(&model, &pose, AV_W, AV_H, 0.04f, stretch, (GXColor) { 0, 0, 0, 0xff },
-					pixels) < 0)
-		return NULL;
-	gfx_restore();
 
-	entity.w = (u16) (w + 0.5f);   // the texture spans this many view units
+	// Drawn in its place in HBC's frame (avatar_draw()), not into a texture
+	// first: no copy, no pixel-format change.
+	entity.type = GFXE_DRAW;
+	entity.w = (u16) (w + 0.5f);
+	entity.h = AV_H;
+	entity.draw.fn = avatar_draw;
+	entity.draw.ctx = NULL;
 	if (last_frame)
 		interval_us = interval_us - interval_us / 64 + diff_usec(last_frame, start_ticks) / 64;
 	last_frame = start_ticks;
@@ -324,7 +391,9 @@ void avatar_get_info(avatar_info *info) {
 	info->state = state == AV_READY ? "ready" : state == AV_LOADING ? "loading" : "none";
 	strcpy(info->name, state == AV_READY ? shown_name : "");
 	info->slot = state == AV_READY ? shown_slot : -1;
-	info->frame_us = frame_us;
+	info->frame_us = frame_us + draw_us;   // posing and drawing
 	info->interval_us = interval_us;
 	info->frames = frames;
+	info->bad = bad;
+	strcpy(info->bad_at, bad_at);
 }

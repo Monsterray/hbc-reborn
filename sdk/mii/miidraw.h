@@ -34,8 +34,7 @@
  *     each part as a display list): call it outside the frame loop, from
  *     any thread (it writes no GX commands). Drawing replays the lists, so
  *     a whole Mii puts about 2 KB into the GX FIFO, not its 240 KB of
- *     vertices: sent vertex by vertex they overran HBC's 256 KB FIFO on a
- *     Wii (garbage triangles, then a GPU hang; Dolphin never showed it).
+ *     vertices (a frame's commands should stay well under the FIFO).
  *   - mii_capture and mii_draw leave GX state changed (see each): restore
  *     yours after them.
  *
@@ -83,6 +82,63 @@ int mii_res_attach(mii_res *res, const void *data, size_t size);
  * is not there: ask the user to save it from HBC's HOME menu. */
 int mii_res_load(mii_res *res, const char *path);
 void mii_res_free(mii_res *res);
+
+/* ---- The Wii's own bodies (miibody.c) ------------------------------------ */
+
+/* The Mii Channel's male and female bodies (maleBody.brres, femaleBody.brres
+ * in its Character.szs), which HBC's Save Mii faces copies next to the
+ * faces. Nintendo's, like RFL_Res.dat: read the user's own, never ship them.
+ * Each holds a 20-bone skeleton, two skinned meshes (the shirt with its
+ * hands, and the trousers) and 21 animations (bodyWait, bodyGreeting,
+ * bodyWalk, bodyRun, bodyTalk, ...). Without them mii_model_make builds a
+ * body of its own. */
+#define MII_BODY_MALE_PATH "sd:/mii/maleBody.brres"
+#define MII_BODY_FEMALE_PATH "sd:/mii/femaleBody.brres"
+#define MII_BODY_BONES 32
+#define MII_BODY_ANIMS 32
+
+typedef struct {
+	char name[20];
+	int parent;            /* bone index, or -1 */
+	int matrix;            /* the MDL0 matrix id its vertices use */
+	float s[3], r[3], t[3];   /* local bind scale, rotation (degrees, X then Y then Z), translation */
+	float bind_rot[3][3];  /* world rotation in the bind pose */
+} mii_bone;
+
+typedef struct {
+	char name[24];
+	int frames;
+	struct {
+		uint32_t code;     /* CHR0 v3 code: what is animated, constant, its format */
+		float c[9];        /* constants: scale, rotation, translation (X Y Z each) */
+		const uint8_t *keys[9];   /* keyframes, where not constant */
+	} track[MII_BODY_BONES];
+	int has[MII_BODY_BONES];
+} mii_anim;
+
+typedef struct {
+	uint8_t *data;         /* the file, kept: animation keys point into it */
+	uint32_t size;
+	int nbones;
+	mii_bone bone[MII_BODY_BONES];
+	int head, chest;       /* bone indexes */
+	int nverts;            /* skin vertices: a bone, a position and a normal in its space */
+	int vcap;
+	uint8_t *vbone;
+	float *vpos, *vnrm;
+	int ntris[2];          /* index triples into the skin vertices: shirt, trousers */
+	uint16_t *tris[2];
+	int nanims;
+	mii_anim anim[MII_BODY_ANIMS];
+} mii_body;
+
+/* Checks and parses a copy in memory (taken over: freed by mii_body_free). */
+int mii_body_attach(mii_body *body, void *data, size_t size);
+/* Reads one (path NULL: the male body). MII_E_NO_FILE without it. */
+int mii_body_load(mii_body *body, const char *path);
+void mii_body_free(mii_body *body);
+/* The animation named so ("bodyWait"), or -1. */
+int mii_body_anim(const mii_body *body, const char *name);
 
 /* ---- A Mii, built -------------------------------------------------------- */
 
@@ -141,12 +197,25 @@ typedef struct {
 	float head_y;          /* where the chin sits, body scaled */
 	float shoulder[3];     /* the right shoulder (mirror X for the left) */
 	float hip[3];          /* the right leg's top */
+	float arm_len;         /* shoulder to the hand's centre, unscaled */
+	float shoe[2];         /* a shoe's centre: height and how far forward */
+	/* With a Wii body (mii_model_set_body): */
+	const mii_body *body;
+	float bone_scale[MII_BODY_BONES][3];   /* each bone's own scale, from height and build */
+	float ground;          /* lifts the bind pose's feet to Y = 0 */
+	float *skin_pos, *skin_nrm;   /* the posed vertices, rewritten each draw */
+	int body_ready;        /* skin_pos and skin_nrm hold this draw's pose */
+	uint32_t shirt, pants; /* colours, 0xRRGGBBAA */
 } mii_model;
 
 /* Builds a Mii. mask_size is the face texture's side (64, 128 or 256; 0:
  * 128). Free it with mii_model_free. */
 int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *out);
 void mii_model_free(mii_model *model);
+
+/* Uses a loaded body (male or female, to match the Mii) for this model in
+ * place of the built one; the body must outlive the model. 0 or MII_E_*. */
+int mii_model_set_body(mii_model *model, const mii_body *body);
 
 /* ---- Posing ---------------------------------------------------------------- */
 
@@ -161,7 +230,19 @@ typedef struct {
 	float breathe;         /* 0 to 1: the chest a little fuller */
 	int expression;        /* MII_EXPR_* */
 	int head_only;         /* no body: the head, chin at Y = 0 */
+	/* With a Wii body: 1 + one of its animations (mii_body_anim), or 0 to
+	 * stand still (Wait's first frame); at this frame, counted at 60 a
+	 * second and wrapping round. The arm, leg and breathing fields above
+	 * are for the built body. */
+	int anim;
+	float frame;
 } mii_pose;
+
+/* The pose's bones in the world, for a Wii body (portable: tests use it):
+ * each bone's rotation and position, the body scale applied. */
+void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]);
+/* The posed vertices into model->skin_pos and skin_nrm (3 floats each). */
+void mii_body_skin(mii_model *model, const mii_pose *pose);
 
 /* The bounds of a standing Mii (feet at 0), for framing a camera. */
 void mii_model_bounds(const mii_model *model, int head_only, float *top, float *half_width);
@@ -179,6 +260,15 @@ void mii_model_bounds(const mii_model *model, int head_only, float *top, float *
  * yours after. */
 void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place);
 
+/* A camera for drawing the Mii straight into your frame: the projection and
+ * view that frame the whole Mii (or the head, for head_only) in a viewport
+ * whose width over height on the TV is `aspect`, with `margin` around it.
+ * Set your viewport (and a depth range of your choosing) to that area, load
+ * `proj` with GX_PERSPECTIVE, then mii_draw(model, pose, view, NULL). This is
+ * how to draw a Mii each frame: no copies, no pixel-format change. */
+int mii_view(const mii_model *model, const mii_pose *pose, float aspect, float margin, Mtx44 proj,
+			 Mtx view);
+
 /* Draws the Mii into the EFB's top-left w x h pixels and copies that, with
  * alpha (clear where there is no Mii), to `dst` as GX_TF_RGBA8 (w*h*4 bytes,
  * 32-byte aligned; w and h multiples of 4, at most 640 x 528), clearing the
@@ -189,7 +279,9 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
  * Call it between frames: after your last copy to the screen, before you
  * draw the next frame. It changes the EFB pixel format (RGBA6 while it
  * draws, then RGB8_Z24), the viewport, scissor, projection, copy filter and
- * everything mii_draw changes: set yours again after (or at frame start). */
+ * everything mii_draw changes: set yours again after (or at frame start).
+ * For icons and stills; to show a Mii every frame, draw it in place with
+ * mii_view and mii_draw: no copies, no pixel-format change. */
 int mii_capture(const mii_model *model, const mii_pose *pose, int w, int h, float margin,
 				float stretch_x, GXColor clear, void *dst);
 
