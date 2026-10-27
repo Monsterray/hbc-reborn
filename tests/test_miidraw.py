@@ -165,15 +165,17 @@ class MiiDrawTest(unittest.TestCase):
 
     def check_head_lods(self, stdout, real):
         # Coarser heads: valid levels, never more triangles than the level
-        # before; with the Wii's own faces, about 60, 35 and 20% of them.
-        m = re.search(r"headlod: (\d+) (\d+) (\d+) (\d+) triangles, (\d+) bad", stdout)
+        # before; with the Wii's own faces, each level fewer and the last
+        # under 60% of the whole (each level may change a part by half a
+        # pixel where it is drawn, so how far they go depends on the Mii).
+        m = re.search(r"headlod: (\d+) (\d+) (\d+) (\d+) (\d+) triangles, (\d+) bad", stdout)
         self.assertTrue(m, stdout)
-        tris = [int(m[k]) for k in range(1, 5)]
-        self.assertEqual(m[5], "0", stdout)
+        tris = [int(m[k]) for k in range(1, 6)]
+        self.assertEqual(m[6], "0", stdout)
         self.assertEqual(tris, sorted(tris, reverse=True), stdout)
         if real:
-            for got, share in zip(tris[1:], (0.6, 0.35, 0.2)):
-                self.assertLess(got, tris[0] * share * 1.2 + 6, stdout)
+            self.assertEqual(len(set(tris)), 5, stdout)
+            self.assertLess(tris[3], tris[0] * 0.6, stdout)
         return tris
 
     def test_head_lods_real_faces(self):
@@ -183,6 +185,14 @@ class MiiDrawTest(unittest.TestCase):
             r, _ = self.run_host(os.environ["MII_REAL_RES"], "-d", sex, "64", "64", "5")
             self.assertEqual(r.returncode, 0, r.stdout)
             print("head levels:", self.check_head_lods(r.stdout, real=True))
+            # Strips: every triangle back, the same way round, and far fewer
+            # vertices sent than as separate triangles.
+            m = re.search(r"strips: (\d+) triangles sent as (\d+) vertices \((\d+) as triangles\), (\d+) wrong",
+                          r.stdout)
+            self.assertTrue(m, r.stdout)
+            self.assertEqual(m[4], "0", r.stdout)
+            self.assertLess(int(m[2]), int(m[3]) * 0.6, r.stdout)
+            print("strips:", m[0])
             # The forehead and nose are the face texture's colour as the Wii
             # draws it, so they do not stand apart from the face.
             self.assertIn("skin: 6 of 6 the face texture's colour", r.stdout)
@@ -213,24 +223,26 @@ class MiiDrawTest(unittest.TestCase):
             self.assertTrue(r.stdout.startswith("res: ") or r.stdout.count("model: "), r.stdout)
 
     def test_body_lods(self):
-        # Levels of detail from the user's own bodies: about Wii Party's
-        # shares of the triangles (62, 37, 21%), each list the body's own
-        # vertices, fewer triangles each level.
+        # Levels of detail from the user's own bodies: four, each list the
+        # body's own vertices, fewer triangles each level (each may move the
+        # surface half a pixel where it is drawn), the last under 40%.
         if not os.environ.get("MII_REAL_BODIES"):
             self.skipTest("set MII_REAL_BODIES")
         for name in ("maleBody.brres", "femaleBody.brres"):
             r = self.run_body(pathlib.Path(os.environ["MII_REAL_BODIES"]) / name, MII_LOD="1")
             self.assertEqual(r.returncode, 0, r.stdout)
             full = int(re.search(r"lod 0: (\d+) triangles", r.stdout)[1])
-            levels = re.findall(r"lod (\d): (\d+) triangles, moved at most ([\d.]+), (\d+) bad", r.stdout)
-            self.assertEqual(len(levels), 3, r.stdout)
+            levels = re.findall(r"lod (\d): (\d+) triangles, (\d+) vertices sent, moved at most ([\d.]+), "
+                                r"(\d+) bad", r.stdout)
+            self.assertEqual(len(levels), 4, r.stdout)
             last = full
-            for (level, tris, moved, bad), share in zip(levels, (0.62, 0.37, 0.21)):
+            for level, tris, sent, moved, bad in levels:
                 tris = int(tris)
                 self.assertEqual(bad, "0", r.stdout)
                 self.assertLess(tris, last, r.stdout)
-                self.assertLess(tris, full * share * 1.25 + 4, (name, r.stdout))
+                self.assertLess(int(sent), 3 * tris * 0.7, r.stdout)   # strips, not separate triangles
                 last = tris
+            self.assertLess(last, full * 0.4, r.stdout)
             print(name, r.stdout.split("lod 0", 1)[1].strip().replace("\n", "; "))
 
     def test_pose_memo(self):

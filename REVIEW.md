@@ -161,6 +161,84 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.10: levels by likeness, a fourth level, and the hardware doing the drawing
+
+The user found the smallest head disfigured and asked for a fourth level,
+and for the CPU's time to come down with the hardware's help.
+
+- **Levels by likeness, not by share.** Each level now folds while a fold
+  changes the part by no more than half a pixel at the largest the level is
+  drawn: 0.57, 0.94, 1.7 and 3.4 units for a Mii under 150, 90, 50 and 25
+  pixels tall. This is the same for heads and bodies.
+  - A fold's change is a distance: its quadric over the area behind it.
+    On a textured part it is also how far the texture under the folded
+    vertex moves, interpolated from the triangles that take its place, so
+    the evenly mapped face folds and the eyes do not move.
+  - Each part's levels depend on the part alone, so the cache's shared
+    levels still hold.
+  - The face layers are pulled toward the camera, and the forehead shrunk,
+    by the level's own tolerance, not a fixed amount.
+  - PC likeness measure (50 random Miis, rendered whole and at each level
+    at its drawn size). The old level 3 had 102 triangles, off by 34 with
+    87% overlap.
+
+    | Head level | Triangles | Colour off by (worst Mii) | Silhouette overlap |
+    |---|---|---|---|
+    | 1 | 357 | 2.2 (5.6) | 99.6% |
+    | 2 | 306 | 4.5 (9.8) | 99.0% |
+    | 3 | 216 | 10.2 (19.4) | 96.9% |
+    | 4 | 124 | 24.0 (41.6) | 91.4% |
+
+  - The body: 748 triangles to 486, 410, 318 and 241. The old share-based
+    level 4 folded the limbs flat; this one keeps them round.
+- **Strips** (`mii_strips`): every list sdk/mii writes (head parts, body
+  levels) is triangle strips. The GPU transforms each vertex it is sent,
+  and its vertex cache holds fetched data, not transformed vertices.
+  - Heads send 40% fewer vertices, body levels about 45% fewer.
+  - The host test expands the strips back: every triangle, the same way
+    round.
+- **The CPU, profiled on the Wii** (`-DMII_PROFILE`, `mii_profile`), a Mii
+  a frame:
+
+  | Stage | Before | After | What did it |
+  |---|---|---|---|
+  | Posing | 13.8 us | 6.9 us | bones on the paired-single unit (`mii_body_world`: each a `ps_guMtxConcat`, the scale `ps_guMtxApplyScale`); `bodyWait` found once |
+  | Palette | 5.7 us | 4.3 us | `dcbz` (`DCZeroRange`) on its lines: written whole, never read from memory first |
+  | Head | 8.2 us | 2.2-3.0 us | each level two display lists |
+  | Body, setup | 2.4 us | 2.4 us | |
+  | Total | about 32 us | about 16 us | |
+
+  - The paired-single pose matches the portable code to 0.00001 on the Wii
+    (a draw test check). One Mii's bones take 3.0 us against 65.6 us.
+- **Head display lists, and what recording taught.**
+  - The lists are made at a level's first draw: the parts' state, then
+    their triangles inline (a list cannot call another).
+  - A list records what libogc sends while it records. State it has marked
+    changed goes out only at the next primitive, and GX_EndDispList puts
+    back libogc's copy from before.
+  - So a list's last settings (the current matrix, the cull mode) never
+    reached it, and a setting libogc thought current (PNMTX0) was not
+    recorded. The heads after a coarse one drew on the wrong matrix and the
+    picture broke.
+  - Each list now sets all it relies on before its first triangles; the
+    caller restores the rest through libogc.
+  - The face's mask stays out of the lists (drawn between the two), and
+    each list is copied to its exact size.
+- **Bench Wii**, `mii_app walk`, 20 s each way:
+
+  | Miis | Before (1.11.9) | Now |
+  |---|---|---|
+  | 200 | 60 fps | 60 fps |
+  | 400 | 30 fps | 48 fps |
+  | 800 | 20 fps | 27 fps |
+
+  - GPU probe, 200 standing Miis, GPU time after the CPU: whole 11.5 ms
+    (was 16.2), level 3 3.9 ms (was 6.9).
+  - Fuzzing: 16,000 damaged bodies (about 13,600 parsed) through the new
+    levels and strips under ASan and UBSan, clean.
+  - HBC's avatar on the bench Wii: drawn whole, 60 frames a second for
+    90 s with no bad frame, 63 us of CPU a frame (about 128 before).
+
 ### 1.11.9: coarser heads, faces drawn by the GPU, the skin in one colour
 
 - **Coarser heads** (`mii_model_opts.lods`, drawn by `mii_pose.lod`):

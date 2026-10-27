@@ -678,6 +678,40 @@ static void draw_test(int slot) {
 	n = save_rgba8("body", body, 128, 256, &corners);
 	say("body: %d of %d pixels drawn, %d in the corners\n", n, 128 * 256, corners);
 	result("a Mii in the capture and clear corners", n > 128 * 256 / 8 && !corners ? MII_OK : MII_E_VERIFY);
+	/* The paired-single pose (mii_body_world, what mii_draw draws with)
+	 * against the portable one (mii_body_matrices), over a walk, and the
+	 * time each takes a Mii. */
+	if (model.body) {
+		static float pm[MII_BODY_BONES][3][4], nm[MII_BODY_BONES][3][3];
+		static Mtx w[MII_BODY_BONES];
+		mii_pose wp;
+		float worst = 0;
+		int f, b, i2, j2, walk = 1 + mii_body_anim(model.body, "bodyWalk");
+		u64 tp = 0, tw = 0, t1;
+
+		memset(&wp, 0, sizeof(wp));
+		wp.anim = walk;
+		for (f = 0; f < 40; ++f) {
+			wp.frame = f + 0.5f;
+			t1 = gettime();
+			mii_body_matrices(&model, &wp, pm, nm);
+			tp += gettime() - t1;
+			t1 = gettime();
+			mii_body_world(&model, &wp, w);
+			tw += gettime() - t1;
+			for (b = 0; b < model.body->nbones; ++b)
+				for (i2 = 0; i2 < 3; ++i2)
+					for (j2 = 0; j2 < 4; ++j2) {
+						float s = j2 < 3 ? model.bone_scale[b][j2] : 1, d = fabsf(w[b][i2][j2] * s - pm[b][i2][j2]);
+
+						worst = d > worst ? d : worst;
+					}
+		}
+		say("pose: paired singles against the portable code, largest difference %.5f; %llu ns against %llu ns "
+			"a Mii (the memo answers from the second frame)\n", worst, ticks_to_nanosecs(tw / 40),
+			ticks_to_nanosecs(tp / 40));
+		result("the paired-single pose matches", worst < 0.01f ? MII_OK : MII_E_VERIFY);
+	}
 	/* Its levels of detail, made from the body (mii_body_make_lods), standing. */
 	if (model.body && mii_body_make_lods((mii_body *) model.body, NULL, 0) == MII_OK) {
 		int l;
@@ -1241,7 +1275,8 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 	static u8 fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
 	static mii_res res;
 	static mii_body bodies[2];
-	static const char *what[] = { "whole", "heads only", "no pixels", "no Miis", "whole, level 3" };
+	static const char *what[] = { "whole", "heads only", "no pixels", "no Miis", "whole, level 3",
+								  "level 3, walking (a pose a frame)" };
 	mii_model **models = calloc(count, sizeof(mii_model *));
 	mii_cache *cache = mii_cache_new();
 	int i, mode, r, built = 0;
@@ -1281,10 +1316,13 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 		mii_model_make_faces(models[i], &res, (GXColor) { 150, 190, 230, 255 });
 	guLookAt(view, &eye, &up, &at);
 	guPerspective(proj, 45, (f32) rmode->fbWidth / rmode->efbHeight, 20, 12000);
-	for (mode = 0; mode < 5; ++mode) {
+	for (mode = 0; mode < 6; ++mode) {
 		u64 start = gettime(), cpu = 0, gpu = 0;
 		int frames = 0;
 
+#ifdef MII_PROFILE
+		memset(&mii_profile, 0, sizeof(mii_profile));
+#endif
 		while (diff_sec(start, gettime()) < 4) {
 			u64 a, b, c;
 
@@ -1302,7 +1340,11 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 
 				memset(&pose, 0, sizeof(pose));
 				pose.head_only = mode == 1;
-				pose.lod = mode == 4 ? bodies[i & 1].nlods : 0;
+				pose.lod = mode >= 4 ? bodies[i & 1].nlods : 0;
+				if (mode == 5) {   /* walking, eight groups in step, as walk_test */
+					pose.anim = 1 + mii_body_anim(&bodies[i & 1], "bodyWalk");
+					pose.frame = (float) (frames + (i % 8) * 5);
+				}
 				guMtxIdentity(place);
 				guMtxTransApply(place, place, x, 0, z);
 				mii_draw(models[i], &pose, view, place);
@@ -1318,6 +1360,17 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 		}
 		say("gpuprobe %d at %.0f, %s: CPU %llu us, GPU after it %llu us a frame (%d frames)\n", built, dist,
 			what[mode], ticks_to_microsecs(cpu / frames), ticks_to_microsecs(gpu / frames), frames);
+#ifdef MII_PROFILE
+		if (mii_profile.draws) {   /* nanoseconds a Mii */
+			u64 d = mii_profile.draws;
+
+			say("  a Mii: setup %llu, pose %llu, palette %llu, body GX %llu, head %llu ns (%u draws)\n",
+				ticks_to_nanosecs(mii_profile.setup / d), ticks_to_nanosecs(mii_profile.pose / d),
+				ticks_to_nanosecs(mii_profile.palette / d), ticks_to_nanosecs(mii_profile.body / d),
+				ticks_to_nanosecs(mii_profile.head / d), (unsigned) d);
+		}
+		memset(&mii_profile, 0, sizeof(mii_profile));
+#endif
 	}
 	for (i = 0; i < built; ++i) {
 		mii_model_free(models[i]);

@@ -223,7 +223,55 @@ int main(int argc, char **argv) {
 					bad += p->idx[p->lod_first[l] + c] >= p->nverts;
 			}
 		}
-		printf("headlod: %d %d %d %d triangles, %d bad\n", tris[0], tris[1], tris[2], tris[3], bad);
+		printf("headlod: %d %d %d %d %d triangles, %d bad\n", tris[0], tris[1], tris[2], tris[3], tris[4], bad);
+		{   /* Strips (mii_strips) give back every triangle, the same way round, once. */
+			long in = 0, sent = 0, wrong = 0;
+
+			for (i = 0; i < MII_HEAD_PARTS; ++i)
+				for (l = 0; l <= lm.part[i].lods; ++l) {
+					const mii_mesh *p = &lm.part[i];
+					const uint16_t *t = l ? p->idx + p->lod_first[l - 1] : p->idx;
+					int n = (l ? p->lod_count[l - 1] : p->count) / 3, ns, s, k, at = 0;
+					uint16_t *out = malloc(sizeof(uint16_t) * 3 * (n + 1)), *lens = malloc(sizeof(uint16_t) * (n + 1));
+					int *seen = calloc(n + 1, sizeof(int));
+
+					if (!n)
+						goto next_level;
+					ns = mii_strips(t, n, out, lens);
+					in += n;
+					for (s = 0; s < ns; ++s) {
+						for (k = 0; k + 2 < lens[s]; ++k) {
+							int a = out[at + k], b = out[at + k + 1], c = out[at + k + 2], j, hit = -1;
+
+							if (k % 2) {
+								int x = a;
+
+								a = b;
+								b = x;
+							}
+							for (j = 0; j < n && hit < 0; ++j)
+								if (!seen[j] && ((t[3 * j] == a && t[3 * j + 1] == b && t[3 * j + 2] == c) ||
+												 (t[3 * j + 1] == a && t[3 * j + 2] == b && t[3 * j] == c) ||
+												 (t[3 * j + 2] == a && t[3 * j] == b && t[3 * j + 1] == c)))
+									hit = j;
+							if (hit < 0)
+								++wrong;
+							else
+								seen[hit] = 1;
+						}
+						sent += lens[s];
+						at += lens[s];
+					}
+					for (k = 0; k < n; ++k)
+						wrong += !seen[k];
+				next_level:
+					free(out);
+					free(lens);
+					free(seen);
+				}
+			printf("strips: %ld triangles sent as %ld vertices (%ld as triangles), %ld wrong\n", in, sent, 3 * in,
+				   wrong);
+		}
 		mii_model_free(&lm);
 	}
 	{   /* The skin: the forehead and the nose, plain colours, are the face
@@ -370,49 +418,75 @@ int main(int argc, char **argv) {
 			}
 			printf("lod 0: %d triangles\n", body.full_tris);
 			for (l = 0; l < body.nlods; ++l) {
-				int bad = 0, corners = 0;
+				int bad = 0, tris = 0;
+				long sent = 0;
 
 				for (k = 0; k < body.nobjs; ++k) {
 					const mii_body_obj *o = &body.obj[k];
 					const uint8_t *d = body.lod[l].dl[k];
-					uint32_t at, head = 0, size = body.lod[l].dl_size[k];
-					int tm = 0, vs, n, c;
+					uint32_t at = 0, size = body.lod[l].dl_size[k];
+					int tm = 0, vs;
 
 					for (j = 1; j <= 8; ++j)
 						tm += o->vcd >> j & 1;
 					vs = 1 + tm + ((o->vcd >> 9 & 3) == 2 ? 1 : 2) + ((o->vcd >> 11 & 3) == 2 ? 1 : 2);
-					while (head < o->dl_size && (o->dl[head] == 0x20 || o->dl[head] == 0x28 || o->dl[head] == 0x30))
-						head += 5;
-					if (!d || size % 32 || memcmp(d, o->dl, head) || d[head] != 0x91) {
+					if (!d || size % 32 || memcmp(d, o->dl, 5)) {
 						++bad;
 						continue;
 					}
-					n = d[head + 1] << 8 | d[head + 2];
-					if (head + 3 + (uint32_t) n * vs > size || n % 3)
-						++bad;
-					for (c = 0; c < n && !bad; ++c) {
-						const uint8_t *v = d + head + 3 + c * vs;
-						int found = 0;
+					/* Each primitive (strips, 0x99, or triangles, 0x91) after
+					 * the run's loads: every vertex one of the object's own. */
+					while (at < size && !bad) {
+						int op = d[at], n, c;
 
-						for (at = head; at < o->dl_size && !found;) {   /* the object's own vertices */
-							int m, cnt;
-
-							if (!o->dl[at]) {
-								++at;
-								continue;
-							}
-							cnt = o->dl[at + 1] << 8 | o->dl[at + 2];
-							for (m = 0; m < cnt && !found; ++m)
-								found = !memcmp(o->dl + at + 3 + m * vs, v, vs);
-							at += 3 + (uint32_t) cnt * vs;
+						if (!op) {
+							++at;
+							continue;
 						}
-						bad += !found;
+						if (op == 0x20 || op == 0x28 || op == 0x30) {
+							at += 5;
+							continue;
+						}
+						if (op != 0x99 && op != 0x91) {
+							++bad;
+							break;
+						}
+						n = d[at + 1] << 8 | d[at + 2];
+						if (at + 3 + (uint32_t) n * vs > size || (op == 0x91 && n % 3) || n < 3) {
+							++bad;
+							break;
+						}
+						tris += op == 0x99 ? n - 2 : n / 3;
+						sent += n;
+						for (c = 0; c < n && !bad; ++c) {
+							const uint8_t *v = d + at + 3 + c * vs;
+							uint32_t b;
+							int found = 0;
+
+							for (b = 0; b < o->dl_size && !found;) {   /* the object's own vertices */
+								int m, cnt;
+
+								if (!o->dl[b]) {
+									++b;
+									continue;
+								}
+								if (o->dl[b] == 0x20 || o->dl[b] == 0x28 || o->dl[b] == 0x30) {
+									b += 5;
+									continue;
+								}
+								cnt = o->dl[b + 1] << 8 | o->dl[b + 2];
+								for (m = 0; m < cnt && !found; ++m)
+									found = !memcmp(o->dl + b + 3 + m * vs, v, vs);
+								b += 3 + (uint32_t) cnt * vs;
+							}
+							bad += !found;
+						}
+						at += 3 + (uint32_t) n * vs;
 					}
-					corners += n;
 				}
-				printf("lod %d: %d triangles, moved at most %.2f, %d bad\n", l + 1, body.lod[l].tris,
-					   body.lod[l].err, bad);
-				(void) corners;
+				bad += tris != body.lod[l].tris;
+				printf("lod %d: %d triangles, %ld vertices sent, moved at most %.2f, %d bad\n", l + 1,
+					   body.lod[l].tris, sent, body.lod[l].err, bad);
 			}
 			return 0;
 		}

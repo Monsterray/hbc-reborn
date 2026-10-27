@@ -187,6 +187,7 @@ typedef struct {
 	 * body's models from one thread. */
 	mii_pose_memo *memo;
 	int memo_next;
+	int wait_anim;         /* bodyWait's index (or -1): a pose's anim 0 */
 	uint32_t memo_hits, memo_misses;
 	/* Levels of detail (mii_body_make_lods): lod[0] is level 1. */
 	int full_tris;         /* the whole body's triangles */
@@ -205,17 +206,17 @@ void mii_body_free(mii_body *body);
 int mii_body_anim(const mii_body *body, const char *name);
 
 /* Makes coarser levels of the body, as games draw a crowd's far Miis (Wii
- * Party's bodies go 2,092, 1,296, 776, 448, 240 triangles): each a share
- * of the body's triangles (fractions, finest first), up to MII_BODY_LODS.
- * NULL: Wii Party's first three steps, 0.62, 0.37 and 0.21 (about 465,
- * 280 and 155 of the Mii Channel body's 750). A fourth (0.115) leaves under
- * 8 triangles a bone, and the limbs fold flat. Built here from the user's
- * own body, so nothing Nintendo made is shipped: each step folds a vertex
- * into a neighbour on the same bone, the fold that changes the surface
- * least for that bone's thickness (quadric error), keeping open edges and
- * turning no triangle more than 60 degrees. 0 or MII_E_*; a level that
- * could not get that small stops where it could. */
-int mii_body_make_lods(mii_body *body, const float *fractions, int n);
+ * Party's bodies go 2,092, 1,296, 776, 448, 240 triangles), up to
+ * MII_BODY_LODS: each level folds while a fold moves the surface by no
+ * more than its tolerance (body units, finest first). NULL: half a pixel
+ * at the largest each level is drawn (mii_body_lod_for), 0.57, 0.94, 1.7
+ * and 3.4, so each looks as the whole body does at its size; n 0: all
+ * four. Built here from the user's own body, so nothing Nintendo made is
+ * shipped: each step folds a vertex into a neighbour on the same bone, the
+ * fold that moves the surface least (quadric error over the area behind
+ * it), keeping open edges and turning no triangle more than 60 degrees.
+ * 0 or MII_E_*. */
+int mii_body_make_lods(mii_body *body, const float *tolerances, int n);
 /* The level for a Mii this many pixels tall on screen: 0 (the whole body)
  * from 150, then one level more under each of 150, 90, 50 and 25, as far
  * as made. */
@@ -236,7 +237,7 @@ enum {
 
 typedef struct mii_cache mii_cache;   /* below: parts shared between Miis */
 
-#define MII_HEAD_LODS 3        /* coarser heads mii_model_opts.lods can ask for */
+#define MII_HEAD_LODS 4        /* coarser heads mii_model_opts.lods can ask for */
 
 /* One part's triangles, each vertex x y z, nx ny nz, s t. */
 typedef struct {
@@ -324,7 +325,7 @@ typedef struct {
 	/* The bones as the last draw posed them (mii_pose.reuse): each one's
 	 * matrices, and the head's place. */
 	float (*last_pm)[3][4];
-	float (*last_nm)[3][3];
+	float (*last_w)[3][4];   /* unscaled: the normals' rotation */
 	float last_head[3][4];
 	int posed;
 	int pal_next;
@@ -334,6 +335,12 @@ typedef struct {
 	unsigned expressions;
 	mii_cache *cache;
 	int gpu_faces, faces_pending;   /* mii_model_opts.gpu_faces; faces still to draw */
+	/* On the Wii, each head level as two display lists (made by its first
+	 * draw): the parts' state and triangles before the face, and after it,
+	 * so a draw is a few matrix loads, the face and two calls. Scratch,
+	 * written by drawing. */
+	void *head_dl[MII_HEAD_LODS + 1][2];
+	uint32_t head_dl_size[MII_HEAD_LODS + 1][2];
 } mii_model;
 
 /* Which expressions' faces to build: MII_EXPR_BIT(MII_EXPR_SMILE) | ...
@@ -358,9 +365,11 @@ typedef struct {
 	unsigned expressions;  /* MII_EXPR_BIT()s (0: all of them) */
 	mii_cache *cache;      /* share identical parts with other Miis built with it, or NULL */
 	/* Coarser heads for Miis far off, drawn by mii_pose.lod: 0 to
-	 * MII_HEAD_LODS levels, about 60, 35 and 20% of the head's triangles. A
-	 * head is about 480 triangles, more than a far body: in a crowd the
-	 * GPU's time is mostly heads (REVIEW.md, 1.11.8). Some ms to build. */
+	 * MII_HEAD_LODS levels, each changing the head by no more than half a
+	 * pixel where it is drawn (a Mii under 150, 90, 50 and 25 pixels tall).
+	 * A head is about 480 triangles, more than a far body: in a crowd the
+	 * GPU's time is mostly heads (REVIEW.md, 1.11.8). Some ms to build;
+	 * Miis sharing a part through a cache share its levels. */
 	int lods;
 	/* 1: the faces drawn by the GPU, as RFL does (RFLiMakeTexture): about
 	 * 0.2 ms each against 1 to 6 ms on the CPU. They need the EFB, so
@@ -392,6 +401,16 @@ void mii_model_free(mii_model *model);
 int mii_model_set_body(mii_model *model, const mii_body *body);
 /* Frees a part's triangles, leaving it empty. */
 void mii_mesh_free(mii_mesh *mesh);
+
+/* Triangles (ntri index triples) as strips, the way the GPU takes them
+ * cheapest: a strip of n vertices draws n - 2 triangles, and the GPU
+ * transforms each vertex it is sent (its vertex cache holds what it reads,
+ * not what it works out). Greedy: from the triangle with the fewest free
+ * neighbours, on through the neighbour across the strip's last edge, the
+ * winding kept. out gets the strips' vertices, lens each strip's length;
+ * returns how many strips, or -1 (no memory). out needs 3 * ntri entries,
+ * lens ntri. */
+int mii_strips(const uint16_t *tri, int ntri, uint16_t *out, uint16_t *lens);
 
 /* ---- Posing ---------------------------------------------------------------- */
 
@@ -427,7 +446,7 @@ typedef struct {
 	 * unread but the head's angles and the expression: a Mii far off posed
 	 * every second or fourth frame costs about a third. */
 	int reuse;
-	/* 0 the whole Mii; 1 to 3 coarser levels for a Mii far off
+	/* 0 the whole Mii; 1 to 4 coarser levels for a Mii far off
 	 * (mii_body_lod_for): the Wii body's (mii_body_make_lods) and the
 	 * head's (mii_model_opts.lods), each as far as it has levels. */
 	int lod;
@@ -451,6 +470,13 @@ void mii_body_matrices(const mii_model *model, const mii_pose *pose, float pos[]
 /* The same, from a pose mii_body_pose worked out. */
 void mii_body_matrices_posed(const mii_model *model, float rot[][3][3], float at[][3], float pos[][3][4],
 							 float nrm[][3][3]);
+#ifndef MII_NO_OGC
+/* Each bone in the body's space as a matrix (rotation and position, the
+ * scale not applied): mii_body_pose, on the Wii's paired-single unit (each
+ * bone its parent's matrix times its own, ps_guMtxConcat). What mii_draw
+ * poses with. */
+void mii_body_world(const mii_model *model, const mii_pose *pose, Mtx world[]);
+#endif
 
 /* The bounds of a standing Mii (feet at 0), for framing a camera. */
 void mii_model_bounds(const mii_model *model, int head_only, float *top, float *half_width);
@@ -478,6 +504,16 @@ void mii_model_bounds(const mii_model *model, int head_only, float *top, float *
  * It writes the model's skinning arrays: draw one model from one thread at
  * a time. */
 void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place);
+
+#ifdef MII_PROFILE
+/* Built with -DMII_PROFILE: where mii_draw's CPU time goes, in time base
+ * ticks, summed over draws (zero it to start). */
+typedef struct {
+	uint64_t setup, pose, palette, body, head;
+	uint32_t draws;
+} mii_profile_ticks;
+extern mii_profile_ticks mii_profile;
+#endif
 
 /* A camera for drawing the Mii straight into your frame: the projection and
  * view that frame the whole Mii (or the head, for head_only) in a viewport

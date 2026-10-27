@@ -267,12 +267,19 @@ if (ok) {
     each part that comes out the same, byte for byte (the same hair, face
     shape, textures). With 32 px faces and the normal one only, a random
     Mii then takes about 12 to 20 KB; the bench Wii held 5,855.
-  - `mii_body_make_lods` once per body, `mii_model_opts.lods = 3` for each
-    Mii, then each frame `pose.lod = mii_body_lod_for(&body, pixels_tall)`:
-    coarser bodies (62, 37 and 21% of the triangles) and heads (about 60,
-    35 and 20%) for Miis far off, made on the Wii from the user's own files.
-    The GPU's time in a crowd is vertices, mostly heads: at level 3, 200
-    Miis took it 1.8 ms where whole ones took 13.
+  - `mii_body_make_lods(&body, NULL, 0)` once per body,
+    `mii_model_opts.lods = MII_HEAD_LODS` for each Mii, then each frame
+    `pose.lod = mii_body_lod_for(&body, pixels_tall)`: four coarser levels
+    of body and head for Miis under 150, 90, 50 and 25 pixels tall, each
+    changing the Mii by no more than half a pixel at that size, made on the
+    Wii from the user's own files. A head of about 480 triangles goes to
+    about 360, 300, 220 and 120, the body's 750 to about 490, 420, 320 and
+    240, all drawn as strips. The GPU's time in a crowd is vertices.
+  - Drawing is the hardware's work: the bones on the paired-single unit,
+    each head level a display list the GPU fetches itself, the matrix
+    palette's cache lines claimed with `dcbz`. A Mii far off costs the CPU
+    about 16 us a frame. Build with `-DMII_PROFILE` to see where
+    (`mii_profile`).
   - `mii_model_opts.gpu_faces = 1`: faces drawn by the GPU, as RFL draws
     them (`RFLiMakeTexture`): about 0.08 ms each against 1 to 6 ms on the
     CPU, within 0.1 of 255 of the CPU's on average. They use the EFB, so

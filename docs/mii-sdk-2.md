@@ -81,6 +81,9 @@ HBC will offer both modes, with a setting.
      RFL's `RFLiMakeTexture` does (`mii_model_opts.gpu_faces`,
      `mii_model_make_faces`): HBC 1.11.9. 200 walking Miis hold 60 fps;
      the CPU's posing is now the limit.
+   - Levels by likeness (half a pixel where drawn), a fourth level, strips,
+     paired-single posing, head display lists: HBC 1.11.10. 400 walking
+     Miis at 48 fps, 800 at 27; a far Mii costs the CPU about 16 us.
 2. **API:** `mii_draw_opa`, `mii_draw_xlu`, `mii_draw_setup`,
    `mii_draw_done`, `mii_draw_in_rect` with the two modes; `mii_view`'s
    depth needs.

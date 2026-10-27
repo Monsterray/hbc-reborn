@@ -741,6 +741,7 @@ int mii_body_attach(mii_body *body, void *data, size_t size) {
 				++body->nanims;
 		}
 	}
+	body->wait_anim = mii_body_anim(body, "bodyWait");
 	return MII_OK;
 fail:
 	body->data = NULL;   /* the caller keeps its data on failure */
@@ -800,7 +801,7 @@ static const mii_anim *pick_anim(const mii_body *body, int anim1, float frame, f
 
 	*f = 0;
 	if (anim < 0 || anim >= body->nanims)
-		anim = mii_body_anim(body, "bodyWait");
+		anim = body->wait_anim;   /* found once, at load */
 	a = anim >= 0 ? &body->anim[anim] : NULL;
 	if (a && anim1 > 0) {
 		*f = fmodf(frame, (float) a->frames);
@@ -1003,6 +1004,44 @@ void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][
 		pos[i][1] += model->ground;
 }
 
+#ifndef MII_NO_OGC
+void mii_body_world(const mii_model *model, const mii_pose *pose, Mtx world[]) {
+	const mii_body *body = model ? model->body : NULL;
+	const mii_pose_memo *lp;
+	mii_pose_memo own;
+	int i;
+
+	if (!body || !world)
+		return;
+	lp = pose_locals(body, pose, &own);
+	for (i = 0; i < body->nbones; ++i) {
+		const mii_bone *bn = &body->bone[i];
+		const float *t = lp->t[i];
+		Mtx local;
+		int r;
+
+		for (r = 0; r < 3; ++r) {
+			local[r][0] = lp->r[i][r][0];
+			local[r][1] = lp->r[i][r][1];
+			local[r][2] = lp->r[i][r][2];
+		}
+		if (bn->parent < 0) {   /* a root: the ground under its feet */
+			local[0][3] = t[0];
+			local[1][3] = t[1] + model->ground;
+			local[2][3] = t[2];
+			guMtxCopy(local, world[i]);
+		} else {   /* its offset in the parent's scaled frame */
+			const float *ps = model->bone_scale[bn->parent];
+
+			local[0][3] = t[0] * ps[0];
+			local[1][3] = t[1] * ps[1];
+			local[2][3] = t[2] * ps[2];
+			guMtxConcat(world[bn->parent], local, world[i]);
+		}
+	}
+}
+#endif
+
 void mii_body_skin(mii_model *model, const mii_pose *pose) {
 	const mii_body *body = model ? model->body : NULL;
 	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
@@ -1123,11 +1162,11 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 	model->pal_nrm = malloc(sizeof(float) * 9 * model->pal_size * MII_PALETTES);
 #endif
 	free(model->last_pm);
-	free(model->last_nm);
+	free(model->last_w);
 	model->last_pm = malloc(sizeof(float) * 12 * body->nbones);
-	model->last_nm = malloc(sizeof(float) * 9 * body->nbones);
+	model->last_w = malloc(sizeof(float) * 12 * body->nbones);
 	model->posed = 0;
-	if (!model->pal_pos || !model->pal_nrm || !model->last_pm || !model->last_nm) {
+	if (!model->pal_pos || !model->pal_nrm || !model->last_pm || !model->last_w) {
 		model->body = NULL;
 		return MII_E_MEM;
 	}
@@ -1199,8 +1238,8 @@ static void tri_normal(const float *a, const float *b, const float *c, double n[
  * (normal and all) until a fold moves a corner, which then takes the kept
  * node's. Each level's bytes (the loads, then GX_TRIANGLES) go to out[]. */
 static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int pos_w, uint32_t h0, uint32_t h1,
-				   uint32_t p0, uint32_t p1, const float *world, const uint8_t *vbone, const float *thick,
-				   const float *frac, int n, uint8_t **out, uint32_t *out_len) {
+				   uint32_t p0, uint32_t p1, const float *world, const float *tol, int n, uint8_t **out,
+				   uint32_t *out_len) {
 	uint32_t at;
 	int i, j, nn = 0, nt = 0, alive, lev, local = 0, corners = 0, r = MII_E_MEM;
 	int *key = NULL, *canon = NULL, *tri = NULL, *traw = NULL;
@@ -1256,7 +1295,7 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 				key[2 * nn + 1] = pi;
 				canon[nn] = (int) at;
 				memcpy(pos + 3 * nn, world + 3 * local, sizeof(float) * 3);
-				scale[nn] = thick[vbone[local]];
+				scale[nn] = 0;   /* the area behind the node, below */
 				++nn;
 			}
 			vn[v] = j;
@@ -1300,9 +1339,11 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 			continue;
 		for (j = 0; j < 3; ++j)
 			nm[j] /= l;
-		for (j = 0; j < 3; ++j)
+		for (j = 0; j < 3; ++j) {
 			quad_plane(q + 10 * t[j], nm, -(nm[0] * pos[3 * t[0]] + nm[1] * pos[3 * t[0] + 1] + nm[2] * pos[3 * t[0] + 2]),
 					   l / 2);
+			scale[t[j]] += (float) (l / 2);
+		}
 		for (e = 0; e < 3; ++e) {
 			int a = t[e], b = t[(e + 1) % 3], m, shared = 0;
 			double d[3], sd[3], sl;
@@ -1330,13 +1371,14 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 			quad_plane(q + 10 * b, sd, sl, 100 * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
 		}
 	}
-	/* Fold, cheapest first, down to each level's share; write the level. */
+	/* Fold, cheapest first, while a fold moves the surface by no more than
+	 * the level's tolerance; write the level. */
 	alive = nt;
 	for (lev = 0; lev < n; ++lev) {
-		int target = (int) (frac[lev] * nt + 0.5f), tries = 0;
+		int tries = 0;
 		uint8_t *o;
 
-		while (alive > target) {
+		while (alive > 2) {
 			double best = 1e300;
 			int bu = -1, bv = -1, ok = 1;
 
@@ -1352,9 +1394,10 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 
 					if (key[2 * u] != key[2 * v])
 						continue;   /* another bone: the joint stays */
-					/* In the bone's own thickness: a thin arm is not cheaper
-					 * to flatten than the chest. */
-					c = quad_at(q + 10 * u, q + 10 * v, pos + 3 * v) / scale[u];
+					/* A distance: the quadric over the area behind it.
+					 * Flattening a limb moves its side by its radius. */
+					c = quad_at(q + 10 * u, q + 10 * v, pos + 3 * v);
+					c = sqrt((c > 0 ? c : 0) / (scale[u] + scale[v] + 1e-6));
 					if (c < best) {
 						best = c;
 						bu = u;
@@ -1362,7 +1405,7 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 					}
 				}
 			}
-			if (bu < 0)
+			if (bu < 0 || best > tol[lev])   /* the next fold would show */
 				break;
 			/* No triangle around u may turn more than 60 degrees: folds
 			 * that flatten a limb turn its sides over. */
@@ -1431,20 +1474,63 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 				}
 			}
 		}
-		/* The run's loads, then its triangles. */
-		out_len[lev] = (h1 - h0) + 3 + (uint32_t) alive * 3 * vs;
-		o = out[lev] = malloc(out_len[lev]);
-		if (!o)
-			goto done;
-		memcpy(o, dl + h0, h1 - h0);
-		at = h1 - h0;
-		o[at++] = 0x90 | 1;   /* GX_TRIANGLES on GX_VTXFMT1 */
-		o[at++] = (uint8_t) (alive * 3 >> 8);
-		o[at++] = (uint8_t) (alive * 3);
-		for (i = 0; i < nt; ++i)
-			if (!dead[i])
-				for (j = 0; j < 3; ++j, at += vs)
-					memcpy(o + at, dl + traw[3 * i + j], vs);
+		/* The run's loads, then its triangles as strips (mii_strips: the
+		 * GPU works out each vertex it is sent). A strip's vertex is a
+		 * corner's bytes: corners with the same bytes are one vertex. */
+		{
+			uint16_t *tv = malloc(sizeof(uint16_t) * 3 * (alive + 1)), *sv = malloc(sizeof(uint16_t) * 3 * (alive + 1));
+			uint16_t *lens = malloc(sizeof(uint16_t) * (alive + 1));
+			int *rep = malloc(sizeof(int) * 3 * (alive + 1)), nr = 0, ns, s, k2, c = 0;
+
+			if (!tv || !sv || !lens || !rep) {
+				free(tv);
+				free(sv);
+				free(lens);
+				free(rep);
+				goto done;
+			}
+			for (i = 0; i < nt; ++i)
+				if (!dead[i])
+					for (j = 0; j < 3; ++j) {
+						int raw = traw[3 * i + j], v;
+
+						for (v = 0; v < nr; ++v)
+							if (!memcmp(dl + rep[v], dl + raw, vs))
+								break;
+						if (v == nr)
+							rep[nr++] = raw;
+						tv[c++] = (uint16_t) v;
+					}
+			ns = mii_strips(tv, alive, sv, lens);
+			if (ns < 0) {
+				free(tv);
+				free(sv);
+				free(lens);
+				free(rep);
+				goto done;
+			}
+			out_len[lev] = h1 - h0;
+			for (s = 0; s < ns; ++s)
+				out_len[lev] += 3 + (uint32_t) lens[s] * vs;
+			o = out[lev] = malloc(out_len[lev]);
+			if (o) {
+				memcpy(o, dl + h0, h1 - h0);
+				at = h1 - h0;
+				for (s = 0, c = 0; s < ns; ++s) {
+					o[at++] = 0x98 | 1;   /* GX_TRIANGLESTRIP on GX_VTXFMT1 */
+					o[at++] = (uint8_t) (lens[s] >> 8);
+					o[at++] = (uint8_t) lens[s];
+					for (k2 = 0; k2 < lens[s]; ++k2, ++c, at += vs)
+						memcpy(o + at, dl + rep[sv[c]], vs);
+				}
+			}
+			free(tv);
+			free(sv);
+			free(lens);
+			free(rep);
+			if (!o)
+				goto done;
+		}
 		body->lod[lev].tris += alive;
 	}
 	r = MII_OK;
@@ -1463,8 +1549,7 @@ done:
 /* One object's levels: each run of its list on its own (a list may load
  * other bones into its slots part way: the female shirt does), the runs'
  * bytes one after another, padded to 32 with GX_NOPs. world: its vertices. */
-static int lod_object(mii_body *body, int k, const float *world, const uint8_t *vbone, const float *thick,
-					  const float *frac, int n) {
+static int lod_object(mii_body *body, int k, const float *world, const float *tol, int n) {
 	mii_body_obj *ob = &body->obj[k];
 	uint32_t lo = ob->vcd, at = 0, len[MII_BODY_LODS], total[MII_BODY_LODS] = { 0 };
 	uint8_t *chunk[MII_BODY_LODS], *runs[16][MII_BODY_LODS];
@@ -1499,8 +1584,8 @@ static int lod_object(mii_body *body, int k, const float *world, const uint8_t *
 		p1 = at;
 		if (nr >= 16)
 			return MII_E_FORMAT;
-		r = lod_run(body, ob->dl, vs, tex_mtx, pos_w, h0, h1, p0, p1, world + 3 * verts, vbone + verts, thick,
-					frac, n, runs[nr], runs_len[nr]);
+		r = lod_run(body, ob->dl, vs, tex_mtx, pos_w, h0, h1, p0, p1, world + 3 * verts, tol, n, runs[nr],
+					runs_len[nr]);
 		for (l = 0; l < n; ++l)
 			total[l] += runs_len[nr][l];
 		++nr;
@@ -1535,21 +1620,22 @@ static int lod_object(mii_body *body, int k, const float *world, const uint8_t *
 	return r < 0 ? r : verts;
 }
 
-int mii_body_make_lods(mii_body *body, const float *fractions, int n) {
-	static const float wii_party[MII_BODY_LODS] = { 0.62f, 0.37f, 0.21f };
-	float rot[MII_BODY_BONES][3][3], at[MII_BODY_BONES][3], *world, thick[MII_BODY_BONES] = { 0 };
-	int per[MII_BODY_BONES] = { 0 };
+int mii_body_make_lods(mii_body *body, const float *tolerances, int n) {
+	/* Half a pixel at the largest each level is drawn (mii_body_lod_for: a
+	 * Mii 150, 90, 50 and 25 pixels tall, about 170 units), as the head's. */
+	static const float half_pixel[MII_BODY_LODS] = { 0.57f, 0.94f, 1.7f, 3.4f };
+	float rot[MII_BODY_BONES][3][3], at[MII_BODY_BONES][3], *world;
 	int i, k, vbase = 0, r = 0;
 
 	if (!body || !body->nobjs || n < 0 || n > MII_BODY_LODS)
 		return MII_E_ARG;
-	if (!fractions) {
-		fractions = wii_party;
-		if (!n || n > 3)
-			n = 3;
+	if (!tolerances) {
+		tolerances = half_pixel;
+		if (!n)
+			n = MII_BODY_LODS;
 	}
 	for (i = 0; i < n; ++i)
-		if (!(fractions[i] > 0 && fractions[i] <= 1) || (i && fractions[i] > fractions[i - 1]))
+		if (!(tolerances[i] > 0) || (i && tolerances[i] < tolerances[i - 1]))
 			return MII_E_ARG;
 	for (i = 0; i < body->nlods; ++i)
 		for (k = 0; k < MII_BODY_OBJS; ++k)
@@ -1584,18 +1670,8 @@ int mii_body_make_lods(mii_body *body, const float *fractions, int n) {
 		for (k = 0; k < 3; ++k)
 			world[3 * i + k] = at[b][k] + rot[b][k][0] * v[0] + rot[b][k][1] * v[1] + rot[b][k][2] * v[2];
 	}
-	/* Each bone's thickness: its vertices' mean square distance from its own
-	 * X axis (a limb runs along X), the fold costs' unit. */
-	for (i = 0; i < body->nverts; ++i) {
-		const float *v = body->vpos + 3 * i;
-
-		thick[body->vbone[i]] += v[1] * v[1] + v[2] * v[2];
-		++per[body->vbone[i]];
-	}
-	for (i = 0; i < MII_BODY_BONES; ++i)
-		thick[i] = per[i] ? thick[i] / per[i] + 1e-3f : 1;
 	for (k = 0; k < body->nobjs && r >= 0; ++k) {   /* each object's skin vertices follow the last's */
-		r = lod_object(body, k, world + 3 * vbase, body->vbone + vbase, thick, fractions, n);
+		r = lod_object(body, k, world + 3 * vbase, tolerances, n);
 		vbase += r > 0 ? r : 0;
 	}
 	free(world);
