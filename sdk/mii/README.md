@@ -218,8 +218,10 @@ if (ok) {
 - **Ways to draw it:**
   - In place, each frame: `mii_view()` gives the projection and camera
     that frame the Mii in a viewport of the aspect you pass; set your
-    viewport (and a depth range) there and `mii_draw()`. HBC's avatar does
-    this (channel/channelapp/source/avatar.c).
+    viewport there and `mii_draw()`. Give the Mii a wide depth range: its
+    face's layers break up on a real Wii in a thin one (Dolphin hides it).
+    HBC's avatar does this (channel/channelapp/source/avatar.c): the whole
+    range in front of its slot, then its rectangle's depth put back.
   - `mii_capture()` into a texture with alpha, framed whole (or the head:
     `pose.head_only`). It draws twice the size and box-filters down, so the
     edges are smooth. For icons and stills.

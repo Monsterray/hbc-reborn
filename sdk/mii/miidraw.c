@@ -1236,6 +1236,9 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 
 		draw_mesh(p, p->tex >= 0 && p->tex < MII_TEX_COUNT ? &model->tex[p->tex].obj : NULL);
 	}
+	/* The layers over the face test Z but write none: drawn just in front of
+	 * the faceline, they must not fight it or each other. */
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
 	for (i = 0; i < sizeof(translucent) / sizeof(translucent[0]); ++i) {
 		const mii_mesh *p = &model->part[translucent[i]];
 
@@ -1248,6 +1251,7 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 				  &model->tex[p->tex].obj);
 	}
 	GX_SetCullMode(GX_CULL_BACK);
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
 }
 
 /* A Wii body (miibody.c): skinned on the CPU into the model's arrays, the
@@ -1507,10 +1511,21 @@ int mii_view(const mii_model *model, const mii_pose *pose, float aspect, float m
 	static const mii_pose still = { 0 };
 	guVector eye, target, up = { 0, 1, 0 };
 
+	float top, half, r, near;
+
 	if (!model || !proj || !view || !(aspect > 0))
 		return MII_E_ARG;
-	frame(model, pose ? pose : &still, aspect, margin, &eye, &target);
-	guPerspective(proj, 20, aspect, 10, 4000);
+	if (!pose)
+		pose = &still;
+	frame(model, pose, aspect, margin, &eye, &target);
+	/* Near and far just around the Mii, so a depth range of any size spends
+	 * its precision on the Mii: with 10 and 4000 a Mii 400 away had about
+	 * 0.4% of the range, and a narrow viewport depth band left the face's
+	 * layers (mask, nose line, glasses) a few dozen Z steps to fight over. */
+	mii_model_bounds(model, pose->head_only, &top, &half);
+	r = top + half;   /* more than the Mii reaches from its centre, any pose */
+	near = eye.z - r > 1 ? eye.z - r : 1;
+	guPerspective(proj, 20, aspect, near, eye.z + r);
 	guLookAt(view, &eye, &up, &target);
 	return MII_OK;
 }

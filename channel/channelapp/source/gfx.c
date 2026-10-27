@@ -489,6 +489,44 @@ static void plot_draw (const gfx_queue_entry *entry, Mtx v) {
 	GX_SetScissor (scissor[0], scissor[1], scissor[2], scissor[3]);
 }
 
+// The rectangle's depth set to r->z_far, colour and alpha untouched: what a
+// sprite there would leave in the Z buffer, so what HBC draws later layers
+// over or under it as over a sprite. A GFXE_DRAW entity that drew from depth
+// 0 calls it last; gfx_restore after it puts HBC's state back.
+void gfx_depth_fill (const gfx_rect *r) {
+	Mtx44 p;
+	Mtx m;
+
+	GX_SetViewport (r->x, r->y, r->w, r->h, r->z_far, r->z_far);
+	guOrtho (p, 1, -1, -1, 1, 0.5f, 1.5f);
+	GX_LoadProjectionMtx (p, GX_ORTHOGRAPHIC);
+	guMtxIdentity (m);
+	GX_LoadPosMtxImm (m, GX_PNMTX0);
+	GX_SetCurrentMtx (GX_PNMTX0);
+	GX_SetColorUpdate (GX_FALSE);
+	GX_SetAlphaUpdate (GX_FALSE);
+	GX_SetZMode (GX_TRUE, GX_ALWAYS, GX_TRUE);
+	GX_SetAlphaCompare (GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+	GX_SetNumChans (1);
+	GX_SetNumTexGens (0);
+	GX_SetNumTevStages (1);
+	GX_SetTevOrder (GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+	GX_SetTevOp (GX_TEVSTAGE0, GX_PASSCLR);
+	GX_SetChanCtrl (GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_REG,
+					GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+	GX_ClearVtxDesc ();
+	GX_SetVtxDesc (GX_VA_POS, GX_DIRECT);
+	GX_SetVtxAttrFmt (GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+	GX_Begin (GX_QUADS, GX_VTXFMT0, 4);
+	GX_Position3f32 (-1, 1, -1);
+	GX_Position3f32 (1, 1, -1);
+	GX_Position3f32 (1, -1, -1);
+	GX_Position3f32 (-1, -1, -1);
+	GX_End ();
+	GX_SetColorUpdate (GX_TRUE);
+	GX_SetAlphaUpdate (GX_TRUE);
+}
+
 // After something drew with its own GX state (a GFXE_DRAW entity, such as
 // the avatar's Mii, avatar.c): HBC's viewport, copies, projection, vertex
 // format and an unlit colour channel again; frame_state sets the rest. No

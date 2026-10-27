@@ -337,13 +337,18 @@ static void avatar_draw(void *ctx, const gfx_rect *r) {
 	(void) ctx;
 	if (state != AV_READY || mii_view(&model, &pose, r->aspect, 0.04f, proj, view) < 0)
 		return;
-	GX_SetViewport(r->x, r->y, r->w, r->h, r->z_near, r->z_far);
+	// The whole depth range in front of the sprite's, for the Mii's own
+	// layers (a thin band left its face a few dozen Z steps: the mask,
+	// nose line and glasses broke up on a real Wii); then the rectangle's
+	// depth is put back to the sprite's (gfx_depth_fill).
+	GX_SetViewport(r->x, r->y, r->w, r->h, 0, r->z_far);
 	GX_SetScissor((u32) r->x, (u32) r->y, (u32) (r->w + 0.5f), (u32) (r->h + 0.5f));
 	GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
 #ifdef HBC_DIAG_GPU
 	gfx_diag_token(0x1001);
 #endif
 	mii_draw(&model, &pose, view, NULL);
+	gfx_depth_fill(r);
 #ifdef HBC_DIAG_GPU
 	gfx_diag_token(0x1002);
 	check_pose(&pose);

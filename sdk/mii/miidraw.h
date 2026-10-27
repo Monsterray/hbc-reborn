@@ -63,7 +63,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.1.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view */
+#define MIIDRAW_VERSION "1.1.1"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -278,9 +278,13 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
 /* A camera for drawing the Mii straight into your frame: the projection and
  * view that frame the whole Mii (or the head, for head_only) in a viewport
  * whose width over height on the TV is `aspect`, with `margin` around it.
- * Set your viewport (and a depth range of your choosing) to that area, load
- * `proj` with GX_PERSPECTIVE, then mii_draw(model, pose, view, NULL). This is
- * how to draw a Mii each frame: no copies, no pixel-format change. */
+ * Its near and far planes fit the Mii, so all of the viewport's depth range
+ * goes to it. Give it a wide range: the face's layers (mask, nose line,
+ * glasses) sit just in front of the faceline, and with a sliver of the Z
+ * buffer they break up on a real Wii (Dolphin hides it; HBC 1.11.1). Set
+ * your viewport to that area, load `proj` with GX_PERSPECTIVE, then
+ * mii_draw(model, pose, view, NULL). This is how to draw a Mii each frame:
+ * no copies, no pixel-format change. */
 int mii_view(const mii_model *model, const mii_pose *pose, float aspect, float margin, Mtx44 proj,
 			 Mtx view);
 

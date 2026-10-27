@@ -22,10 +22,11 @@ typedef enum {
 	GFXE_DRAW
 } gfx_entity_type;
 
-// Where a GFXE_DRAW entity draws itself: its w x h in EFB pixels, the
-// depths HBC's own drawing has around it (a thin band just in front of
-// where a sprite at its z would be), and its width over its height as the
-// TV shows it.
+// Where a GFXE_DRAW entity draws itself: its w x h in EFB pixels; z_far,
+// the depth a sprite at its z would have, and z_near a thin band in front;
+// and its width over its height as the TV shows it. An entity that needs
+// more depth precision may draw from 0 to z_far if it then sets the
+// rectangle's depth to z_far (gfx_depth_fill), as a sprite would leave it.
 typedef struct {
 	f32 x, y, w, h;
 	f32 z_near, z_far;
@@ -92,6 +93,7 @@ void gfx_init_video (void);
 void gfx_init (void);
 void gfx_deinit (void);
 void gfx_restore (void);
+void gfx_depth_fill (const gfx_rect *r);
 
 void gfx_get_efb_size(u16 *x, u16 *y);
 // The video mode HBC set up, for the HOME overlay (home.c).

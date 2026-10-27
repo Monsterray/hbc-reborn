@@ -161,6 +161,29 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.1: the Mii's face whole on a real Wii
+
+The user saw the avatar's face broken on the TV: eyes as stray lines,
+glasses doubled, the nose split, differently each frame. Dolphin showed it
+whole. Bench grabs of the Wii's framebuffer (`tests/wii_avatar.py`'s
+`avatar_*.png`) showed it, and a Z-precision count explained it:
+
+- 1.10.26 drew the Mii in place with a viewport depth band of 0.0005 (to
+  stay under HBC's later layers), and `mii_view`'s perspective had near 10
+  and far 4000 with the Mii about 400 away, where depth is all crowded near
+  1. The whole Mii got about 30 of the Z buffer's 2^24 steps; the face's
+  layers (mask, nose line, glasses), just in front of the faceline, fought
+  it. The texture capture before it had had the whole range.
+- `mii_view` now fits near and far to the Mii (its distance plus or minus
+  its height and half width). HBC's avatar draws with the whole range in
+  front of its slot (0 to the sprite's depth), then `gfx_depth_fill` sets
+  its rectangle's depth to the sprite's, so HBC's later layers fall over
+  or under it as over the old sprite. The mask, nose line and glasses
+  draw with Z compare but no Z write.
+- Bench Wii, this build: the face whole in every grab, 60 s at 60 frames a
+  second, no hang; Dolphin the same. The edges stay hard (no supersampling
+  in place); a supersampled mode is planned for the SDK's next version.
+
 ### 1.11.0: release; the memory audit and the Mii SDK's review
 
 1.11.0 releases what 1.10.17 to 1.10.26 built: the agent's way out
