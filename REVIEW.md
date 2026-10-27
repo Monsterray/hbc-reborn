@@ -161,6 +161,47 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.5: what a Mii costs: crowds on the bench Wii, and a Mii made through the SDK
+
+- **`mii_app crowd COUNTS SECONDS MASK`** (`tests/wii_mii.py crowd`): COUNTS
+  random Miis, half female, walking (`bodyWalk`) with the Mii Channel's
+  bodies, all drawn in place each frame. Bench Wii, sdk/mii 2.0 step 1
+  (GPU-skinned bodies):
+
+  | Faces | Miis | Frames a second | CPU a frame | GPU after the CPU |
+  |---|---|---|---|---|
+  | 128 px | 20 | 60.0 | 2.8 ms | 0.09 ms |
+  | 128 px | 40 | 60.0 | 5.8 ms | 0.08 ms |
+  | 128 px | 60 | did not build (memory, at 53) | | |
+  | 64 px | 20 / 60 / 100 | 59.9 | 2.8 / 8.6 / 14.4 ms | 0.08 ms |
+  | 64 px | 120 | did not build (memory, at 105) | | |
+
+  - CPU: about 0.14 ms per Mii each frame (posing 20 bones from the
+    animation keys, the palette, the head's state and lists). It is the
+    limit: 60 frames a second holds to about 110 Miis.
+  - GPU: it keeps up as the CPU sends (0.08 ms after it at any count).
+  - Memory: about 1.36 MB per Mii with 128 px faces, 0.70 MB with 64 px
+    (measured between counts: `mallinfo` counts the MEM1-MEM2 gap once
+    the heap reaches MEM2, so its totals are not memory in use). Memory,
+    not time, ends the crowd: about 53 or 105 Miis. Shared once: RFL_Res.dat
+    (686 KB), each body (180 KB).
+- **The smooth mode's cost** (a 2x supersampled `mii_capture`, 128 x 256):
+  0.57 ms a Mii a frame, about 4.5 times drawing in place, and a 128 KB
+  texture each.
+- **A Mii made through the SDK on the bench Wii**: Clio (slot 2, female),
+  added (`wii_mii.py add`) and designed (`edit`), each changing only her
+  slot and the database's CRC (right). `draw 2` now poses the Mii Channel
+  body for the Mii's sex: her female body waving, her icons.
+- **How Nintendo draws many Miis** (Wii Fit Plus, Wii Party, Wii Sports,
+  from the user's backups; static analysis):
+  - RFL heads on NW4R bodies.
+  - Bodies in levels of detail on one 28-bone skeleton: Wii Party has
+    2,092, 1,296, 776, 448 and 240 triangles, with separate cheap hands.
+    One animation set drives every level.
+  - Blob or silhouette shadows.
+  - Big crowds are baked meshes and textures, not Miis.
+  - The Mii Channel body is one level (about 750 triangles, 20 bones).
+
 ### 1.11.4: the avatar out of its wave without a jump
 
 The user saw the Mii jump from the wave back to standing. The fade played

@@ -38,6 +38,7 @@
 // tests/dolphin_mii.py), and the app powers off at the end instead of
 // returning.
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -654,6 +655,17 @@ static void draw_test(int slot) {
 	memset(&pose, 0, sizeof(pose));
 	pose.arm_raise[0] = 2.3f;
 	pose.expression = MII_EXPR_SMILE;
+	/* The Mii Channel's body for the Mii's sex, if Save Mii faces saved it. */
+	{
+		static mii_body wb;
+
+		if (mii_body_load(&wb, m.sex == MII_FEMALE ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH) == MII_OK &&
+				mii_model_set_body(&model, &wb) == MII_OK) {
+			pose.anim = 1 + mii_body_anim(&wb, "bodyGreeting");
+			pose.frame = 40;
+			say("the Wii's %s body, waving\n", m.sex == MII_FEMALE ? "female" : "male");
+		}
+	}
 	t0 = gettime();
 	r = mii_capture(&model, &pose, 128, 256, 0.04f, 1, (GXColor) { 0, 0, 0, 255 }, body);
 	GX_DrawDone();
@@ -667,6 +679,140 @@ static void draw_test(int slot) {
 	mii_db_free(&db);
 	free(icon);
 	free(body);
+}
+
+/* A crowd: COUNTS (e.g. 20,40,60) random Miis, half female, walking across a
+ * field with the Mii Channel's bodies, SECONDS each, faces MASK px. For each
+ * count: memory a Mii takes, the CPU time to pose and send them, the GPU
+ * time after (GX_DrawDone), frames a second. Stops when a count cannot be
+ * built (memory) or runs under 30 frames a second. */
+static void crowd_test(const char *counts, int seconds, int mask, void *xfb, GXRModeObj *rmode) {
+	static u8 fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
+	static mii_res res;
+	static mii_body bodies[2];
+	static mii_model models[200];
+	static float phase[200], lane[200];
+	int built = 0, r, walk[2], count;
+	uint32_t seed = 0x434c494f;
+	const char *p = counts;
+	struct mallinfo m0 = mallinfo();
+
+	GX_Init(fifo, sizeof(fifo));
+	GX_SetCopyClear((GXColor) { 40, 60, 90, 255 }, 0x00ffffff);
+	GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
+	GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
+	GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
+	GX_SetDispCopyDst(rmode->fbWidth, rmode->xfbHeight);
+	GX_SetDispCopyYScale((f32) rmode->xfbHeight / (f32) rmode->efbHeight);
+	GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+	GX_SetFieldMode(rmode->field_rendering, rmode->viHeight == 2 * rmode->xfbHeight ? GX_ENABLE : GX_DISABLE);
+	GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+	GX_SetCullMode(GX_CULL_BACK);
+	GX_SetColorUpdate(GX_TRUE);
+	if ((r = mii_res_load(&res, NULL)) < 0 || (r = mii_body_load(&bodies[0], MII_BODY_MALE_PATH)) < 0 ||
+			(r = mii_body_load(&bodies[1], MII_BODY_FEMALE_PATH)) < 0) {
+		result("RFL_Res.dat and the Mii Channel bodies (Save Mii faces)", r);
+		return;
+	}
+	walk[0] = 1 + mii_body_anim(&bodies[0], "bodyWalk");
+	walk[1] = 1 + mii_body_anim(&bodies[1], "bodyWalk");
+	say("crowd: faces %d px, %d s a count; MEM1+MEM2 arena %u KB free at the start\n", mask, seconds,
+		(unsigned) ((SYS_GetArena1Hi() - SYS_GetArena1Lo()) + (SYS_GetArena2Hi() - SYS_GetArena2Lo())) / 1024);
+	while (*p) {
+		struct mallinfo mb = mallinfo(), ma;
+		u64 start, t, cpu = 0, gpu = 0, cpu_max = 0, gpu_max = 0;
+		int frames = 0, cols, i;
+		float depth, fps;
+		Mtx44 proj;
+		Mtx view;
+		guVector eye, up = { 0, 1, 0 }, at = { 0, 40, 0 };
+
+		count = atoi(p);
+		while (*p && *p != ',')
+			++p;
+		if (*p == ',')
+			++p;
+		if (count < 1 || count > 200)
+			break;
+		for (; built < count; ++built) {
+			mii m;
+			int sex = built & 1;
+
+			mii_random(&m, sex ? MII_FEMALE : MII_MALE, MII_ANY, &seed);
+			r = mii_model_make(&res, &m, mask, &models[built]);
+			if (r == MII_OK)
+				r = mii_model_set_body(&models[built], &bodies[sex]);
+			if (r < 0)
+				break;
+			phase[built] = (float) (seed % 40);
+			lane[built] = (float) (seed % 1000) / 1000;
+		}
+		ma = mallinfo();
+		if (built < count) {
+			say("crowd %d: built %d, then %d: stop (memory: %u KB in use)\n", count, built, r,
+				(unsigned) (ma.uordblks / 1024));
+			break;
+		}
+		/* Rows of ten, 70 apart, walking along X; the camera back and up. */
+		cols = count < 10 ? count : 10;
+		depth = (count + cols - 1) / cols * 70.0f;
+		eye.x = 0;
+		eye.y = 160 + depth * 0.5f;
+		eye.z = 420 + depth * 1.2f;
+		at.z = -depth / 2;
+		guLookAt(view, &eye, &up, &at);
+		guPerspective(proj, 45, (f32) rmode->fbWidth / rmode->efbHeight, 50, 6000);
+		start = gettime();
+		while (diff_sec(start, gettime()) < (u32) seconds) {
+			float secs = diff_usec(start, gettime()) / 1e6f;
+			u64 a, b;
+
+			a = gettime();
+			GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
+			GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+			for (i = 0; i < count; ++i) {
+				mii_pose pose;
+				Mtx place, turn;
+				float x = fmodf(secs * 40 + phase[i] * 20 + lane[i] * 300, 700) - 350;
+
+				memset(&pose, 0, sizeof(pose));
+				pose.anim = walk[i & 1];
+				pose.frame = secs * 60 + phase[i];
+				guMtxRotRad(turn, 'y', (float) M_PI / 2);   /* face the way they walk */
+				guMtxTransApply(turn, place, x, 0, -(i / cols) * 70.0f - lane[i] * 20);
+				mii_draw(&models[i], &pose, view, place);
+			}
+			b = gettime();
+			GX_DrawDone();
+			t = gettime();
+			cpu += b - a;
+			gpu += t - b;
+			if (b - a > cpu_max)
+				cpu_max = b - a;
+			if (t - b > gpu_max)
+				gpu_max = t - b;
+			GX_CopyDisp(xfb, GX_TRUE);
+			GX_Flush();
+			VIDEO_WaitVSync();
+			++frames;
+		}
+		fps = frames / (diff_usec(start, gettime()) / 1e6f);
+		say("crowd %d: %.1f frames a second; CPU %llu us a frame (max %llu), GPU after it %llu us "
+			"(max %llu); %u KB a Mii (%u KB in use)\n",
+			count, fps, ticks_to_microsecs(cpu / frames), ticks_to_microsecs(cpu_max),
+			ticks_to_microsecs(gpu / frames), ticks_to_microsecs(gpu_max),
+			(unsigned) ((ma.uordblks - m0.uordblks) / 1024 / count), (unsigned) (ma.uordblks / 1024));
+		(void) mb;
+		if (fps < 30) {
+			say("crowd %d: under 30 frames a second: stop\n", count);
+			break;
+		}
+	}
+	for (count = 0; count < built; ++count)
+		mii_model_free(&models[count]);
+	mii_body_free(&bodies[0]);
+	mii_body_free(&bodies[1]);
+	mii_res_free(&res);
 }
 
 int main(int argc, char **argv) {
@@ -723,6 +869,8 @@ int main(int argc, char **argv) {
 		draw_test(argc == 3 ? atoi(argv[2]) : 0);
 	else if (argc >= 4 && !strcmp(argv[1], "edit"))
 		edit(argv[2], argc - 3, argv + 3);
+	else if (argc >= 3 && !strcmp(argv[1], "crowd"))
+		crowd_test(argv[2], argc > 3 ? atoi(argv[3]) : 10, argc > 4 ? atoi(argv[4]) : 128, xfb, rmode);
 	else
 		say("usage: check | add NAME SEED | remove ID | hidden SEED | remote-add ID | remote-remove ID\n");
 	say("failures %d\ndone\n", failures);

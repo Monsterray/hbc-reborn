@@ -21,6 +21,11 @@
   draw [SLOT] sdk/mii's drawing: the Mii's icons (96 and 256 px, normal and
             smiling) and a full-body capture, checked by mii_app and saved
             as PNGs in the run folder (needs sd:/mii/RFL_Res.dat)
+  crowd COUNTS [SECONDS] [MASK]
+            sdk/mii's cost: COUNTS (e.g. 20,40,60) random Miis walking with the
+            Mii Channel's bodies, SECONDS each, faces MASK px (64, 128): memory a
+            Mii, CPU and GPU time a frame, frames a second; TV pictures from
+            the capture card every 8 s
   remote-add ID / remote-remove ID
             copy the database's Mii with that ID to Wii Remote 1, or take it
             off; written and read back
@@ -169,6 +174,20 @@ def main():
             rows = [[tuple(body[4 * (y * w + x):4 * (y * w + x) + 4]) for x in range(w)] for y in range(h)]
             (out / f"{name}.png").write_bytes(mii_res.png(w, h, rows))
             print(f"{name}.png: {w} x {h}", flush=True)
+    elif step == "crowd" and len(sys.argv) > 2:
+        import threading
+        done = threading.Event()
+
+        def pictures():   # the capture card, while the crowd walks
+            k = 0
+            while not done.wait(8):
+                wm.still(out, f"crowd_{k:02d}")
+                k += 1
+        threading.Thread(target=pictures, daemon=True).start()
+        try:
+            ok = app_ok(run_app(out, "crowd", *sys.argv[2:5], label="crowd"))
+        finally:
+            done.set()
     elif step == "remote-rewrite":
         ok = app_ok(run_app(out, step, label=step))
         wm.tool("get", "sd:/mii_test/remote_backup.bin", str(out / "remote_backup.bin"), check=False)
