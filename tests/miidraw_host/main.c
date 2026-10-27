@@ -130,8 +130,76 @@ int main(int argc, char **argv) {
 	}
 	for (e = 0; e < MII_EXPR_COUNT; ++e)
 		write_tex(dir, "mask", e, &md.mask[e]);
+	{   /* The packed meshes give back the floats; RGB5A3 the texels, to its bits. */
+		float pe = 0, ne = 0, se = 0;
+		long corners = 0, verts = 0;
+		int te = 0, ae = 0;
+
+		for (i = 0; i < MII_PARTS; ++i) {
+			const mii_mesh *p = &md.part[i];
+			const int16_t *pos = (const int16_t *) p->pack, *st = (const int16_t *) (p->pack + p->pack_st);
+			const int8_t *nrm = (const int8_t *) (p->pack + p->pack_nrm);
+			int k, j;
+
+			corners += p->count;
+			verts += p->nverts;
+			for (k = 0; k < p->count; ++k) {
+				const float *v = p->v + 8 * k;
+				int x = p->idx[k];
+
+				for (j = 0; j < 3; ++j) {
+					float d = fabsf(pos[3 * x + j] / (float) (1 << p->pos_frac) - v[j]);
+					float n = fabsf(nrm[3 * x + j] / 64.0f - v[3 + j]);
+
+					pe = d > pe ? d : pe;
+					ne = n > ne ? n : ne;
+				}
+				for (j = 0; j < 2; ++j) {
+					float d = fabsf(st[2 * x + j] / (float) (1 << p->st_frac) - v[6 + j]);
+
+					se = d > se ? d : se;
+				}
+			}
+		}
+		for (i = 0; i < MII_TEX_COUNT + MII_EXPR_COUNT; ++i) {
+			const mii_tex *t = i < MII_TEX_COUNT ? &md.tex[i] : &md.mask[i - MII_TEX_COUNT];
+			uint8_t *g;
+			int x, y;
+
+			if (!t->rgba)
+				continue;
+			g = malloc(mii_tex_rgb5a3_size(t->w, t->h));
+			mii_tex_rgb5a3(t, g);
+			for (y = 0; y < t->h; ++y)
+				for (x = 0; x < t->w; ++x) {
+					const uint8_t *q = g + 32 * ((y / 4) * ((t->w + 3) / 4) + x / 4) + 2 * (4 * (y % 4) + x % 4);
+					const uint8_t *p = t->rgba + 4 * (y * t->w + x);
+					int v = q[0] << 8 | q[1], c[4], k;
+
+					if (v & 0x8000) {
+						c[0] = (v >> 10 & 31) * 255 / 31;
+						c[1] = (v >> 5 & 31) * 255 / 31;
+						c[2] = (v & 31) * 255 / 31;
+						c[3] = 255;
+					} else {
+						c[0] = (v >> 8 & 15) * 17;
+						c[1] = (v >> 4 & 15) * 17;
+						c[2] = (v & 15) * 17;
+						c[3] = (v >> 12 & 7) * 255 / 7;
+					}
+					for (k = 0; k < 3; ++k)
+						if (p[3] && abs(c[k] - p[k]) > te)
+							te = abs(c[k] - p[k]);   /* colour where there is any */
+					if (abs(c[3] - p[3]) > ae)
+						ae = abs(c[3] - p[3]);
+				}
+			free(g);
+		}
+		printf("pack: %ld corners, %ld vertices; largest error: position %.4f, normal %.4f, "
+			   "coordinate %.5f; rgb5a3 colour %d, alpha %d\n", corners, verts, pe, ne, se, te, ae);
+	}
 	{   /* mii_model_opts: only the expressions asked for (and the normal one), at 32 px */
-		mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_BLINK) };
+		mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_BLINK), NULL };
 		mii_model few;
 		unsigned built = 0;
 
@@ -144,6 +212,41 @@ int main(int argc, char **argv) {
 				built |= 1u << e;
 		printf("opts: expressions %#x, %d px\n", built, few.mask[MII_EXPR_NORMAL].w);
 		mii_model_free(&few);
+	}
+	{   /* A cache: two of the same Mii share every part; the last one out frees them.
+		 * mii_model_set_mask_size: the faces rebuilt at another size, still shared. */
+		mii_model_opts o = { 128, MII_EXPR_BIT(MII_EXPR_SMILE), NULL };
+		mii_model a, b;
+		int same = 0, parts = 0, entries[4], users[4];
+		uint32_t bytes[4];
+
+		o.cache = mii_cache_new();
+		if (!o.cache || mii_model_build(&res, &m, &o, &a) < 0 || mii_model_build(&res, &m, &o, &b) < 0) {
+			printf("cache: did not build\n");
+			return 1;
+		}
+		for (i = 0; i < MII_PARTS; ++i)
+			if (a.part[i].count) {
+				++parts;
+				same += a.part[i].pack == b.part[i].pack && a.part[i].idx == b.part[i].idx;
+			}
+		same += a.mask[MII_EXPR_SMILE].rgba == b.mask[MII_EXPR_SMILE].rgba;
+		mii_cache_stats(o.cache, &entries[0], &bytes[0], &users[0]);
+		r = mii_model_set_mask_size(&a, &res, 32);
+		mii_cache_stats(o.cache, &entries[1], &bytes[1], &users[1]);
+		if (r < 0 || mii_model_set_mask_size(&b, &res, 32) < 0) {
+			printf("cache: set_mask_size %d\n", r);
+			return 1;
+		}
+		mii_cache_stats(o.cache, &entries[2], &bytes[2], &users[2]);
+		mii_model_free(&a);
+		mii_model_free(&b);
+		mii_cache_stats(o.cache, &entries[3], &bytes[3], &users[3]);
+		mii_cache_free(o.cache);
+		printf("cache: %d of %d parts and the face shared; entries %d %d %d %d, users %d %d %d %d; "
+			   "bytes %u then %u at 32 px; faces %d px\n", same - 1, parts, entries[0], entries[1],
+			   entries[2], entries[3], users[0], users[1], users[2], users[3], (unsigned) bytes[0],
+			   (unsigned) bytes[2], 32);
 	}
 	for (i = 0; i < MII_TEX_COUNT; ++i)
 		write_tex(dir, "tex", i, &md.tex[i]);
@@ -171,6 +274,24 @@ int main(int argc, char **argv) {
 		if ((r = mii_model_set_body(&md, &body)) < 0) {
 			printf("set_body: %s\n", mii_strerror(r));
 			return 1;
+		}
+		{   /* The body's pose memo: a frame posed again is found, and is the same. */
+			static float r1[MII_BODY_BONES][3][3], p1[MII_BODY_BONES][3];
+			int walk = 1 + mii_body_anim(&body, "bodyWalk"), f;
+
+			memset(&pose, 0, sizeof(pose));
+			pose.anim = walk;
+			pose.frame = 10.5f;
+			mii_body_pose(&md, &pose, r1, p1);
+			for (f = 0; f < MII_POSE_MEMO - 1; ++f) {   /* fills all but the first */
+				pose.frame = 20.0f + f;
+				mii_body_pose(&md, &pose, rot, pos);
+			}
+			body.memo_hits = 0;
+			pose.frame = 10.5f;
+			mii_body_pose(&md, &pose, rot, pos);
+			printf("memo: hits %u, same %d\n", (unsigned) body.memo_hits,
+				   !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) && !memcmp(pos, p1, sizeof(float) * 3 * body.nbones));
 		}
 		if (getenv("MII_FADE")) {
 			/* Cross-fades (mii_pose.from_*): a pose faded into itself is

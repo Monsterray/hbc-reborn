@@ -141,6 +141,16 @@ typedef struct {
 
 #define MII_BODY_OBJS 8
 #define MII_BODY_MATRICES 64   /* matrix ids a body may use */
+#define MII_POSE_MEMO 16       /* poses a body remembers */
+
+/* A pose's bones, local (each one's rotation and translation from its
+ * parent, before any Mii's scale): what the animation keys give, worked out
+ * once for every Mii at that frame. */
+typedef struct {
+	const void *a, *a2;    /* the animations (NULL: none), */
+	float f, f2, w;        /* their frames and the fade */
+	float r[MII_BODY_BONES][3][3], t[MII_BODY_BONES][3];
+} mii_pose_memo;
 
 typedef struct {
 	uint8_t *data;         /* the file, kept: animation keys point into it */
@@ -162,6 +172,12 @@ typedef struct {
 	mii_body_array pos_array[8], nrm_array[8];
 	int nmatrices;         /* matrix ids 0 .. nmatrices - 1 */
 	int8_t matrix_bone[MII_BODY_MATRICES];   /* the bone with that id, or -1 */
+	/* The last MII_POSE_MEMO poses drawn: Miis at the same frame of the same
+	 * animation pose once between them. Scratch, written by drawing: draw a
+	 * body's models from one thread. */
+	mii_pose_memo *memo;
+	int memo_next;
+	uint32_t memo_hits, memo_misses;
 } mii_body;
 
 /* Checks and parses a copy in memory. On success it is taken over and
@@ -187,29 +203,49 @@ enum {
 	MII_EXPR_COUNT
 };
 
+typedef struct mii_cache mii_cache;   /* below: parts shared between Miis */
+
 /* One part's triangles, each vertex x y z, nx ny nz, s t. */
 typedef struct {
 	int count;             /* vertices, three to a triangle */
-	float *v;
+	float *v;              /* as floats (on the Wii, freed once packed) */
 	uint32_t color;        /* 0xRRGGBBAA, for a part without a texture */
 	int tex;               /* MII_TEX_*, or -1 */
 	int flip;              /* mirrored: its triangles wind the other way */
+	/* Packed, as the GPU draws it (RFL keeps its shapes as s16 too): the
+	 * distinct vertices, each array 32-byte aligned in one block: positions
+	 * s16 x 3 with pos_frac fraction bits, normals s8 x 3 (6), texture
+	 * coordinates s16 x 2 (st_frac); and each corner's vertex. */
+	int nverts;
+	int pos_frac, st_frac;
+	uint8_t *pack;
+	uint32_t pack_nrm, pack_st;   /* where the normals and coordinates start */
+	uint16_t *idx;         /* count corners (on the Wii, in the display list instead) */
 	void *dl;              /* on the Wii: the triangles as a GX display list */
 	uint32_t dl_size;
+	void *shared;          /* a mii_cache entry holding pack and dl (on a PC, idx), or NULL */
 } mii_mesh;
 
 enum { MII_TEX_FACE, MII_TEX_CAP, MII_TEX_NOSELINE, MII_TEX_GLASS, MII_TEX_COUNT };
 
-/* A texture as linear RGBA bytes (and, on the Wii, GX's RGBA8 tiles). */
+/* A texture as linear RGBA bytes (and, on the Wii, GX's RGB5A3 tiles). */
 typedef struct {
 	int w, h;
 	int wrap_s, wrap_t;    /* 0 clamp, 1 repeat, 2 mirror (GX's values) */
 	uint8_t *rgba;
 #ifndef MII_NO_OGC
-	void *gx;              /* GX_TF_RGBA8, 32-byte aligned */
+	void *gx;              /* GX_TF_RGB5A3, 32-byte aligned */
 	GXTexObj obj;
 #endif
+	void *shared;          /* a mii_cache entry holding gx (on a PC, rgba), or NULL */
 } mii_tex;
+
+/* The texture as GX's RGB5A3 (RFL's format for its faces): 4 x 4 tiles of
+ * big-endian 16-bit texels, opaque ones 1RRRRRGGGGGBBBBB, the rest
+ * 0AAARRRRGGGGBBBB; mii_tex_rgb5a3_size bytes. What the Wii uploads;
+ * portable, for tests. */
+uint32_t mii_tex_rgb5a3_size(int w, int h);
+void mii_tex_rgb5a3(const mii_tex *t, uint8_t *out);
 
 /* Head parts, in drawing order: opaque, then (from MII_PART_MASK) the
  * translucent ones. Body parts follow. */
@@ -244,9 +280,18 @@ typedef struct {
 	 * GX_DrawDone. */
 	float (*pal_pos)[3][4];
 	float (*pal_nrm)[3][3];
+	/* The bones as the last draw posed them (mii_pose.reuse): each one's
+	 * matrices, and the head's place. */
+	float (*last_pm)[3][4];
+	float (*last_nm)[3][3];
+	float last_head[3][4];
+	int posed;
 	int pal_next;
 	int pal_size;          /* entries in each: the body's matrix ids, rounded up to 8 */
 	uint32_t shirt, pants; /* colours, 0xRRGGBBAA */
+	int mask_size;         /* as built (mii_model_opts) */
+	unsigned expressions;
+	mii_cache *cache;
 } mii_model;
 
 /* Which expressions' faces to build: MII_EXPR_BIT(MII_EXPR_SMILE) | ...
@@ -256,9 +301,20 @@ typedef struct {
 #define MII_EXPR_BIT(e) (1u << (e))
 #define MII_EXPRS_ALL ((1u << MII_EXPR_COUNT) - 1)
 
+/* Miis built with one cache share the parts that come out the same: the
+ * same hair, face shape, nose or glasses, the same textures, even the same
+ * face. Free the cache after every model built with it; one thread at a
+ * time. */
+mii_cache *mii_cache_new(void);
+void mii_cache_free(mii_cache *cache);
+/* What it holds: distinct parts, their bytes, and how many models' parts
+ * use them. */
+void mii_cache_stats(const mii_cache *cache, int *entries, uint32_t *bytes, int *users);
+
 typedef struct {
 	int mask_size;         /* the face texture's side: 32, 64, 128 or 256 (0: 128) */
 	unsigned expressions;  /* MII_EXPR_BIT()s (0: all of them) */
+	mii_cache *cache;      /* share identical parts with other Miis built with it, or NULL */
 } mii_model_opts;
 
 /* Builds a Mii (opts NULL: 128 px, every expression). Free it with
@@ -268,11 +324,19 @@ typedef struct {
 int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts, mii_model *out);
 /* mii_model_build with that mask size and every expression. */
 int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *out);
+/* Rebuilds the model's faces (the expressions it was built with) at
+ * another size: 32 px for a Mii far off, 128 near (the faces are most of a
+ * Mii's memory). About as long as building them did. On failure the model
+ * keeps its faces. Do not call it while the GPU may still draw the model. */
+int mii_model_set_mask_size(mii_model *model, const mii_res *res, int mask_size);
 void mii_model_free(mii_model *model);
 
 /* Uses a loaded body (male or female, to match the Mii) for this model in
- * place of the built one; the body must outlive the model. 0 or MII_E_*. */
+ * place of the built one, whose parts it frees; the body must outlive the
+ * model. 0 or MII_E_*. */
 int mii_model_set_body(mii_model *model, const mii_body *body);
+/* Frees a part's triangles, leaving it empty. */
+void mii_mesh_free(mii_mesh *mesh);
 
 /* ---- Posing ---------------------------------------------------------------- */
 
@@ -304,6 +368,10 @@ typedef struct {
 	int from_anim;
 	float from_frame;
 	float from_weight;
+	/* 1: the bones as this model's last draw posed them, the fields above
+	 * unread but the head's angles and the expression: a Mii far off posed
+	 * every second or fourth frame costs about a third. */
+	int reuse;
 } mii_pose;
 
 /* The weight for a cross-fade `seconds` after a change of animation that
@@ -321,6 +389,9 @@ void mii_body_skin(mii_model *model, const mii_pose *pose);
  * length kept: the GPU does not renormalise). What the GPU draws with,
  * before the camera and the model's placement. */
 void mii_body_matrices(const mii_model *model, const mii_pose *pose, float pos[][3][4], float nrm[][3][3]);
+/* The same, from a pose mii_body_pose worked out. */
+void mii_body_matrices_posed(const mii_model *model, float rot[][3][3], float at[][3], float pos[][3][4],
+							 float nrm[][3][3]);
 
 /* The bounds of a standing Mii (feet at 0), for framing a camera. */
 void mii_model_bounds(const mii_model *model, int head_only, float *top, float *half_width);
@@ -333,9 +404,10 @@ void mii_model_bounds(const mii_model *model, int head_only, float *top, float *
  * (the Mii stands at the world's origin; move it with `place`, or NULL).
  * Lit by one white light from the front-left-above, in view space.
  *
- * It changes, so set yours again after: the vertex descriptor and the
- * formats of GX_VTXFMT0 (position, normal, texture coordinate, F32) and,
- * with a Wii body, GX_VTXFMT1 (position, normal); GX_LIGHT0; one colour
+ * It changes, so set yours again after: the vertex descriptor, the
+ * position, normal and texture coordinate arrays, and the formats of
+ * GX_VTXFMT0 (indexed s16 positions, s8 normals, s16 coordinates) and, with
+ * a Wii body, GX_VTXFMT1 (its own); GX_LIGHT0; one colour
  * channel (COLOR0 lit by GX_LIGHT0, ALPHA0 unlit) and its ambient and
  * material colours; one texture coordinate generation (TEXCOORD0 from TEX0,
  * identity); one TEV stage, its order and operation; GX_TEXMAP0; GX_PNMTX0's

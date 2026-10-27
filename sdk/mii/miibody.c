@@ -651,6 +651,7 @@ void mii_body_free(mii_body *body) {
 	free(body->vnrm);
 	free(body->tris[0]);
 	free(body->tris[1]);
+	free(body->memo);
 	for (i = 0; i < MII_BODY_OBJS; ++i)
 		free(body->obj[i].dl);
 	for (i = 0; i < 8; ++i) {
@@ -896,39 +897,82 @@ float mii_fade_weight(float seconds, float length) {
 	return x * x * (3 - 2 * x);   /* eased in and out */
 }
 
-void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]) {
-	const mii_body *body = model ? model->body : NULL;
+/* Each bone's local rotation and translation for the pose (no Mii's scale
+ * yet). A drawn pose (not the bind pose a model is set up with, maybe on
+ * another thread) is remembered in the body, and found again for the next
+ * Mii at the same frame. */
+static const mii_pose_memo *pose_locals(const mii_body *body, const mii_pose *pose, mii_pose_memo *own) {
+	mii_body *b = (mii_body *) body;   /* the memo is scratch */
 	const mii_anim *a, *a2 = NULL;
 	float f, f2 = 0, w = 0;
+	mii_pose_memo *out = own;
 	int i, k;
 
-	if (!body || !rot || !pos)
-		return;   /* no Wii body set on this model */
 	a = pick_anim(body, pose ? pose->anim : 0, pose ? pose->frame : 0, &f);
 	if (pose && pose->from_weight > 0) {
 		w = pose->from_weight < 1 ? pose->from_weight : 1;
 		a2 = pick_anim(body, pose->from_anim, pose->from_frame, &f2);
 	}
-	for (i = 0; i < body->nbones; ++i) {
-		const mii_bone *bn = &body->bone[i];
-		float r[3], t[3];
-		m33 local;
+	if (pose) {
+		if (!b->memo && (b->memo = calloc(MII_POSE_MEMO, sizeof(mii_pose_memo))))
+			for (i = 0; i < MII_POSE_MEMO; ++i)
+				b->memo[i].f = -1;   /* no frame is negative: empty */
+		for (i = 0; b->memo && i < MII_POSE_MEMO; ++i) {
+			const mii_pose_memo *m = &b->memo[i];
 
-		bone_local(body, a, f, i, r, t);
-		rot_xyz(local, r);
+			if (m->a == a && m->f == f && m->w == w && (!w || (m->a2 == a2 && m->f2 == f2))) {
+				++b->memo_hits;
+				return m;
+			}
+		}
+		++b->memo_misses;
+		if (b->memo) {
+			out = &b->memo[b->memo_next];
+			b->memo_next = (b->memo_next + 1) % MII_POSE_MEMO;
+		}
+	}
+	out->a = a;
+	out->a2 = a2;
+	out->f = f;
+	out->f2 = f2;
+	out->w = w;
+	for (i = 0; i < body->nbones; ++i) {
+		float r[3];
+
+		bone_local(body, a, f, i, r, out->t[i]);
+		rot_xyz(out->r[i], r);
 		if (w > 0) {   /* the cross-fade from the animation before */
 			float r2[3], t2[3];
 			m33 from;
 
 			bone_local(body, a2, f2, i, r2, t2);
 			rot_xyz(from, r2);
-			blend_rot(local, from, w, local);
+			blend_rot(out->r[i], from, w, out->r[i]);
 			for (k = 0; k < 3; ++k)
-				t[k] += (t2[k] - t[k]) * w;
+				out->t[i][k] += (t2[k] - out->t[i][k]) * w;
 		}
+	}
+	return out;
+}
+
+void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]) {
+	const mii_body *body = model ? model->body : NULL;
+	const mii_pose_memo *lp;
+	mii_pose_memo own;
+	int i, k;
+
+	if (!body || !rot || !pos)
+		return;   /* no Wii body set on this model */
+	lp = pose_locals(body, pose, &own);
+	for (i = 0; i < body->nbones; ++i) {
+		const mii_bone *bn = &body->bone[i];
+		const float *t = lp->t[i];
+		m33 local;
+
+		memcpy(local, lp->r[i], sizeof(local));
 		if (bn->parent < 0) {
 			memcpy(rot[i], local, sizeof(local));
-			memcpy(pos[i], t, sizeof(t));
+			memcpy(pos[i], t, sizeof(lp->t[i]));
 		} else {
 			const float *ps = model->bone_scale[bn->parent];
 			float st[3] = { t[0] * ps[0], t[1] * ps[1], t[2] * ps[2] };
@@ -977,13 +1021,19 @@ void mii_body_skin(mii_model *model, const mii_pose *pose) {
 }
 
 void mii_body_matrices(const mii_model *model, const mii_pose *pose, float pm[][3][4], float nm[][3][3]) {
-	const mii_body *body = model ? model->body : NULL;
 	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
-	int i, j, k;
 
-	if (!body || !pm || !nm)
+	if (!model || !model->body || !pm || !nm)
 		return;
 	mii_body_pose(model, pose, rot, pos);
+	mii_body_matrices_posed(model, rot, pos, pm, nm);
+}
+
+void mii_body_matrices_posed(const mii_model *model, float rot[][3][3], float pos[][3], float pm[][3][4],
+							 float nm[][3][3]) {
+	const mii_body *body = model->body;
+	int i, j, k;
+
 	for (i = 0; i < body->nbones; ++i) {
 		const float *s = model->bone_scale[i];
 
@@ -1038,6 +1088,8 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 		return MII_E_ARG;
 	model->body = body;
 	body_scales(model);
+	for (i = MII_HEAD_PARTS; i < MII_PARTS; ++i)
+		mii_mesh_free(&model->part[i]);   /* the built body: not drawn again */
 	free(model->skin_pos);
 	free(model->skin_nrm);
 	model->skin_pos = model->skin_nrm = NULL;   /* mii_body_skin makes them if it is called */
@@ -1054,7 +1106,12 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 	model->pal_pos = malloc(sizeof(float) * 12 * model->pal_size * MII_PALETTES);
 	model->pal_nrm = malloc(sizeof(float) * 9 * model->pal_size * MII_PALETTES);
 #endif
-	if (!model->pal_pos || !model->pal_nrm) {
+	free(model->last_pm);
+	free(model->last_nm);
+	model->last_pm = malloc(sizeof(float) * 12 * body->nbones);
+	model->last_nm = malloc(sizeof(float) * 9 * body->nbones);
+	model->posed = 0;
+	if (!model->pal_pos || !model->pal_nrm || !model->last_pm || !model->last_nm) {
 		model->body = NULL;
 		return MII_E_MEM;
 	}

@@ -235,12 +235,156 @@ static int tex_decode(const uint8_t *f, uint32_t len, mii_tex *out) {
 	return MII_OK;
 }
 
+/* ---- The cache: parts shared by content ---------------------------------- */
+
+typedef struct share {
+	struct share *next;
+	mii_cache *cache;
+	uint32_t hash, size[2];
+	void *buf[2];
+	int refs;
+} share;
+
+struct mii_cache {
+	share *head;
+};
+
+mii_cache *mii_cache_new(void) {
+	return calloc(1, sizeof(mii_cache));
+}
+
+void mii_cache_free(mii_cache *cache) {
+	share *e, *next;
+
+	if (!cache)
+		return;
+	for (e = cache->head; e; e = next) {   /* any a model still holds: its model is gone */
+		next = e->next;
+		free(e->buf[0]);
+		free(e->buf[1]);
+		free(e);
+	}
+	free(cache);
+}
+
+void mii_cache_stats(const mii_cache *cache, int *entries, uint32_t *bytes, int *users) {
+	const share *e;
+
+	*entries = *users = 0;
+	*bytes = 0;
+	for (e = cache ? cache->head : NULL; e; e = e->next) {
+		++*entries;
+		*bytes += e->size[0] + e->size[1];
+		*users += e->refs;
+	}
+}
+
+static uint32_t hash_bytes(uint32_t h, const void *p, uint32_t n) {
+	const uint8_t *b = p;
+
+	while (n--)
+		h = (h ^ *b++) * 16777619u;
+	return h;
+}
+
+/* Two buffers (the second may be NULL) handed to the cache: if it holds the
+ * same bytes, ours are freed and its used; else it keeps ours. The entry
+ * goes in *owner; NULL cache: nothing changes. */
+static int share_bufs(mii_cache *cache, void **a, uint32_t sa, void **b, uint32_t sb, void **owner) {
+	uint32_t h;
+	share *e;
+
+	*owner = NULL;
+	if (!cache || !*a)
+		return MII_OK;
+	if (!b || !*b)
+		sb = 0;
+	h = hash_bytes(hash_bytes(2166136261u, *a, sa), sb ? *b : NULL, sb);
+	for (e = cache->head; e; e = e->next)
+		if (e->hash == h && e->size[0] == sa && e->size[1] == sb && !memcmp(e->buf[0], *a, sa) &&
+				(!sb || !memcmp(e->buf[1], *b, sb))) {
+			free(*a);
+			*a = e->buf[0];
+			if (sb) {
+				free(*b);
+				*b = e->buf[1];
+			}
+			++e->refs;
+			*owner = e;
+			return MII_OK;
+		}
+	e = calloc(1, sizeof(*e));
+	if (!e)
+		return MII_E_MEM;
+	e->cache = cache;
+	e->hash = h;
+	e->size[0] = sa;
+	e->size[1] = sb;
+	e->buf[0] = *a;
+	e->buf[1] = sb ? *b : NULL;
+	e->refs = 1;
+	e->next = cache->head;
+	cache->head = e;
+	*owner = e;
+	return MII_OK;
+}
+
+/* A model lets go of a shared entry: the last one frees it. */
+static void unshare(void *owner) {
+	share *e = owner, **p;
+
+	if (--e->refs)
+		return;
+	for (p = &e->cache->head; *p; p = &(*p)->next)
+		if (*p == e) {
+			*p = e->next;
+			break;
+		}
+	free(e->buf[0]);
+	free(e->buf[1]);
+	free(e);
+}
+
 static void tex_free(mii_tex *t) {
+	if (t->shared) {
+		unshare(t->shared);
+#ifndef MII_NO_OGC
+		t->gx = NULL;
+#else
+		t->rgba = NULL;
+#endif
+	}
 	free(t->rgba);
 #ifndef MII_NO_OGC
 	free(t->gx);
 #endif
 	memset(t, 0, sizeof(*t));
+}
+
+uint32_t mii_tex_rgb5a3_size(int w, int h) {
+	return (uint32_t) ((w + 3) / 4) * ((h + 3) / 4) * 32;
+}
+
+void mii_tex_rgb5a3(const mii_tex *t, uint8_t *out) {
+	int tw = (t->w + 3) / 4, th = (t->h + 3) / 4, tx, ty, k;
+
+	for (ty = 0; ty < th; ++ty)
+		for (tx = 0; tx < tw; ++tx, out += 32)
+			for (k = 0; k < 16; ++k) {
+				int x = tx * 4 + k % 4, y = ty * 4 + k / 4;
+				const uint8_t *p = x < t->w && y < t->h ? t->rgba + 4 * (y * t->w + x) : (const uint8_t *) "\0\0\0\0";
+				int a = (p[3] * 7 + 127) / 255;
+				uint16_t v;
+
+				if (a == 7)   /* opaque: 5 bits a colour */
+					v = (uint16_t) (0x8000 | (p[0] * 31 + 127) / 255 << 10 | (p[1] * 31 + 127) / 255 << 5 |
+									(p[2] * 31 + 127) / 255);
+				else
+					v = (uint16_t) (a << 12 | (p[0] * 15 + 127) / 255 << 8 | (p[1] * 15 + 127) / 255 << 4 |
+									(p[2] * 15 + 127) / 255);
+				out[2 * k] = (uint8_t) (v >> 8);
+				out[2 * k + 1] = (uint8_t) v;
+			}
 }
 
 static int res_tex(const mii_res *res, int arc, int idx, mii_tex *out) {
@@ -924,19 +1068,126 @@ static void bake(mii_tex *t, int kind, const uint8_t c[3]) {
 	}
 }
 
+/* The fraction bits that fit the largest magnitude in a signed 16 bits. */
+static int frac_for(float most) {
+	int f = 14;
+
+	while (f > 0 && most * (float) (1 << f) > 32767)
+		--f;
+	return f;
+}
+
+static int16_t fixed16(float v, int frac) {
+	float q = v * (float) (1 << frac);
+
+	return (int16_t) (q > 32767 ? 32767 : q < -32768 ? -32768 : (q < 0 ? q - 0.5f : q + 0.5f));
+}
+
+/* The mesh's distinct vertices, packed (mii_mesh.pack), and each corner's
+ * index: a head's 1,438 corners have about 330 distinct vertices. A hash of
+ * each vertex's 32 bytes finds the repeats. */
+static int pack_mesh(mii_mesh *mesh) {
+	int n = mesh->count, cap = 64, i, k, nv = 0, *slot, *first;
+	float pmost = 0, smost = 0;
+	uint32_t at;
+	int16_t *pos, *st;
+	int8_t *nrm;
+
+	if (!n)
+		return MII_OK;
+	while (cap < 2 * n)
+		cap *= 2;
+	slot = malloc(sizeof(int) * cap);
+	first = malloc(sizeof(int) * n);   /* each distinct vertex's first corner */
+	mesh->idx = malloc(sizeof(uint16_t) * n);
+	if (!slot || !first || !mesh->idx) {
+		free(slot);
+		free(first);
+		return MII_E_MEM;
+	}
+	for (i = 0; i < cap; ++i)
+		slot[i] = -1;
+	for (i = 0; i < n; ++i) {
+		const uint8_t *b = (const uint8_t *) (mesh->v + 8 * i);
+		uint32_t h = 2166136261u;
+
+		for (k = 0; k < 32; ++k)
+			h = (h ^ b[k]) * 16777619u;
+		for (h &= cap - 1; slot[h] >= 0; h = (h + 1) & (cap - 1))
+			if (!memcmp(mesh->v + 8 * first[slot[h]], b, 32))
+				break;
+		if (slot[h] < 0) {
+			if (nv >= 65535) {
+				free(slot);
+				free(first);
+				return MII_E_FORMAT;
+			}
+			slot[h] = nv;
+			first[nv++] = i;
+		}
+		mesh->idx[i] = (uint16_t) slot[h];
+	}
+	free(slot);
+	for (i = 0; i < nv; ++i) {
+		const float *v = mesh->v + 8 * first[i];
+
+		for (k = 0; k < 3; ++k)
+			if (fabsf(v[k]) > pmost)
+				pmost = fabsf(v[k]);
+		for (k = 6; k < 8; ++k)
+			if (fabsf(v[k]) > smost)
+				smost = fabsf(v[k]);
+	}
+	mesh->pos_frac = frac_for(pmost);
+	mesh->st_frac = frac_for(smost);
+	mesh->pack_nrm = ((uint32_t) nv * 6 + 31) & ~31u;
+	mesh->pack_st = mesh->pack_nrm + (((uint32_t) nv * 3 + 31) & ~31u);
+	at = mesh->pack_st + (((uint32_t) nv * 4 + 31) & ~31u);
 #ifndef MII_NO_OGC
-/* A mesh as a GX display list, written as bytes (so any thread can build
- * it): GX_TRIANGLES on VTXFMT0, a big-endian u16 vertex count, then each
- * vertex's position, normal and texture coordinate as F32 (mii_draw's
- * vertex format), padded with GX_NOPs to 32 bytes. One draw command
- * holds at most 65535 vertices. */
+	mesh->pack = memalign(32, at);
+#else
+	mesh->pack = malloc(at);
+#endif
+	if (!mesh->pack) {
+		free(first);
+		return MII_E_MEM;
+	}
+	memset(mesh->pack, 0, at);
+	pos = (int16_t *) mesh->pack;
+	nrm = (int8_t *) (mesh->pack + mesh->pack_nrm);
+	st = (int16_t *) (mesh->pack + mesh->pack_st);
+	for (i = 0; i < nv; ++i) {
+		const float *v = mesh->v + 8 * first[i];
+
+		for (k = 0; k < 3; ++k) {
+			float c = v[3 + k] * 64;
+
+			pos[3 * i + k] = fixed16(v[k], mesh->pos_frac);
+			nrm[3 * i + k] = (int8_t) (c > 127 ? 127 : c < -128 ? -128 : (c < 0 ? c - 0.5f : c + 0.5f));
+		}
+		st[2 * i] = fixed16(v[6], mesh->st_frac);
+		st[2 * i + 1] = fixed16(v[7], mesh->st_frac);
+	}
+	free(first);
+	mesh->nverts = nv;
+	return MII_OK;
+}
+
+#ifndef MII_NO_OGC
+/* A packed mesh as a GX display list, written as bytes (so any thread can
+ * build it): GX_TRIANGLES on VTXFMT0, a big-endian u16 corner count, then
+ * each corner's index into the position, normal and coordinate arrays (8
+ * bits each where there are under 256 vertices, else 16), padded with
+ * GX_NOPs to 32 bytes. One draw command holds at most 65535 corners. The
+ * floats and the corner list then go: the list and the arrays are all the
+ * GPU reads. */
 static int mesh_list(mii_mesh *mesh) {
-	uint32_t size = 0, done = 0;
+	uint32_t size = 0, done = 0, w = mesh->nverts < 256 ? 1 : 2;
 	uint8_t *o;
 
 	if (!mesh->count)
 		return MII_OK;
-	size = 3 * ((mesh->count + 65534) / 65535) + (uint32_t) mesh->count * 32;
+	size = 3 * ((mesh->count + 65534) / 65535) + (uint32_t) mesh->count * 3 * w;
 	size = (size + 31) & ~31u;
 	mesh->dl = memalign(32, size);
 	if (!mesh->dl)
@@ -944,53 +1195,124 @@ static int mesh_list(mii_mesh *mesh) {
 	memset(mesh->dl, 0, size);   /* 0: GX_NOP */
 	o = mesh->dl;
 	while (done < (uint32_t) mesh->count) {
-		uint32_t n = mesh->count - done > 65535 ? 65535 : mesh->count - done;
+		uint32_t n = mesh->count - done > 65535 ? 65535 : mesh->count - done, i, k;
 
 		*o++ = GX_TRIANGLES | GX_VTXFMT0;
 		*o++ = (uint8_t) (n >> 8);
 		*o++ = (uint8_t) n;
-		memcpy(o, mesh->v + 8 * done, n * 32);   /* the PPC's floats are big-endian */
-		o += n * 32;
+		for (i = 0; i < n; ++i)
+			for (k = 0; k < 3; ++k) {
+				uint16_t x = mesh->idx[done + i];
+
+				if (w == 2)
+					*o++ = (uint8_t) (x >> 8);
+				*o++ = (uint8_t) x;
+			}
 		done += n;
 	}
 	mesh->dl_size = size;
 	DCFlushRange(mesh->dl, size);
+	DCFlushRange(mesh->pack, mesh->pack_st + (((uint32_t) mesh->nverts * 4 + 31) & ~31u));
+	free(mesh->v);
+	free(mesh->idx);
+	mesh->v = NULL;
+	mesh->idx = NULL;
 	return MII_OK;
 }
 
-/* Linear RGBA to GX's RGBA8: 4x4 tiles, each 32 bytes of AR then 32 of GB. */
+/* Linear RGBA to GX's RGB5A3, as RFL keeps its faces: half of RGBA8. */
 static int tex_upload(mii_tex *t) {
-	int tw = (t->w + 3) / 4, th = (t->h + 3) / 4, tx, ty, k;
-	uint8_t *o;
+	uint32_t size = mii_tex_rgb5a3_size(t->w, t->h);
 
 	if (!t->rgba)
 		return MII_OK;
-	t->gx = memalign(32, (size_t) tw * th * 64);
+	t->gx = memalign(32, size);
 	if (!t->gx)
 		return MII_E_MEM;
-	o = t->gx;
-	for (ty = 0; ty < th; ++ty)
-		for (tx = 0; tx < tw; ++tx, o += 64)
-			for (k = 0; k < 16; ++k) {
-				int x = tx * 4 + k % 4, y = ty * 4 + k / 4;
-				const uint8_t *p = x < t->w && y < t->h ? t->rgba + 4 * (y * t->w + x) : (const uint8_t *) "\0\0\0\0";
-
-				o[2 * k] = p[3];
-				o[2 * k + 1] = p[0];
-				o[32 + 2 * k] = p[1];
-				o[33 + 2 * k] = p[2];
-			}
-	DCFlushRange(t->gx, tw * th * 64);
+	mii_tex_rgb5a3(t, t->gx);
+	DCFlushRange(t->gx, size);
 	free(t->rgba);   /* the GPU's copy is all a Wii draws from */
 	t->rgba = NULL;
-	GX_InitTexObj(&t->obj, t->gx, t->w, t->h, GX_TF_RGBA8, t->wrap_s, t->wrap_t, GX_FALSE);
-	GX_InitTexObjFilterMode(&t->obj, GX_LINEAR, GX_LINEAR);
 	return MII_OK;
+}
+
+static void tex_obj(mii_tex *t) {
+	GX_InitTexObj(&t->obj, t->gx, t->w, t->h, GX_TF_RGB5A3, t->wrap_s, t->wrap_t, GX_FALSE);
+	GX_InitTexObjFilterMode(&t->obj, GX_LINEAR, GX_LINEAR);
 }
 #endif
 
+/* A texture into the cache (and, on the Wii, its texture object made). */
+static int tex_share(mii_cache *cache, mii_tex *t) {
+	int r;
+
+#ifndef MII_NO_OGC
+	if (!t->gx)
+		return MII_OK;
+	r = share_bufs(cache, &t->gx, mii_tex_rgb5a3_size(t->w, t->h), NULL, 0, &t->shared);
+	tex_obj(t);
+#else
+	if (!t->rgba)
+		return MII_OK;
+	r = share_bufs(cache, (void **) &t->rgba, (uint32_t) t->w * t->h * 4, NULL, 0, &t->shared);
+#endif
+	return r;
+}
+
+static int mesh_share(mii_cache *cache, mii_mesh *mesh) {
+	uint32_t pack = mesh->pack_st + (((uint32_t) mesh->nverts * 4 + 31) & ~31u);
+
+	if (!mesh->count)
+		return MII_OK;
+#ifndef MII_NO_OGC
+	return share_bufs(cache, (void **) &mesh->pack, pack, &mesh->dl, mesh->dl_size, &mesh->shared);
+#else
+	return share_bufs(cache, (void **) &mesh->pack, pack, (void **) &mesh->idx,
+					  sizeof(uint16_t) * mesh->count, &mesh->shared);
+#endif
+}
+
+/* The faces of the expressions asked for, at that size, uploaded and shared. */
+static int make_masks(const mii_res *res, mii_model *model, int size, unsigned exprs, mii_tex *out) {
+	int e, r;
+
+	for (e = 0; e < MII_EXPR_COUNT; ++e) {
+		if (!(exprs >> e & 1))
+			continue;
+		if ((r = make_mask(res, &model->m, e, size, &out[e])) < 0)
+			return r;
+#ifndef MII_NO_OGC
+		if ((r = tex_upload(&out[e])) < 0)
+			return r;
+#endif
+		if ((r = tex_share(model->cache, &out[e])) < 0)
+			return r;
+	}
+	return MII_OK;
+}
+
+int mii_model_set_mask_size(mii_model *model, const mii_res *res, int mask_size) {
+	mii_tex fresh[MII_EXPR_COUNT];
+	int e, r;
+
+	if (!model || !res || !res->data ||
+			(mask_size != 32 && mask_size != 64 && mask_size != 128 && mask_size != 256))
+		return MII_E_ARG;
+	if (mask_size == model->mask_size)
+		return MII_OK;
+	memset(fresh, 0, sizeof(fresh));
+	r = make_masks(res, model, mask_size, model->expressions, fresh);
+	for (e = 0; e < MII_EXPR_COUNT; ++e)
+		tex_free(r < 0 ? &fresh[e] : &model->mask[e]);
+	if (r < 0)
+		return r;
+	memcpy(model->mask, fresh, sizeof(fresh));
+	model->mask_size = mask_size;
+	return MII_OK;
+}
+
 int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *out) {
-	mii_model_opts o = { mask_size, 0 };
+	mii_model_opts o = { mask_size, 0, NULL };
 
 	return mii_model_build(res, m, &o, out);
 }
@@ -1000,7 +1322,7 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 	int mask_size = opts && opts->mask_size ? opts->mask_size : 128;
 	unsigned exprs = (opts && opts->expressions ? opts->expressions : MII_EXPRS_ALL) | MII_EXPR_BIT(MII_EXPR_NORMAL);
 	float scale;
-	int r, e, i;
+	int r, i;
 
 	if (!res || !res->data || !m || !out)
 		return MII_E_ARG;
@@ -1010,6 +1332,9 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 	out->m = *m;
 	if (mask_size != 32 && mask_size != 64 && mask_size != 128 && mask_size != 256)
 		return MII_E_ARG;
+	out->mask_size = mask_size;
+	out->expressions = exprs;
+	out->cache = opts ? opts->cache : NULL;
 
 	/* The faceline first: its anchors place the rest (RFLiInitCharModelRes). */
 	if ((r = shape(res, A_FACELINE, m->face_type, "face", 1, 1, zero, 0,
@@ -1065,28 +1390,58 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 	bake(&out->tex[MII_TEX_NOSELINE], MII_TEX_NOSELINE, NULL);
 	if (m->glass_type)
 		bake(&out->tex[MII_TEX_GLASS], MII_TEX_GLASS, glass_colors[pick(m->glass_color, 6)]);
-	for (e = 0; e < MII_EXPR_COUNT; ++e)
-		if ((exprs >> e & 1) && (r = make_mask(res, m, e, mask_size, &out->mask[e])) < 0)
-			goto fail;
 
 	if ((r = make_body(out)) < 0)
 		goto fail;
+	for (i = 0; i < MII_PARTS; ++i)
+		if ((r = pack_mesh(&out->part[i])) < 0)
+			goto fail;
 
 #ifndef MII_NO_OGC
 	for (i = 0; i < MII_TEX_COUNT; ++i)
 		if ((r = tex_upload(&out->tex[i])) < 0)
 			goto fail;
-	for (e = 0; e < MII_EXPR_COUNT; ++e)
-		if ((r = tex_upload(&out->mask[e])) < 0)
-			goto fail;
 	for (i = 0; i < MII_PARTS; ++i)
 		if ((r = mesh_list(&out->part[i])) < 0)
 			goto fail;
 #endif
+	for (i = 0; i < MII_TEX_COUNT; ++i)
+		if ((r = tex_share(out->cache, &out->tex[i])) < 0)
+			goto fail;
+	for (i = 0; i < MII_PARTS; ++i)
+		if ((r = mesh_share(out->cache, &out->part[i])) < 0)
+			goto fail;
+	if ((r = make_masks(res, out, mask_size, exprs, out->mask)) < 0)
+		goto fail;
 	return MII_OK;
 fail:
 	mii_model_free(out);
 	return r;
+}
+
+void mii_mesh_free(mii_mesh *mesh) {
+	if (mesh->shared) {
+		unshare(mesh->shared);
+		mesh->shared = NULL;
+		mesh->pack = NULL;
+#ifndef MII_NO_OGC
+		mesh->dl = NULL;
+#else
+		mesh->idx = NULL;
+#endif
+	}
+	free(mesh->v);
+	free(mesh->idx);
+	free(mesh->pack);
+#ifndef MII_NO_OGC
+	free(mesh->dl);
+#endif
+	mesh->v = NULL;
+	mesh->idx = NULL;
+	mesh->pack = NULL;
+	mesh->dl = NULL;
+	mesh->count = mesh->nverts = 0;
+	mesh->dl_size = 0;
 }
 
 void mii_model_free(mii_model *model) {
@@ -1094,12 +1449,8 @@ void mii_model_free(mii_model *model) {
 
 	if (!model)
 		return;
-	for (i = 0; i < MII_PARTS; ++i) {
-		free(model->part[i].v);
-#ifndef MII_NO_OGC
-		free(model->part[i].dl);
-#endif
-	}
+	for (i = 0; i < MII_PARTS; ++i)
+		mii_mesh_free(&model->part[i]);
 	for (i = 0; i < MII_TEX_COUNT; ++i)
 		tex_free(&model->tex[i]);
 	for (i = 0; i < MII_EXPR_COUNT; ++i)
@@ -1108,6 +1459,8 @@ void mii_model_free(mii_model *model) {
 	free(model->skin_nrm);
 	free(model->pal_pos);
 	free(model->pal_nrm);
+	free(model->last_pm);
+	free(model->last_nm);
 	memset(model, 0, sizeof(*model));
 }
 
@@ -1168,10 +1521,9 @@ static void load(Mtx view, Mtx model) {
 }
 
 static void draw_mesh(const mii_mesh *mesh, const GXTexObj *tex) {
-	const float *v = mesh->v;
-	int i;
+	int w = mesh->nverts < 256 ? GX_INDEX8 : GX_INDEX16;
 
-	if (!mesh->count)
+	if (!mesh->count || !mesh->dl)
 		return;
 	if (tex) {
 		GX_LoadTexObj((GXTexObj *) tex, GX_TEXMAP0);
@@ -1184,32 +1536,26 @@ static void draw_mesh(const mii_mesh *mesh, const GXTexObj *tex) {
 		GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
 		GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
 	}
-	/* The GPU fetches the list from RAM: a few bytes in the FIFO. */
-	if (mesh->dl) {
-		GX_CallDispList(mesh->dl, mesh->dl_size);
-		return;
-	}
-	GX_Begin(GX_TRIANGLES, GX_VTXFMT0, mesh->count);
-	for (i = 0; i < mesh->count; ++i, v += 8) {
-		GX_Position3f32(v[0], v[1], v[2]);
-		GX_Normal3f32(v[3], v[4], v[5]);
-		GX_TexCoord2f32(v[6], v[7]);
-	}
-	GX_End();
+	/* The GPU fetches the list and the vertices from RAM: a few bytes in
+	 * the FIFO. */
+	GX_ClearVtxDesc();
+	GX_SetVtxDesc(GX_VA_POS, w);
+	GX_SetVtxDesc(GX_VA_NRM, w);
+	GX_SetVtxDesc(GX_VA_TEX0, w);
+	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_S16, mesh->pos_frac);
+	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
+	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_S16, mesh->st_frac);
+	GX_SetArray(GX_VA_POS, mesh->pack, 6);
+	GX_SetArray(GX_VA_NRM, mesh->pack + mesh->pack_nrm, 3);
+	GX_SetArray(GX_VA_TEX0, mesh->pack + mesh->pack_st, 4);
+	GX_CallDispList(mesh->dl, mesh->dl_size);
 }
 
 static void setup(Mtx view) {
 	GXLightObj light;
 	guVector pos = { -900, 1100, 1400 }, vpos;
 
-	GX_ClearVtxDesc();
-	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
-	GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
-	GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
-	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-	GX_InvVtxCache();
+	GX_InvVtxCache();   /* the arrays may be new at an address a freed model used */
 
 	/* One white light from the front, upper left, as RFL's icons light a
 	 * head, in view space; a grey ambient. */
@@ -1273,18 +1619,33 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
  * (CPU skinning sent 54 KB). The head on the head bone, its bind pose
  * upright, the pose's look on top. */
 static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mtx root) {
-	mii_model *mm = (mii_model *) model;   /* the palette ring is scratch */
+	mii_model *mm = (mii_model *) model;   /* the palette ring and the last pose are scratch */
 	const mii_body *body = model->body;
-	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
-	float bp[MII_BODY_BONES][3][4], bn[MII_BODY_BONES][3][3];
+	float (*bp)[3][4] = mm->last_pm, (*bn)[3][3] = mm->last_nm;
 	float (*pp)[3][4] = mm->pal_pos + mm->pal_size * mm->pal_next;
 	float (*pn)[3][3] = mm->pal_nrm + mm->pal_size * mm->pal_next;
-	const float (*b)[3] = body->bone[body->head].bind_rot;
 	Mtx mv, inv, nmv, head, t;
 	int i, j, k, id;
 
 	mm->pal_next = (mm->pal_next + 1) % MII_PALETTES;
-	mii_body_matrices(model, pose, bp, bn);
+	if (!pose->reuse || !mm->posed) {   /* pose it: once, for the body and the head */
+		float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
+		const float (*b)[3] = body->bone[body->head].bind_rot;
+
+		mii_body_pose(model, pose, rot, pos);
+		mii_body_matrices_posed(model, rot, pos, bp, bn);
+		for (i = 0; i < 3; ++i) {
+			for (j = 0; j < 3; ++j) {
+				float v = 0;
+
+				for (k = 0; k < 3; ++k)
+					v += rot[body->head][i][k] * b[j][k];   /* R_head times the bind's transpose */
+				mm->last_head[i][j] = v;
+			}
+			mm->last_head[i][3] = pos[body->head][i];
+		}
+		mm->posed = 1;
+	}
 	guMtxConcat(view, root, mv);
 	if (guMtxInverse(mv, inv))
 		guMtxTranspose(inv, nmv);
@@ -1340,25 +1701,10 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 		GX_SetArray(GX_VA_NRM, na->gx, na->stride);
 		GX_CallDispList(o->dl, o->dl_size);
 	}
-	GX_ClearVtxDesc();
-	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
-	GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
-	GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
 	GX_SetNumTexGens(1);
 	GX_SetCurrentMtx(GX_PNMTX0);
 
-	mii_body_pose(model, pose, rot, pos);
-	guMtxIdentity(head);
-	for (i = 0; i < 3; ++i) {
-		for (j = 0; j < 3; ++j) {
-			float v = 0;
-
-			for (k = 0; k < 3; ++k)
-				v += rot[body->head][i][k] * b[j][k];   /* R_head times the bind's transpose */
-			head[i][j] = v;
-		}
-		head[i][3] = pos[body->head][i];
-	}
+	guMtxCopy(mm->last_head, head);
 	mtx_mul(head, root, head);
 	mtx_rot(t, 'y', pose->head_yaw);
 	mtx_mul(head, head, t);

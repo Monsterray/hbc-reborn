@@ -161,6 +161,43 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.7: packed parts, shared parts, a pose worked out once
+
+- **Textures as RGB5A3**, RFL's format for its faces: half of RGBA8.
+  `mii_tex_rgb5a3` is portable; the host test decodes it back within its
+  bits (colour 8 of 255, alpha 19).
+- **Meshes packed** (`mii_mesh.pack`), as RFL keeps its shapes: the
+  distinct vertices (a head's 1,438 corners have about 330), positions s16
+  with as many fraction bits as fit, normals s8, coordinates s16, drawn
+  indexed (8-bit indexes under 256 vertices). The host test unpacks them
+  within 0.004 (position) of the floats. On the Wii the floats then go.
+- **The built body's parts are freed** when a Wii body replaces them.
+- **`mii_cache`** (`mii_model_opts.cache`): Miis share any part, texture or
+  face that comes out byte for byte the same, found by a hash of its
+  contents. 100 random Miis use 1,029 parts and 418 are distinct.
+- **`mii_model_set_mask_size`**: a model's faces rebuilt at another size
+  (for a Mii far off), in its cache.
+- **A pose worked out once a draw.** `draw_body` posed every bone twice
+  (the palette, then the head). Posing is nearly all of the CPU's part:
+  on a PC 1.40 of 1.48 us.
+- **The body remembers its last 16 poses** (`mii_body.memo`): Miis at the
+  same frame of the same animation pose once. The host test finds a pose
+  again, bit for bit the same.
+- **`mii_pose.reuse`**: the bones as the model's last draw posed them, for
+  a Mii far off posed every few frames.
+
+What a Wii keeps per Mii now (PC accounting, 50 random Miis, male body):
+
+| Faces | Built | Before (1.11.5) | Now |
+|---|---|---|---|
+| 128 px | every expression | 1,100 KB | 281 KB |
+| 128 px | normal only | | 67 KB |
+| 32 px | normal only | | 37 KB |
+
+On the bench Wii (1.11.6 + the packing, every expression, 128 px), a crowd
+used 277-316 KB a Mii, against 1.36 MB in 1.11.5, and 160 Miis fit; the
+faces, the icons and the female body drew right.
+
 ### 1.11.6: a Mii keeps only what it draws
 
 Where a Mii's memory went (sdk/mii 1.1.1, 128 px faces, 50 random Miis

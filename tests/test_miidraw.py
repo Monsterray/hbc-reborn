@@ -147,6 +147,35 @@ class MiiDrawTest(unittest.TestCase):
         self.assertTrue((out / "mii.obj").stat().st_size > 1000)
         # mii_model_opts: the normal face and those asked for, at their size.
         self.assertIn("opts: expressions 0x21, 32 px", r.stdout)
+        self.check_pack(r.stdout)
+        # The cache: the same Mii twice shares everything (each part, the
+        # face); faces rebuilt at 32 px replace the 128 px ones in it; with
+        # both models freed, nothing is left.
+        m = re.search(r"cache: (\d+) of (\d+) parts and the face shared; entries (\d+) (\d+) (\d+) (\d+), "
+                      r"users (\d+) (\d+) (\d+) (\d+); bytes (\d+) then (\d+)", r.stdout)
+        self.assertTrue(m, r.stdout)
+        self.assertEqual(m[1], m[2])
+        entries, users = [int(m[k]) for k in range(3, 7)], [int(m[k]) for k in range(7, 11)]
+        self.assertGreaterEqual(users[0], 2 * entries[0])   # synthetic parts repeat within a Mii too
+        self.assertEqual(entries[2], entries[0])     # 32 px faces in place of the 128 px ones
+        self.assertGreater(entries[1], entries[0])   # one model moved: both sizes held
+        self.assertEqual((entries[3], users[3]), (0, 0))
+        self.assertLess(int(m[12]), int(m[11]))
+
+    def check_pack(self, stdout):
+        # Packed meshes: fewer vertices than corners, each within its fixed
+        # point's step; RGB5A3 within its bits (4-bit colour: 8; alpha 3 bits: 18).
+        m = re.search(r"pack: (\d+) corners, (\d+) vertices; largest error: position ([\d.]+), "
+                      r"normal ([\d.]+), coordinate ([\d.]+); rgb5a3 colour (\d+), alpha (\d+)", stdout)
+        self.assertTrue(m, stdout)
+        corners, verts = int(m[1]), int(m[2])
+        self.assertLess(verts, corners)
+        self.assertLess(float(m[3]), 0.01)
+        self.assertLess(float(m[4]), 0.01)
+        self.assertLess(float(m[5]), 0.001)
+        self.assertLessEqual(int(m[6]), 8)
+        self.assertLessEqual(int(m[7]), 19)
+        return corners, verts
 
     def test_damaged_resource_refused(self):
         good = resource()
@@ -157,6 +186,14 @@ class MiiDrawTest(unittest.TestCase):
             r, _ = self.run_host(res)
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertTrue(r.stdout.startswith("res: ") or r.stdout.count("model: "), r.stdout)
+
+    def test_pose_memo(self):
+        # A Mii posed at a frame another Mii was posed at takes the body's
+        # remembered pose: the same bones, bit for bit.
+        if not os.environ.get("MII_REAL_BODIES"):
+            self.skipTest("set MII_REAL_BODIES")
+        r = self.run_body(pathlib.Path(os.environ["MII_REAL_BODIES"]) / "maleBody.brres")
+        self.assertIn("memo: hits 1, same 1", r.stdout)
 
     def run_body(self, body, anim=None, frame=0, size=("64", "64"), **extra):
         res = self.dir / "RFL_Res.dat"
