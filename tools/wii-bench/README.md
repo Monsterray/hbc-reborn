@@ -96,8 +96,33 @@ python tools/wii-bench/wiibench.py stop ID                  # a running job: end
 The monitor's manage page does the same with a click and a key, and asks `y` first: click a
 job (or `j`/`k`, or the arrow keys), then `c` cancels it (or stops it, when it runs), `a`
 cancels its agent's, `w` its workstation's, `X` everything queued, `g` gives up waiting for a
-frozen Wii.
+frozen Wii, and `b` bumps a turn that waits for HBC (below).
 
+- **Bumping a wait for HBC.** When a turn waits for a Wii that is out of HBC (an app or a game
+  is running, a crash screen, the Wii Menu, or a Wii that is off), the dispatcher probes it only
+  every 15 s, and once HBC answers it waits 20 s more for it to stay idle. When you have just
+  brought the Wii back, bump the turn instead of waiting:
+
+  ```bash
+  python tools/wii-bench/wiibench.py bump ID    # the job its turn waits with
+  ```
+
+  On the manage page, select the waiting row (a Wii's holder, or this workstation's first
+  queued job) and press `b`; it asks nothing. The dispatcher then:
+  1. probes at once, within a second;
+  2. starts the job after 2 s of HBC answering, not 20 s. Until HBC answers, it probes a busy
+     Wii every 5 s, not 15 s.
+
+  A job here is bumped through a file in `bump/` that the dispatcher looks for every second; a
+  job on another workstation through the lease server, which hands it on with the next lease
+  renewal (within about 5 s). Either way the job starts about 3 to 8 s after the bump.
+  - It is only a request to look: the probe is the usual version request, so it never
+    interrupts a running app, and if HBC is not there yet the turn goes on waiting.
+  - It does nothing to a job that is running or finished (`bump` says so), and a bump a turn
+    doesn't use within 5 minutes (the server keeps one for 2) is dropped.
+  - Each bump is in the history: the server logs the request (`bump`), and the dispatcher
+    logs that its turn used it (`bumped`, with the Wii and what it last answered).
+  - A dispatcher before this change ignores a bump.
 - A job on another workstation is cancelled by that workstation's dispatcher. The lease server
   hands the request on with the dispatcher's next call, within a few seconds, and drops the job
   from every list at once.
@@ -222,7 +247,7 @@ waits, and anything that needs a look: a Wii left out of HBC, an expired lease, 
 | 2 errors | every problem in the window, newest first: failed and timed-out jobs with their log's last line, a Wii left out of HBC, an expired lease, a workstation that left the line, the lease server unreachable, a dispatcher that crashed, jobs queued with no dispatcher, a workstation still on a dispatcher before 1.9.1 |
 | 3 history | a lane per Wii over the window (below); per workstation: jobs, failures, Wii minutes, turns, median and longest wait; hand-over speed; the longest waits |
 | 4 log | the end of this workstation's `dispatcher.log`, problems in colour |
-| 5 manage | every job running, waiting or queued, on every workstation, with its agent and project folder; cancel or stop one, an agent's, a workstation's or all; give up waiting for a frozen Wii |
+| 5 manage | every job running, waiting or queued, on every workstation, with its agent and project folder; cancel or stop one, an agent's, a workstation's or all; bump a turn that waits for HBC; give up waiting for a frozen Wii |
 
 The two lines under the tabs, on every page:
 

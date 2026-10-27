@@ -82,6 +82,8 @@ KEYS
     a   cancel every queued job of its agent
     w   cancel every queued job of its workstation
     X   cancel every queued job, on every workstation
+    b   bump a turn that waits for HBC: you brought the Wii back, so it probes now and
+        starts after 2 s of quiet instead of 20 (no y: it changes nothing if HBC is not there)
     g   give up waiting for a frozen Wii to come back (its data is not saved)
   Each asks y first. Another workstation's job is cancelled by its own
   dispatcher, through the lease server, within a few seconds.
@@ -861,7 +863,7 @@ MSG=""; MSG_UNTIL=0                                # the last action's answer, s
 render_manage() {
     local i fmt nm host color mark n="${NROWS[manage]:-0}" ids=() sel_ok=0
     MANAGE_AT=()
-    heading "$c_cyan" "MANAGE" "click a job or j/k to select; c cancel/stop it, a its agent's, w its workstation's, X all queued, g give up a freeze wait" manage
+    heading "$c_cyan" "MANAGE" "click a job or j/k to select; c cancel/stop it, a its agent's, w its workstation's, X all queued, b bump a wait for HBC, g give up a freeze wait" manage
     if [ -n "$CONFIRM" ]; then
         lines+=("  ${c_bold}${c_yellow}${CONFIRM}  y to do it, any other key to leave it${c_reset}")
     elif epoch; [ -n "$MSG" ] && (( EPOCH < MSG_UNTIL )); then
@@ -956,6 +958,16 @@ manage_key() {
             CONFIRM="Cancel every queued job on $host?"; CONFIRM_ARGS=(cancel --host "$host") ;;
         X)
             CONFIRM="Cancel EVERY queued job, on every workstation?"; CONFIRM_ARGS=(cancel --all) ;;
+        b)
+            [ -n "$SELECTED" ] || { MSG="select a job first: click it, or j/k"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
+            manage_field "$SELECTED" 0; state="$V"
+            if [ "$state" = "running" ]; then
+                MSG="$SELECTED is running: a bump is for a turn that waits for HBC"
+            else
+                MSG="$("$PY" "$BENCH" bump "$SELECTED" 2>&1 | tr '\n' ' ')"
+            fi
+            epoch; MSG_UNTIL=$(( EPOCH + 6 ))
+            collect ;;
         g)
             [ -n "${KV[recovering_id]:-}" ] || { MSG="no freeze being waited out here"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
             CONFIRM="Give up waiting for the Wii to save ${KV[recovering_name]}'s data?"; CONFIRM_ARGS=(stop "${KV[recovering_id]}") ;;

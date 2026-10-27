@@ -343,6 +343,7 @@ TTL = 60                                           # a lease or a place in line 
 WAITING_FOR_HBC = "waiting for HBC"
 QUEUE_MAX = 50        # jobs per workstation the server keeps (and the total, for the rest)
 REQUEST_TTL = 3600    # s a cancel or stop waits for the workstation that has the job
+BUMP_TTL = 120        # s a bump waits: it is about the Wii being in HBC now
 RESERVE = 10          # s the Wii waits for the workstation with the earliest job to ask for it
 
 
@@ -440,11 +441,13 @@ class Leases:
         return {"ok": True}
 
     def request(self, d):
-        """Cancel or stop jobs: by id, or every queued job of an agent, a host, or all."""
+        """Cancel or stop jobs: by id, or every queued job of an agent, a host, or all. Or bump
+        one: tell the dispatcher whose turn waits for HBC with that job that a person says the
+        Wii is back in HBC, so it probes now and starts after a short quiet wait."""
         now = self.clock()
         action = d.get("action")
-        if action not in ("cancel", "stop"):
-            return {"ok": False, "error": "action: cancel or stop"}
+        if action not in ("cancel", "stop", "bump"):
+            return {"ok": False, "error": "action: cancel, stop or bump"}
         ids = set(d.get("ids") or [])
         if action == "cancel" and (d.get("agent") or d.get("host") or d.get("all")):
             for q in self.queues.values():
@@ -456,7 +459,7 @@ class Leases:
             owner = next((q["qid"] for q in self.queues.values() if any(j["id"] == i for j in q["jobs"])), None)
             if owner is None:
                 owner = next((s["holder"].get("qid") for s in self.slots.values()
-                              if s["holder"] and s["holder"].get("job") == i), None)
+                              if s["holder"] and i in (s["holder"].get("job"), s["holder"].get("head"))), None)
             self.requests[i] = (action, now, owner)
         if action == "cancel":                     # off every list now, so monitors stop showing them
             for q in self.queues.values():
@@ -467,14 +470,16 @@ class Leases:
     def requests_for(self, qid, now):
         """The cancels and stops waiting for this workstation: its own jobs', and those of jobs
         no list knew (a dispatcher before 1.10.4), which go to every workstation until they expire."""
-        out = {"cancel": [], "stop": []}
+        out = {"cancel": [], "stop": [], "bump": []}
         for i, (action, t, owner) in list(self.requests.items()):
-            if now - t > REQUEST_TTL:
+            if now - t > (BUMP_TTL if action == "bump" else REQUEST_TTL):
                 del self.requests[i]
             elif owner in (qid, None):
                 out[action].append(i)
-        if not out["cancel"] and not out["stop"]:
+        if not any(out.values()):
             return None
+        if not out["bump"]:                        # a dispatcher before bumps never sees the key
+            del out["bump"]
         return out
 
     def done_with(self, ids, qid=None):
@@ -624,6 +629,8 @@ class Leases:
         if d.get("name"):                          # the job the turn is for now (the first was cancelled)
             h["name"] = d["name"]
         h["job"] = d.get("job")                    # the job running now, if one is
+        if d.get("head"):                          # the job it waits with: what a bump names
+            h["head"] = d["head"]
         if d.get("phase") is not None and d["phase"] != h.get("phase"):
             self._phase_end(h, now)
             h["phase"], h["phase_at"] = d["phase"], now
@@ -1471,16 +1478,50 @@ def stop_here(ids):
     return out
 
 
+BUMPS = HOME / "bump"                              # ID: a person says the Wii is back in HBC
+BUMP_QUIET = 2        # s of HBC idle after a bump: a person has just said the Wii is free
+BUMP_BUSY_STEP = 5    # s between probes of a busy Wii after a bump, until HBC answers
+BUMP_FRESH = 300      # s a bump file counts for: one older is a Wii that was not ready
+
+
+def bump_here(ids):
+    """Bump the turns here that wait with these jobs: a file the dispatcher looks for every
+    second while it waits for HBC. Returns the ids of pending jobs here."""
+    out = []
+    for i in ids:
+        if (PENDING / f"{i}.json").exists():
+            BUMPS.mkdir(parents=True, exist_ok=True)
+            (BUMPS / i).write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+            out.append(i)
+    return out
+
+
+def take_bump(job_id):
+    """True once, if a person bumped this job: the file is taken. Old ones are dropped."""
+    if job_id is None:
+        return False
+    f = BUMPS / str(job_id)
+    try:
+        fresh = time.time() - f.stat().st_mtime < BUMP_FRESH
+        f.unlink()
+    except OSError:
+        return False
+    return fresh
+
+
 def apply_requests(reqs):
-    """Cancels and stops relayed by the lease server for this workstation's jobs."""
+    """Cancels, stops and bumps relayed by the lease server for this workstation's jobs."""
     if not reqs:
         return []
     done = cancel_here(reqs.get("cancel") or [], "cancelled through the lease server")
     done += stop_here(reqs.get("stop") or [])
+    bumps = reqs.get("bump") or []
+    bump_here(bumps)
     gone = [i for i in reqs.get("cancel") or [] if not (PENDING / f"{i}.json").exists()]
     if done:
         say(f"by request: {', '.join(done)}")
-    return sorted(set(done) | set(gone) | set(i for i in reqs.get("stop") or [] if not (RUNNING / f"{i}.json").exists()))
+    return sorted(set(done) | set(gone) | set(bumps)
+                  | set(i for i in reqs.get("stop") or [] if not (RUNNING / f"{i}.json").exists()))
 
 
 def send_queue():
@@ -2041,6 +2082,7 @@ def wait_idle(full, need, job_id=None, turn=None):
     step = 1.0 if need < full else 5.0
     ok_since = busy_since = None
     said, busy_what = None, None
+    bumped = False       # a person said the Wii is back in HBC: probe now, and a short quiet wait
     head = [job_id]
     wii = turn.target if turn is not None else None
     busy_log = {}        # busy_s (how long the Wii was not in HBC), what answered: turn.last_wait
@@ -2066,6 +2108,8 @@ def wait_idle(full, need, job_id=None, turn=None):
         if state == "hbc":
             ok_since = t if ok_since is None else ok_since
             step = min(step, 5.0)                  # HBC is back: the quiet period at 5 s, not BUSY_STEP
+            if bumped:
+                step, need = 1.0, min(need, BUMP_QUIET)
             if busy_since is not None:             # back after a busy spell: how long, and what it was
                 busy_log["busy_s"] = round(t - busy_log["first_busy"])
                 busy_log["what"] = busy_what.split(": ", 1)[1] if busy_what else "busy"
@@ -2075,6 +2119,8 @@ def wait_idle(full, need, job_id=None, turn=None):
             msg = "waiting for HBC to stay idle"
         else:
             ok_since, need, step = None, full, BUSY_STEP
+            if bumped:                             # someone is waiting: look a little more often
+                need, step = min(full, BUMP_QUIET), BUMP_BUSY_STEP
             busy_since = t if busy_since is None else busy_since
             busy_log["first_busy"] = busy_log.get("first_busy", busy_since)
             busy_log["probes"] = busy_log.get("probes", 0) + 1
@@ -2096,6 +2142,23 @@ def wait_idle(full, need, job_id=None, turn=None):
             if head[0] != job_id:                  # a new head: say so under its id
                 job_id, said = head[0], None
                 report(job_id, msg, (wii or {}).get("name"))
+            if take_bump(head[0]):                 # a person says it is back: look now
+                bumped = True
+                bumped_event(turn, head[0], state)
+                break
+
+
+def bumped_event(turn, job_id, state):
+    """A bump reached the turn that waits with this job: say so, and put it in the history."""
+    slot = getattr(turn, "slot", None)
+    say(f"bumped: probing {slot or 'the Wii'} now (it answered {state} last); {job_id}")
+    ev = {"type": "bumped", "host": socket.gethostname(), "id": job_id, "wii": slot, "was": state}
+    local_history(ev)
+    if turn is not None and getattr(turn, "server", False):
+        try:
+            lease_call("/event", ev)
+        except OSError:
+            pass
 
 
 def used_outside(wait):
@@ -3298,7 +3361,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
     for _, _, h, _ in pool:                    # every Wii's holder elsewhere
         if h and h.get("host") != socket.gethostname():
             row("manage", state="running" if str(h.get("phase", "")).startswith("running") else "waiting",
-                turn="-", host=h.get("host"), id=h.get("job") or "-", name=h.get("name"), agent="-", folder="-",
+                turn="-", host=h.get("host"), id=h.get("job") or h.get("head") or "-", name=h.get("name"), agent="-", folder="-",
                 age=_age(h.get("held_s", 0)), age_s=h.get("held_s", 0))
     for i, j in enumerate(order, 1):
         row("manage", state="queued", turn=i, host=j.get("host"), id=j.get("id") or "-", name=j.get("name"),
@@ -3480,6 +3543,29 @@ def cmd_cancel(a):
         sys.exit(1)
 
 
+def cmd_bump(a):
+    """Tell a dispatcher whose turn waits for HBC that the Wii is back in HBC: it probes at once
+    and starts after a short quiet wait instead of the full one. For a person who has just
+    brought the Wii back. A job here is bumped through a file, one on another workstation through
+    the lease server. It changes nothing for a job that is not waiting for HBC."""
+    for i in a.ids:
+        d, _ = find(i)
+        if d == RUNNING:
+            print(f"{i}: already running")
+        elif d == DONE:
+            print(f"{i}: already finished")
+        elif bump_here([i]):
+            print(f"bumped {i} (its turn probes the Wii within a second)")
+        elif lease_server():
+            try:
+                lease_call("/request", {"action": "bump", "ids": [i], "by": job_agent(), "by_host": socket.gethostname()})
+                print(f"bump sent for {i} (its workstation's dispatcher probes within about 5 s)")
+            except OSError as e:
+                print(f"{i}: the lease server did not take the bump: {e}")
+        else:
+            print(f"{i}: not found")
+
+
 def cmd_stop(a):
     """Stop running jobs (here, or on another workstation through the lease server): the job is
     ended like a timeout ("stopped"), then the Wii's HBC is checked and its data collected."""
@@ -3518,6 +3604,8 @@ def main():
     s.add_argument("--all", action="store_true", help="every queued job, on every workstation")
     s = sub.add_parser("stop", help="stop running jobs, here or anywhere")
     s.add_argument("ids", nargs="+")
+    s = sub.add_parser("bump", help="the Wii is back in HBC: its turn probes now and starts after a short wait")
+    s.add_argument("ids", nargs="+", help="the job whose turn waits for HBC (the monitor's manage page shows it)")
     s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=4310); s.add_argument("--ttl", type=float, default=TTL)
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--history", help="keep the history (events, rotated and archived) in this directory")
@@ -3548,7 +3636,7 @@ def main():
     a = ap.parse_args()
     if a.op == "add" and a.cmd[:1] == ["--"]:
         a.cmd = a.cmd[1:]
-    {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel, "stop": cmd_stop,
+    {"add": cmd_add, "run": cmd_run, "status": cmd_status, "wait": cmd_wait, "cancel": cmd_cancel, "stop": cmd_stop, "bump": cmd_bump,
      "serve": cmd_serve, "setup": cmd_setup, "report": cmd_report,
      "snapshot": cmd_snapshot, "runs": cmd_runs, "results": cmd_results, "rollover": cmd_rollover}[a.op](a)
 

@@ -292,6 +292,37 @@ class IdleWaitTest(unittest.TestCase):
         self.assertFalse(self.wb.real_outside({"busy_s": 40, "probes": 1}))
         self.assertTrue(self.wb.real_outside({"busy_s": 30, "probes": 2}))
 
+    def test_a_bump_ends_the_wait_for_hbc_at_once(self):
+        from unittest import mock
+        turn = mock.Mock(target=None, server=False, slot="dev")
+        turn._refill.return_value = True
+        turn.job_id = "j"
+        bumps = iter([False, False, True] + [False] * 50)         # a person bumps 3 s into the wait
+        self.answers = ["agent"]                                   # busy once, then HBC answers
+        with mock.patch.object(self.wb, "take_bump", lambda job: next(bumps)),              mock.patch.object(self.wb, "local_history"):
+            self.assertTrue(self.wb.wait_idle(20, 20, "j", turn))
+        self.assertEqual(self.now, 3 + self.wb.BUMP_QUIET)         # not BUSY_STEP + the full 20 s
+        self.assertEqual(self.probes, 4)                           # 1 busy, the bump's, then 2 s of quiet at 1 s steps
+
+    def test_a_bump_files_are_taken_once_and_old_ones_dropped(self):
+        import time
+        from unittest import mock
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = pathlib.Path(tmp.name)
+        (home / "pending").mkdir()
+        (home / "pending/j1.json").write_text("{}")
+        with mock.patch.object(self.wb, "BUMPS", home / "bump"), mock.patch.object(self.wb, "PENDING", home / "pending"):
+            self.assertEqual(self.wb.bump_here(["j1", "nope"]), ["j1"])     # only a job pending here
+            self.assertTrue(self.wb.take_bump("j1"))
+            self.assertFalse(self.wb.take_bump("j1"))                       # taken
+            self.assertFalse(self.wb.take_bump(None))
+            self.wb.bump_here(["j1"])
+            old = time.time() - self.wb.BUMP_FRESH - 5
+            os.utime(home / "bump/j1", (old, old))
+            self.assertFalse(self.wb.take_bump("j1"))                       # too old: the Wii was not ready then
+            self.assertFalse((home / "bump/j1").exists())
+
     def test_a_busy_wii_brings_back_the_full_wait(self):
         self.answers = ["hbc", "agent", "off"]
         self.wb.wait_idle(20, 2)
@@ -341,6 +372,35 @@ class DispatcherTest(unittest.TestCase):
             time.sleep(0.2)
         time.sleep(0.2)
         return float(p.read_text().split()[0]), json.loads((self.home / "queue/done" / f"{job_id}.json").read_text())
+
+    def test_a_bump_ends_the_wait_for_a_busy_wii(self):
+        import time
+        self.fake.agent = True                     # an app answers on 4299: HBC is not back
+        self.addCleanup(setattr, self.fake, "agent", False)
+        job = self.add("bumped", "A", secs=0.3)
+        env = dict(self.env, WII_BENCH_BUSY_STEP="60")   # without a bump the next probe is a minute off
+        d = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", "30"], env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(d.wait)
+        self.addCleanup(d.kill)
+        state = self.home / "dispatcher.state"
+        end = time.monotonic() + 30
+        while not (state.exists() and "busy" in state.read_text()):
+            self.assertLess(time.monotonic(), end, "the turn never saw the busy Wii")
+            time.sleep(0.2)
+        self.fake.agent = False                    # the person brings the Wii back to HBC, then bumps
+        t0 = time.time()
+        r = subprocess.run([sys.executable, str(BENCH), "bump", job], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"bumped {job}", r.stdout)
+        started, rec = self.done(job, timeout=40)
+        self.assertLess(started - t0, 12)          # not the 60 s probe step, nor the 30 s idle wait
+        self.assertEqual(rec["exit"], 0)
+        r = subprocess.run([sys.executable, str(BENCH), "bump", job], env=env, capture_output=True, text=True, timeout=30)
+        self.assertIn("already finished", r.stdout)
+        hist = (self.home / "history").glob("events-*.jsonl")
+        evs = [json.loads(l) for f in hist for l in f.read_text().splitlines()]
+        self.assertEqual([e["id"] for e in evs if e["type"] == "bumped"], [job])
 
     def test_same_agent_chains_and_another_agent_waits_briefly(self):
         import time
@@ -556,6 +616,31 @@ class ManageTest(unittest.TestCase):
 
     def setUp(self):
         self.wb = import_wiibench()
+
+    def test_a_bump_reaches_the_workstation_that_waits_and_expires(self):
+        now = [60.0]
+        leases = self.wb.Leases(ttl=600, clock=lambda: now[0])
+        leases.grace_until = 0
+        q = lambda qid, ids: {"qid": qid, "host": qid, "queue_at": now[0],
+                              "queue": [{"id": i, "name": i, "agent": "A"} for i in ids]}
+        leases.queue(q("pc", ["p1"]))
+        leases.queue(q("mac", ["m1"]))
+        r = leases.request({"action": "bump", "ids": ["p1"], "by": "x"})
+        self.assertEqual(r["ids"], ["p1"])
+        self.assertEqual([j["id"] for j in leases.queues["pc"]["jobs"]], ["p1"])    # a bump is not a cancel
+        self.assertEqual(leases.requests_for("pc", now[0]), {"cancel": [], "stop": [], "bump": ["p1"]})
+        self.assertIsNone(leases.requests_for("mac", now[0]))                       # not mac's
+        leases.done_with(["p1"], "pc")
+        self.assertIsNone(leases.requests_for("pc", now[0]))                        # handled
+        leases.request({"action": "bump", "ids": ["p1"]})
+        now[0] += self.wb.BUMP_TTL + 1                                              # about the Wii now
+        self.assertIsNone(leases.requests_for("pc", now[0]))
+        # The holder's row on the manage page names the job it waits with.
+        r = leases.acquire({"ticket": "t", "host": "pc", "qid": "pc", "name": "p1", "head": "p1"})
+        self.assertTrue(r["granted"])
+        leases.renew({"ticket": "t", "qid": "pc", "name": "p1", "head": "p1", "phase": "waiting for HBC"})
+        self.assertEqual(leases.status()["holder"]["head"], "p1")
+        self.assertFalse(leases.request({"action": "dance", "ids": ["p1"]})["ok"])
 
     def test_requests_reach_the_workstation_that_has_the_job(self):
         now = [60.0]
@@ -1046,6 +1131,30 @@ class LeaseDispatcherTest(unittest.TestCase):
         self.assertLess(time.monotonic() - t, 20)
         rec = json.loads((self.home / "queue/done" / f"{long_}.json").read_text())
         self.assertEqual(rec["exit"], "stopped")
+
+    def test_a_bump_from_another_workstation(self):
+        import time
+        bhome, benv = self.second_workstation()
+        self.fake.agent = True                     # HBC is not back yet
+        self.addCleanup(setattr, self.fake, "agent", False)
+        job = self.add("bump me", "A", secs=0.3)
+        env = dict(self.env, WII_BENCH_BUSY_STEP="60")
+        d = subprocess.Popen([sys.executable, str(BENCH), "run", "--idle", "30"], env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(d.wait)
+        self.addCleanup(d.kill)
+        holder = lambda: self.wb.lease_call("/status").get("holder") or {}
+        self.until(lambda: str(holder().get("phase", "")).startswith("waiting for HBC") and holder().get("head") == job, 30)
+        self.fake.agent = False                    # someone brings it back, and bumps from their own workstation
+        t0 = time.time()
+        out = subprocess.run([sys.executable, str(BENCH), "bump", job], env=benv, capture_output=True, text=True,
+                             timeout=30).stdout
+        self.assertIn(f"bump sent for {job}", out)
+        started, rec = self.done(job, timeout=40)
+        self.assertLess(started - t0, 14)          # the next renew carries it (5 s), then 2 s of quiet
+        self.assertEqual(rec["exit"], 0)
+        self.assertEqual([e["id"] for e in self.history() if e["type"] == "bumped"], [job])
+        self.assertEqual([e["ids"] for e in self.history() if e["type"] == "bump"], [[job]])
 
     def test_a_stuck_app_still_tells_what_it_can(self):
         # HBC does not come back, but the app's agent answers: status, its log and the screen
@@ -1922,6 +2031,27 @@ class MonitorTtyTest(unittest.TestCase):
         self.key("n")
         self.wait(self.has("left as it was"), "a no")
         self.assertTrue((pathlib.Path(self.tmp.name) / "queue/pending/j-q1.json").exists())
+        self.key("q")
+        self.assertEqual(self.proc.wait(timeout=10), 0)
+
+    def test_the_manage_page_bumps(self):
+        self.start()
+        self.wait(self.has("[1 queue]"), "the queue page")
+        self.key("5")
+        self.wait(self.has("queued two"), "the queued jobs")
+        self.key("b")
+        self.wait(self.has("select a job first"), "a hint without a selection")
+        r, c = self.find("j-run")                  # (the status line also says "running job")
+        self.click(r, c + 1)
+        self.wait(lambda sc: any(t.startswith(">") and "j-run" in t for t in sc.values()), "the running row selected")
+        self.key("b")
+        self.wait(self.has("is running: a bump is for a turn that waits for HBC"), "no bump for a running job")
+        r, c = self.find("queued two")
+        self.click(r, c + 1)
+        self.wait(lambda sc: any(t.startswith(">") and "queued two" in t for t in sc.values()), "the row selected")
+        self.key("b")                              # no question: a bump changes nothing if HBC is not there
+        self.wait(self.has("bumped j-q1"), "the bump")
+        self.assertTrue((pathlib.Path(self.tmp.name) / "bump/j-q1").exists())
         self.key("q")
         self.assertEqual(self.proc.wait(timeout=10), 0)
 

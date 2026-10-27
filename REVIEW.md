@@ -884,6 +884,34 @@ would, writing and compiling the code for six tasks.
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
 
+#### Bump: a person tells a waiting turn the Wii is back
+
+Tool work, no version of its own.
+
+- **What it fixes:** a turn waiting for a Wii out of HBC probes every 15 s, then waits 20 s for
+  HBC to stay idle. After someone brings the Wii back, the job started 20 to 35 s later.
+- **The bump:** `wiibench.py bump ID`, or `b` on the monitor's manage page. The turn probes at
+  once, then needs 2 s of HBC (`BUMP_QUIET`) instead of 20. Until HBC answers it probes a busy
+  Wii every 5 s (`BUMP_BUSY_STEP`). The job starts about 3 to 8 s after the bump.
+- **How it travels:** like a cancel or a stop.
+  - **A job on this workstation:** a file in `bump/` that `wait_idle` looks for every second.
+  - **A job on another workstation:** a `bump` request on the lease server (`Leases.request`,
+    kept `BUMP_TTL` = 120 s), handed on with the dispatcher's next renew.
+  - **Which id:** the job the turn waits with. The holder's row on the manage page now shows
+    that (`head`, which the server keeps from each renew) when no job runs yet.
+- **Safe:** the probe is the usual version request, so it never interrupts a running app. A
+  bump while HBC isn't there changes nothing. A bump file older than 5 minutes is dropped.
+- **History:** the server logs `bump`, and the turn logs `bumped` (Wii, what it last answered).
+- **Old dispatchers** ignore it: `requests_for` leaves the `bump` key out when empty, so their
+  replies are unchanged.
+- **Checked:**
+  - the server relay, its expiry and the holder's `head`;
+  - the wait on a mocked clock (bump at 3 s: done at 5 s);
+  - the bump file taken once, and old ones dropped;
+  - a real dispatcher against a busy fake Wii, with a 60 s probe step and a 30 s idle wait:
+    the job starts within 12 s of the bump;
+  - a bump from a second workstation, through the server.
+
 #### A Wii can lack a part: dev's broken disc drive
 
 Tool work, no version of its own. Main USBLoaderGX asked for this (2026-10-24).
