@@ -161,6 +161,18 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.4: the avatar out of its wave without a jump
+
+The user saw the Mii jump from the wave back to standing. The fade played
+the finished wave on, and frames wrap: 96 frames in, Greeting went back to
+its first frame, so the fade blended toward the wave starting over (the arm
+going up). A finished one-shot animation now holds its last frame while it
+fades out (a looping one still plays on); the fade is 0.4 s. Host check at
+60 frames a second, both bodies: the largest per-frame vertex step out of
+the wave is 0.98 (Wait alone moves 0.35), where playing it on gave 10.4.
+The `mii_pose` docs and the SDK README say to hold a finished one-shot.
+Bench Wii: 5 minutes at 60 fps.
+
 ### 1.11.3: sdk/mii 2.0 step 1: the body skinned on the GPU, and cross-fades
 
 Branch `mii-sdk-2` (docs/mii-sdk-2.md).

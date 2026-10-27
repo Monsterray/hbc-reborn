@@ -219,6 +219,14 @@ class MiiDrawTest(unittest.TestCase):
             self.assertLess(float(m.group(1)), 0.001, m.group(0))
             self.assertLess(float(m.group(2)), 0.001, m.group(0))
             self.assertLess(float(m.group(3)), 5, m.group(0))
+            # Out of the wave as HBC does it (Greeting held at its last
+            # frame, Wait fading in over 0.4 s): no frame jumps. Playing
+            # the finished wave on wraps it to its start: about 10 units in
+            # one frame, the jump the user saw.
+            m = re.search(r"out of the wave: largest frame step: wait alone ([\d.]+), held ([\d.]+), "
+                          r"played on ([\d.]+)", r.stdout)
+            self.assertTrue(m, r.stdout)
+            self.assertLess(float(m.group(2)), 2, m.group(0))
             for anim in ("bodyWait", "bodyGreeting"):
                 r = self.run_body(body, anim, MII_SWEEP="1")
                 self.assertEqual(r.returncode, 0, r.stdout)

@@ -238,8 +238,11 @@ if (ok) {
   mii_body_anim(&body, "bodyWait")` (or `bodyGreeting`, `bodyWalk`,
   `bodyRun`, `bodyTalk`, ...) and `pose.frame` at 60 a second; 0 stands
   still. When you change animation, cross-fade instead of snapping: keep
-  the one before in `pose.from_anim` / `from_frame` (it plays on) with
-  `pose.from_weight = mii_fade_weight(seconds_since, 0.3f)`.
+  the one before in `pose.from_anim` / `from_frame` with
+  `pose.from_weight = mii_fade_weight(seconds_since, 0.4f)`. A looping
+  animation plays on as it fades; a finished one-shot (a wave) holds its
+  last frame, since frames wrap and it would otherwise fade toward its own
+  start.
   Height and build scale each bone as Nintendo's later libraries do.
   Without the files the model keeps a body of the library's own.
 

@@ -278,9 +278,12 @@ typedef struct {
 	float frame;
 	/* A cross-fade from the animation before, so a change of animation does
 	 * not snap: from_anim and from_frame as anim and frame were, and
-	 * from_weight its share, 1 at the change down to 0 (a quarter of a
-	 * second is usual; mii_fade_weight). Each bone's rotation is blended as
-	 * a quaternion (the short way), its position linearly. 0: no fade. */
+	 * from_weight its share, 1 at the change down to 0 (0.3 to 0.4 s is
+	 * usual; mii_fade_weight). Each bone's rotation is blended as a
+	 * quaternion (the short way), its position linearly. 0: no fade.
+	 * Frames wrap: let a looping animation (bodyWait) play on as it fades,
+	 * but hold a finished one-shot (bodyGreeting) at its last frame, or the
+	 * fade blends toward it starting over. */
 	int from_anim;
 	float from_frame;
 	float from_weight;

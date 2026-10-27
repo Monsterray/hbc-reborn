@@ -226,7 +226,7 @@ static struct {
 	float from_frame, from_t;
 } a;
 
-#define FADE_S 0.3f   // how long a change of animation blends
+#define FADE_S 0.4f   // how long a change of animation blends
 
 static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float sy, float sw, float sh) {
 	float t = a.t, dt = t - a.last;
@@ -300,7 +300,10 @@ static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float 
 		p->from_weight = a.from_anim ? mii_fade_weight(t - a.from_t, FADE_S) : 0;
 		if (p->from_weight > 0) {
 			p->from_anim = a.from_anim;
-			p->from_frame = a.from_frame + (t - a.from_t) * 60;   // it plays on as it fades
+			// Wait loops, so it plays on as it fades. The wave is done: it
+			// holds its last pose (frames wrap, so playing on would fade
+			// toward the wave starting over, the arm going up again).
+			p->from_frame = a.from_anim == anim_greet ? a.from_frame : a.from_frame + (t - a.from_t) * 60;
 		}
 	}
 

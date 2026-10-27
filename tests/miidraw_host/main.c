@@ -204,6 +204,33 @@ int main(int argc, char **argv) {
 				}
 			}
 			printf("fade: self %.5f, whole %.5f, largest step %.3f\n", self, whole, step);
+			{
+				/* HBC's way out of the wave, at 60 frames a second: Wait
+				 * fading in over 0.4 s from Greeting's last frame, held or
+				 * played on (and wrapping), against Wait's own motion. */
+				int last = body.anim[greet - 1].frames - 1, mode, w0;
+				float most[3] = { 0, 0, 0 };
+
+				for (w0 = 0; w0 < 120; w0 += 10)
+					for (mode = 0; mode < 3; ++mode)
+						for (s = 0; s <= 30; ++s) {
+							memset(&pose, 0, sizeof(pose));
+							pose.anim = wait;
+							pose.frame = (float) (w0 + s);
+							if (mode) {
+								pose.from_anim = greet;
+								pose.from_frame = mode == 1 ? (float) last : (float) (last + s);
+								pose.from_weight = mii_fade_weight(s / 60.0f, 0.4f);
+							}
+							mii_body_skin(&md, &pose);
+							for (i = 0; s && i < n; ++i)
+								if (fabsf(md.skin_pos[i] - prev[i]) > most[mode])
+									most[mode] = fabsf(md.skin_pos[i] - prev[i]);
+							memcpy(prev, md.skin_pos, sizeof(float) * n);
+						}
+				printf("out of the wave: largest frame step: wait alone %.3f, held %.3f, played on %.3f\n",
+					   most[0], most[1], most[2]);
+			}
 			return 0;
 		}
 		if (getenv("MII_PALETTE")) {
