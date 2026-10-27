@@ -26,6 +26,10 @@
             Mii Channel's bodies, SECONDS each, faces MASK px (64, 128): memory a
             Mii, CPU and GPU time a frame, frames a second; TV pictures from
             the capture card every 8 s
+  walk COUNTS|max [SECONDS]
+            levels of detail: COUNTS random Miis walking in from the horizon to
+            the bottom of the screen, then away into it, SECONDS each way;
+            "max" builds until memory runs out; TV pictures every 3 s
   remote-add ID / remote-remove ID
             copy the database's Mii with that ID to Wii Remote 1, or take it
             off; written and read back
@@ -80,8 +84,8 @@ def changed(a, b):
     return out
 
 
-def run_app(out, *args, label):
-    wm.launch(APP, *args)
+def run_app(out, *args, label, wait_s=300):
+    wm.launch(APP, *args, wait_s=wait_s)
     wm.tool("get", "sd:/mii_test/result.txt", str(out / f"{label}_result.txt"))
     report = (out / f"{label}_result.txt").read_text(errors="replace")
     print(f"-- {label}_result.txt --\n{report}", flush=True)
@@ -164,7 +168,7 @@ def main():
         # sdk/mii's drawing on the Wii: icons (96 and 256 px) and a capture,
         # from sd:/mii/RFL_Res.dat (Save Mii faces), as PNGs in the run folder.
         ok = app_ok(run_app(out, "draw", *sys.argv[2:3], label="draw"))
-        for name in ("icon_normal", "icon_smile", "icon_large", "body"):
+        for name in ("icon_normal", "icon_smile", "icon_large", "body", *(f"body_lod{k}" for k in range(5))):
             raw = out / f"{name}.rgba"
             if wm.tool("get", f"sd:/mii_test/{name}.rgba", str(raw), check=False).returncode:
                 ok = False
@@ -174,18 +178,20 @@ def main():
             rows = [[tuple(body[4 * (y * w + x):4 * (y * w + x) + 4]) for x in range(w)] for y in range(h)]
             (out / f"{name}.png").write_bytes(mii_res.png(w, h, rows))
             print(f"{name}.png: {w} x {h}", flush=True)
-    elif step == "crowd" and len(sys.argv) > 2:
+    elif step == "gpuprobe" and len(sys.argv) > 2:
+        ok = app_ok(run_app(out, step, *sys.argv[2:4], label=step, wait_s=900))
+    elif step in ("crowd", "walk") and len(sys.argv) > 2:
         import threading
         done = threading.Event()
 
         def pictures():   # the capture card, while the crowd walks
             k = 0
-            while not done.wait(8):
-                wm.still(out, f"crowd_{k:02d}")
+            while not done.wait(8 if step == "crowd" else 3):
+                wm.still(out, f"{step}_{k:03d}")
                 k += 1
         threading.Thread(target=pictures, daemon=True).start()
         try:
-            ok = app_ok(run_app(out, "crowd", *sys.argv[2:5], label="crowd"))
+            ok = app_ok(run_app(out, step, *sys.argv[2:5], label=step, wait_s=3600))
         finally:
             done.set()
     elif step == "remote-rewrite":

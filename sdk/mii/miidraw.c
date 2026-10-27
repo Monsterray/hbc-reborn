@@ -1686,6 +1686,7 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 		const mii_body_obj *o = &body->obj[k];
 		const mii_body_array *pa = &body->pos_array[o->pos], *na = &body->nrm_array[o->nrm];
 		uint32_t col = o->mesh ? model->pants : model->shirt;
+		const mii_body_lod *l = pose->lod > 0 && pose->lod <= body->nlods ? &body->lod[pose->lod - 1] : NULL;
 
 		GX_SetChanMatColor(GX_COLOR0A0, (GXColor) { col >> 24, col >> 16, col >> 8, 255 });
 		GX_ClearVtxDesc();
@@ -1699,7 +1700,10 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 		GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_NRM, GX_NRM_XYZ, na->fmt, 0);
 		GX_SetArray(GX_VA_POS, pa->gx, pa->stride);
 		GX_SetArray(GX_VA_NRM, na->gx, na->stride);
-		GX_CallDispList(o->dl, o->dl_size);
+		if (l && l->dl[k])
+			GX_CallDispList(l->dl[k], l->dl_size[k]);
+		else
+			GX_CallDispList(o->dl, o->dl_size);
 	}
 	GX_SetNumTexGens(1);
 	GX_SetCurrentMtx(GX_PNMTX0);

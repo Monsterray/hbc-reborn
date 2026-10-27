@@ -187,6 +187,27 @@ class MiiDrawTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertTrue(r.stdout.startswith("res: ") or r.stdout.count("model: "), r.stdout)
 
+    def test_body_lods(self):
+        # Levels of detail from the user's own bodies: about Wii Party's
+        # shares of the triangles (62, 37, 21%), each list the body's own
+        # vertices, fewer triangles each level.
+        if not os.environ.get("MII_REAL_BODIES"):
+            self.skipTest("set MII_REAL_BODIES")
+        for name in ("maleBody.brres", "femaleBody.brres"):
+            r = self.run_body(pathlib.Path(os.environ["MII_REAL_BODIES"]) / name, MII_LOD="1")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            full = int(re.search(r"lod 0: (\d+) triangles", r.stdout)[1])
+            levels = re.findall(r"lod (\d): (\d+) triangles, moved at most ([\d.]+), (\d+) bad", r.stdout)
+            self.assertEqual(len(levels), 3, r.stdout)
+            last = full
+            for (level, tris, moved, bad), share in zip(levels, (0.62, 0.37, 0.21)):
+                tris = int(tris)
+                self.assertEqual(bad, "0", r.stdout)
+                self.assertLess(tris, last, r.stdout)
+                self.assertLess(tris, full * share * 1.25 + 4, (name, r.stdout))
+                last = tris
+            print(name, r.stdout.split("lod 0", 1)[1].strip().replace("\n", "; "))
+
     def test_pose_memo(self):
         # A Mii posed at a frame another Mii was posed at takes the body's
         # remembered pose: the same bones, bit for bit.

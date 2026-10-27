@@ -161,6 +161,73 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.8: levels of detail from the user's own body, and a crowd walking in and out
+
+- **`mii_body_make_lods`**: coarser bodies for Miis far off, made on the
+  Wii from the user's own `maleBody.brres` / `femaleBody.brres`, so nothing
+  Nintendo made is shipped.
+  - Each level is a new display list over the body's own vertex arrays:
+    the object's matrix loads, then GX_TRIANGLES whose corners are the
+    original vertices' bytes. A few KB a body, about 0.1 s to make.
+  - Each step folds a vertex into a neighbour on the same bone (quadric
+    error, measured in that bone's own thickness), keeping open edges and
+    turning no triangle more than 60 degrees.
+  - A list that loads other bones into its slots part way (the female
+    shirt) is simplified run by run.
+  - Default: Wii Party's first three steps, 62, 37 and 21% of the
+    triangles:
+
+    | Body | Full | Level 1 | Level 2 | Level 3 |
+    |---|---|---|---|---|
+    | Male | 748 | 462 | 274 | 155 |
+    | Female | 762 | 470 | 282 | 160 |
+
+  - A fourth level (Wii Party's 11.5%, about 85 triangles) folded the
+    limbs flat on the bench Wii and in a PC render: under 8 triangles a
+    bone. Wii Party's 240 come from a 2,092-triangle body.
+- **`mii_pose.lod`** and **`mii_body_lod_for`** (a level per screen
+  height: 150, 90 and 50 pixels).
+- **Checks**:
+  - Host test: each level's every corner is byte for byte a vertex of its
+    object's own list; fewer triangles each level.
+  - Fuzzing: 16,000 damaged bodies (about 13,600 parsed) through LODs and
+    the pose memo under ASan and UBSan, clean.
+- **`mii_app walk COUNTS|max SECONDS`** (`wii_mii.py walk`), as the user
+  asked:
+  - The crowd, in ranks of 8 through one `mii_cache`, walks in from the
+    horizon to the bottom of the screen, then turns and walks off into it.
+  - Each Mii takes its level and face size from its height on screen, and
+    reuses its pose every second frame at level 3.
+  - Faces are rebuilt to a 2 ms budget a frame.
+- **`mii_app gpuprobe COUNT DISTANCE`**: where the GPU's time goes.
+
+Bench Wii:
+
+| Miis | Toward: fps, CPU, GPU after | Away: fps, CPU, GPU after | KB a Mii |
+|---|---|---|---|
+| 100 | 59.9, 3.7 ms, 5.0 ms | 59.9, 3.2 ms, 5.3 ms | 21 |
+| 200 | 50.4, 6.9 ms, 8.8 ms | 54.3, 6.0 ms, 10.4 ms | 19 |
+| 300 | 33.0, 14.1 ms, 8.2 ms | 30.0, 14.8 ms, 9.7 ms | 18 |
+| 400 | 29.9, 19.8 ms, 8.1 ms | 28.9, 23.6 ms, 8.9 ms | 17 |
+| 800 (4 levels) | 15.6, 47.8 ms | 14.9, 51.6 ms | 24 |
+| 5,855 (memory full) | 7.4 | 2.2 | 12 |
+
+- The pose memo answered 87-94% of poses.
+- A 128 px face takes 4.4-6.6 ms to build, 64 px about 1 ms.
+
+GPU probe, 200 Miis standing, at 1,500 and at 200 (the same both ways):
+
+| Drawn | CPU | GPU after it |
+|---|---|---|
+| Whole | 6.2 ms | 13.1 ms |
+| Heads only | 1.6 ms | 9.9 ms |
+| Whole, scissored to one pixel | 6.2 ms | 13.1 ms |
+| Whole, bodies at level 3 | 6.2 ms | 9.7 ms |
+
+The GPU's limit is vertices and commands, not pixels, and the heads (about
+480 triangles each) are most of it. Next: coarser heads for Miis far off,
+and faces made by the GPU (docs/mii-sdk-2.md).
+
 ### 1.11.7: packed parts, shared parts, a pose worked out once
 
 - **Textures as RGB5A3**, RFL's format for its faces: half of RGBA8.

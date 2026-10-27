@@ -67,6 +67,21 @@ HBC will offer both modes, with a setting.
      `GX_SetArray(GX_POSMTXARRAY/GX_NRMMTXARRAY)`.
    - Host test: posed by the palette, every vertex matches CPU skinning
      within 0.01.
+   1b. **Crowds.** Done (HBC 1.11.6 to 1.11.8; REVIEW.md has the numbers):
+   - Memory: the GPU's copies only, textures RGB5A3 and shapes packed s16
+     as RFL keeps them, only the expressions asked for
+     (`mii_model_opts`), parts shared through a `mii_cache`. A Mii went
+     from 1.36 MB to 12-67 KB; the bench Wii held 5,855.
+   - CPU: one pose a draw (it was two), poses shared by Miis at the same
+     frame (the body's memo), `mii_pose.reuse` for Miis far off.
+   - Levels of detail made on the Wii from the user's own body
+     (`mii_body_make_lods`), and faces by distance
+     (`mii_model_set_mask_size`).
+   - Next, where the numbers point:
+     - Faces made with the GPU, as RFL's `RFLiMakeTexture` draws its
+       parts into the EFB: about 4 ms on the CPU at 128 px now.
+     - Coarser heads for Miis far off: a head is about 480 triangles,
+       more than a far body's 155.
 2. **API:** `mii_draw_opa`, `mii_draw_xlu`, `mii_draw_setup`,
    `mii_draw_done`, `mii_draw_in_rect` with the two modes; `mii_view`'s
    depth needs.

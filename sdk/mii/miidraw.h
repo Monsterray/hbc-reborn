@@ -63,7 +63,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.1.1"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth */
+#define MIIDRAW_VERSION "1.2.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0: crowds */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -142,6 +142,16 @@ typedef struct {
 #define MII_BODY_OBJS 8
 #define MII_BODY_MATRICES 64   /* matrix ids a body may use */
 #define MII_POSE_MEMO 16       /* poses a body remembers */
+#define MII_BODY_LODS 4        /* levels of detail mii_body_make_lods can add */
+
+/* A coarser body (mii_body_make_lods): each object's own display list, its
+ * triangles a subset of the body's vertices (no new vertex data). */
+typedef struct {
+	uint8_t *dl[MII_BODY_OBJS];
+	uint32_t dl_size[MII_BODY_OBJS];
+	int tris;              /* triangles, all objects */
+	float err;             /* the farthest a vertex was moved, in body units */
+} mii_body_lod;
 
 /* A pose's bones, local (each one's rotation and translation from its
  * parent, before any Mii's scale): what the animation keys give, worked out
@@ -178,6 +188,10 @@ typedef struct {
 	mii_pose_memo *memo;
 	int memo_next;
 	uint32_t memo_hits, memo_misses;
+	/* Levels of detail (mii_body_make_lods): lod[0] is level 1. */
+	int full_tris;         /* the whole body's triangles */
+	int nlods;
+	mii_body_lod lod[MII_BODY_LODS];
 } mii_body;
 
 /* Checks and parses a copy in memory. On success it is taken over and
@@ -189,6 +203,23 @@ int mii_body_load(mii_body *body, const char *path);
 void mii_body_free(mii_body *body);
 /* The animation named so ("bodyWait"), or -1. */
 int mii_body_anim(const mii_body *body, const char *name);
+
+/* Makes coarser levels of the body, as games draw a crowd's far Miis (Wii
+ * Party's bodies go 2,092, 1,296, 776, 448, 240 triangles): each a share
+ * of the body's triangles (fractions, finest first), up to MII_BODY_LODS.
+ * NULL: Wii Party's first three steps, 0.62, 0.37 and 0.21 (about 465,
+ * 280 and 155 of the Mii Channel body's 750). A fourth (0.115) leaves under
+ * 8 triangles a bone, and the limbs fold flat. Built here from the user's
+ * own body, so nothing Nintendo made is shipped: each step folds a vertex
+ * into a neighbour on the same bone, the fold that changes the surface
+ * least for that bone's thickness (quadric error), keeping open edges and
+ * turning no triangle more than 60 degrees. 0 or MII_E_*; a level that
+ * could not get that small stops where it could. */
+int mii_body_make_lods(mii_body *body, const float *fractions, int n);
+/* The level for a Mii this many pixels tall on screen: 0 (the whole body)
+ * from 150, then one level more under each of 150, 90, 50 and 25, as far
+ * as made. */
+int mii_body_lod_for(const mii_body *body, float pixels_tall);
 
 /* ---- A Mii, built -------------------------------------------------------- */
 
@@ -372,6 +403,9 @@ typedef struct {
 	 * unread but the head's angles and the expression: a Mii far off posed
 	 * every second or fourth frame costs about a third. */
 	int reuse;
+	/* With a Wii body: 0 the whole body, 1 to its nlods a coarser level
+	 * (mii_body_make_lods, mii_body_lod_for). */
+	int lod;
 } mii_pose;
 
 /* The weight for a cross-fade `seconds` after a change of animation that

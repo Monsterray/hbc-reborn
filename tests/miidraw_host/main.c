@@ -293,6 +293,65 @@ int main(int argc, char **argv) {
 			printf("memo: hits %u, same %d\n", (unsigned) body.memo_hits,
 				   !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) && !memcmp(pos, p1, sizeof(float) * 3 * body.nbones));
 		}
+		if (getenv("MII_LOD")) {
+			/* Levels of detail: each level's lists are the object's own matrix
+			 * loads, then one run of triangles whose every corner is, byte for
+			 * byte, a vertex of the object's own list; fewer triangles each
+			 * level. */
+			int l;
+
+			if ((r = mii_body_make_lods(&body, NULL, 0)) < 0) {
+				printf("lods: %s\n", mii_strerror(r));
+				return 1;
+			}
+			printf("lod 0: %d triangles\n", body.full_tris);
+			for (l = 0; l < body.nlods; ++l) {
+				int bad = 0, corners = 0;
+
+				for (k = 0; k < body.nobjs; ++k) {
+					const mii_body_obj *o = &body.obj[k];
+					const uint8_t *d = body.lod[l].dl[k];
+					uint32_t at, head = 0, size = body.lod[l].dl_size[k];
+					int tm = 0, vs, n, c;
+
+					for (j = 1; j <= 8; ++j)
+						tm += o->vcd >> j & 1;
+					vs = 1 + tm + ((o->vcd >> 9 & 3) == 2 ? 1 : 2) + ((o->vcd >> 11 & 3) == 2 ? 1 : 2);
+					while (head < o->dl_size && (o->dl[head] == 0x20 || o->dl[head] == 0x28 || o->dl[head] == 0x30))
+						head += 5;
+					if (!d || size % 32 || memcmp(d, o->dl, head) || d[head] != 0x91) {
+						++bad;
+						continue;
+					}
+					n = d[head + 1] << 8 | d[head + 2];
+					if (head + 3 + (uint32_t) n * vs > size || n % 3)
+						++bad;
+					for (c = 0; c < n && !bad; ++c) {
+						const uint8_t *v = d + head + 3 + c * vs;
+						int found = 0;
+
+						for (at = head; at < o->dl_size && !found;) {   /* the object's own vertices */
+							int m, cnt;
+
+							if (!o->dl[at]) {
+								++at;
+								continue;
+							}
+							cnt = o->dl[at + 1] << 8 | o->dl[at + 2];
+							for (m = 0; m < cnt && !found; ++m)
+								found = !memcmp(o->dl + at + 3 + m * vs, v, vs);
+							at += 3 + (uint32_t) cnt * vs;
+						}
+						bad += !found;
+					}
+					corners += n;
+				}
+				printf("lod %d: %d triangles, moved at most %.2f, %d bad\n", l + 1, body.lod[l].tris,
+					   body.lod[l].err, bad);
+				(void) corners;
+			}
+			return 0;
+		}
 		if (getenv("MII_FADE")) {
 			/* Cross-fades (mii_pose.from_*): a pose faded into itself is
 			 * unchanged (the quaternion round trip), weight 1 is the

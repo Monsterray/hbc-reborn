@@ -505,6 +505,16 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
 	}
 	if (r == MII_OK && (!body->ntris[0] || !body->ntris[1]))
 		r = MII_E_FORMAT;
+	if (r == MII_OK) {   /* the whole body's triangles, without the strips' degenerate ones */
+		int m, t;
+
+		for (m = 0; m < 2; ++m)
+			for (t = 0; t < body->ntris[m]; ++t) {
+				const uint16_t *c = body->tris[m] + 3 * t;
+
+				body->full_tris += c[0] != c[1] && c[1] != c[2] && c[0] != c[2];
+			}
+	}
 	return r;
 }
 
@@ -652,6 +662,12 @@ void mii_body_free(mii_body *body) {
 	free(body->tris[0]);
 	free(body->tris[1]);
 	free(body->memo);
+	for (i = 0; i < MII_BODY_LODS; ++i) {
+		int k;
+
+		for (k = 0; k < MII_BODY_OBJS; ++k)
+			free(body->lod[i].dl[k]);
+	}
 	for (i = 0; i < MII_BODY_OBJS; ++i)
 		free(body->obj[i].dl);
 	for (i = 0; i < 8; ++i) {
@@ -1142,4 +1158,463 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 		model->shoulder[0] = 30 * model->bone_scale[body->head][1];
 	}
 	return MII_OK;
+}
+
+/* ---- Levels of detail ------------------------------------------------------- */
+
+/* A quadric (Garland and Heckbert): the sum of squared distances to planes,
+ * as the 10 numbers of a symmetric 4 x 4. */
+static void quad_plane(double *q, const double n[3], double d, double w) {
+	q[0] += w * n[0] * n[0]; q[1] += w * n[0] * n[1]; q[2] += w * n[0] * n[2]; q[3] += w * n[0] * d;
+	q[4] += w * n[1] * n[1]; q[5] += w * n[1] * n[2]; q[6] += w * n[1] * d;
+	q[7] += w * n[2] * n[2]; q[8] += w * n[2] * d;
+	q[9] += w * d * d;
+}
+
+/* (a + b) at p. */
+static double quad_at(const double *a, const double *b, const float *p) {
+	double x = p[0], y = p[1], z = p[2], s;
+	double c[10];
+	int k;
+
+	for (k = 0; k < 10; ++k)
+		c[k] = a[k] + b[k];
+	s = c[0] * x * x + 2 * c[1] * x * y + 2 * c[2] * x * z + 2 * c[3] * x + c[4] * y * y + 2 * c[5] * y * z +
+		2 * c[6] * y + c[7] * z * z + 2 * c[8] * z + c[9];
+	return s;
+}
+
+static void tri_normal(const float *a, const float *b, const float *c, double n[3]) {
+	double u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, v[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+
+	n[0] = u[1] * v[2] - u[2] * v[1];
+	n[1] = u[2] * v[0] - u[0] * v[2];
+	n[2] = u[0] * v[1] - u[1] * v[0];
+}
+
+/* One run of an object's list: its matrix loads [h0, h1), then its
+ * primitives [p0, p1), whose vertices are world[] from 0 on. Its vertices
+ * become nodes (a slot, so a bone, and a position index: the strips repeat
+ * a vertex for each normal); each triangle keeps its corners' own bytes
+ * (normal and all) until a fold moves a corner, which then takes the kept
+ * node's. Each level's bytes (the loads, then GX_TRIANGLES) go to out[]. */
+static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int pos_w, uint32_t h0, uint32_t h1,
+				   uint32_t p0, uint32_t p1, const float *world, const uint8_t *vbone, const float *thick,
+				   const float *frac, int n, uint8_t **out, uint32_t *out_len) {
+	uint32_t at;
+	int i, j, nn = 0, nt = 0, alive, lev, local = 0, corners = 0, r = MII_E_MEM;
+	int *key = NULL, *canon = NULL, *tri = NULL, *traw = NULL;
+	float *pos = NULL, *scale = NULL;
+	double *q = NULL;
+	uint8_t *dead = NULL;
+
+	for (at = p0; at < p1;) {
+		if (!dl[at]) {
+			++at;
+			continue;
+		}
+		corners += dl[at + 1] << 8 | dl[at + 2];
+		at += 3 + (uint32_t) (dl[at + 1] << 8 | dl[at + 2]) * vs;
+	}
+	key = malloc(sizeof(int) * 2 * (corners + 1));
+	canon = malloc(sizeof(int) * (corners + 1));
+	pos = malloc(sizeof(float) * 3 * (corners + 1));
+	tri = malloc(sizeof(int) * 3 * (corners + 1));
+	traw = malloc(sizeof(int) * 3 * (corners + 1));
+	q = calloc((size_t) (corners + 1) * 10, sizeof(double));
+	dead = calloc(corners + 1, 1);
+	scale = malloc(sizeof(float) * (corners + 1));
+	if (!key || !canon || !pos || !tri || !traw || !q || !dead || !scale)
+		goto done;
+	/* Nodes and triangles. */
+	for (at = p0; at < p1;) {
+		uint8_t op = dl[at] & 0xF8;
+		int cnt, v, nodes[3], raws[3];
+		int *vn, *vr;
+
+		if (!dl[at]) {
+			++at;
+			continue;
+		}
+		cnt = dl[at + 1] << 8 | dl[at + 2];
+		at += 3;
+		vn = malloc(sizeof(int) * (cnt ? cnt : 1));
+		vr = malloc(sizeof(int) * (cnt ? cnt : 1));
+		if (!vn || !vr) {
+			free(vn);
+			free(vr);
+			goto done;
+		}
+		for (v = 0; v < cnt; ++v, at += vs, ++local) {
+			int slot = dl[at], pi = pos_w == 1 ? dl[at + 1 + tex_mtx] : dl[at + 1 + tex_mtx] << 8 | dl[at + 2 + tex_mtx];
+
+			for (j = 0; j < nn; ++j)
+				if (key[2 * j] == slot && key[2 * j + 1] == pi)
+					break;
+			if (j == nn) {
+				key[2 * nn] = slot;
+				key[2 * nn + 1] = pi;
+				canon[nn] = (int) at;
+				memcpy(pos + 3 * nn, world + 3 * local, sizeof(float) * 3);
+				scale[nn] = thick[vbone[local]];
+				++nn;
+			}
+			vn[v] = j;
+			vr[v] = (int) at;
+		}
+		for (v = 0; v + 2 < cnt; ++v) {
+			int a, c, d;
+
+			if (op == 0x90) {
+				if (v % 3)
+					continue;
+				a = v; c = v + 1; d = v + 2;
+			} else if (op == 0x98) {
+				a = v % 2 ? v + 1 : v;
+				c = v % 2 ? v : v + 1;
+				d = v + 2;
+			} else {
+				a = 0; c = v + 1; d = v + 2;
+			}
+			nodes[0] = vn[a]; nodes[1] = vn[c]; nodes[2] = vn[d];
+			raws[0] = vr[a]; raws[1] = vr[c]; raws[2] = vr[d];
+			if (nodes[0] == nodes[1] || nodes[1] == nodes[2] || nodes[0] == nodes[2])
+				continue;   /* a strip's turn */
+			memcpy(tri + 3 * nt, nodes, sizeof(nodes));
+			memcpy(traw + 3 * nt, raws, sizeof(raws));
+			++nt;
+		}
+		free(vn);
+		free(vr);
+	}
+	/* Each node's quadric: its triangles' planes by area, and for each open
+	 * edge a plane through it, square to the triangle, weighted heavily. */
+	for (i = 0; i < nt; ++i) {
+		const int *t = tri + 3 * i;
+		double nm[3], l;
+		int e;
+
+		tri_normal(pos + 3 * t[0], pos + 3 * t[1], pos + 3 * t[2], nm);
+		l = sqrt(nm[0] * nm[0] + nm[1] * nm[1] + nm[2] * nm[2]);
+		if (l <= 0)
+			continue;
+		for (j = 0; j < 3; ++j)
+			nm[j] /= l;
+		for (j = 0; j < 3; ++j)
+			quad_plane(q + 10 * t[j], nm, -(nm[0] * pos[3 * t[0]] + nm[1] * pos[3 * t[0] + 1] + nm[2] * pos[3 * t[0] + 2]),
+					   l / 2);
+		for (e = 0; e < 3; ++e) {
+			int a = t[e], b = t[(e + 1) % 3], m, shared = 0;
+			double d[3], sd[3], sl;
+
+			for (m = 0; m < nt && !shared; ++m) {
+				const int *o = tri + 3 * m;
+
+				if (m != i && (o[0] == a || o[1] == a || o[2] == a) && (o[0] == b || o[1] == b || o[2] == b))
+					shared = 1;
+			}
+			if (shared)
+				continue;
+			for (j = 0; j < 3; ++j)
+				d[j] = pos[3 * b + j] - pos[3 * a + j];
+			sd[0] = d[1] * nm[2] - d[2] * nm[1];
+			sd[1] = d[2] * nm[0] - d[0] * nm[2];
+			sd[2] = d[0] * nm[1] - d[1] * nm[0];
+			sl = sqrt(sd[0] * sd[0] + sd[1] * sd[1] + sd[2] * sd[2]);
+			if (sl <= 0)
+				continue;
+			for (j = 0; j < 3; ++j)
+				sd[j] /= sl;
+			sl = -(sd[0] * pos[3 * a] + sd[1] * pos[3 * a + 1] + sd[2] * pos[3 * a + 2]);
+			quad_plane(q + 10 * a, sd, sl, 100 * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+			quad_plane(q + 10 * b, sd, sl, 100 * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+		}
+	}
+	/* Fold, cheapest first, down to each level's share; write the level. */
+	alive = nt;
+	for (lev = 0; lev < n; ++lev) {
+		int target = (int) (frac[lev] * nt + 0.5f), tries = 0;
+		uint8_t *o;
+
+		while (alive > target) {
+			double best = 1e300;
+			int bu = -1, bv = -1, ok = 1;
+
+			for (i = 0; i < nt; ++i) {
+				const int *t = tri + 3 * i;
+				int e;
+
+				if (dead[i])
+					continue;
+				for (e = 0; e < 6; ++e) {
+					int u = t[e % 3], v = t[(e % 3 + (e < 3 ? 1 : 2)) % 3];
+					double c;
+
+					if (key[2 * u] != key[2 * v])
+						continue;   /* another bone: the joint stays */
+					/* In the bone's own thickness: a thin arm is not cheaper
+					 * to flatten than the chest. */
+					c = quad_at(q + 10 * u, q + 10 * v, pos + 3 * v) / scale[u];
+					if (c < best) {
+						best = c;
+						bu = u;
+						bv = v;
+					}
+				}
+			}
+			if (bu < 0)
+				break;
+			/* No triangle around u may turn more than 60 degrees: folds
+			 * that flatten a limb turn its sides over. */
+			for (i = 0; i < nt && ok; ++i) {
+				int *t = tri + 3 * i, h = -1;
+				double n0[3], n1[3];
+				const float *pp[3];
+
+				if (dead[i])
+					continue;
+				for (j = 0; j < 3; ++j) {
+					if (t[j] == bv)
+						h = -2;
+					else if (t[j] == bu && h != -2)
+						h = j;
+				}
+				if (h < 0)
+					continue;
+				for (j = 0; j < 3; ++j)
+					pp[j] = pos + 3 * t[j];
+				tri_normal(pp[0], pp[1], pp[2], n0);
+				pp[h] = pos + 3 * bv;
+				tri_normal(pp[0], pp[1], pp[2], n1);
+				if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.5 *
+						sqrt(n0[0] * n0[0] + n0[1] * n0[1] + n0[2] * n0[2]) *
+						sqrt(n1[0] * n1[0] + n1[1] * n1[1] + n1[2] * n1[2]))
+					ok = 0;
+			}
+			if (!ok) {
+				/* Make u dear to fold (a constant on its quadric), and look
+				 * again; give up after many. */
+				double none[3] = { 0, 0, 0 };
+
+				if (++tries > 2000)
+					break;
+				quad_plane(q + 10 * bu, none, 1, 1e6);
+				continue;
+			}
+			{
+				float d0 = pos[3 * bu] - pos[3 * bv], d1 = pos[3 * bu + 1] - pos[3 * bv + 1],
+					  d2 = pos[3 * bu + 2] - pos[3 * bv + 2], d = sqrtf(d0 * d0 + d1 * d1 + d2 * d2);
+
+				if (d > body->lod[lev].err)
+					body->lod[lev].err = d;
+			}
+			for (j = 0; j < 10; ++j)
+				q[10 * bv + j] += q[10 * bu + j];
+			for (i = 0; i < nt; ++i) {
+				int *t = tri + 3 * i, has_v = 0, h = -1;
+
+				if (dead[i])
+					continue;
+				for (j = 0; j < 3; ++j) {
+					has_v |= t[j] == bv;
+					if (t[j] == bu)
+						h = j;
+				}
+				if (h < 0)
+					continue;
+				if (has_v) {
+					dead[i] = 1;
+					--alive;
+				} else {
+					t[h] = bv;
+					traw[3 * i + h] = canon[bv];
+				}
+			}
+		}
+		/* The run's loads, then its triangles. */
+		out_len[lev] = (h1 - h0) + 3 + (uint32_t) alive * 3 * vs;
+		o = out[lev] = malloc(out_len[lev]);
+		if (!o)
+			goto done;
+		memcpy(o, dl + h0, h1 - h0);
+		at = h1 - h0;
+		o[at++] = 0x90 | 1;   /* GX_TRIANGLES on GX_VTXFMT1 */
+		o[at++] = (uint8_t) (alive * 3 >> 8);
+		o[at++] = (uint8_t) (alive * 3);
+		for (i = 0; i < nt; ++i)
+			if (!dead[i])
+				for (j = 0; j < 3; ++j, at += vs)
+					memcpy(o + at, dl + traw[3 * i + j], vs);
+		body->lod[lev].tris += alive;
+	}
+	r = MII_OK;
+done:
+	free(key);
+	free(canon);
+	free(pos);
+	free(tri);
+	free(traw);
+	free(q);
+	free(dead);
+	free(scale);
+	return r;
+}
+
+/* One object's levels: each run of its list on its own (a list may load
+ * other bones into its slots part way: the female shirt does), the runs'
+ * bytes one after another, padded to 32 with GX_NOPs. world: its vertices. */
+static int lod_object(mii_body *body, int k, const float *world, const uint8_t *vbone, const float *thick,
+					  const float *frac, int n) {
+	mii_body_obj *ob = &body->obj[k];
+	uint32_t lo = ob->vcd, at = 0, len[MII_BODY_LODS], total[MII_BODY_LODS] = { 0 };
+	uint8_t *chunk[MII_BODY_LODS], *runs[16][MII_BODY_LODS];
+	uint32_t runs_len[16][MII_BODY_LODS];
+	int tex_mtx = 0, pos_w, vs, i, l, nr = 0, r = MII_OK, verts = 0;
+
+	for (i = 1; i <= 8; ++i)
+		tex_mtx += lo >> i & 1;
+	pos_w = (lo >> 9 & 3) == 2 ? 1 : 2;
+	vs = 1 + tex_mtx + pos_w + ((lo >> 11 & 3) == 2 ? 1 : 2);
+	memset(runs, 0, sizeof(runs));
+	while (at < ob->dl_size && r == MII_OK) {
+		uint32_t h0, h1, p0, p1;
+		int rv = 0;
+
+		while (at < ob->dl_size && !ob->dl[at])
+			++at;
+		if (at >= ob->dl_size)
+			break;
+		h0 = at;
+		while (at < ob->dl_size && (ob->dl[at] == 0x20 || ob->dl[at] == 0x28 || ob->dl[at] == 0x30))
+			at += 5;
+		h1 = p0 = at;
+		while (at < ob->dl_size && ob->dl[at] != 0x20 && ob->dl[at] != 0x28 && ob->dl[at] != 0x30) {
+			if (!ob->dl[at]) {
+				++at;
+				continue;
+			}
+			rv += ob->dl[at + 1] << 8 | ob->dl[at + 2];
+			at += 3 + (uint32_t) (ob->dl[at + 1] << 8 | ob->dl[at + 2]) * vs;
+		}
+		p1 = at;
+		if (nr >= 16)
+			return MII_E_FORMAT;
+		r = lod_run(body, ob->dl, vs, tex_mtx, pos_w, h0, h1, p0, p1, world + 3 * verts, vbone + verts, thick,
+					frac, n, runs[nr], runs_len[nr]);
+		for (l = 0; l < n; ++l)
+			total[l] += runs_len[nr][l];
+		++nr;
+		verts += rv;
+	}
+	for (l = 0; l < n && r == MII_OK; ++l) {
+		len[l] = (total[l] + 31) & ~31u;
+#ifndef MII_NO_OGC
+		chunk[l] = memalign(32, len[l]);
+#else
+		chunk[l] = malloc(len[l]);
+#endif
+		if (!chunk[l]) {
+			r = MII_E_MEM;
+			break;
+		}
+		memset(chunk[l], 0, len[l]);   /* 0: GX_NOP */
+		at = 0;
+		for (i = 0; i < nr; ++i) {
+			memcpy(chunk[l] + at, runs[i][l], runs_len[i][l]);
+			at += runs_len[i][l];
+		}
+#ifndef MII_NO_OGC
+		DCFlushRange(chunk[l], len[l]);
+#endif
+		body->lod[l].dl[k] = chunk[l];
+		body->lod[l].dl_size[k] = len[l];
+	}
+	for (i = 0; i < nr; ++i)
+		for (l = 0; l < n; ++l)
+			free(runs[i][l]);
+	return r < 0 ? r : verts;
+}
+
+int mii_body_make_lods(mii_body *body, const float *fractions, int n) {
+	static const float wii_party[MII_BODY_LODS] = { 0.62f, 0.37f, 0.21f };
+	float rot[MII_BODY_BONES][3][3], at[MII_BODY_BONES][3], *world, thick[MII_BODY_BONES] = { 0 };
+	int per[MII_BODY_BONES] = { 0 };
+	int i, k, vbase = 0, r = 0;
+
+	if (!body || !body->nobjs || n < 0 || n > MII_BODY_LODS)
+		return MII_E_ARG;
+	if (!fractions) {
+		fractions = wii_party;
+		if (!n || n > 3)
+			n = 3;
+	}
+	for (i = 0; i < n; ++i)
+		if (!(fractions[i] > 0 && fractions[i] <= 1) || (i && fractions[i] > fractions[i - 1]))
+			return MII_E_ARG;
+	for (i = 0; i < body->nlods; ++i)
+		for (k = 0; k < MII_BODY_OBJS; ++k)
+			free(body->lod[i].dl[k]);
+	memset(body->lod, 0, sizeof(body->lod));
+	body->nlods = 0;
+	/* The bind pose in the body's space: where the folds are measured. */
+	for (i = 0; i < body->nbones; ++i) {
+		const mii_bone *bn = &body->bone[i];
+		float r3[3], t[3];
+		m33 local;
+
+		bone_local(body, NULL, 0, i, r3, t);
+		rot_xyz(local, r3);
+		if (bn->parent < 0) {
+			memcpy(rot[i], local, sizeof(local));
+			memcpy(at[i], t, sizeof(t));
+		} else {
+			mul33(rot[i], rot[bn->parent], local);
+			for (k = 0; k < 3; ++k)
+				at[i][k] = at[bn->parent][k] + rot[bn->parent][k][0] * t[0] + rot[bn->parent][k][1] * t[1] +
+						   rot[bn->parent][k][2] * t[2];
+		}
+	}
+	world = malloc(sizeof(float) * 3 * (body->nverts ? body->nverts : 1));
+	if (!world)
+		return MII_E_MEM;
+	for (i = 0; i < body->nverts; ++i) {
+		int b = body->vbone[i];
+		const float *v = body->vpos + 3 * i;
+
+		for (k = 0; k < 3; ++k)
+			world[3 * i + k] = at[b][k] + rot[b][k][0] * v[0] + rot[b][k][1] * v[1] + rot[b][k][2] * v[2];
+	}
+	/* Each bone's thickness: its vertices' mean square distance from its own
+	 * X axis (a limb runs along X), the fold costs' unit. */
+	for (i = 0; i < body->nverts; ++i) {
+		const float *v = body->vpos + 3 * i;
+
+		thick[body->vbone[i]] += v[1] * v[1] + v[2] * v[2];
+		++per[body->vbone[i]];
+	}
+	for (i = 0; i < MII_BODY_BONES; ++i)
+		thick[i] = per[i] ? thick[i] / per[i] + 1e-3f : 1;
+	for (k = 0; k < body->nobjs && r >= 0; ++k) {   /* each object's skin vertices follow the last's */
+		r = lod_object(body, k, world + 3 * vbase, body->vbone + vbase, thick, fractions, n);
+		vbase += r > 0 ? r : 0;
+	}
+	free(world);
+	if (r < 0) {
+		for (i = 0; i < n; ++i)
+			for (k = 0; k < MII_BODY_OBJS; ++k)
+				free(body->lod[i].dl[k]);
+		memset(body->lod, 0, sizeof(body->lod));
+		return r;
+	}
+	body->nlods = n;
+	return MII_OK;
+}
+
+int mii_body_lod_for(const mii_body *body, float pixels_tall) {
+	static const float from[MII_BODY_LODS] = { 150, 90, 50, 25 };   /* each level's height and under */
+	int l = 0;
+
+	while (body && l < body->nlods && pixels_tall < from[l])
+		++l;
+	return l;
 }

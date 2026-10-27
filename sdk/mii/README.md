@@ -214,7 +214,13 @@ if (ok) {
   (`MII_EXPR_*`), the parts RFL colours with TEV tricks baked into plain
   textures, a body in the Mii's colours (shirt in the favourite colour,
   trousers grey or gold for a special Mii) scaled by height and build, and
-  each part as a GX display list. About 1 MiB.
+  each part as a GX display list. As RFL keeps them: textures RGB5A3,
+  shapes as s16 vertices drawn indexed. About 280 KB with 128 px faces;
+  most of it is the seven faces.
+- **`mii_model_build`** takes `mii_model_opts`: the face size (32 to 256
+  px) and which expressions to build (`MII_EXPR_BIT`; the normal face is
+  always built, and one not built draws as it). With 128 px faces and the
+  normal one only, a Mii takes about 67 KB; with 32 px, about 37 KB.
 - **Ways to draw it:**
   - In place, each frame: `mii_view()` gives the projection and camera
     that frame the Mii in a viewport of the aspect you pass; set your
@@ -254,13 +260,32 @@ if (ok) {
   pose.anim = 1 + mii_body_anim(&body, "bodyWait");
   pose.frame = seconds * 60;
   ```
+- **Many Miis.** A crowd is what the Wii's CPU and memory allow, not its
+  GPU, until the CPU's part is small. What helps, all measured on the
+  bench Wii (REVIEW.md, 1.11.6 to 1.11.8):
+  - One `mii_cache` for the crowd (`mii_model_opts.cache`): Miis share
+    each part that comes out the same, byte for byte (the same hair, face
+    shape, textures). With 32 px faces and the normal one only, a random
+    Mii then takes about 12 to 20 KB; the bench Wii held 5,855.
+  - `mii_body_make_lods` once per body, then each frame
+    `pose.lod = mii_body_lod_for(&body, pixels_tall)`: coarser bodies for
+    Miis far off (62, 37 and 21% of the triangles), made on the Wii from
+    the user's own body.
+  - Faces by distance: `mii_model_set_mask_size` (32 px far, 128 near). A
+    128 px face takes about 4 ms to build, so give it a time budget a
+    frame.
+  - Walk in step: Miis at the same frame of the same animation pose once
+    (the body remembers its last 16 poses), so give a crowd a few phases,
+    not one each.
+  - `pose.reuse` for a Mii far off: draw it with the bones its last draw
+    posed, posing every second or fourth frame.
 - **Your GX FIFO in MEM1.** Make it a static array
   (`static u8 fifo[SIZE] ATTRIBUTE_ALIGN(32);`), not `memalign` from the
   heap: once MEM1's part of the heap runs out, the heap gives MEM2, and a
   GPU fed its commands from MEM2 stalled at random on a real Wii (never in
   Dolphin). HBC lost days to this when linking this library grew its .bss
-  (REVIEW.md, 1.10.26). A Mii adds about 54 KB of commands a frame; keep a
-  frame well under the FIFO's size.
+  (REVIEW.md, 1.10.26). A Mii adds under 2 KB of commands a frame (its
+  lists and arrays stay in memory, where the GPU reads them).
 - **Builds with libogc 3 and libogc2.** HBC uses libogc 3; every function
   here also compiles and links with devkitPPC r41-2 and libogc2.
 - **Between frames.** `mii_capture` and `mii_icon` draw in the EFB's corner
