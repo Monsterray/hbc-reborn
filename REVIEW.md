@@ -161,6 +161,71 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.9: coarser heads, faces drawn by the GPU, the skin in one colour
+
+- **Coarser heads** (`mii_model_opts.lods`, drawn by `mii_pose.lod`):
+  - 1.11.8's probe found the GPU's time in a crowd was vertices, mostly
+    heads (about 480 triangles each). Each head part gets levels of about
+    60, 35 and 20% of its triangles.
+  - Each step folds the cheapest node into a neighbour: quadric error plus
+    how far it moves the texture, so the eyes and mouth stay put. Open edges
+    are kept, and no triangle turns more than 60 degrees.
+  - The lists follow the whole one in the part's display list. The cache
+    keeps them, and a Mii with the same part takes them without simplifying
+    again (`mesh_twin`).
+  - At a coarser level the face's layers are drawn a unit nearer the
+    camera a level, and the forehead (scalp) 4% smaller a level, so the
+    simpler hair still covers it.
+  - On the bench Wii a head went 514, 307, 183 and 107 triangles.
+  - Two bugs on the way, both found on the bench:
+    - The whole list's call ran the levels after it too (200 Miis'
+      GPU time 13 to 24 ms).
+    - The texture term rescanned every corner (170 ms a Mii). Per-node
+      lists fixed it: about 20 ms, and less with the cache.
+- **Faces drawn by the GPU** (`mii_model_opts.gpu_faces`,
+  `mii_model_make_faces`), as RFL's `RFLiMakeTexture`:
+  - The parts are drawn as quads into the EFB's corner, from their own
+    I4/I8/IA4/IA8/RGB5A3 textures.
+  - TEV mixes the channels with the default swap tables: eye red, blue and
+    green give colour 0, the eye colour and white; mouth red, green and
+    blue give its two colours and white.
+  - Blending is front to back, premultiplied (INVDSTALPHA, ONE), which
+    equals the CPU's back-to-front "over". The copy-out is RGB5A3.
+  - The face layout is shared with the CPU path (`face_layout`).
+  - It needs the EFB, so it runs between frames on the drawing thread.
+    `mii_model_set_mask_size` only marks the face, and the old one draws
+    until the new one is made.
+  - Bench Wii: 7 faces in 0.57 ms against about 44 ms on the CPU. They
+    match the CPU's to a mean of 0.10 of 255 (largest 37, at an edge).
+- **The skin in one colour.** The face texture is RGB5A3 (5 bits a channel
+  where opaque), and the forehead and nose were full-precision colours. On
+  the TV the forehead stood out, redder on dark skin: (82, 46, 28) against
+  the face's (82, 49, 24). They now take the colour as RGB5A3 keeps it. A
+  host test checks all six skins against the decoded texture.
+- **Tearing in `mii_app walk`**, reported by the user:
+  - The test now shows two framebuffers, copying to the one not on screen
+    and flipping at the vertical blank.
+  - The tearing seen was the front ranks walking through the camera: the
+    near plane cut them open. The front rank now stops at the bottom of the
+    screen.
+  - A lossless 60 fps capture of the whole walk (`tears.py`, every frame
+    against its neighbours) found no torn frame and no combing.
+
+Bench Wii, `mii_app walk` (GPU faces, body and head levels, 20 s each way):
+
+| Miis | Toward | Away | CPU a frame | Face rebuilds |
+|---|---|---|---|---|
+| 200 | 59.9 fps | 59.9 fps | 6.0 ms | 0.11-0.21 ms each |
+| 400 | 30.0 | 30.0 | 11.9 ms | 0.13-0.23 ms |
+| 800 | 20.0 | 20.0 | 28.5 ms | 0.17-0.27 ms |
+
+- Building: 100 Miis with head levels in 2.8 s, their 100 faces by the GPU
+  in 8 ms.
+- GPU probe, 200 standing Miis, GPU time after the CPU: whole 13.0 ms,
+  heads only 9.8 ms, at level 3 1.7 ms.
+- The count is now limited by the CPU's posing (about 30 us a Mii at level
+  3), not the GPU.
+
 ### 1.11.8: levels of detail from the user's own body, and a crowd walking in and out
 
 - **`mii_body_make_lods`**: coarser bodies for Miis far off, made on the

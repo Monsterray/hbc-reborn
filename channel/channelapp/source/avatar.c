@@ -140,7 +140,7 @@ static void *loader(void *arg) {
 		return NULL;
 	}
 	{
-		mii_model_opts o = { 128, MII_EXPR_BIT(MII_EXPR_SMILE) | MII_EXPR_BIT(MII_EXPR_BLINK), NULL };
+		mii_model_opts o = { 128, MII_EXPR_BIT(MII_EXPR_SMILE) | MII_EXPR_BIT(MII_EXPR_BLINK), NULL, 0, 0 };
 
 		r = mii_model_build(&res, &m, &o, &model);
 	}

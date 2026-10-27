@@ -168,7 +168,8 @@ def main():
         # sdk/mii's drawing on the Wii: icons (96 and 256 px) and a capture,
         # from sd:/mii/RFL_Res.dat (Save Mii faces), as PNGs in the run folder.
         ok = app_ok(run_app(out, "draw", *sys.argv[2:3], label="draw"))
-        for name in ("icon_normal", "icon_smile", "icon_large", "body", *(f"body_lod{k}" for k in range(5))):
+        for name in ("icon_normal", "icon_smile", "icon_large", "body", *(f"body_lod{k}" for k in range(4)),
+                     *(f"head_lod{k}" for k in range(4)), "face_cpu", "face_gpu"):
             raw = out / f"{name}.rgba"
             if wm.tool("get", f"sd:/mii_test/{name}.rgba", str(raw), check=False).returncode:
                 ok = False

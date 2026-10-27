@@ -694,11 +694,138 @@ static void draw_test(int slot) {
 			say("%s: %d triangles, %d pixels drawn\n", name, l ? model.body->lod[l - 1].tris : model.body->full_tris, n);
 		}
 	}
+	/* Each face drawn by the GPU (mii_model_make_faces) against the CPU's,
+	 * texel by texel (both RGB5A3), and the time each takes. */
+	{
+		mii_model_opts oc = { 128, 0, NULL, 0, 0 }, og = { 128, 0, NULL, 0, 1 };
+		mii_model cm, gm;
+		u64 t1, t2, t3;
+		int e, worst = 0, rc, rg;
+		long sum = 0, texels = 0;
+
+		t1 = gettime();
+		rc = mii_model_build(&res, &m, &oc, &cm);
+		t2 = gettime();
+		rg = mii_model_build(&res, &m, &og, &gm);
+		t3 = gettime();
+		if (rg == MII_OK)
+			rg = mii_model_make_faces(&gm, &res, (GXColor) { 0, 0, 0, 255 });
+		say("faces: the CPU built the model with 7 in %llu us; the GPU drew them in %llu us (model %llu us)\n",
+			ticks_to_microsecs(t2 - t1), ticks_to_microsecs(gettime() - t3), ticks_to_microsecs(t3 - t2));
+		for (e = 0; rc == MII_OK && rg == MII_OK && e < MII_EXPR_COUNT; ++e) {
+			const u8 *a = cm.mask[e].gx, *b = gm.mask[e].gx;
+			int k, c;
+
+			DCInvalidateRange((void *) b, mii_tex_rgb5a3_size(128, 128));
+			for (k = 0; k < 128 * 128; ++k) {
+				int va = a[2 * k] << 8 | a[2 * k + 1], vb = b[2 * k] << 8 | b[2 * k + 1], ca[4], cb[4];
+				const int *pv[2] = { ca, cb };
+				int v[2] = { va, vb }, j;
+
+				for (j = 0; j < 2; ++j) {
+					int *o = (int *) pv[j], x = v[j];
+
+					if (x & 0x8000) {
+						o[0] = (x >> 10 & 31) * 255 / 31; o[1] = (x >> 5 & 31) * 255 / 31; o[2] = (x & 31) * 255 / 31; o[3] = 255;
+					} else {
+						o[0] = (x >> 8 & 15) * 17; o[1] = (x >> 4 & 15) * 17; o[2] = (x & 15) * 17; o[3] = (x >> 12 & 7) * 255 / 7;
+					}
+				}
+				for (c = 0; c < 4; ++c) {
+					int d = abs(ca[c] - cb[c]);
+
+					sum += d;
+					worst = d > worst ? d : worst;
+				}
+				texels += 4;
+			}
+			if (e == MII_EXPR_NORMAL) {   /* both as pictures */
+				u8 *pic = memalign(32, 128 * 128 * 4);
+				int j;
+
+				for (j = 0; pic && j < 2; ++j) {
+					const u8 *src = j ? b : a;
+					int x, y;
+
+					for (y = 0; y < 128; ++y)
+						for (x = 0; x < 128; ++x) {
+							const u8 *q = src + 32 * ((y / 4) * 32 + x / 4) + 2 * (4 * (y % 4) + x % 4);
+							int v = q[0] << 8 | q[1], o[4];
+							u8 *t = pic + 64 * ((y / 4) * 32 + x / 4) + 2 * (4 * (y % 4) + x % 4);
+
+							if (v & 0x8000) {
+								o[0] = (v >> 10 & 31) * 255 / 31; o[1] = (v >> 5 & 31) * 255 / 31; o[2] = (v & 31) * 255 / 31; o[3] = 255;
+							} else {
+								o[0] = (v >> 8 & 15) * 17; o[1] = (v >> 4 & 15) * 17; o[2] = (v & 15) * 17; o[3] = (v >> 12 & 7) * 255 / 7;
+							}
+							t[0] = (u8) o[3]; t[1] = (u8) o[0]; t[32] = (u8) o[1]; t[33] = (u8) o[2];   /* RGBA8 tiles */
+						}
+					save_rgba8(j ? "face_gpu" : "face_cpu", pic, 128, 128, &corners);
+				}
+				free(pic);
+			}
+		}
+		say("faces: GPU against CPU, mean difference %.2f, largest %d (of 255, each channel)\n",
+			texels ? (double) sum / texels : -1.0, worst);
+		result("the GPU's faces match the CPU's", rc == MII_OK && rg == MII_OK && texels &&
+			   (double) sum / texels < 3 ? MII_OK : MII_E_VERIFY);
+		if (rc == MII_OK)
+			mii_model_free(&cm);
+		if (rg == MII_OK)
+			mii_model_free(&gm);
+	}
+	/* The head's coarser levels (mii_model_opts.lods), 128 x 128 each. */
+	{
+		mii_model_opts o = { 128, 0, NULL, MII_HEAD_LODS, 0 };
+		mii_model lm;
+		u64 t1 = gettime();
+		int l;
+
+		r = mii_model_build(&res, &m, &o, &lm);
+		say("built with %d head levels in %llu us\n", MII_HEAD_LODS, ticks_to_microsecs(gettime() - t1));
+		for (l = 0; r == MII_OK && l <= MII_HEAD_LODS; ++l) {
+			char name[24];
+			int i, tris = 0;
+
+			memset(&pose, 0, sizeof(pose));
+			pose.head_only = 1;
+			pose.lod = l;
+			mii_capture(&lm, &pose, 128, 128, 0.04f, 1, (GXColor) { 0, 0, 0, 255 }, body);
+			GX_DrawDone();
+			for (i = 0; i < MII_HEAD_PARTS; ++i)
+				tris += (l ? lm.part[i].lod_count[l - 1] : lm.part[i].count) / 3;
+			snprintf(name, sizeof(name), "head_lod%d", l);
+			n = save_rgba8(name, body, 128, 128, &corners);
+			say("%s: %d triangles, %d pixels drawn\n", name, tris, n);
+		}
+		if (r == MII_OK)
+			mii_model_free(&lm);
+	}
 	mii_model_free(&model);
 	mii_res_free(&res);
 	mii_db_free(&db);
 	free(icon);
 	free(body);
+}
+
+/* Two framebuffers: each frame is copied to the one the TV is not showing,
+ * and shown from the next vertical blank. With one, a frame slower than
+ * the TV's copied over the picture while it was being shown: the crowd
+ * tests tore. */
+static void present(GXRModeObj *rmode) {
+	static void *xfbs[2];
+	static int back;
+
+	if (!xfbs[0]) {
+		xfbs[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+		xfbs[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+	}
+	GX_CopyDisp(xfbs[back], GX_TRUE);
+	GX_DrawDone();   /* the copy is in memory */
+	VIDEO_SetNextFramebuffer(xfbs[back]);
+	VIDEO_Flush();
+	VIDEO_WaitVSync();
+	back ^= 1;
 }
 
 /* A crowd: COUNTS (e.g. 20,40,60) random Miis, half female, walking across a
@@ -717,6 +844,7 @@ static void crowd_test(const char *counts, int seconds, int mask, void *xfb, GXR
 	const char *p = counts;
 	struct mallinfo m0 = mallinfo();
 
+	(void) xfb;   /* present() shows two framebuffers of its own */
 	GX_Init(fifo, sizeof(fifo));
 	GX_SetCopyClear((GXColor) { 40, 60, 90, 255 }, 0x00ffffff);
 	GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
@@ -811,9 +939,7 @@ static void crowd_test(const char *counts, int seconds, int mask, void *xfb, GXR
 				cpu_max = b - a;
 			if (t - b > gpu_max)
 				gpu_max = t - b;
-			GX_CopyDisp(xfb, GX_TRUE);
-			GX_Flush();
-			VIDEO_WaitVSync();
+			present(rmode);
 			++frames;
 		}
 		fps = frames / (diff_usec(start, gettime()) / 1e6f);
@@ -877,7 +1003,8 @@ static u32 heap_grown(u32 *m1, u32 *m2) {
 
 /* A crowd walking in from the horizon to the bottom of the screen, then
  * turning and walking off into the distance (`walk COUNTS SECONDS`):
- * COUNTS random Miis, half female, in ranks of 8, through one mii_cache,
+ * COUNTS random Miis, half female, in ranks of 8 (the front one stops at
+ * the bottom of the screen), through one mii_cache,
  * built with the normal face only. Each frame every Mii takes a level of
  * detail by its height on screen (mii_body_lod_for), poses every frame near,
  * every second frame at level 3 and every fourth at 4 (mii_pose.reuse), and
@@ -902,13 +1029,15 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 	Mtx view;
 	guVector eye = { 0, 260, 520 }, up = { 0, 1, 0 }, at = { 0, 0, -700 };
 	float half_h = (float) rmode->efbHeight / 2, focal = 1 / tanf(22.5f * (float) M_PI / 180);
+	GXColor sky = { 150, 190, 230, 255 };
 
 	if (!models || !lane || !cache) {
 		say("walk: no memory to start\n");
 		return;
 	}
+	(void) xfb;   /* present() shows two framebuffers of its own */
 	GX_Init(fifo, sizeof(fifo));
-	GX_SetCopyClear((GXColor) { 150, 190, 230, 255 }, 0x00ffffff);
+	GX_SetCopyClear(sky, 0x00ffffff);
 	GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
 	GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
 	GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
@@ -956,7 +1085,7 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 		for (; built < count; ++built) {
 			mii m;
 			int sex = built & 1;
-			mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_NORMAL), cache };
+			mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_NORMAL), cache, MII_HEAD_LODS, 1 };
 
 			mii_random(&m, sex ? MII_FEMALE : MII_MALE, MII_ANY, &seed);
 			models[built] = malloc(sizeof(mii_model));
@@ -984,6 +1113,15 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 				(heap_grown(&a1, &a2) - base) / 1024, built ? (heap_grown(&a1, &a2) - base) / 1024 / built : 0,
 				e, users, bytes / 1024);
 		}
+		{   /* their faces, by the GPU (mii_model_opts.gpu_faces) */
+			u64 f0 = gettime();
+			int made = 0;
+
+			for (i = step_built; i < built; ++i)
+				made += mii_model_make_faces(models[i], &res, sky) == MII_OK;
+			say("walk %d: %d faces drawn by the GPU in %llu ms\n", count, made,
+				ticks_to_microsecs(gettime() - f0) / 1000);
+		}
 		if (built < count) {
 			if (!max_mode || built == step_built) {
 				say("walk %d: built %d, then %d: the memory limit\n", count, built, r);
@@ -995,18 +1133,33 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 			u64 start = gettime(), cpu = 0, gpu = 0, cpu_max = 0, remask_t = 0;
 			u32 hits0 = bodies[0].memo_hits + bodies[1].memo_hits, miss0 = bodies[0].memo_misses + bodies[1].memo_misses;
 			long at_lod[MII_BODY_LODS + 1] = { 0 }, drawn = 0;
-			int frames = 0, remasks = 0, ranks = (count + COLS - 1) / COLS;
-			float fps, far = -4200, near = 180, depth = ranks * 90.0f;
+			int frames = 0, remasks = 0;
+			float fps, far = -4200, near = 180;
 
 			while (diff_sec(start, gettime()) < (u32) seconds) {
 				float t = diff_usec(start, gettime()) / 1e6f / seconds;   /* 0 to 1 */
-				/* The front rank's z: from the horizon to the camera's feet, or back. */
-				float front = dir ? near - t * (near - far) - 0 : far + t * (near - far + depth);
-				float speed = (near - far + depth) / seconds;   /* units a second */
+				/* The front rank's z: from the horizon to the bottom of the screen,
+				 * where it stops (walking on past, the front ranks went through
+				 * the camera and its near plane cut them open), or back. */
+				float front = dir ? near - t * (near - far) : far + t * (near - far);
+				float speed = (near - far) / seconds;   /* units a second */
 				float gait = speed / 90 < 2 ? speed / 90 : 2;   /* bodyWalk covers about 90 a second */
 				u64 budget = secs_to_ticks(2) / 1000;   /* 2 ms of face rebuilds a frame */
 				u64 a, b, c, remask_frame = 0;
 
+				/* Between frames: faces whose size changed, by the GPU, up to
+				 * the budget. */
+				for (i = 0; i < count && remask_frame < budget; ++i)
+					if (models[i]->faces_pending) {
+						c = gettime();
+						if (mii_model_make_faces(models[i], &res, sky) == MII_OK)
+							++remasks;
+						remask_t += gettime() - c;
+						remask_frame += gettime() - c;
+					}
+				GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+				GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+				GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
 				a = gettime();
 				GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
 				GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
@@ -1018,23 +1171,14 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 					mii_pose pose;
 					Mtx place;
 
-					if (!dir && z > near + 400)
-						continue;   /* walked past the camera */
-					if (dir && rank * 90 > depth)
-						continue;
 					vz = -(view[2][0] * x + view[2][2] * z + view[2][3]);
 					if (vz < 30)
 						continue;
 					px = 120 * focal * half_h / vz;
 					lod = mii_body_lod_for(&bodies[sex], px);
 					want = px >= 150 ? 128 : px >= 60 ? 64 : 32;
-					if (want != models[i]->mask_size && remask_frame < budget) {
-						c = gettime();
-						if (mii_model_set_mask_size(models[i], &res, want) == MII_OK)
-							++remasks;
-						remask_t += gettime() - c;
-						remask_frame += gettime() - c;
-					}
+					if (want != models[i]->mask_size)   /* drawn before a later frame */
+						mii_model_set_mask_size(models[i], &res, want);
 					memset(&pose, 0, sizeof(pose));
 					pose.anim = walk[sex];
 					pose.frame = floorf(diff_usec(start, gettime()) / 1e6f * 60 * gait) + (i % 8) * 5;
@@ -1054,9 +1198,7 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 				gpu += c - b;
 				if (b - a > cpu_max)
 					cpu_max = b - a;
-				GX_CopyDisp(xfb, GX_TRUE);
-				GX_Flush();
-				VIDEO_WaitVSync();
+				present(rmode);
 				++frames;
 			}
 			fps = frames / (diff_usec(start, gettime()) / 1e6f);
@@ -1108,6 +1250,7 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 	Mtx view;
 	guVector eye = { 0, 260, 520 }, up = { 0, 1, 0 }, at = { 0, 0, -700 };
 
+	(void) xfb;   /* present() shows two framebuffers of its own */
 	GX_Init(fifo, sizeof(fifo));
 	GX_SetCopyClear((GXColor) { 150, 190, 230, 255 }, 0x00ffffff);
 	GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
@@ -1126,7 +1269,7 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 	mii_body_make_lods(&bodies[1], NULL, 0);
 	for (; built < count; ++built) {
 		mii m;
-		mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_NORMAL), cache };
+		mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_NORMAL), cache, MII_HEAD_LODS, 1 };
 
 		mii_random(&m, built & 1 ? MII_FEMALE : MII_MALE, MII_ANY, &seed);
 		models[built] = malloc(sizeof(mii_model));
@@ -1134,6 +1277,8 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 				mii_model_set_body(models[built], &bodies[built & 1]) < 0)
 			break;
 	}
+	for (i = 0; i < built; ++i)
+		mii_model_make_faces(models[i], &res, (GXColor) { 150, 190, 230, 255 });
 	guLookAt(view, &eye, &up, &at);
 	guPerspective(proj, 45, (f32) rmode->fbWidth / rmode->efbHeight, 20, 12000);
 	for (mode = 0; mode < 5; ++mode) {
@@ -1168,9 +1313,7 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 			cpu += b - a;
 			gpu += c - b;
 			GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
-			GX_CopyDisp(xfb, GX_TRUE);
-			GX_Flush();
-			VIDEO_WaitVSync();
+			present(rmode);
 			++frames;
 		}
 		say("gpuprobe %d at %.0f, %s: CPU %llu us, GPU after it %llu us a frame (%d frames)\n", built, dist,

@@ -77,11 +77,10 @@ HBC will offer both modes, with a setting.
    - Levels of detail made on the Wii from the user's own body
      (`mii_body_make_lods`), and faces by distance
      (`mii_model_set_mask_size`).
-   - Next, where the numbers point:
-     - Faces made with the GPU, as RFL's `RFLiMakeTexture` draws its
-       parts into the EFB: about 4 ms on the CPU at 128 px now.
-     - Coarser heads for Miis far off: a head is about 480 triangles,
-       more than a far body's 155.
+   - Coarser heads (`mii_model_opts.lods`) and faces drawn by the GPU as
+     RFL's `RFLiMakeTexture` does (`mii_model_opts.gpu_faces`,
+     `mii_model_make_faces`): HBC 1.11.9. 200 walking Miis hold 60 fps;
+     the CPU's posing is now the limit.
 2. **API:** `mii_draw_opa`, `mii_draw_xlu`, `mii_draw_setup`,
    `mii_draw_done`, `mii_draw_in_rect` with the two modes; `mii_view`'s
    depth needs.

@@ -148,6 +148,7 @@ class MiiDrawTest(unittest.TestCase):
         # mii_model_opts: the normal face and those asked for, at their size.
         self.assertIn("opts: expressions 0x21, 32 px", r.stdout)
         self.check_pack(r.stdout)
+        self.check_head_lods(r.stdout, real=False)
         # The cache: the same Mii twice shares everything (each part, the
         # face); faces rebuilt at 32 px replace the 128 px ones in it; with
         # both models freed, nothing is left.
@@ -161,6 +162,30 @@ class MiiDrawTest(unittest.TestCase):
         self.assertGreater(entries[1], entries[0])   # one model moved: both sizes held
         self.assertEqual((entries[3], users[3]), (0, 0))
         self.assertLess(int(m[12]), int(m[11]))
+
+    def check_head_lods(self, stdout, real):
+        # Coarser heads: valid levels, never more triangles than the level
+        # before; with the Wii's own faces, about 60, 35 and 20% of them.
+        m = re.search(r"headlod: (\d+) (\d+) (\d+) (\d+) triangles, (\d+) bad", stdout)
+        self.assertTrue(m, stdout)
+        tris = [int(m[k]) for k in range(1, 5)]
+        self.assertEqual(m[5], "0", stdout)
+        self.assertEqual(tris, sorted(tris, reverse=True), stdout)
+        if real:
+            for got, share in zip(tris[1:], (0.6, 0.35, 0.2)):
+                self.assertLess(got, tris[0] * share * 1.2 + 6, stdout)
+        return tris
+
+    def test_head_lods_real_faces(self):
+        if not os.environ.get("MII_REAL_RES"):
+            self.skipTest("set MII_REAL_RES to your own RFL_Res.dat")
+        for sex in ("0", "1"):
+            r, _ = self.run_host(os.environ["MII_REAL_RES"], "-d", sex, "64", "64", "5")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            print("head levels:", self.check_head_lods(r.stdout, real=True))
+            # The forehead and nose are the face texture's colour as the Wii
+            # draws it, so they do not stand apart from the face.
+            self.assertIn("skin: 6 of 6 the face texture's colour", r.stdout)
 
     def check_pack(self, stdout):
         # Packed meshes: fewer vertices than corners, each within its fixed

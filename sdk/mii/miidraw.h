@@ -236,6 +236,8 @@ enum {
 
 typedef struct mii_cache mii_cache;   /* below: parts shared between Miis */
 
+#define MII_HEAD_LODS 3        /* coarser heads mii_model_opts.lods can ask for */
+
 /* One part's triangles, each vertex x y z, nx ny nz, s t. */
 typedef struct {
 	int count;             /* vertices, three to a triangle */
@@ -254,7 +256,15 @@ typedef struct {
 	uint16_t *idx;         /* count corners (on the Wii, in the display list instead) */
 	void *dl;              /* on the Wii: the triangles as a GX display list */
 	uint32_t dl_size;
+	/* Coarser levels (mii_model_opts.lods): fewer triangles over the same
+	 * vertices. On a PC each level's corners follow the full list in idx
+	 * (lod_first); on the Wii its own list follows in dl (lod_at, lod_size). */
+	int lods;
+	int lod_count[MII_HEAD_LODS];
+	uint32_t lod_first[MII_HEAD_LODS];
+	uint32_t lod_at[MII_HEAD_LODS], lod_size[MII_HEAD_LODS];
 	void *shared;          /* a mii_cache entry holding pack and dl (on a PC, idx), or NULL */
+	uint32_t whole;        /* with a cache: the hash it finds this part again by */
 } mii_mesh;
 
 enum { MII_TEX_FACE, MII_TEX_CAP, MII_TEX_NOSELINE, MII_TEX_GLASS, MII_TEX_COUNT };
@@ -323,6 +333,7 @@ typedef struct {
 	int mask_size;         /* as built (mii_model_opts) */
 	unsigned expressions;
 	mii_cache *cache;
+	int gpu_faces, faces_pending;   /* mii_model_opts.gpu_faces; faces still to draw */
 } mii_model;
 
 /* Which expressions' faces to build: MII_EXPR_BIT(MII_EXPR_SMILE) | ...
@@ -346,6 +357,17 @@ typedef struct {
 	int mask_size;         /* the face texture's side: 32, 64, 128 or 256 (0: 128) */
 	unsigned expressions;  /* MII_EXPR_BIT()s (0: all of them) */
 	mii_cache *cache;      /* share identical parts with other Miis built with it, or NULL */
+	/* Coarser heads for Miis far off, drawn by mii_pose.lod: 0 to
+	 * MII_HEAD_LODS levels, about 60, 35 and 20% of the head's triangles. A
+	 * head is about 480 triangles, more than a far body: in a crowd the
+	 * GPU's time is mostly heads (REVIEW.md, 1.11.8). Some ms to build. */
+	int lods;
+	/* 1: the faces drawn by the GPU, as RFL does (RFLiMakeTexture): about
+	 * 0.2 ms each against 1 to 6 ms on the CPU. They need the EFB, so
+	 * mii_model_build leaves them to mii_model_make_faces, which the thread
+	 * that draws calls between frames (as mii_capture). Until then the
+	 * model draws without a face. A PC build draws them on the CPU. */
+	int gpu_faces;
 } mii_model_opts;
 
 /* Builds a Mii (opts NULL: 128 px, every expression). Free it with
@@ -357,8 +379,10 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *out);
 /* Rebuilds the model's faces (the expressions it was built with) at
  * another size: 32 px for a Mii far off, 128 near (the faces are most of a
- * Mii's memory). About as long as building them did. On failure the model
- * keeps its faces. Do not call it while the GPU may still draw the model. */
+ * Mii's memory). About as long as building them did. With gpu_faces it
+ * only asks: mii_model_make_faces draws them (faces_pending), and the old
+ * ones draw until then. On failure the model keeps its faces. Do not call
+ * it while the GPU may still draw the model. */
 int mii_model_set_mask_size(mii_model *model, const mii_res *res, int mask_size);
 void mii_model_free(mii_model *model);
 
@@ -403,8 +427,9 @@ typedef struct {
 	 * unread but the head's angles and the expression: a Mii far off posed
 	 * every second or fourth frame costs about a third. */
 	int reuse;
-	/* With a Wii body: 0 the whole body, 1 to its nlods a coarser level
-	 * (mii_body_make_lods, mii_body_lod_for). */
+	/* 0 the whole Mii; 1 to 3 coarser levels for a Mii far off
+	 * (mii_body_lod_for): the Wii body's (mii_body_make_lods) and the
+	 * head's (mii_model_opts.lods), each as far as it has levels. */
 	int lod;
 } mii_pose;
 
@@ -486,6 +511,15 @@ int mii_capture(const mii_model *model, const mii_pose *pose, int w, int h, floa
 /* A head icon, as the Wii Menu's: size x size, the head framed as RFL frames
  * it, on `background` (alpha 0 for none). Same rules as mii_capture. */
 int mii_icon(const mii_model *model, int expression, int size, GXColor background, void *dst);
+
+/* Draws a model's faces with the GPU (mii_model_opts.gpu_faces), as RFL's
+ * RFLiMakeTexture: the parts as quads into the EFB's corner, coloured by
+ * TEV, copied out as RGB5A3. Call it between frames, on the thread that
+ * draws: after your last copy, before you draw the next frame. It leaves
+ * the corner in `clear` (your clear colour), the pixel format RGB8_Z24,
+ * and changes the viewport, scissor, projection, copy filter, vertex
+ * format, channels, TEV, blending, Z and culling: set yours again. */
+int mii_model_make_faces(mii_model *model, const mii_res *res, GXColor clear);
 
 #endif /* MII_NO_OGC */
 

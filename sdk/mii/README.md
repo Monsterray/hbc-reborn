@@ -267,13 +267,19 @@ if (ok) {
     each part that comes out the same, byte for byte (the same hair, face
     shape, textures). With 32 px faces and the normal one only, a random
     Mii then takes about 12 to 20 KB; the bench Wii held 5,855.
-  - `mii_body_make_lods` once per body, then each frame
-    `pose.lod = mii_body_lod_for(&body, pixels_tall)`: coarser bodies for
-    Miis far off (62, 37 and 21% of the triangles), made on the Wii from
-    the user's own body.
-  - Faces by distance: `mii_model_set_mask_size` (32 px far, 128 near). A
-    128 px face takes about 4 ms to build, so give it a time budget a
-    frame.
+  - `mii_body_make_lods` once per body, `mii_model_opts.lods = 3` for each
+    Mii, then each frame `pose.lod = mii_body_lod_for(&body, pixels_tall)`:
+    coarser bodies (62, 37 and 21% of the triangles) and heads (about 60,
+    35 and 20%) for Miis far off, made on the Wii from the user's own files.
+    The GPU's time in a crowd is vertices, mostly heads: at level 3, 200
+    Miis took it 1.8 ms where whole ones took 13.
+  - `mii_model_opts.gpu_faces = 1`: faces drawn by the GPU, as RFL draws
+    them (`RFLiMakeTexture`): about 0.08 ms each against 1 to 6 ms on the
+    CPU, within 0.1 of 255 of the CPU's on average. They use the EFB, so
+    call `mii_model_make_faces` between frames on the thread that draws.
+  - Faces by distance: `mii_model_set_mask_size` (32 px far, 128 near);
+    with GPU faces it marks them, and `mii_model_make_faces` draws them
+    between frames.
   - Walk in step: Miis at the same frame of the same animation pose once
     (the body remembers its last 16 poses), so give a crowd a few phases,
     not one each.

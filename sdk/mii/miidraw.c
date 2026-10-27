@@ -243,6 +243,12 @@ typedef struct share {
 	uint32_t hash, size[2];
 	void *buf[2];
 	int refs;
+	/* A mesh's: its whole list's hash and corners, and its levels, so the
+	 * next Mii with the same part takes them without simplifying again. */
+	int mesh, count, lods;
+	uint32_t whole;
+	int lod_count[MII_HEAD_LODS];
+	uint32_t lod_first[MII_HEAD_LODS], lod_at[MII_HEAD_LODS], lod_size[MII_HEAD_LODS];
 } share;
 
 struct mii_cache {
@@ -462,6 +468,19 @@ static uint32_t rgba(const uint8_t c[3]) {
 	return (uint32_t) c[0] << 24 | (uint32_t) c[1] << 16 | (uint32_t) c[2] << 8 | 0xFF;
 }
 
+/* A colour as RGB5A3 keeps an opaque one: 5 bits a channel. The skin's
+ * plain parts (forehead, nose) take it so, the same as the face texture
+ * beside them: at full precision the darkest skin, (82, 46, 28), stood
+ * redder than the face's (82, 49, 24). */
+static uint32_t rgba_as5(const uint8_t c[3]) {
+	uint8_t q[3];
+	int k;
+
+	for (k = 0; k < 3; ++k)
+		q[k] = x5((unsigned) (c[k] * 31 + 127) / 255);
+	return rgba(q);
+}
+
 static int pick(int v, int n) {
 	return v < 0 ? 0 : v >= n ? n - 1 : v;
 }
@@ -589,18 +608,101 @@ static void composite(float *buf, int size, const face_part *p) {
 		}
 }
 
-/* The mask texture for one expression (RFLiSetFaceParts, RFLiCapture). RFL
- * draws front to back (mustache, mouth, eyebrows, eyes, mole) with the
- * destination alpha as coverage; this composites the same parts back to
- * front. */
-static int make_mask(const mii_res *res, const mii *m, int e, int size, mii_tex *out) {
+/* The face parts for one expression, in mask pixels (RFLiSetFaceParts):
+ * the mole, the eyes, the eyebrows, the mouth and the mustache, back to
+ * front, each pointing at its texture among those given (only their
+ * pixels are read later). Returns how many. */
+static int face_layout(const mii *m, int e, int size, face_part *p, const mii_tex *eye, const mii_tex *brow,
+					   const mii_tex *mouth, const mii_tex *mustache, const mii_tex *mole) {
 	static const float ux = 0.88961464f, uy = 1.1600001f * 0.9276675f;
 	expr_face f = expression(m, e);
-	float unit = size / 64.0f, *buf;
+	float unit = size / 64.0f;
+	int n = 0, i;
+	float eye_x, eye_y, eye_w, eye_h, eye_a, brow_x, brow_y, brow_w, brow_h, brow_a;
+
+	eye_x = ux * m->eye_x;
+	eye_y = 18.451525f + uy * m->eye_y;
+	eye_w = 342 / 64.0f * (1 + 0.4f * m->eye_scale);
+	eye_h = 288 / 64.0f * (1 + 0.4f * m->eye_scale);
+	eye_a = 11.25f * ((f.eye_rot + eye_rot_offset[pick(f.eye_type, 50)]) % 32);
+	brow_x = ux * m->brow_x;
+	brow_y = 16.549807f + uy * f.brow_y;
+	brow_w = 324 / 64.0f * (1 + 0.4f * m->brow_scale);
+	brow_h = 288 / 64.0f * (1 + 0.4f * m->brow_scale);
+	brow_a = 11.25f * ((f.brow_rot + brow_rot_offset[pick(m->brow_type, 24)]) % 32);
+
+	memset(p, 0, sizeof(face_part) * 8);
+	if (m->mole) {
+		p[n].x = (17.766165f + 2 * ux * m->mole_x) * unit;
+		p[n].y = (17.95986f + uy * m->mole_y) * unit;
+		p[n].w = p[n].h = (1 + 0.4f * m->mole_scale) * unit;
+		p[n].origin = O_CENTER;
+		p[n].kind = K_FLAT;
+		p[n].tex = mole;
+		color3(p[n].c0, mole_color);
+		++n;
+	}
+	for (i = 0; i < 2; ++i, ++n) {   /* the eyes: right, then left (mirrored) */
+		p[n].x = (32 + (i ? eye_x : -eye_x)) * unit;
+		p[n].y = eye_y * unit;
+		p[n].w = eye_w * unit;
+		p[n].h = eye_h * unit;
+		p[n].angle = i ? 360 - eye_a : eye_a;
+		p[n].origin = i ? O_LEFT : O_RIGHT;
+		p[n].kind = K_EYE;
+		p[n].tex = eye;
+		if (f.eye_type == 9) {
+			p[n].c0[0] = 1; p[n].c0[1] = 130 / 255.0f;
+		} else if (f.eye_type == 20) {
+			p[n].c0[1] = 1; p[n].c0[2] = 1;
+		}
+		color3(p[n].c1, eye_colors[pick(m->eye_color, 6)]);
+	}
+	for (i = 0; i < 2; ++i, ++n) {
+		p[n].x = (32 + (i ? brow_x : -brow_x)) * unit;
+		p[n].y = brow_y * unit;
+		p[n].w = brow_w * unit;
+		p[n].h = brow_h * unit;
+		p[n].angle = i ? 360 - brow_a : brow_a;
+		p[n].origin = i ? O_LEFT : O_RIGHT;
+		p[n].kind = K_FLAT;
+		p[n].tex = brow;
+		color3(p[n].c0, hair_colors[pick(m->brow_color, 8)]);
+	}
+	p[n].x = 32 * unit;
+	p[n].y = (29.25885f + uy * m->mouth_y) * unit;
+	p[n].w = 396 / 64.0f * (1 + 0.4f * m->mouth_scale) * unit;
+	p[n].h = 288 / 64.0f * (1 + 0.4f * m->mouth_scale) * unit;
+	p[n].origin = O_CENTER;
+	p[n].kind = K_MOUTH;
+	p[n].tex = mouth;
+	color3(p[n].c0, mouth_color0[pick(m->mouth_color, 3)]);
+	color3(p[n].c1, mouth_color1[pick(m->mouth_color, 3)]);
+	++n;
+	if (m->mustache)
+		for (i = 0; i < 2; ++i, ++n) {
+			p[n].x = 32 * unit;
+			p[n].y = (31.763554f + uy * m->beard_y) * unit;
+			p[n].w = 288 / 64.0f * (1 + 0.4f * m->beard_scale) * unit;
+			p[n].h = 576 / 64.0f * (1 + 0.4f * m->beard_scale) * unit;
+			p[n].origin = i ? O_LEFT : O_RIGHT;
+			p[n].kind = K_FLAT;
+			p[n].tex = mustache;
+			color3(p[n].c0, hair_colors[pick(m->beard_color, 8)]);
+		}
+	return n;
+}
+
+/* The mask texture for one expression on the CPU (RFLiSetFaceParts,
+ * RFLiCapture). RFL draws front to back (mustache, mouth, eyebrows, eyes,
+ * mole) with the destination alpha as coverage; this composites the same
+ * parts back to front, which comes to the same. */
+static int make_mask(const mii_res *res, const mii *m, int e, int size, mii_tex *out) {
+	expr_face f = expression(m, e);
+	float *buf;
 	mii_tex eye, brow, mouth, mustache, mole;
 	face_part p[8];
-	int n = 0, i, r;
-	float eye_x, eye_y, eye_w, eye_h, eye_a, brow_x, brow_y, brow_w, brow_h, brow_a;
+	int n, i, r;
 
 	memset(out, 0, sizeof(*out));
 	memset(&eye, 0, sizeof(eye));
@@ -622,77 +724,7 @@ static int make_mask(const mii_res *res, const mii *m, int e, int size, mii_tex 
 		goto done;
 	}
 	out->w = out->h = size;
-
-	eye_x = ux * m->eye_x;
-	eye_y = 18.451525f + uy * m->eye_y;
-	eye_w = 342 / 64.0f * (1 + 0.4f * m->eye_scale);
-	eye_h = 288 / 64.0f * (1 + 0.4f * m->eye_scale);
-	eye_a = 11.25f * ((f.eye_rot + eye_rot_offset[pick(f.eye_type, 50)]) % 32);
-	brow_x = ux * m->brow_x;
-	brow_y = 16.549807f + uy * f.brow_y;
-	brow_w = 324 / 64.0f * (1 + 0.4f * m->brow_scale);
-	brow_h = 288 / 64.0f * (1 + 0.4f * m->brow_scale);
-	brow_a = 11.25f * ((f.brow_rot + brow_rot_offset[pick(m->brow_type, 24)]) % 32);
-
-	memset(p, 0, sizeof(p));
-	if (m->mole) {
-		p[n].x = (17.766165f + 2 * ux * m->mole_x) * unit;
-		p[n].y = (17.95986f + uy * m->mole_y) * unit;
-		p[n].w = p[n].h = (1 + 0.4f * m->mole_scale) * unit;
-		p[n].origin = O_CENTER;
-		p[n].kind = K_FLAT;
-		p[n].tex = &mole;
-		color3(p[n].c0, mole_color);
-		++n;
-	}
-	for (i = 0; i < 2; ++i, ++n) {   /* the eyes: right, then left (mirrored) */
-		p[n].x = (32 + (i ? eye_x : -eye_x)) * unit;
-		p[n].y = eye_y * unit;
-		p[n].w = eye_w * unit;
-		p[n].h = eye_h * unit;
-		p[n].angle = i ? 360 - eye_a : eye_a;
-		p[n].origin = i ? O_LEFT : O_RIGHT;
-		p[n].kind = K_EYE;
-		p[n].tex = &eye;
-		if (f.eye_type == 9) {
-			p[n].c0[0] = 1; p[n].c0[1] = 130 / 255.0f;
-		} else if (f.eye_type == 20) {
-			p[n].c0[1] = 1; p[n].c0[2] = 1;
-		}
-		color3(p[n].c1, eye_colors[pick(m->eye_color, 6)]);
-	}
-	for (i = 0; i < 2; ++i, ++n) {
-		p[n].x = (32 + (i ? brow_x : -brow_x)) * unit;
-		p[n].y = brow_y * unit;
-		p[n].w = brow_w * unit;
-		p[n].h = brow_h * unit;
-		p[n].angle = i ? 360 - brow_a : brow_a;
-		p[n].origin = i ? O_LEFT : O_RIGHT;
-		p[n].kind = K_FLAT;
-		p[n].tex = &brow;
-		color3(p[n].c0, hair_colors[pick(m->brow_color, 8)]);
-	}
-	p[n].x = 32 * unit;
-	p[n].y = (29.25885f + uy * m->mouth_y) * unit;
-	p[n].w = 396 / 64.0f * (1 + 0.4f * m->mouth_scale) * unit;
-	p[n].h = 288 / 64.0f * (1 + 0.4f * m->mouth_scale) * unit;
-	p[n].origin = O_CENTER;
-	p[n].kind = K_MOUTH;
-	p[n].tex = &mouth;
-	color3(p[n].c0, mouth_color0[pick(m->mouth_color, 3)]);
-	color3(p[n].c1, mouth_color1[pick(m->mouth_color, 3)]);
-	++n;
-	if (m->mustache)
-		for (i = 0; i < 2; ++i, ++n) {
-			p[n].x = 32 * unit;
-			p[n].y = (31.763554f + uy * m->beard_y) * unit;
-			p[n].w = 288 / 64.0f * (1 + 0.4f * m->beard_scale) * unit;
-			p[n].h = 576 / 64.0f * (1 + 0.4f * m->beard_scale) * unit;
-			p[n].origin = i ? O_LEFT : O_RIGHT;
-			p[n].kind = K_FLAT;
-			p[n].tex = &mustache;
-			color3(p[n].c0, hair_colors[pick(m->beard_color, 8)]);
-		}
+	n = face_layout(m, e, size, p, &eye, &brow, &mouth, &mustache, &mole);
 	for (i = 0; i < n; ++i)
 		composite(buf, size, &p[i]);
 	for (i = 0; i < size * size * 4; ++i) {
@@ -1173,6 +1205,315 @@ static int pack_mesh(mii_mesh *mesh) {
 	return MII_OK;
 }
 
+/* ---- Coarser heads ------------------------------------------------------------ */
+
+static void quad_add_plane(double *q, const double n[3], double d, double w) {
+	q[0] += w * n[0] * n[0]; q[1] += w * n[0] * n[1]; q[2] += w * n[0] * n[2]; q[3] += w * n[0] * d;
+	q[4] += w * n[1] * n[1]; q[5] += w * n[1] * n[2]; q[6] += w * n[1] * d;
+	q[7] += w * n[2] * n[2]; q[8] += w * n[2] * d;
+	q[9] += w * d * d;
+}
+
+static double quad_sum_at(const double *a, const double *b, const float *p) {
+	double c[10], x = p[0], y = p[1], z = p[2];
+	int k;
+
+	for (k = 0; k < 10; ++k)
+		c[k] = a[k] + b[k];
+	return c[0] * x * x + 2 * c[1] * x * y + 2 * c[2] * x * z + 2 * c[3] * x + c[4] * y * y + 2 * c[5] * y * z +
+		   2 * c[6] * y + c[7] * z * z + 2 * c[8] * z + c[9];
+}
+
+static void cross3(const float *a, const float *b, const float *c, double n[3]) {
+	double u[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, v[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+
+	n[0] = u[1] * v[2] - u[2] * v[1];
+	n[1] = u[2] * v[0] - u[0] * v[2];
+	n[2] = u[0] * v[1] - u[1] * v[0];
+}
+
+/* A packed mesh's triangles (in, ntri) down to about `target`, into out:
+ * each step folds a node (the vertices at one position) into a neighbour,
+ * the fold that moves the surface least (quadric error) plus how far it
+ * moves the texture (textured parts: the eyes and mouth stay where they
+ * are), keeping open edges and turning no triangle more than 60 degrees.
+ * A corner that moves takes the vertex at its new node nearest in texture
+ * coordinate and normal. Returns the triangles left. */
+static int simplify(const mii_mesh *m, int textured, const uint16_t *in, int ntri, int target, uint16_t *out) {
+	int nv = m->nverts, i, j, e, alive = ntri, tries = 0;
+	const int16_t *pp = (const int16_t *) m->pack, *st = (const int16_t *) (m->pack + m->pack_st);
+	const int8_t *nr = (const int8_t *) (m->pack + m->pack_nrm);
+	float *pos = malloc(sizeof(float) * 3 * nv), *uv = malloc(sizeof(float) * 2 * nv);
+	int *node = malloc(sizeof(int) * nv), *t = malloc(sizeof(int) * 3 * ntri);
+	/* Each node's vertices, and (each step) its live corners: vfirst and
+	 * cfirst index vlist and clist by node. */
+	int *vfirst = malloc(sizeof(int) * (nv + 1)), *vlist = malloc(sizeof(int) * nv);
+	int *cfirst = malloc(sizeof(int) * (nv + 1)), *clist = malloc(sizeof(int) * 3 * ntri);
+	double *q = calloc((size_t) nv * 10, sizeof(double));
+	uint8_t *dead = calloc(ntri ? ntri : 1, 1);
+	float scale = 1;
+
+	if (!pos || !uv || !node || !t || !q || !dead || !vfirst || !vlist || !cfirst || !clist) {
+		alive = -1;
+		goto done;
+	}
+	for (i = 0; i < nv; ++i) {
+		for (j = 0; j < 3; ++j)
+			pos[3 * i + j] = pp[3 * i + j] / (float) (1 << m->pos_frac);
+		uv[2 * i] = st[2 * i] / (float) (1 << m->st_frac);
+		uv[2 * i + 1] = st[2 * i + 1] / (float) (1 << m->st_frac);
+		node[i] = i;
+		for (j = 0; j < i; ++j)   /* the first vertex at this position names the node */
+			if (node[j] == j && !memcmp(pp + 3 * j, pp + 3 * i, 6)) {
+				node[i] = j;
+				break;
+			}
+		for (j = 0; j < 3; ++j)
+			if (fabsf(pos[3 * i + j]) > scale)
+				scale = fabsf(pos[3 * i + j]);
+	}
+	for (i = 0; i < 3 * ntri; ++i)
+		t[i] = in[i];
+	memset(vfirst, 0, sizeof(int) * (nv + 1));   /* the vertices by node (a counting sort) */
+	for (i = 0; i < nv; ++i)
+		++vfirst[node[i] + 1];
+	for (i = 0; i < nv; ++i)
+		vfirst[i + 1] += vfirst[i];
+	{
+		int *fill = cfirst;   /* scratch here */
+
+		memcpy(fill, vfirst, sizeof(int) * (nv + 1));
+		for (i = 0; i < nv; ++i)
+			vlist[fill[node[i]]++] = i;
+	}
+	/* Quadrics on the nodes: their triangles' planes by area, and a plane
+	 * square to each open edge, weighted heavily. */
+	for (i = 0; i < ntri; ++i) {
+		double n[3], l;
+
+		cross3(pos + 3 * node[t[3 * i]], pos + 3 * node[t[3 * i + 1]], pos + 3 * node[t[3 * i + 2]], n);
+		l = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+		if (l <= 0)
+			continue;
+		for (j = 0; j < 3; ++j)
+			n[j] /= l;
+		for (j = 0; j < 3; ++j) {
+			const float *p0 = pos + 3 * node[t[3 * i]];
+
+			quad_add_plane(q + 10 * node[t[3 * i + j]], n, -(n[0] * p0[0] + n[1] * p0[1] + n[2] * p0[2]), l / 2);
+		}
+		for (e = 0; e < 3; ++e) {
+			int a = node[t[3 * i + e]], b = node[t[3 * i + (e + 1) % 3]], k, shared = 0;
+			double d[3], s[3], sl;
+
+			for (k = 0; k < ntri && !shared; ++k) {
+				int c0 = node[t[3 * k]], c1 = node[t[3 * k + 1]], c2 = node[t[3 * k + 2]];
+
+				shared = k != i && (c0 == a || c1 == a || c2 == a) && (c0 == b || c1 == b || c2 == b);
+			}
+			if (shared)
+				continue;
+			for (j = 0; j < 3; ++j)
+				d[j] = pos[3 * b + j] - pos[3 * a + j];
+			s[0] = d[1] * n[2] - d[2] * n[1];
+			s[1] = d[2] * n[0] - d[0] * n[2];
+			s[2] = d[0] * n[1] - d[1] * n[0];
+			sl = sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+			if (sl <= 0)
+				continue;
+			for (j = 0; j < 3; ++j)
+				s[j] /= sl;
+			sl = -(s[0] * pos[3 * a] + s[1] * pos[3 * a + 1] + s[2] * pos[3 * a + 2]);
+			quad_add_plane(q + 10 * a, s, sl, 100 * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+			quad_add_plane(q + 10 * b, s, sl, 100 * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+		}
+	}
+	while (alive > target) {
+		double best = 1e300;
+		int bu = -1, bv = -1, ok = 1;
+
+		if (textured) {   /* the live corners by node, for the texture term */
+			memset(cfirst, 0, sizeof(int) * (nv + 1));
+			for (i = 0; i < 3 * ntri; ++i)
+				if (!dead[i / 3])
+					++cfirst[node[t[i]] + 1];
+			for (i = 0; i < nv; ++i)
+				cfirst[i + 1] += cfirst[i];
+			for (i = 0; i < 3 * ntri; ++i)
+				if (!dead[i / 3])
+					clist[cfirst[node[t[i]]]++] = i;
+			for (i = nv; i > 0; --i)   /* the fill moved each start to the next: back */
+				cfirst[i] = cfirst[i - 1];
+			cfirst[0] = 0;
+		}
+		for (i = 0; i < ntri; ++i) {
+			if (dead[i])
+				continue;
+			for (e = 0; e < 6; ++e) {
+				int u = node[t[3 * i + e % 3]], v = node[t[3 * i + (e % 3 + (e < 3 ? 1 : 2)) % 3]];
+				double c = quad_sum_at(q + 10 * u, q + 10 * v, pos + 3 * v);
+
+				if (textured && c < best) {   /* how far u's corners' texture moves */
+					int k, x;
+
+					for (k = cfirst[u]; k < cfirst[u + 1]; ++k) {
+						int at = t[clist[k]];
+						float bd = 1e30f;
+
+						for (x = vfirst[v]; x < vfirst[v + 1]; ++x) {
+							float du = uv[2 * vlist[x]] - uv[2 * at], dv = uv[2 * vlist[x] + 1] - uv[2 * at + 1];
+
+							if (du * du + dv * dv < bd)
+								bd = du * du + dv * dv;
+						}
+						c += bd * scale * scale * 4;   /* the texture's width is about the head's */
+					}
+				}
+				if (c < best) {
+					best = c;
+					bu = u;
+					bv = v;
+				}
+			}
+		}
+		if (bu < 0)
+			break;
+		for (i = 0; i < ntri && ok; ++i) {   /* no triangle round u turned over 60 degrees */
+			int h = -1, has_v = 0;
+			double n0[3], n1[3];
+			const float *p[3];
+
+			if (dead[i])
+				continue;
+			for (j = 0; j < 3; ++j) {
+				has_v |= node[t[3 * i + j]] == bv;
+				if (node[t[3 * i + j]] == bu)
+					h = j;
+			}
+			if (h < 0 || has_v)
+				continue;
+			for (j = 0; j < 3; ++j)
+				p[j] = pos + 3 * node[t[3 * i + j]];
+			cross3(p[0], p[1], p[2], n0);
+			p[h] = pos + 3 * bv;
+			cross3(p[0], p[1], p[2], n1);
+			if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.5 * sqrt(n0[0] * n0[0] + n0[1] * n0[1] + n0[2] * n0[2]) *
+					sqrt(n1[0] * n1[0] + n1[1] * n1[1] + n1[2] * n1[2]))
+				ok = 0;
+		}
+		if (!ok) {
+			double none[3] = { 0, 0, 0 };
+
+			if (++tries > 4 * ntri)
+				break;
+			quad_add_plane(q + 10 * bu, none, 1, 1e9);   /* dear to fold from now on */
+			continue;
+		}
+		for (j = 0; j < 10; ++j)
+			q[10 * bv + j] += q[10 * bu + j];
+		for (i = 0; i < ntri; ++i) {
+			int has_v = 0, has_u = 0;
+
+			if (dead[i])
+				continue;
+			for (j = 0; j < 3; ++j) {
+				has_v |= node[t[3 * i + j]] == bv;
+				has_u |= node[t[3 * i + j]] == bu;
+			}
+			if (!has_u)
+				continue;
+			if (has_v) {
+				dead[i] = 1;
+				--alive;
+				continue;
+			}
+			for (j = 0; j < 3; ++j) {
+				int c = t[3 * i + j], x, r = bv;
+				float bd = 1e30f;
+
+				if (node[c] != bu)
+					continue;
+				for (x = vfirst[bv]; x < vfirst[bv + 1]; ++x) {   /* the vertex at bv nearest this corner's */
+					int y = vlist[x], k;
+					float du = uv[2 * y] - uv[2 * c], dv = uv[2 * y + 1] - uv[2 * c + 1], dn = 0;
+
+					for (k = 0; k < 3; ++k)
+						dn += (float) (nr[3 * y + k] - nr[3 * c + k]) * (nr[3 * y + k] - nr[3 * c + k]) / 4096;
+					if (du * du + dv * dv + 0.1f * dn < bd) {
+						bd = du * du + dv * dv + 0.1f * dn;
+						r = y;
+					}
+				}
+				t[3 * i + j] = r;
+			}
+		}
+	}
+	for (i = 0, j = 0; i < ntri; ++i)
+		if (!dead[i]) {
+			out[3 * j] = (uint16_t) t[3 * i];
+			out[3 * j + 1] = (uint16_t) t[3 * i + 1];
+			out[3 * j + 2] = (uint16_t) t[3 * i + 2];
+			++j;
+		}
+	alive = j;
+done:
+	free(pos);
+	free(uv);
+	free(node);
+	free(t);
+	free(q);
+	free(dead);
+	free(vfirst);
+	free(vlist);
+	free(cfirst);
+	free(clist);
+	return alive;
+}
+
+/* A part's coarser levels, each from the last: their corners after the
+ * full list in idx. Parts of a few triangles stay whole. */
+static int head_lods(mii_mesh *mesh, int textured, int n) {
+	static const float share[MII_HEAD_LODS] = { 0.6f, 0.35f, 0.2f };
+	uint16_t *all;
+	uint32_t at = mesh->count;
+	int l, prev = mesh->count / 3, from = 0;
+
+	if (!mesh->count || n <= 0)
+		return MII_OK;
+	all = realloc(mesh->idx, sizeof(uint16_t) * (mesh->count * (n + 1)));
+	if (!all)
+		return MII_E_MEM;
+	mesh->idx = all;
+	for (l = 0; l < n; ++l) {
+		int target = (int) (share[l] * mesh->count / 3 + 0.5f), got;
+
+		if (target < 4)
+			target = 4;
+		if (target >= prev) {   /* already as small as it goes: the level before */
+			memmove(all + at, all + from, sizeof(uint16_t) * 3 * prev);
+			got = prev;
+		} else {
+			got = simplify(mesh, textured, all + from, prev, target, all + at);
+			if (got < 0)
+				return MII_E_MEM;
+		}
+		mesh->lod_first[l] = at;
+		mesh->lod_count[l] = 3 * got;
+		from = (int) at;
+		at += 3 * got;
+		prev = got;
+	}
+	mesh->lods = n;
+	return MII_OK;
+}
+
+#ifdef MII_NO_OGC
+/* The corners in idx: the full list and its levels (a PC keeps them). */
+static uint32_t idx_total(const mii_mesh *mesh) {
+	return mesh->lods ? mesh->lod_first[mesh->lods - 1] + mesh->lod_count[mesh->lods - 1] : (uint32_t) mesh->count;
+}
+#endif
+
 #ifndef MII_NO_OGC
 /* A packed mesh as a GX display list, written as bytes (so any thread can
  * build it): GX_TRIANGLES on VTXFMT0, a big-endian u16 corner count, then
@@ -1181,28 +1522,22 @@ static int pack_mesh(mii_mesh *mesh) {
  * GX_NOPs to 32 bytes. One draw command holds at most 65535 corners. The
  * floats and the corner list then go: the list and the arrays are all the
  * GPU reads. */
-static int mesh_list(mii_mesh *mesh) {
-	uint32_t size = 0, done = 0, w = mesh->nverts < 256 ? 1 : 2;
-	uint8_t *o;
+static uint32_t list_size(uint32_t count, uint32_t w) {
+	return (3 * ((count + 65534) / 65535) + count * 3 * w + 31) & ~31u;
+}
 
-	if (!mesh->count)
-		return MII_OK;
-	size = 3 * ((mesh->count + 65534) / 65535) + (uint32_t) mesh->count * 3 * w;
-	size = (size + 31) & ~31u;
-	mesh->dl = memalign(32, size);
-	if (!mesh->dl)
-		return MII_E_MEM;
-	memset(mesh->dl, 0, size);   /* 0: GX_NOP */
-	o = mesh->dl;
-	while (done < (uint32_t) mesh->count) {
-		uint32_t n = mesh->count - done > 65535 ? 65535 : mesh->count - done, i, k;
+static uint8_t *list_write(uint8_t *o, const uint16_t *idx, uint32_t count, uint32_t w) {
+	uint32_t done = 0;
+
+	while (done < count) {
+		uint32_t n = count - done > 65535 ? 65535 : count - done, i, k;
 
 		*o++ = GX_TRIANGLES | GX_VTXFMT0;
 		*o++ = (uint8_t) (n >> 8);
 		*o++ = (uint8_t) n;
 		for (i = 0; i < n; ++i)
 			for (k = 0; k < 3; ++k) {
-				uint16_t x = mesh->idx[done + i];
+				uint16_t x = idx[done + i];
 
 				if (w == 2)
 					*o++ = (uint8_t) (x >> 8);
@@ -1210,6 +1545,28 @@ static int mesh_list(mii_mesh *mesh) {
 			}
 		done += n;
 	}
+	return o;
+}
+
+static int mesh_list(mii_mesh *mesh) {
+	uint32_t size, w = mesh->nverts < 256 ? 1 : 2;
+	int l;
+
+	if (!mesh->count || mesh->shared)
+		return MII_OK;
+	size = list_size(mesh->count, w);
+	for (l = 0; l < mesh->lods; ++l) {   /* the coarser levels' lists after it, each 32-byte aligned */
+		mesh->lod_at[l] = size;
+		mesh->lod_size[l] = list_size(mesh->lod_count[l], w);
+		size += mesh->lod_size[l];
+	}
+	mesh->dl = memalign(32, size);
+	if (!mesh->dl)
+		return MII_E_MEM;
+	memset(mesh->dl, 0, size);   /* 0: GX_NOP */
+	list_write(mesh->dl, mesh->idx, mesh->count, w);
+	for (l = 0; l < mesh->lods; ++l)
+		list_write((uint8_t *) mesh->dl + mesh->lod_at[l], mesh->idx + mesh->lod_first[l], mesh->lod_count[l], w);
 	mesh->dl_size = size;
 	DCFlushRange(mesh->dl, size);
 	DCFlushRange(mesh->pack, mesh->pack_st + (((uint32_t) mesh->nverts * 4 + 31) & ~31u));
@@ -1240,6 +1597,235 @@ static void tex_obj(mii_tex *t) {
 	GX_InitTexObj(&t->obj, t->gx, t->w, t->h, GX_TF_RGB5A3, t->wrap_s, t->wrap_t, GX_FALSE);
 	GX_InitTexObjFilterMode(&t->obj, GX_LINEAR, GX_LINEAR);
 }
+/* ---- Faces drawn by the GPU (RFLiMakeTexture) ----------------------------------- */
+
+static int tex_share(mii_cache *cache, mii_tex *t);
+
+/* A face part's texture from RFL_Res.dat, for the GPU: its image in RFL's
+ * own GX format (I4, I8, IA4, IA8, RGB5A3), copied 32-byte aligned. */
+typedef struct {
+	void *data;
+	GXTexObj obj;
+} gx_part;
+
+static int gx_part_load(const mii_res *res, int arc, int idx, gx_part *out) {
+	static const uint8_t gx_fmt[6] = { GX_TF_I4, GX_TF_I8, GX_TF_IA4, GX_TF_IA8, 0xFF, GX_TF_RGB5A3 };
+	static const uint8_t bw[6] = { 8, 8, 8, 4, 0, 4 }, bh[6] = { 8, 4, 4, 4, 0, 4 }, bits[6] = { 4, 8, 8, 16, 0, 16 };
+	const uint8_t *f;
+	uint32_t len, image, need;
+	int r = res_file(res, arc, idx, &f, &len), fmt, w, h;
+
+	memset(out, 0, sizeof(*out));
+	if (r < 0)
+		return r;
+	if (len < 0x20 || f[0] > 5 || gx_fmt[f[0]] == 0xFF)
+		return MII_E_FORMAT;
+	fmt = f[0];
+	w = be16(f + 2);
+	h = be16(f + 4);
+	image = be32(f + 0x1C);
+	if (w <= 0 || h <= 0 || w > 1024 || h > 1024)
+		return MII_E_FORMAT;
+	need = (uint32_t) ((w + bw[fmt] - 1) / bw[fmt]) * ((h + bh[fmt] - 1) / bh[fmt]) * (bw[fmt] * bh[fmt] * bits[fmt] / 8);
+	if (image > len || need > len - image)
+		return MII_E_FORMAT;
+	out->data = memalign(32, (need + 31) & ~31u);
+	if (!out->data)
+		return MII_E_MEM;
+	memcpy(out->data, f + image, need);
+	DCFlushRange(out->data, (need + 31) & ~31u);
+	/* Clamped and bilinear, as composite() samples (RFLiInitRFLTexture). */
+	GX_InitTexObj(&out->obj, out->data, w, h, gx_fmt[fmt], GX_CLAMP, GX_CLAMP, GX_FALSE);
+	GX_InitTexObjFilterMode(&out->obj, GX_LINEAR, GX_LINEAR);
+	return MII_OK;
+}
+
+/* One TEV stage: colour d + (1 - c) a + c b, alpha from ins, clamped. */
+static void tev(int stage, int swap, int ca, int cb, int cc, int cd, int ad, int k) {
+	GX_SetTevOrder(stage, GX_TEXCOORD0, GX_TEXMAP0, GX_COLORNULL);
+	GX_SetTevSwapMode(stage, GX_TEV_SWAP0, swap);
+	GX_SetTevKColorSel(stage, k);
+	GX_SetTevColorIn(stage, ca, cb, cc, cd);
+	GX_SetTevColorOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+	GX_SetTevAlphaIn(stage, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, ad);
+	GX_SetTevAlphaOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+}
+
+static GXColor kcolor(const float c[3]) {
+	return (GXColor) { (u8) (c[0] * 255 + 0.5f), (u8) (c[1] * 255 + 0.5f), (u8) (c[2] * 255 + 0.5f), 255 };
+}
+
+/* Draws one expression's face into the EFB's top-left size x size and
+ * copies it out to dst (RGB5A3) as RFL does: the parts front to back, each
+ * coloured by TEV from its texture's channels (the eye's red, blue and
+ * green: colour 0, the eye's colour, white; the mouth's red, green, blue:
+ * its two colours, white; the rest one colour), premultiplied by its alpha
+ * and added under what is there (GX_BL_INVDSTALPHA, GX_BL_ONE), which is
+ * the CPU's back-to-front "over". */
+static void gpu_face(const mii *m, int e, int size, gx_part *tx, void *dst) {
+	static const mii_tex ids[5];   /* tokens: which of tx a part uses */
+	face_part p[8];
+	Mtx44 proj;
+	Mtx id;
+	int n = face_layout(m, e, size, p, ids + 0, ids + 1, ids + 2, ids + 3, ids + 4), i, k;
+
+	guOrtho(proj, 0, (f32) size, 0, (f32) size, 0, 1);   /* pixels, y down */
+	GX_LoadProjectionMtx(proj, GX_ORTHOGRAPHIC);
+	guMtxIdentity(id);
+	GX_LoadPosMtxImm(id, GX_PNMTX0);
+	GX_SetCurrentMtx(GX_PNMTX0);
+	GX_SetViewport(0, 0, (f32) size, (f32) size, 0, 1);
+	GX_SetScissor(0, 0, size, size);
+	for (i = n - 1; i >= 0; --i) {   /* front to back */
+		const face_part *q = &p[i];
+		gx_part *g = &tx[q->tex - ids];
+		float a = q->angle * (float) M_PI / 180.0f, ca = cosf(a), sa = sinf(a);
+		float xo = q->origin == O_CENTER ? -0.5f : q->origin == O_RIGHT ? -1.0f : 0.0f;
+		static const float tx_ = 0.88961464f, ty_ = 0.9276675f;
+
+		if (!g->data || q->w <= 0 || q->h <= 0)
+			continue;
+		GX_LoadTexObj(&g->obj, GX_TEXMAP0);
+		GX_SetTevKColor(GX_KCOLOR0, kcolor(q->c0));
+		GX_SetTevKColor(GX_KCOLOR1, kcolor(q->c1));
+		if (q->kind == K_FLAT) {   /* colour 0 times the texture's alpha */
+			GX_SetNumTevStages(1);
+			tev(GX_TEVSTAGE0, GX_TEV_SWAP0, GX_CC_ZERO, GX_CC_KONST, GX_CC_TEXA, GX_CC_ZERO, GX_CA_TEXA,
+				GX_TEV_KCSEL_K0);
+		} else {
+			int second = q->kind == K_EYE ? GX_TEV_SWAP3 : GX_TEV_SWAP2;   /* the eye's blue, the mouth's green */
+			int third = q->kind == K_EYE ? GX_TEV_SWAP2 : GX_TEV_SWAP3;
+
+			GX_SetNumTevStages(4);
+			tev(GX_TEVSTAGE0, GX_TEV_SWAP1, GX_CC_ZERO, GX_CC_KONST, GX_CC_TEXC, GX_CC_ZERO, GX_CA_TEXA,
+				GX_TEV_KCSEL_K0);
+			tev(GX_TEVSTAGE1, second, GX_CC_ZERO, GX_CC_KONST, GX_CC_TEXC, GX_CC_CPREV, GX_CA_APREV,
+				GX_TEV_KCSEL_K1);
+			tev(GX_TEVSTAGE2, third, GX_CC_ZERO, GX_CC_ONE, GX_CC_TEXC, GX_CC_CPREV, GX_CA_APREV,
+				GX_TEV_KCSEL_K0);
+			tev(GX_TEVSTAGE3, GX_TEV_SWAP0, GX_CC_ZERO, GX_CC_CPREV, GX_CC_APREV, GX_CC_ZERO, GX_CA_APREV,
+				GX_TEV_KCSEL_K0);   /* premultiplied */
+		}
+		GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
+		for (k = 0; k < 4; ++k) {
+			int c = k == 0 ? 0 : k == 1 ? 1 : k == 2 ? 3 : 2;   /* round the quad */
+			float u = (c & 1 ? 1.0f : 0.0f) + xo, v = c & 2 ? 0.5f : -0.5f;
+			float lx = u * q->w, ly = v * q->h;
+			float s = q->origin == O_LEFT ? 1.0f - u : q->origin == O_RIGHT ? u + 1.0f : u + 0.5f;
+
+			GX_Position3f32((lx * ca - ly * sa) * tx_ + q->x, (lx * sa + ly * ca) * ty_ + q->y, 0);
+			GX_TexCoord2f32(s, v + 0.5f);
+		}
+		GX_End();
+	}
+	GX_SetTexCopySrc(0, 0, size, size);
+	GX_SetTexCopyDst(size, size, GX_TF_RGB5A3, GX_FALSE);
+	GX_CopyTex(dst, GX_TRUE);   /* and clears the corner for the next */
+}
+
+int mii_model_make_faces(mii_model *model, const mii_res *res, GXColor clear) {
+	gx_part tx[5];
+	int e, r = MII_OK, k, made = 0;
+	uint32_t size;
+	mii_tex fresh[MII_EXPR_COUNT];
+
+	if (!model || !res || !res->data)
+		return MII_E_ARG;
+	size = mii_tex_rgb5a3_size(model->mask_size, model->mask_size);
+	memset(fresh, 0, sizeof(fresh));
+	/* GX: the EFB with alpha, no Z, no culling, quads with positions and
+	 * texture coordinates, one texture coordinate, no lighting. */
+	GX_SetPixelFmt(GX_PF_RGBA6_Z24, GX_ZC_LINEAR);
+	GX_PixModeSync();
+	GX_SetCopyFilter(GX_FALSE, NULL, GX_FALSE, NULL);
+	GX_SetColorUpdate(GX_TRUE);
+	GX_SetAlphaUpdate(GX_TRUE);
+	GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+	GX_SetCullMode(GX_CULL_NONE);
+	GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+	GX_SetBlendMode(GX_BM_BLEND, GX_BL_INVDSTALPHA, GX_BL_ONE, GX_LO_CLEAR);
+	GX_SetDstAlpha(GX_FALSE, 0);
+	GX_SetNumChans(1);
+	GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+	GX_SetNumTexGens(1);
+	GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+	GX_SetTevSwapModeTable(GX_TEV_SWAP1, GX_CH_RED, GX_CH_RED, GX_CH_RED, GX_CH_ALPHA);
+	GX_SetTevSwapModeTable(GX_TEV_SWAP2, GX_CH_GREEN, GX_CH_GREEN, GX_CH_GREEN, GX_CH_ALPHA);
+	GX_SetTevSwapModeTable(GX_TEV_SWAP3, GX_CH_BLUE, GX_CH_BLUE, GX_CH_BLUE, GX_CH_ALPHA);
+	GX_ClearVtxDesc();
+	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+	GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+	GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+	/* The corner starts clear (a copy that clears it, into a face's buffer,
+	 * which its own copy then overwrites). */
+	GX_SetCopyClear((GXColor) { 0, 0, 0, 0 }, 0x00FFFFFF);
+	for (e = 0; e < MII_EXPR_COUNT && r == MII_OK; ++e) {
+		expr_face f = expression(&model->m, e);
+
+		if (!(model->expressions >> e & 1))
+			continue;
+		memset(tx, 0, sizeof(tx));
+		fresh[e].w = fresh[e].h = model->mask_size;
+		fresh[e].gx = memalign(32, size);
+		if (!fresh[e].gx ||
+				(r = gx_part_load(res, A_EYE, f.eye_type, &tx[0])) < 0 ||
+				(r = gx_part_load(res, A_EYEBROW, model->m.brow_type, &tx[1])) < 0 ||
+				(r = gx_part_load(res, A_MOUTH, f.mouth_type, &tx[2])) < 0 ||
+				(model->m.mustache && (r = gx_part_load(res, A_MUSTACHE, model->m.mustache, &tx[3])) < 0) ||
+				(model->m.mole && (r = gx_part_load(res, A_MOLE, model->m.mole, &tx[4])) < 0)) {
+			if (r == MII_OK)
+				r = MII_E_MEM;
+		} else {
+			if (!made++) {
+				GX_SetTexCopySrc(0, 0, model->mask_size, model->mask_size);
+				GX_SetTexCopyDst(model->mask_size, model->mask_size, GX_TF_RGB5A3, GX_FALSE);
+				GX_CopyTex(fresh[e].gx, GX_TRUE);
+			}
+			DCInvalidateRange(fresh[e].gx, size);
+			gpu_face(&model->m, e, model->mask_size, tx, fresh[e].gx);
+		}
+		GX_DrawDone();   /* the parts' textures are read until here */
+		for (k = 0; k < 5; ++k)
+			free(tx[k].data);
+	}
+	/* Back to the defaults mii_draw and most apps expect, RGB8, and the
+	 * corner in the caller's clear colour (a clearing copy into a scratch
+	 * buffer). */
+	for (k = 0; k < 4; ++k)
+		GX_SetTevSwapMode(GX_TEVSTAGE0 + k, GX_TEV_SWAP0, GX_TEV_SWAP0);
+	GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+	GX_PixModeSync();
+	{
+		void *scratch = memalign(32, size);
+
+		if (scratch) {
+			GX_SetCopyClear(clear, 0x00FFFFFF);
+			GX_SetTexCopySrc(0, 0, model->mask_size, model->mask_size);
+			GX_SetTexCopyDst(model->mask_size, model->mask_size, GX_TF_RGB5A3, GX_FALSE);
+			GX_CopyTex(scratch, GX_TRUE);
+			GX_DrawDone();
+			free(scratch);
+		}
+	}
+	GX_InvalidateTexAll();
+	if (r < 0) {
+		for (e = 0; e < MII_EXPR_COUNT; ++e)
+			free(fresh[e].gx);
+		return r;
+	}
+	for (e = 0; e < MII_EXPR_COUNT; ++e) {
+		if (!fresh[e].gx)
+			continue;
+		fresh[e].wrap_s = fresh[e].wrap_t = 0;
+		tex_free(&model->mask[e]);
+		model->mask[e] = fresh[e];
+		tex_share(model->cache, &model->mask[e]);
+	}
+	model->faces_pending = 0;
+	return MII_OK;
+}
+
 #endif
 
 /* A texture into the cache (and, on the Wii, its texture object made). */
@@ -1259,23 +1845,115 @@ static int tex_share(mii_cache *cache, mii_tex *t) {
 	return r;
 }
 
-static int mesh_share(mii_cache *cache, mii_mesh *mesh) {
-	uint32_t pack = mesh->pack_st + (((uint32_t) mesh->nverts * 4 + 31) & ~31u);
+static uint32_t pack_bytes(const mii_mesh *mesh) {
+	return mesh->pack_st + (((uint32_t) mesh->nverts * 4 + 31) & ~31u);
+}
 
-	if (!mesh->count)
+/* The hash of a packed mesh's vertices and whole list: what a twin in the
+ * cache must match before its bytes are compared. */
+static uint32_t whole_hash(const mii_mesh *mesh) {
+	return hash_bytes(hash_bytes(2166136261u, mesh->pack, pack_bytes(mesh)), mesh->idx,
+					  sizeof(uint16_t) * mesh->count);
+}
+
+/* Does the cached part's whole list hold these corners? (A PC keeps the
+ * corners; a Wii the display list made from them.) */
+static int whole_matches(const share *e, const mii_mesh *mesh) {
+#ifndef MII_NO_OGC
+	const uint8_t *d = e->buf[1];
+	uint32_t w = mesh->nverts < 256 ? 1 : 2, done = 0;
+
+	while (done < (uint32_t) mesh->count) {
+		uint32_t n = mesh->count - done > 65535 ? 65535 : mesh->count - done, i;
+
+		if (d[0] != (GX_TRIANGLES | GX_VTXFMT0) || (uint32_t) (d[1] << 8 | d[2]) != n)
+			return 0;
+		d += 3;
+		for (i = 0; i < n; ++i, d += 3 * w)
+			if ((w == 2 ? (uint32_t) (d[0] << 8 | d[1]) : d[0]) != mesh->idx[done + i])
+				return 0;
+		done += n;
+	}
+	return 1;
+#else
+	return !memcmp(e->buf[1], mesh->idx, sizeof(uint16_t) * mesh->count);
+#endif
+}
+
+/* A part the cache already holds, with the same levels asked for: take it,
+ * levels and all (mesh_list and mesh_share then leave it). */
+static int mesh_twin(mii_cache *cache, mii_mesh *mesh, int lods) {
+	uint32_t h;
+	share *e;
+
+	if (!cache || !mesh->count)
+		return 0;
+	h = whole_hash(mesh);
+	mesh->whole = h;
+	for (e = cache->head; e; e = e->next)
+		if (e->mesh && e->whole == h && e->count == mesh->count && e->lods == lods &&
+				e->size[0] == pack_bytes(mesh) && !memcmp(e->buf[0], mesh->pack, e->size[0]) &&
+				whole_matches(e, mesh)) {
+			free(mesh->pack);
+			free(mesh->idx);
+			mesh->pack = e->buf[0];
+#ifndef MII_NO_OGC
+			mesh->idx = NULL;
+			free(mesh->v);
+			mesh->v = NULL;
+			mesh->dl = e->buf[1];
+			mesh->dl_size = e->size[1];
+#else
+			mesh->idx = e->buf[1];
+#endif
+			mesh->lods = e->lods;
+			memcpy(mesh->lod_count, e->lod_count, sizeof(e->lod_count));
+			memcpy(mesh->lod_first, e->lod_first, sizeof(e->lod_first));
+			memcpy(mesh->lod_at, e->lod_at, sizeof(e->lod_at));
+			memcpy(mesh->lod_size, e->lod_size, sizeof(e->lod_size));
+			++e->refs;
+			mesh->shared = e;
+			return 1;
+		}
+	return 0;
+}
+
+static int mesh_share(mii_cache *cache, mii_mesh *mesh) {
+	share *e;
+	int r;
+
+	if (!mesh->count || mesh->shared)   /* empty, or taken whole from the cache */
 		return MII_OK;
 #ifndef MII_NO_OGC
-	return share_bufs(cache, (void **) &mesh->pack, pack, &mesh->dl, mesh->dl_size, &mesh->shared);
+	r = share_bufs(cache, (void **) &mesh->pack, pack_bytes(mesh), &mesh->dl, mesh->dl_size, &mesh->shared);
 #else
-	return share_bufs(cache, (void **) &mesh->pack, pack, (void **) &mesh->idx,
-					  sizeof(uint16_t) * mesh->count, &mesh->shared);
+	r = share_bufs(cache, (void **) &mesh->pack, pack_bytes(mesh), (void **) &mesh->idx,
+				   sizeof(uint16_t) * idx_total(mesh), &mesh->shared);
 #endif
+	e = mesh->shared;
+	if (r == MII_OK && e && e->refs == 1 && mesh->whole) {   /* new: it can be found whole */
+		e->mesh = 1;
+		e->whole = mesh->whole;
+		e->count = mesh->count;
+		e->lods = mesh->lods;
+		memcpy(e->lod_count, mesh->lod_count, sizeof(e->lod_count));
+		memcpy(e->lod_first, mesh->lod_first, sizeof(e->lod_first));
+		memcpy(e->lod_at, mesh->lod_at, sizeof(e->lod_at));
+		memcpy(e->lod_size, mesh->lod_size, sizeof(e->lod_size));
+	}
+	return r;
 }
 
 /* The faces of the expressions asked for, at that size, uploaded and shared. */
 static int make_masks(const mii_res *res, mii_model *model, int size, unsigned exprs, mii_tex *out) {
 	int e, r;
 
+#ifndef MII_NO_OGC
+	if (model->gpu_faces) {   /* mii_model_make_faces draws them, between frames */
+		model->faces_pending = 1;
+		return MII_OK;
+	}
+#endif
 	for (e = 0; e < MII_EXPR_COUNT; ++e) {
 		if (!(exprs >> e & 1))
 			continue;
@@ -1300,6 +1978,13 @@ int mii_model_set_mask_size(mii_model *model, const mii_res *res, int mask_size)
 		return MII_E_ARG;
 	if (mask_size == model->mask_size)
 		return MII_OK;
+#ifndef MII_NO_OGC
+	if (model->gpu_faces) {   /* the old faces draw until mii_model_make_faces replaces them */
+		model->mask_size = mask_size;
+		model->faces_pending = 1;
+		return MII_OK;
+	}
+#endif
 	memset(fresh, 0, sizeof(fresh));
 	r = make_masks(res, model, mask_size, model->expressions, fresh);
 	for (e = 0; e < MII_EXPR_COUNT; ++e)
@@ -1312,7 +1997,7 @@ int mii_model_set_mask_size(mii_model *model, const mii_res *res, int mask_size)
 }
 
 int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *out) {
-	mii_model_opts o = { mask_size, 0, NULL };
+	mii_model_opts o = { mask_size, 0, NULL, 0, 0 };
 
 	return mii_model_build(res, m, &o, out);
 }
@@ -1335,6 +2020,7 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 	out->mask_size = mask_size;
 	out->expressions = exprs;
 	out->cache = opts ? opts->cache : NULL;
+	out->gpu_faces = opts && opts->gpu_faces;
 
 	/* The faceline first: its anchors place the rest (RFLiInitCharModelRes). */
 	if ((r = shape(res, A_FACELINE, m->face_type, "face", 1, 1, zero, 0,
@@ -1352,7 +2038,7 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 					   &out->part[MII_PART_CAP], NULL)) < 0)
 		goto fail;
 	out->part[MII_PART_HAIR].color = rgba(hair_colors[pick(m->hair_color, 8)]);
-	out->part[MII_PART_FOREHEAD].color = rgba(skin_colors[pick(m->face_color, 6)]);
+	out->part[MII_PART_FOREHEAD].color = rgba_as5(skin_colors[pick(m->face_color, 6)]);
 	out->part[MII_PART_CAP].tex = MII_TEX_CAP;
 	if (m->beard_type) {
 		if ((r = shape(res, A_BEARD, m->beard_type, "berd", 0, 1, anchors[1], 0,
@@ -1367,7 +2053,7 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 			(r = shape(res, A_NLINE, m->nose_type, "nsln", 1, scale, at, 0,
 					   &out->part[MII_PART_NOSELINE], NULL)) < 0)
 		goto fail;
-	out->part[MII_PART_NOSE].color = rgba(skin_colors[pick(m->face_color, 6)]);
+	out->part[MII_PART_NOSE].color = rgba_as5(skin_colors[pick(m->face_color, 6)]);
 	out->part[MII_PART_NOSELINE].tex = MII_TEX_NOSELINE;
 	if (m->glass_type) {
 		scale = 0.4f + 0.15f * m->glass_scale;
@@ -1396,6 +2082,15 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 	for (i = 0; i < MII_PARTS; ++i)
 		if ((r = pack_mesh(&out->part[i])) < 0)
 			goto fail;
+	for (i = 0; i < MII_PARTS; ++i) {   /* the cache may hold it already, levels and all */
+		int lods = opts && opts->lods > 0 && i < MII_HEAD_PARTS ?
+				   (opts->lods < MII_HEAD_LODS ? opts->lods : MII_HEAD_LODS) : 0;
+
+		if (mesh_twin(out->cache, &out->part[i], lods))
+			continue;
+		if (lods && (r = head_lods(&out->part[i], out->part[i].tex >= 0, lods)) < 0)   /* coarser heads */
+			goto fail;
+	}
 
 #ifndef MII_NO_OGC
 	for (i = 0; i < MII_TEX_COUNT; ++i)
@@ -1520,7 +2215,7 @@ static void load(Mtx view, Mtx model) {
 	GX_LoadNrmMtxImm(nrm, GX_PNMTX0);
 }
 
-static void draw_mesh(const mii_mesh *mesh, const GXTexObj *tex) {
+static void draw_mesh_lod(const mii_mesh *mesh, const GXTexObj *tex, int lod) {
 	int w = mesh->nverts < 256 ? GX_INDEX8 : GX_INDEX16;
 
 	if (!mesh->count || !mesh->dl)
@@ -1548,7 +2243,16 @@ static void draw_mesh(const mii_mesh *mesh, const GXTexObj *tex) {
 	GX_SetArray(GX_VA_POS, mesh->pack, 6);
 	GX_SetArray(GX_VA_NRM, mesh->pack + mesh->pack_nrm, 3);
 	GX_SetArray(GX_VA_TEX0, mesh->pack + mesh->pack_st, 4);
-	GX_CallDispList(mesh->dl, mesh->dl_size);
+	if (lod > 0 && mesh->lods) {
+		lod = lod < mesh->lods ? lod : mesh->lods;
+		GX_CallDispList((uint8_t *) mesh->dl + mesh->lod_at[lod - 1], mesh->lod_size[lod - 1]);
+	} else {   /* the whole list only: the levels follow it in dl */
+		GX_CallDispList(mesh->dl, mesh->lods ? mesh->lod_at[0] : mesh->dl_size);
+	}
+}
+
+static void draw_mesh(const mii_mesh *mesh, const GXTexObj *tex) {
+	draw_mesh_lod(mesh, tex, 0);
 }
 
 static void setup(Mtx view) {
@@ -1580,7 +2284,7 @@ static void setup(Mtx view) {
 	GX_SetCurrentMtx(GX_PNMTX0);
 }
 
-static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head) {
+static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head, int lod) {
 	static const int opaque[] = { MII_PART_BEARD, MII_PART_NOSE, MII_PART_FOREHEAD, MII_PART_HAIR,
 								  MII_PART_CAP, MII_PART_FACELINE };
 	static const int translucent[] = { MII_PART_MASK, MII_PART_NOSELINE, MII_PART_GLASS };
@@ -1590,10 +2294,35 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 	for (i = 0; i < sizeof(opaque) / sizeof(opaque[0]); ++i) {
 		const mii_mesh *p = &model->part[opaque[i]];
 
-		draw_mesh(p, p->tex >= 0 && p->tex < MII_TEX_COUNT ? &model->tex[p->tex].obj : NULL);
+		/* A coarser head's hair cuts corners, inward: the forehead (the
+		 * scalp under it) is drawn 4% smaller a level, about the head's
+		 * middle, or it shows through. */
+		if (opaque[i] == MII_PART_FOREHEAD && lod > 0 && p->lods) {
+			Mtx in, t;
+			float k = 1 - 0.04f * (lod < p->lods ? lod : p->lods);
+
+			guMtxScale(in, k, k, k);
+			guMtxTransApply(in, in, 0, 35 * (1 - k), 0);   /* about (0, 35, 0) */
+			guMtxConcat(head, in, t);
+			load(view, t);
+			draw_mesh_lod(p, NULL, lod);
+			load(view, head);
+			continue;
+		}
+		draw_mesh_lod(p, p->tex >= 0 && p->tex < MII_TEX_COUNT ? &model->tex[p->tex].obj : NULL, lod);
 	}
 	/* The layers over the face test Z but write none: drawn just in front of
-	 * the faceline, they must not fight it or each other. */
+	 * the faceline, they must not fight it or each other. A coarser head's
+	 * faceline and mask no longer follow each other that closely: its
+	 * layers are drawn a little nearer the camera, a head unit a level (the
+	 * head is about 50 across). */
+	if (lod > 0 && model->part[MII_PART_FACELINE].lods) {
+		Mtx mv;
+
+		guMtxConcat(view, head, mv);
+		mv[2][3] += 1.0f * (lod < MII_HEAD_LODS ? lod : MII_HEAD_LODS);
+		GX_LoadPosMtxImm(mv, GX_PNMTX0);
+	}
 	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
 	for (i = 0; i < sizeof(translucent) / sizeof(translucent[0]); ++i) {
 		const mii_mesh *p = &model->part[translucent[i]];
@@ -1604,8 +2333,10 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 			GX_SetCullMode(GX_CULL_NONE);
 		if (expression < 0 || expression >= MII_EXPR_COUNT || !model->mask[expression].gx)
 			expression = MII_EXPR_NORMAL;   /* not built (mii_model_opts.expressions) */
-		draw_mesh(p, translucent[i] == MII_PART_MASK ? &model->mask[expression].obj :
-				  &model->tex[p->tex].obj);
+		if (translucent[i] == MII_PART_MASK && !model->mask[expression].gx)
+			continue;   /* a GPU face not drawn yet (mii_model_make_faces) */
+		draw_mesh_lod(p, translucent[i] == MII_PART_MASK ? &model->mask[expression].obj :
+					  &model->tex[p->tex].obj, lod);
 	}
 	GX_SetCullMode(GX_CULL_BACK);
 	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
@@ -1716,7 +2447,7 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 	mtx_mul(head, head, t);
 	mtx_rot(t, 'z', pose->head_roll);
 	mtx_mul(head, head, t);
-	draw_head(model, pose->expression, view, head);
+	draw_head(model, pose->expression, view, head, pose->lod);
 }
 
 void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place) {
@@ -1740,7 +2471,7 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
 	mtx_mul(root, root, m);
 
 	if (pose->head_only) {
-		draw_head(model, pose->expression, view, root);
+		draw_head(model, pose->expression, view, root, pose->lod);
 		return;
 	}
 	if (model->body) {
@@ -1814,7 +2545,7 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
 	mtx_mul(m, m, t);
 	mtx_rot(t, 'z', pose->head_roll);
 	mtx_mul(m, m, t);
-	draw_head(model, pose->expression, view, m);
+	draw_head(model, pose->expression, view, m, pose->lod);
 }
 
 /* ---- Capture ------------------------------------------------------------------ */

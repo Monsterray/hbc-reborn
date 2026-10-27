@@ -198,8 +198,70 @@ int main(int argc, char **argv) {
 		printf("pack: %ld corners, %ld vertices; largest error: position %.4f, normal %.4f, "
 			   "coordinate %.5f; rgb5a3 colour %d, alpha %d\n", corners, verts, pe, ne, se, te, ae);
 	}
+	{   /* Coarser heads (mii_model_opts.lods): each level's corners name the
+		 * part's own vertices, fewer triangles a level, the levels in the cache's
+		 * copy too. */
+		mii_model_opts o = { 64, 0, NULL, MII_HEAD_LODS, 0 };
+		mii_model lm;
+		int tris[MII_HEAD_LODS + 1] = { 0 }, bad = 0, l;
+
+		if ((r = mii_model_build(&res, &m, &o, &lm)) < 0) {
+			printf("model (lods): %s\n", mii_strerror(r));
+			return 1;
+		}
+		for (i = 0; i < MII_HEAD_PARTS; ++i) {
+			const mii_mesh *p = &lm.part[i];
+
+			tris[0] += p->count / 3;
+			bad += p->count && p->lods != MII_HEAD_LODS;
+			for (l = 0; l < p->lods; ++l) {
+				int c;
+
+				tris[l + 1] += p->lod_count[l] / 3;
+				bad += p->lod_count[l] % 3 != 0 || p->lod_count[l] > (l ? p->lod_count[l - 1] : p->count);
+				for (c = 0; c < p->lod_count[l]; ++c)
+					bad += p->idx[p->lod_first[l] + c] >= p->nverts;
+			}
+		}
+		printf("headlod: %d %d %d %d triangles, %d bad\n", tris[0], tris[1], tris[2], tris[3], bad);
+		mii_model_free(&lm);
+	}
+	{   /* The skin: the forehead and the nose, plain colours, are the face
+		 * texture's own as the Wii draws it (RGB5A3), for every skin colour. */
+		int c, same = 0;
+
+		for (c = 0; c < 6; ++c) {
+			mii sk = m;
+			mii_model sm;
+			uint8_t *g;
+			const mii_tex *f;
+
+			sk.face_color = (uint8_t) c;
+			sk.face_tex = 0;   /* no make-up: the texture is the skin */
+			if (mii_model_make(&res, &sk, 32, &sm) < 0)
+				return 1;
+			f = &sm.tex[MII_TEX_FACE];
+			g = malloc(mii_tex_rgb5a3_size(f->w, f->h));
+			if (g && f->rgba) {
+				int x = f->w / 2, y = f->h / 2, v;
+				const uint8_t *q;
+				uint32_t col;
+
+				mii_tex_rgb5a3(f, g);
+				q = g + 32 * ((y / 4) * ((f->w + 3) / 4) + x / 4) + 2 * (4 * (y % 4) + x % 4);
+				v = q[0] << 8 | q[1];
+				col = (uint32_t) ((v >> 10 & 31) << 3 | (v >> 12 & 7)) << 24 |
+					  (uint32_t) ((v >> 5 & 31) << 3 | (v >> 7 & 7)) << 16 |
+					  (uint32_t) ((v & 31) << 3 | (v >> 2 & 7)) << 8 | 255;
+				same += (v & 0x8000) && sm.part[MII_PART_FOREHEAD].color == col && sm.part[MII_PART_NOSE].color == col;
+			}
+			free(g);
+			mii_model_free(&sm);
+		}
+		printf("skin: %d of 6 the face texture's colour\n", same);
+	}
 	{   /* mii_model_opts: only the expressions asked for (and the normal one), at 32 px */
-		mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_BLINK), NULL };
+		mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_BLINK), NULL, 0, 0 };
 		mii_model few;
 		unsigned built = 0;
 
@@ -215,7 +277,7 @@ int main(int argc, char **argv) {
 	}
 	{   /* A cache: two of the same Mii share every part; the last one out frees them.
 		 * mii_model_set_mask_size: the faces rebuilt at another size, still shared. */
-		mii_model_opts o = { 128, MII_EXPR_BIT(MII_EXPR_SMILE), NULL };
+		mii_model_opts o = { 128, MII_EXPR_BIT(MII_EXPR_SMILE), NULL, MII_HEAD_LODS, 0 };   /* the second takes the first's parts whole, levels and all */
 		mii_model a, b;
 		int same = 0, parts = 0, entries[4], users[4];
 		uint32_t bytes[4];
@@ -228,7 +290,9 @@ int main(int argc, char **argv) {
 		for (i = 0; i < MII_PARTS; ++i)
 			if (a.part[i].count) {
 				++parts;
-				same += a.part[i].pack == b.part[i].pack && a.part[i].idx == b.part[i].idx;
+				same += a.part[i].pack == b.part[i].pack && a.part[i].idx == b.part[i].idx &&
+						(i >= MII_HEAD_PARTS || (a.part[i].lods == MII_HEAD_LODS && b.part[i].lods == MII_HEAD_LODS &&
+												  !memcmp(a.part[i].lod_count, b.part[i].lod_count, sizeof(a.part[i].lod_count))));
 			}
 		same += a.mask[MII_EXPR_SMILE].rgba == b.mask[MII_EXPR_SMILE].rgba;
 		mii_cache_stats(o.cache, &entries[0], &bytes[0], &users[0]);
