@@ -157,6 +157,123 @@ int main(int argc, char **argv) {
 			printf("set_body: %s\n", mii_strerror(r));
 			return 1;
 		}
+		if (getenv("MII_FADE")) {
+			/* Cross-fades (mii_pose.from_*): a pose faded into itself is
+			 * unchanged (the quaternion round trip), weight 1 is the
+			 * animation before alone, and a fade's steps are small. */
+			static float ref[2048 * 3], prev[2048 * 3];
+			int wait = 1 + mii_body_anim(&body, "bodyWait"), greet = 1 + mii_body_anim(&body, "bodyGreeting");
+			float self = 0, whole = 0, step = 0;
+			int f, s, n = 3 * body.nverts < 2048 * 3 ? 3 * body.nverts : 2048 * 3;
+
+			for (f = 0; f < 200; f += 7) {
+				memset(&pose, 0, sizeof(pose));
+				pose.anim = greet;
+				pose.frame = f;
+				mii_body_skin(&md, &pose);
+				memcpy(ref, md.skin_pos, sizeof(float) * n);
+				pose.from_anim = greet;
+				pose.from_frame = f;
+				pose.from_weight = 0.5f;
+				mii_body_skin(&md, &pose);
+				for (i = 0; i < n; ++i)
+					if (fabsf(md.skin_pos[i] - ref[i]) > self)
+						self = fabsf(md.skin_pos[i] - ref[i]);
+				memset(&pose, 0, sizeof(pose));
+				pose.anim = wait;
+				pose.frame = 3 * f;
+				mii_body_skin(&md, &pose);
+				memcpy(ref, md.skin_pos, sizeof(float) * n);
+				pose.anim = greet;
+				pose.frame = f;
+				pose.from_anim = wait;
+				pose.from_frame = 3 * f;
+				pose.from_weight = 1;
+				mii_body_skin(&md, &pose);
+				for (i = 0; i < n; ++i)
+					if (fabsf(md.skin_pos[i] - ref[i]) > whole)
+						whole = fabsf(md.skin_pos[i] - ref[i]);
+				/* The fade itself, in 60 steps of the weight. */
+				for (s = 0; s <= 60; ++s) {
+					pose.from_weight = mii_fade_weight(s / 240.0f, 0.25f);
+					mii_body_skin(&md, &pose);
+					for (i = 0; s && i < n; ++i)
+						if (fabsf(md.skin_pos[i] - prev[i]) > step)
+							step = fabsf(md.skin_pos[i] - prev[i]);
+					memcpy(prev, md.skin_pos, sizeof(float) * n);
+				}
+			}
+			printf("fade: self %.5f, whole %.5f, largest step %.3f\n", self, whole, step);
+			return 0;
+		}
+		if (getenv("MII_PALETTE")) {
+			/* The GPU's way (sdk/mii 2.0): each vertex through its bone's
+			 * palette matrices, against the CPU reference, mii_body_skin.
+			 * Positions must match; normals point the same way (the GPU's
+			 * leave out the scale's inverse). And every primitive of every
+			 * object's list rewritten to GX_VTXFMT1. */
+			static float pm[MII_BODY_BONES][3][4], nm[MII_BODY_BONES][3][3];
+			float worst = 0, least = 1;
+			long poses = 0, prims = 0, fmt1 = 0;
+			int f, o;
+
+			for (a = 0; a <= body.nanims; ++a)
+				for (f = 0; f < 600; ++f) {
+					memset(&pose, 0, sizeof(pose));
+					pose.anim = a;
+					pose.frame = f * 0.37f;
+					mii_body_skin(&md, &pose);
+					mii_body_matrices(&md, &pose, pm, nm);
+					++poses;
+					for (i = 0; i < body.nverts; ++i) {
+						int bn = body.vbone[i];
+						const float *p = body.vpos + 3 * i, *n = body.vnrm + 3 * i;
+						float q[3], r[3], l = 0, d = 0;
+
+						for (k = 0; k < 3; ++k) {
+							q[k] = pm[bn][k][0] * p[0] + pm[bn][k][1] * p[1] + pm[bn][k][2] * p[2] +
+								   pm[bn][k][3];
+							r[k] = nm[bn][k][0] * n[0] + nm[bn][k][1] * n[1] + nm[bn][k][2] * n[2];
+							if (fabsf(q[k] - md.skin_pos[3 * i + k]) > worst)
+								worst = fabsf(q[k] - md.skin_pos[3 * i + k]);
+							l += r[k] * r[k];
+						}
+						l = l > 0 ? 1 / sqrtf(l) : 0;
+						for (k = 0; k < 3; ++k)
+							d += r[k] * l * md.skin_nrm[3 * i + k];
+						if (d < least)
+							least = d;
+					}
+				}
+			for (o = 0; o < body.nobjs; ++o) {
+				const uint8_t *d = body.obj[o].dl;
+				uint32_t at = 0, n = body.obj[o].dl_size;
+				int tex = 0;
+
+				for (k = 1; k <= 8; ++k)
+					tex += body.obj[o].vcd >> k & 1;
+				while (at < n) {
+					uint8_t op = d[at];
+
+					if (op == 0) {
+						++at;
+					} else if (op == 0x20 || op == 0x28 || op == 0x30) {
+						at += 5;
+					} else {
+						int cnt = d[at + 1] << 8 | d[at + 2];
+						int vsz = 1 + tex + ((body.obj[o].vcd >> 9 & 3) == 2 ? 1 : 2) +
+								  ((body.obj[o].vcd >> 11 & 3) == 2 ? 1 : 2);
+
+						++prims;
+						fmt1 += (op & 7) == 1;
+						at += 3 + (uint32_t) cnt * vsz;
+					}
+				}
+			}
+			printf("palette: %ld poses, objects %d, matrices %d, worst position %.5f, least normal dot %.4f, "
+				   "primitives %ld, on VTXFMT1 %ld\n", poses, body.nobjs, body.nmatrices, worst, least, prims, fmt1);
+			return 0;
+		}
 		if (getenv("MII_SWEEP")) {
 			/* Every animation at many fractional frames, and the avatar's
 			 * large ones: every posed vertex finite and near the body. */

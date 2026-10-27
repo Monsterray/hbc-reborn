@@ -218,7 +218,15 @@ static struct {
 	float blink_at, smile_until, next_smile;
 	float wave_from, next_wave;
 	float raise;
+	// The animation last shown and its frame; on a change, a cross-fade
+	// from it (still playing) for FADE_S.
+	int last_anim;
+	float last_frame;
+	int from_anim;
+	float from_frame, from_t;
 } a;
+
+#define FADE_S 0.3f   // how long a change of animation blends
 
 static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float sy, float sw, float sh) {
 	float t = a.t, dt = t - a.last;
@@ -281,6 +289,19 @@ static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float 
 		p->anim = wave >= 0 && anim_greet ? anim_greet : anim_wait;
 		p->frame = (wave >= 0 && anim_greet ? wave : t) * 60;
 		p->bob = 0;
+		// Into the wave and back out: a cross-fade, not a snap.
+		if (a.last_anim && p->anim != a.last_anim) {
+			a.from_anim = a.last_anim;
+			a.from_frame = a.last_frame;
+			a.from_t = t;
+		}
+		a.last_anim = p->anim;
+		a.last_frame = p->frame;
+		p->from_weight = a.from_anim ? mii_fade_weight(t - a.from_t, FADE_S) : 0;
+		if (p->from_weight > 0) {
+			p->from_anim = a.from_anim;
+			p->from_frame = a.from_frame + (t - a.from_t) * 60;   // it plays on as it fades
+		}
 	}
 
 	// The face: smiles now and then; blinks every few seconds.
@@ -311,6 +332,7 @@ static void check_pose(const mii_pose *pose) {
 
 	if (!model.body)
 		return;
+	mii_body_skin(&model, pose);   // the CPU reference; the GPU drew from the palette
 	for (i = 0; i < 3 * model.body->nverts; ++i) {
 		float p = model.skin_pos[i], n = model.skin_nrm[i];
 
@@ -389,6 +411,7 @@ const gfx_queue_entry *avatar_frame(bool pointer, s32 px, s32 py, bool a_down) {
 		a.smile_until -= 3600;
 		a.next_smile -= 3600;
 		a.wave_from -= 3600;
+		a.from_t -= 3600;
 		a.next_wave -= 3600;
 	}
 

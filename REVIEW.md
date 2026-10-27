@@ -161,6 +161,44 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.3: sdk/mii 2.0 step 1: the body skinned on the GPU, and cross-fades
+
+Branch `mii-sdk-2` (docs/mii-sdk-2.md).
+
+- **The GPU body.**
+  - What the Mii Channel bodies hold: two MDL0 objects, vertex descriptor
+    0x1403 (a matrix index, a texture matrix index, positions and normals
+    indexed by 8 bits); every vertex on one bone (no weights); matrix ids
+    0 to 14; 9 or fewer matrix slots per group. Their display lists load
+    position, normal and texture matrices by id (0x20, 0x28, 0x30) and
+    draw on VTXFMT0.
+  - sdk/mii keeps each object's list (32-byte aligned, primitives moved
+    to VTXFMT1 so the head's VTXFMT0 stays as it is) and the vertex
+    arrays, and each frame fills a palette: view x placement x the bone's
+    rotation and scale, its position. `GX_POSMTXARRAY` and
+    `GX_TEXMTXARRAY` point at it (the texture loads read it, unused),
+    `GX_NRMMTXARRAY` at the normal palette. A ring of 4 palettes, so a
+    model can be drawn up to 4 times between `GX_DrawDone`.
+  - Normals use the bone's rotation alone, unit length (the GPU does not
+    renormalise). Host check over 12,000 poses of each body:
+    - positions match CPU skinning within 0.00024;
+    - normals within 7 degrees at the tallest, broadest Mii, exact at
+      middle height and build;
+    - every primitive moved to VTXFMT1.
+  - The parser now rejects light matrix loads (0x38) and matrix ids past
+    `MII_BODY_MATRICES`.
+  - Bench Wii: 5 minutes at 60 fps, the body right in every grab, avatar
+    CPU time 0.73 to 0.13 ms a frame. Dolphin: the same picture as CPU
+    skinning.
+- **Cross-fades.** A change of animation snapped. `mii_pose.from_anim`,
+  `from_frame` and `from_weight` now blend the pose before into the new
+  one: per bone, rotations as quaternions (normalised lerp, the short
+  way), positions linearly. `mii_fade_weight(seconds, length)` eases it
+  (smoothstep). HBC's avatar fades over 0.3 s into and out of its wave,
+  the old animation playing on as it fades. Host check: a pose faded into
+  itself is unchanged (0.00003), weight 1 is the pose before (0.00004),
+  and a fade's steps stay small.
+
 ### 1.11.1: the Mii's face whole on a real Wii
 
 The user saw the avatar's face broken on the TV: eyes as stray lines,

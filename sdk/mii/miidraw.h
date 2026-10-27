@@ -98,6 +98,7 @@ void mii_res_free(mii_res *res);
 #define MII_BODY_MALE_PATH "sd:/mii/maleBody.brres"
 #define MII_BODY_FEMALE_PATH "sd:/mii/femaleBody.brres"
 #define MII_BODY_BONES 32
+#define MII_PALETTES 4
 #define MII_BODY_ANIMS 32
 
 typedef struct {
@@ -119,6 +120,28 @@ typedef struct {
 	int has[MII_BODY_BONES];
 } mii_anim;
 
+/* One MDL0 object as the GPU draws it: its own display list (the primitives'
+ * vertex format rewritten to GX_VTXFMT1, so the head's VTXFMT0 is left
+ * alone), with indexed matrix loads that take each bone's matrices from the
+ * model's palette (GX_POSMTXARRAY, GX_NRMMTXARRAY) by matrix id. */
+typedef struct {
+	uint8_t *dl;           /* 32-byte aligned, padded with GX_NOPs */
+	uint32_t dl_size;
+	uint32_t vcd;          /* the MDL0 vertex descriptor (CP 0x50) */
+	int mesh;              /* 0 the shirt (with the hands), 1 the trousers */
+	int pos, nrm;          /* which of the vertex arrays */
+} mii_body_obj;
+
+/* A vertex array as the GPU reads it: a 32-byte aligned copy. */
+typedef struct {
+	uint8_t *gx;
+	uint32_t stride;
+	uint8_t fmt, frac;     /* GX_U8 .. GX_F32, and the fixed-point shift */
+} mii_body_array;
+
+#define MII_BODY_OBJS 8
+#define MII_BODY_MATRICES 64   /* matrix ids a body may use */
+
 typedef struct {
 	uint8_t *data;         /* the file, kept: animation keys point into it */
 	uint32_t size;
@@ -133,6 +156,12 @@ typedef struct {
 	uint16_t *tris[2];
 	int nanims;
 	mii_anim anim[MII_BODY_ANIMS];
+	/* For the GPU: the objects, their arrays, and matrix id -> bone. */
+	int nobjs;
+	mii_body_obj obj[MII_BODY_OBJS];
+	mii_body_array pos_array[8], nrm_array[8];
+	int nmatrices;         /* matrix ids 0 .. nmatrices - 1 */
+	int8_t matrix_bone[MII_BODY_MATRICES];   /* the bone with that id, or -1 */
 } mii_body;
 
 /* Checks and parses a copy in memory. On success it is taken over and
@@ -208,8 +237,14 @@ typedef struct {
 	const mii_body *body;
 	float bone_scale[MII_BODY_BONES][3];   /* each bone's own scale, from height and build */
 	float ground;          /* lifts the bind pose's feet to Y = 0 */
-	float *skin_pos, *skin_nrm;   /* the posed vertices, rewritten each draw */
-	int body_ready;        /* skin_pos and skin_nrm hold this draw's pose */
+	float *skin_pos, *skin_nrm;   /* posed by mii_body_skin (the CPU reference) */
+	/* The GPU's palette: each matrix id's position (3 x 4) and normal (3 x 3)
+	 * matrix, a ring of MII_PALETTES so a draw does not rewrite one the GPU
+	 * may still be reading: up to that many draws of this model between two
+	 * GX_DrawDone. */
+	float (*pal_pos)[3][4];
+	float (*pal_nrm)[3][3];
+	int pal_next;
 	uint32_t shirt, pants; /* colours, 0xRRGGBBAA */
 } mii_model;
 
@@ -241,13 +276,31 @@ typedef struct {
 	 * are for the built body. */
 	int anim;
 	float frame;
+	/* A cross-fade from the animation before, so a change of animation does
+	 * not snap: from_anim and from_frame as anim and frame were, and
+	 * from_weight its share, 1 at the change down to 0 (a quarter of a
+	 * second is usual; mii_fade_weight). Each bone's rotation is blended as
+	 * a quaternion (the short way), its position linearly. 0: no fade. */
+	int from_anim;
+	float from_frame;
+	float from_weight;
 } mii_pose;
+
+/* The weight for a cross-fade `seconds` after a change of animation that
+ * takes `length` seconds: 1 at the change, eased to 0 (a smoothstep). */
+float mii_fade_weight(float seconds, float length);
 
 /* The pose's bones in the world, for a Wii body (portable: tests use it):
  * each bone's rotation and position, the body scale applied. */
 void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]);
-/* The posed vertices into model->skin_pos and skin_nrm (3 floats each). */
+/* The posed vertices into model->skin_pos and skin_nrm (3 floats each): the
+ * CPU reference the GPU's palette is tested against. */
 void mii_body_skin(mii_model *model, const mii_pose *pose);
+/* Each bone's matrices in the body's space for the pose: position = rotation
+ * times the bone's own scale, then its position; normal = the rotation (unit
+ * length kept: the GPU does not renormalise). What the GPU draws with,
+ * before the camera and the model's placement. */
+void mii_body_matrices(const mii_model *model, const mii_pose *pose, float pos[][3][4], float nrm[][3][3]);
 
 /* The bounds of a standing Mii (feet at 0), for framing a camera. */
 void mii_model_bounds(const mii_model *model, int head_only, float *top, float *half_width);

@@ -55,7 +55,11 @@ HBC will offer both modes, with a setting.
 
 ## Steps
 
-1. **GPU body.**
+1. **GPU body.** Done (HBC 1.11.3): avatar CPU time 0.73 ms to 0.13 ms a
+   frame, FIFO 54 KB to under 2 KB; the palette matches CPU skinning to
+   0.00024 (positions) on both bodies; 5 minutes on the bench Wii. Also
+   cross-fades between animations (`mii_pose.from_*`, `mii_fade_weight`),
+   which the avatar uses into and out of its wave.
    - Keep the MDL0 objects' display lists and their position and normal
      arrays.
    - Each frame, build the bone and weighted matrices; GX loads them

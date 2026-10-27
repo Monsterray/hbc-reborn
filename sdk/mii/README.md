@@ -232,11 +232,15 @@ if (ok) {
 - **The Wii's own bodies.** With `sd:/mii/maleBody.brres` and
   `femaleBody.brres` (Save Mii faces copies them from the Mii Channel too),
   `mii_body_load` reads one and `mii_model_set_body` puts it under a model:
-  Nintendo's skeleton, the shirt and trousers skinned on the CPU, and the
-  Mii Channel's animations. Pose it with `pose.anim = 1 +
+  Nintendo's skeleton, the shirt and trousers skinned on the GPU from the
+  Mii Channel's own display lists (a matrix per bone a frame), and its
+  animations. Pose it with `pose.anim = 1 +
   mii_body_anim(&body, "bodyWait")` (or `bodyGreeting`, `bodyWalk`,
   `bodyRun`, `bodyTalk`, ...) and `pose.frame` at 60 a second; 0 stands
-  still. Height and build scale each bone as Nintendo's later libraries do.
+  still. When you change animation, cross-fade instead of snapping: keep
+  the one before in `pose.from_anim` / `from_frame` (it plays on) with
+  `pose.from_weight = mii_fade_weight(seconds_since, 0.3f)`.
+  Height and build scale each bone as Nintendo's later libraries do.
   Without the files the model keeps a body of the library's own.
 
   ```c

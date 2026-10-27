@@ -156,7 +156,7 @@ class MiiDrawTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertTrue(r.stdout.startswith("res: ") or r.stdout.count("model: "), r.stdout)
 
-    def run_body(self, body, anim=None, frame=0, **extra):
+    def run_body(self, body, anim=None, frame=0, size=("64", "64"), **extra):
         res = self.dir / "RFL_Res.dat"
         res.write_bytes(resource())
         env = dict(os.environ, MII_BODY=str(body), MII_FRAME=str(frame), **extra)
@@ -164,7 +164,7 @@ class MiiDrawTest(unittest.TestCase):
             env["MII_ANIM"] = anim
         out = self.dir / "out"
         out.mkdir(exist_ok=True)
-        return subprocess.run([str(self.exe), str(res), "-d", "0", "64", "64", "5", str(out)],
+        return subprocess.run([str(self.exe), str(res), "-d", "0", size[0], size[1], "5", str(out)],
                               capture_output=True, text=True, timeout=120, env=env)
 
     def test_body_refused(self):
@@ -192,6 +192,33 @@ class MiiDrawTest(unittest.TestCase):
             # vertex finite and near the body (the GPU is fed them as they
             # are). Not every animation: bodySlap_03 throws the body 2737
             # units.
+            # The GPU's way (sdk/mii 2.0): every vertex through its bone's
+            # palette matrix lands where CPU skinning puts it; its normal
+            # points within 7 degrees (the GPU leaves out the scale's
+            # inverse; exact at middle height and build); every primitive
+            # of the display lists moved to GX_VTXFMT1.
+            for size, least in ((("64", "64"), 0.9999), (("127", "127"), 0.99), (("0", "0"), 0.99)):
+                r = self.run_body(body, size=size, MII_PALETTE="1")
+                self.assertEqual(r.returncode, 0, r.stdout)
+                m = re.search(r"palette: (\d+) poses, objects (\d+), matrices (\d+), worst position ([\d.]+), "
+                              r"least normal dot ([\d.]+), primitives (\d+), on VTXFMT1 (\d+)", r.stdout)
+                self.assertTrue(m, r.stdout)
+                self.assertEqual(int(m.group(2)), 2, m.group(0))
+                self.assertLess(float(m.group(4)), 0.01, m.group(0))
+                self.assertGreater(float(m.group(5)), least, (size, m.group(0)))
+                self.assertGreater(int(m.group(6)), 0, m.group(0))
+                self.assertEqual(m.group(6), m.group(7), m.group(0))
+            # Cross-fades: a pose faded into itself unchanged (the
+            # quaternion round trip), weight 1 is the animation before
+            # alone, and a fade from Wait to Greeting moves in small steps
+            # (60 of them; the hand travels about 100 units).
+            r = self.run_body(body, MII_FADE="1")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            m = re.search(r"fade: self ([\d.]+), whole ([\d.]+), largest step ([\d.]+)", r.stdout)
+            self.assertTrue(m, r.stdout)
+            self.assertLess(float(m.group(1)), 0.001, m.group(0))
+            self.assertLess(float(m.group(2)), 0.001, m.group(0))
+            self.assertLess(float(m.group(3)), 5, m.group(0))
             for anim in ("bodyWait", "bodyGreeting"):
                 r = self.run_body(body, anim, MII_SWEEP="1")
                 self.assertEqual(r.returncode, 0, r.stdout)

@@ -1098,6 +1098,8 @@ void mii_model_free(mii_model *model) {
 		tex_free(&model->mask[i]);
 	free(model->skin_pos);
 	free(model->skin_nrm);
+	free(model->pal_pos);
+	free(model->pal_nrm);
 	memset(model, 0, sizeof(*model));
 }
 
@@ -1254,66 +1256,87 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
 }
 
-/* A Wii body (miibody.c): skinned on the CPU into the model's arrays, the
- * triangles then sent through the FIFO like every other part; the head on
- * the head bone, its bind pose upright, the pose's look on top. (About
- * 2,200 vertices, 54 KB through the FIFO a frame. While this was written
- * HBC's GPU hung on the bench Wii whichever way the body was drawn: the
- * cause was HBC's GX FIFO in MEM2, not the drawing; REVIEW.md, 1.10.26.) */
-static void body_prepare(mii_model *mm, const mii_pose *pose) {
-	mii_body_skin(mm, pose);
-	mm->body_ready = 1;
-}
-
+/* A Wii body (miibody.c), skinned on the GPU as NW4R draws a model: each
+ * MDL0 object's own display list, whose indexed loads take each bone's
+ * matrices from this frame's palette by matrix id (GX_POSMTXARRAY,
+ * GX_NRMMTXARRAY), its vertices from the MDL0's own arrays. The CPU only
+ * fills the palette: a matrix per bone, under 2 KB through the FIFO a frame
+ * (CPU skinning sent 54 KB). The head on the head bone, its bind pose
+ * upright, the pose's look on top. */
 static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mtx root) {
-	mii_model *mm = (mii_model *) model;   /* the skin arrays are scratch */
+	mii_model *mm = (mii_model *) model;   /* the palette ring is scratch */
 	const mii_body *body = model->body;
 	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
+	float bp[MII_BODY_BONES][3][4], bn[MII_BODY_BONES][3][3];
+	float (*pp)[3][4] = mm->pal_pos + MII_BODY_MATRICES * mm->pal_next;
+	float (*pn)[3][3] = mm->pal_nrm + MII_BODY_MATRICES * mm->pal_next;
 	const float (*b)[3] = body->bone[body->head].bind_rot;
-	Mtx head, t;
-	int i, j, k;
+	Mtx mv, inv, nmv, head, t;
+	int i, j, k, id;
 
-	if (!mm->body_ready)
-		body_prepare(mm, pose);
-	mm->body_ready = 0;
-	GX_ClearVtxDesc();
-	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
-	GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
-	GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-	GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
-	/* No texture: no texture coordinate generated either. setup()'s texgen
-	 * reads TEX0, which these vertices do not carry; the transform unit
-	 * told to generate a coordinate from an input the vertex lacks is not
-	 * a valid setup (Dolphin quietly reads a default). */
+	mm->pal_next = (mm->pal_next + 1) % MII_PALETTES;
+	mii_body_matrices(model, pose, bp, bn);
+	guMtxConcat(view, root, mv);
+	if (guMtxInverse(mv, inv))
+		guMtxTranspose(inv, nmv);
+	else
+		guMtxCopy(mv, nmv);
+	for (id = 0; id < body->nmatrices; ++id) {
+		int bone = body->matrix_bone[id];
+
+		if (bone < 0) {   /* an id no bone has: never drawn with, kept harmless */
+			guMtxCopy(mv, pp[id]);
+			for (i = 0; i < 3; ++i)
+				for (j = 0; j < 3; ++j)
+					pn[id][i][j] = nmv[i][j];
+			continue;
+		}
+		guMtxConcat(mv, bp[bone], pp[id]);
+		for (i = 0; i < 3; ++i)
+			for (j = 0; j < 3; ++j)
+				pn[id][i][j] = nmv[i][0] * bn[bone][0][j] + nmv[i][1] * bn[bone][1][j] +
+							   nmv[i][2] * bn[bone][2][j];
+	}
+	DCFlushRange(pp, sizeof(float) * 12 * MII_BODY_MATRICES);
+	DCFlushRange(pn, sizeof(float) * 9 * MII_BODY_MATRICES);
+	GX_SetArray(GX_POSMTXARRAY, pp, sizeof(float) * 12);
+	GX_SetArray(GX_NRMMTXARRAY, pn, sizeof(float) * 9);
+	/* The lists load texture matrices by the same ids; nothing uses them
+	 * (no texgen here), but the GPU still reads them: from the palette. */
+	GX_SetArray(GX_TEXMTXARRAY, pp, sizeof(float) * 12);
+	GX_InvVtxCache();   /* matrices and vertices come through the vertex cache */
+
+	/* No texture: no texture coordinate generated either (the vertices
+	 * carry none; a texgen reading an input the vertex lacks is not a
+	 * valid setup, though Dolphin quietly reads a default). */
 	GX_SetNumTexGens(0);
 	GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
 	GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
-	load(view, root);
-	for (i = 0; i < 2; ++i) {
-		uint32_t col = i ? model->pants : model->shirt;
-		int n = 3 * body->ntris[i], done, c;
+	for (k = 0; k < body->nobjs; ++k) {
+		const mii_body_obj *o = &body->obj[k];
+		const mii_body_array *pa = &body->pos_array[o->pos], *na = &body->nrm_array[o->nrm];
+		uint32_t col = o->mesh ? model->pants : model->shirt;
 
 		GX_SetChanMatColor(GX_COLOR0A0, (GXColor) { col >> 24, col >> 16, col >> 8, 255 });
-		for (done = 0; done < n; done += c) {
-			int v;
-
-			c = n - done > 65535 ? 65535 - 65535 % 3 : n - done;   /* whole triangles */
-			GX_Begin(GX_TRIANGLES, GX_VTXFMT1, (u16) c);
-			for (v = done; v < done + c; ++v) {
-				const float *q = mm->skin_pos + 3 * body->tris[i][v];
-				const float *r = mm->skin_nrm + 3 * body->tris[i][v];
-
-				GX_Position3f32(q[0], q[1], q[2]);
-				GX_Normal3f32(r[0], r[1], r[2]);
-			}
-			GX_End();
-		}
+		GX_ClearVtxDesc();
+		GX_SetVtxDesc(GX_VA_PTNMTXIDX, GX_DIRECT);
+		for (i = 0; i < 8; ++i)
+			if (o->vcd >> (1 + i) & 1)
+				GX_SetVtxDesc(GX_VA_TEX0MTXIDX + i, GX_DIRECT);
+		GX_SetVtxDesc(GX_VA_POS, (o->vcd >> 9 & 3) == 2 ? GX_INDEX8 : GX_INDEX16);
+		GX_SetVtxDesc(GX_VA_NRM, (o->vcd >> 11 & 3) == 2 ? GX_INDEX8 : GX_INDEX16);
+		GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_POS, GX_POS_XYZ, pa->fmt, pa->frac);
+		GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_NRM, GX_NRM_XYZ, na->fmt, 0);
+		GX_SetArray(GX_VA_POS, pa->gx, pa->stride);
+		GX_SetArray(GX_VA_NRM, na->gx, na->stride);
+		GX_CallDispList(o->dl, o->dl_size);
 	}
 	GX_ClearVtxDesc();
 	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
 	GX_SetVtxDesc(GX_VA_NRM, GX_DIRECT);
 	GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
 	GX_SetNumTexGens(1);
+	GX_SetCurrentMtx(GX_PNMTX0);
 
 	mii_body_pose(model, pose, rot, pos);
 	guMtxIdentity(head);
@@ -1449,10 +1472,6 @@ static int capture(const mii_model *model, const mii_pose *pose, int w, int h, f
 	if (!model || !dst || w <= 0 || h <= 0 || w % 4 || h % 4 || ew > 640 || eh > 528 ||
 			((uintptr_t) dst & 31))
 		return MII_E_ARG;
-	/* The body's CPU work (about 1 ms) before any GX command of the
-	 * capture, not in the middle of them. */
-	if (model->body && pose && !pose->head_only)
-		body_prepare((mii_model *) model, pose);
 	/* The capture needs alpha: RGBA6. A pixel-format change takes effect
 	 * only after GX_PixModeSync(), so one follows each change. */
 	GX_SetPixelFmt(GX_PF_RGBA6_Z24, GX_ZC_LINEAR);

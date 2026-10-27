@@ -463,10 +463,17 @@ avatar (1.10.21, the Wii's bodies from 1.10.26) is the first user.
 
 - **The body**: the MDL0's 20 bones and two skinned meshes, posed from
   the CHR0 animations (cubic Hermite keys; rotations the short way
-  round, or the right ankle in bodyWait spins), skinned on the CPU (about
-  1,000 vertices, 0.8 ms) and sent through the FIFO as `GX_Begin`
-  triangles (about 2,200 corners, 54 KB a frame). Height and build scale each bone along its own axis, not
-  inherited. The head rides the head bone.
+  round, or the right ankle in bodyWait spins), skinned on the GPU as
+  NW4R draws a model: each MDL0 object's own display list (its primitives
+  moved to `GX_VTXFMT1`), whose indexed matrix loads take each bone's
+  matrices from a per-frame palette (`GX_POSMTXARRAY`, `GX_NRMMTXARRAY`;
+  a ring of `MII_PALETTES`). Under 2 KB through the FIFO and about 0.13 ms
+  of CPU a frame (CPU skinning: 54 KB, 0.73 ms). Normals use the bone's
+  rotation alone (the GPU does not renormalise): within 7 degrees of the
+  CPU reference, exact at middle height and build. `mii_body_skin` stays as
+  that reference. A change of animation cross-fades (`mii_pose.from_*`,
+  quaternions per bone). Height and build scale each bone along its own
+  axis, not inherited. The head rides the head bone.
 - **Drawn in place**: `mii_view` gives the camera for any viewport (near
   and far fitted to the Mii), and `mii_draw` draws into the frame you are
   building (HBC's avatar does this each frame, with the whole depth range in
