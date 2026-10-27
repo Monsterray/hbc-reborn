@@ -161,6 +161,35 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.11.6: a Mii keeps only what it draws
+
+Where a Mii's memory went (sdk/mii 1.1.1, 128 px faces, 50 random Miis
+built on a PC from a Wii's own RFL_Res.dat and the male body):
+
+| What | KB a Mii |
+|---|---|
+| Faces, 7 expressions: a linear RGBA copy + the GPU's RGBA8 copy | 448 + 448 |
+| The other textures, both copies | 41 + 41 |
+| Head meshes: F32 vertices + the display lists built from them | 45 + 45 |
+| Body: CPU-skinning buffers + 4 matrix palettes of 64 | 24 + 21 |
+
+That is 1.1 MB of the 1.36 MB measured on the bench Wii (1.11.5).
+
+- On the Wii, `tex_upload` frees the linear copy once the GPU's is made:
+  nothing on a Wii reads it. A PC keeps it (the host tests read it).
+- `mii_model_build` with `mii_model_opts`: the face size (now also 32 px)
+  and which expressions to build, as RFLInitCharModel's expression flags do.
+  The normal face is always built, and an expression not built draws as
+  it. `mii_model_make` is unchanged: every expression.
+- HBC's avatar builds the three it shows (normal, smile, blink).
+- `mii_body_skin` (the CPU reference) makes its buffers on its first call.
+  `mii_model_set_body` finds the ground without them.
+- Palettes hold the body's 15 matrix ids, rounded to 16, not 64.
+
+Expected: about 0.53 MB less per Mii from the copies, and about 0.38 MB
+less again for a Mii built with two expressions (128 px). The bench crowd
+run measures it.
+
 ### 1.11.5: what a Mii costs: crowds on the bench Wii, and a Mii made through the SDK
 
 - **`mii_app crowd COUNTS SECONDS MASK`** (`tests/wii_mii.py crowd`): COUNTS

@@ -10,10 +10,11 @@
 //      HBC never ships them: the user saves the Wii's own copy to the SD card
 //      with HOME > HBC > Save Mii faces (miires.c), and every app reads that.
 //   2. mii_db_load and mii_db_get: the Mii, from the Mii Channel's database.
-//   3. mii_model_make: shapes, face textures for each expression, a body;
-//      then mii_body_load and mii_model_set_body: the Mii Channel's own body
-//      for the Mii's sex (saved beside the faces), with its animations. About
-//      0.1 s and 1 MiB, so a background thread does 1 to 3.
+//   3. mii_model_build: shapes, face textures for the three expressions it
+//      shows (normal, smile, blink), a body; then mii_body_load and
+//      mii_model_set_body: the Mii Channel's own body for the Mii's sex
+//      (saved beside the faces), with its animations. About 0.1 s, so a
+//      background thread does 1 to 3.
 //   4. Each frame avatar_frame poses it and queues a GFXE_DRAW entity where
 //      a sprite would go. When HBC's frame reaches it, avatar_draw sets the
 //      viewport to that rectangle and a thin band of depth (gfx.c's
@@ -138,7 +139,11 @@ static void *loader(void *arg) {
 		state = AV_NONE;
 		return NULL;
 	}
-	r = mii_model_make(&res, &m, 128, &model);
+	{
+		mii_model_opts o = { 128, MII_EXPR_BIT(MII_EXPR_SMILE) | MII_EXPR_BIT(MII_EXPR_BLINK) };
+
+		r = mii_model_build(&res, &m, &o, &model);
+	}
 	mii_res_free(&res);   // the model keeps all it needs
 	if (r < 0) {
 		hlog("Avatar: the Mii in slot %d did not build (%s)\n", slot, mii_strerror(r));

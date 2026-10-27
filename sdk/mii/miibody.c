@@ -948,7 +948,13 @@ void mii_body_skin(mii_model *model, const mii_pose *pose) {
 	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
 	int i, k;
 
-	if (!body || !model->skin_pos || !model->skin_nrm)
+	if (!body)
+		return;
+	if (!model->skin_pos)
+		model->skin_pos = malloc(sizeof(float) * 3 * body->nverts);
+	if (!model->skin_nrm)
+		model->skin_nrm = malloc(sizeof(float) * 3 * body->nverts);
+	if (!model->skin_pos || !model->skin_nrm)
 		return;
 
 	mii_body_pose(model, pose, rot, pos);
@@ -1034,30 +1040,41 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 	body_scales(model);
 	free(model->skin_pos);
 	free(model->skin_nrm);
-	model->skin_pos = malloc(sizeof(float) * 3 * body->nverts);
-	model->skin_nrm = malloc(sizeof(float) * 3 * body->nverts);
-	/* The palettes: MII_BODY_MATRICES entries each (48 and 36 bytes an
-	 * entry, so every palette starts 32-byte aligned), MII_PALETTES of them. */
+	model->skin_pos = model->skin_nrm = NULL;   /* mii_body_skin makes them if it is called */
+	/* The palettes: an entry per matrix id the body uses, rounded up to 8
+	 * (48 and 36 bytes an entry: every palette starts 32-byte aligned),
+	 * MII_PALETTES of them. */
+	model->pal_size = (body->nmatrices + 7) & ~7;
 	free(model->pal_pos);
 	free(model->pal_nrm);
 #ifndef MII_NO_OGC
-	model->pal_pos = memalign(32, sizeof(float) * 12 * MII_BODY_MATRICES * MII_PALETTES);
-	model->pal_nrm = memalign(32, sizeof(float) * 9 * MII_BODY_MATRICES * MII_PALETTES);
+	model->pal_pos = memalign(32, sizeof(float) * 12 * model->pal_size * MII_PALETTES);
+	model->pal_nrm = memalign(32, sizeof(float) * 9 * model->pal_size * MII_PALETTES);
 #else
-	model->pal_pos = malloc(sizeof(float) * 12 * MII_BODY_MATRICES * MII_PALETTES);
-	model->pal_nrm = malloc(sizeof(float) * 9 * MII_BODY_MATRICES * MII_PALETTES);
+	model->pal_pos = malloc(sizeof(float) * 12 * model->pal_size * MII_PALETTES);
+	model->pal_nrm = malloc(sizeof(float) * 9 * model->pal_size * MII_PALETTES);
 #endif
-	if (!model->skin_pos || !model->skin_nrm || !model->pal_pos || !model->pal_nrm) {
+	if (!model->pal_pos || !model->pal_nrm) {
 		model->body = NULL;
 		return MII_E_MEM;
 	}
 	model->pal_next = 0;
 	/* The feet on Y = 0 in the standing pose. */
 	model->ground = 0;
-	mii_body_skin(model, NULL);
-	for (i = 0; i < body->nverts; ++i)
-		if (model->skin_pos[3 * i + 1] < min)
-			min = model->skin_pos[3 * i + 1];
+	{
+		float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
+
+		mii_body_pose(model, NULL, rot, pos);
+		for (i = 0; i < body->nverts; ++i) {
+			int bn = body->vbone[i];
+			const float *s = model->bone_scale[bn], *v = body->vpos + 3 * i;
+			float y = pos[bn][1] + rot[bn][1][0] * v[0] * s[0] + rot[bn][1][1] * v[1] * s[1] +
+					  rot[bn][1][2] * v[2] * s[2];
+
+			if (y < min)
+				min = y;
+		}
+	}
 	model->ground = -min;
 	/* Where the head sits, for framing (mii_model_bounds), and how wide. */
 	{

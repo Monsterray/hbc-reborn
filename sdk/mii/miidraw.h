@@ -237,7 +237,7 @@ typedef struct {
 	const mii_body *body;
 	float bone_scale[MII_BODY_BONES][3];   /* each bone's own scale, from height and build */
 	float ground;          /* lifts the bind pose's feet to Y = 0 */
-	float *skin_pos, *skin_nrm;   /* posed by mii_body_skin (the CPU reference) */
+	float *skin_pos, *skin_nrm;   /* posed by mii_body_skin (the CPU reference; made by its first call) */
 	/* The GPU's palette: each matrix id's position (3 x 4) and normal (3 x 3)
 	 * matrix, a ring of MII_PALETTES so a draw does not rewrite one the GPU
 	 * may still be reading: up to that many draws of this model between two
@@ -245,11 +245,28 @@ typedef struct {
 	float (*pal_pos)[3][4];
 	float (*pal_nrm)[3][3];
 	int pal_next;
+	int pal_size;          /* entries in each: the body's matrix ids, rounded up to 8 */
 	uint32_t shirt, pants; /* colours, 0xRRGGBBAA */
 } mii_model;
 
-/* Builds a Mii. mask_size is the face texture's side (64, 128 or 256; 0:
- * 128). Free it with mii_model_free. */
+/* Which expressions' faces to build: MII_EXPR_BIT(MII_EXPR_SMILE) | ...
+ * Each is a texture of its own (128 px: 32 KB on the GPU), so build only
+ * those you draw, as RFLInitCharModel's expression flags do. The normal
+ * face is always built; drawing one not built draws it. */
+#define MII_EXPR_BIT(e) (1u << (e))
+#define MII_EXPRS_ALL ((1u << MII_EXPR_COUNT) - 1)
+
+typedef struct {
+	int mask_size;         /* the face texture's side: 32, 64, 128 or 256 (0: 128) */
+	unsigned expressions;  /* MII_EXPR_BIT()s (0: all of them) */
+} mii_model_opts;
+
+/* Builds a Mii (opts NULL: 128 px, every expression). Free it with
+ * mii_model_free. On the Wii only the GPU's copies are kept: the mii_tex
+ * rgba pointers are NULL after it (on a PC, which has no GPU copy, they
+ * stay). */
+int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts, mii_model *out);
+/* mii_model_build with that mask size and every expression. */
 int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *out);
 void mii_model_free(mii_model *model);
 

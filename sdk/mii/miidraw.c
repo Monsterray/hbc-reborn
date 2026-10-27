@@ -981,6 +981,8 @@ static int tex_upload(mii_tex *t) {
 				o[33 + 2 * k] = p[2];
 			}
 	DCFlushRange(t->gx, tw * th * 64);
+	free(t->rgba);   /* the GPU's copy is all a Wii draws from */
+	t->rgba = NULL;
 	GX_InitTexObj(&t->obj, t->gx, t->w, t->h, GX_TF_RGBA8, t->wrap_s, t->wrap_t, GX_FALSE);
 	GX_InitTexObjFilterMode(&t->obj, GX_LINEAR, GX_LINEAR);
 	return MII_OK;
@@ -988,7 +990,15 @@ static int tex_upload(mii_tex *t) {
 #endif
 
 int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *out) {
+	mii_model_opts o = { mask_size, 0 };
+
+	return mii_model_build(res, m, &o, out);
+}
+
+int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts, mii_model *out) {
 	vec3 anchors[3] = { { 0, 0, 0 } }, at, zero = { 0, 0, 0 };
+	int mask_size = opts && opts->mask_size ? opts->mask_size : 128;
+	unsigned exprs = (opts && opts->expressions ? opts->expressions : MII_EXPRS_ALL) | MII_EXPR_BIT(MII_EXPR_NORMAL);
 	float scale;
 	int r, e, i;
 
@@ -998,9 +1008,7 @@ int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *o
 	for (i = 0; i < MII_PARTS; ++i)
 		out->part[i].tex = -1;
 	out->m = *m;
-	if (!mask_size)
-		mask_size = 128;
-	if (mask_size != 64 && mask_size != 128 && mask_size != 256)
+	if (mask_size != 32 && mask_size != 64 && mask_size != 128 && mask_size != 256)
 		return MII_E_ARG;
 
 	/* The faceline first: its anchors place the rest (RFLiInitCharModelRes). */
@@ -1058,7 +1066,7 @@ int mii_model_make(const mii_res *res, const mii *m, int mask_size, mii_model *o
 	if (m->glass_type)
 		bake(&out->tex[MII_TEX_GLASS], MII_TEX_GLASS, glass_colors[pick(m->glass_color, 6)]);
 	for (e = 0; e < MII_EXPR_COUNT; ++e)
-		if ((r = make_mask(res, m, e, mask_size, &out->mask[e])) < 0)
+		if ((exprs >> e & 1) && (r = make_mask(res, m, e, mask_size, &out->mask[e])) < 0)
 			goto fail;
 
 	if ((r = make_body(out)) < 0)
@@ -1248,8 +1256,9 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 			continue;
 		if (translucent[i] == MII_PART_GLASS)
 			GX_SetCullMode(GX_CULL_NONE);
-		draw_mesh(p, translucent[i] == MII_PART_MASK ?
-				  &model->mask[expression >= 0 && expression < MII_EXPR_COUNT ? expression : 0].obj :
+		if (expression < 0 || expression >= MII_EXPR_COUNT || !model->mask[expression].gx)
+			expression = MII_EXPR_NORMAL;   /* not built (mii_model_opts.expressions) */
+		draw_mesh(p, translucent[i] == MII_PART_MASK ? &model->mask[expression].obj :
 				  &model->tex[p->tex].obj);
 	}
 	GX_SetCullMode(GX_CULL_BACK);
@@ -1268,8 +1277,8 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 	const mii_body *body = model->body;
 	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3];
 	float bp[MII_BODY_BONES][3][4], bn[MII_BODY_BONES][3][3];
-	float (*pp)[3][4] = mm->pal_pos + MII_BODY_MATRICES * mm->pal_next;
-	float (*pn)[3][3] = mm->pal_nrm + MII_BODY_MATRICES * mm->pal_next;
+	float (*pp)[3][4] = mm->pal_pos + mm->pal_size * mm->pal_next;
+	float (*pn)[3][3] = mm->pal_nrm + mm->pal_size * mm->pal_next;
 	const float (*b)[3] = body->bone[body->head].bind_rot;
 	Mtx mv, inv, nmv, head, t;
 	int i, j, k, id;
@@ -1297,8 +1306,8 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 				pn[id][i][j] = nmv[i][0] * bn[bone][0][j] + nmv[i][1] * bn[bone][1][j] +
 							   nmv[i][2] * bn[bone][2][j];
 	}
-	DCFlushRange(pp, sizeof(float) * 12 * MII_BODY_MATRICES);
-	DCFlushRange(pn, sizeof(float) * 9 * MII_BODY_MATRICES);
+	DCFlushRange(pp, sizeof(float) * 12 * mm->pal_size);
+	DCFlushRange(pn, sizeof(float) * 9 * mm->pal_size);
 	GX_SetArray(GX_POSMTXARRAY, pp, sizeof(float) * 12);
 	GX_SetArray(GX_NRMMTXARRAY, pn, sizeof(float) * 9);
 	/* The lists load texture matrices by the same ids; nothing uses them

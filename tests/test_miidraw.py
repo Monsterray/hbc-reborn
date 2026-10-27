@@ -145,6 +145,8 @@ class MiiDrawTest(unittest.TestCase):
             self.assertGreater(min(covered), 20, e)
             self.assertLess(max(covered), 100, e)
         self.assertTrue((out / "mii.obj").stat().st_size > 1000)
+        # mii_model_opts: the normal face and those asked for, at their size.
+        self.assertIn("opts: expressions 0x21, 32 px", r.stdout)
 
     def test_damaged_resource_refused(self):
         good = resource()

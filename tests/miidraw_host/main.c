@@ -130,6 +130,21 @@ int main(int argc, char **argv) {
 	}
 	for (e = 0; e < MII_EXPR_COUNT; ++e)
 		write_tex(dir, "mask", e, &md.mask[e]);
+	{   /* mii_model_opts: only the expressions asked for (and the normal one), at 32 px */
+		mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_BLINK) };
+		mii_model few;
+		unsigned built = 0;
+
+		if ((r = mii_model_build(&res, &m, &o, &few)) < 0) {
+			printf("model (opts): %s\n", mii_strerror(r));
+			return 1;
+		}
+		for (e = 0; e < MII_EXPR_COUNT; ++e)
+			if (few.mask[e].rgba)
+				built |= 1u << e;
+		printf("opts: expressions %#x, %d px\n", built, few.mask[MII_EXPR_NORMAL].w);
+		mii_model_free(&few);
+	}
 	for (i = 0; i < MII_TEX_COUNT; ++i)
 		write_tex(dir, "tex", i, &md.tex[i]);
 	snprintf(path, sizeof(path), "%s/mii.obj", dir);
