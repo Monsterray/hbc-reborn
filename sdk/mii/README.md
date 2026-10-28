@@ -262,7 +262,7 @@ if (ok) {
   ```
 - **Many Miis.** A crowd is what the Wii's CPU and memory allow, not its
   GPU, until the CPU's part is small. What helps, all measured on the
-  bench Wii (REVIEW.md, 1.11.6 to 1.11.8):
+  bench Wii (REVIEW.md, 1.11.6 to 1.11.10):
   - One `mii_cache` for the crowd (`mii_model_opts.cache`): Miis share
     each part that comes out the same, byte for byte (the same hair, face
     shape, textures). With 32 px faces and the normal one only, a random
@@ -273,7 +273,7 @@ if (ok) {
     of body and head for Miis under 150, 90, 50 and 25 pixels tall, each
     changing the Mii by no more than half a pixel at that size, made on the
     Wii from the user's own files. A head of about 480 triangles goes to
-    about 360, 300, 220 and 120, the body's 750 to about 490, 420, 320 and
+    about 360, 300, 220 and 120, the body's 750 to about 490, 410, 320 and
     240, all drawn as strips. The GPU's time in a crowd is vertices.
   - Drawing is the hardware's work: the bones on the paired-single unit,
     each head level a display list the GPU fetches itself, the matrix
@@ -292,6 +292,28 @@ if (ok) {
     not one each.
   - `pose.reuse` for a Mii far off: draw it with the bones its last draw
     posed, posing every second or fourth frame.
+
+  ```c
+  /* Once: a cache for the crowd, the bodies' levels. */
+  mii_cache *cache = mii_cache_new();
+  mii_body_make_lods(&body, NULL, 0);
+  mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_NORMAL), cache, MII_HEAD_LODS, 1 };
+  for (i = 0; i < n; ++i)
+      if (mii_model_build(&res, &miis[i], &o, &crowd[i]) == MII_OK)
+          mii_model_set_body(&crowd[i], &body);
+
+  /* Each frame, before drawing: faces still to draw (the GPU, between frames). */
+  for (i = 0; i < n; ++i)
+      if (crowd[i].faces_pending)
+          mii_model_make_faces(&crowd[i], &res, clear_colour);
+  /* ... set your GX state, projection and camera, then for each Mii: */
+  float px = mii_pixels_tall(&crowd[i], view, place, proj, rmode->efbHeight);
+  pose.lod = mii_body_lod_for(&body, px);
+  pose.reuse = pose.lod >= 3 && (frame + i) % 2;   /* far: pose every other frame */
+  mii_draw(&crowd[i], &pose, view, place);
+
+  /* At the end: the models, then the cache and the body. */
+  ```
 - **Your GX FIFO in MEM1.** Make it a static array
   (`static u8 fifo[SIZE] ATTRIBUTE_ALIGN(32);`), not `memalign` from the
   heap: once MEM1's part of the heap runs out, the heap gives MEM2, and a

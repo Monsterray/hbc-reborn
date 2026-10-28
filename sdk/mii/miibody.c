@@ -284,6 +284,13 @@ static int read_bones(buf *b, uint32_t grp, mii_body *body) {
 	return body->head < 0 ? MII_E_FORMAT : MII_OK;
 }
 
+/* Two skin vertices at one spot: on one bone, at one position. Each corner
+ * of a list is a skin vertex of its own, so a strip's turning triangles
+ * (two corners at one spot) show only so. */
+static int same_spot(const mii_body *body, int a, int b) {
+	return body->vbone[a] == body->vbone[b] && !memcmp(body->vpos + 3 * a, body->vpos + 3 * b, 3 * sizeof(float));
+}
+
 /* One object's display list into skin vertices and triangles. Supports
  * what the Mii Channel's bodies use: a position-matrix index per vertex,
  * texture-matrix indexes (ignored), indexed positions and normals; the
@@ -339,6 +346,8 @@ static int read_object(buf *b, uint32_t o, mii_body *body, const float *pos, int
 		if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {   /* indexed XF loads */
 			int mid = rd16(b, at + 1);
 
+			if (end - at < 5)   /* within the object: its list is copied alone */
+				return MII_E_FORMAT;
 			/* The GPU reads these from the palette by id: in range, and
 			 * no light matrices (no light palette is set). */
 			if (op == 0x38 || mid >= MII_BODY_MATRICES)
@@ -361,6 +370,8 @@ static int read_object(buf *b, uint32_t o, mii_body *body, const float *pos, int
 		if ((op & 0xF8) == 0x90 || (op & 0xF8) == 0x98 || (op & 0xF8) == 0xA0) {
 			int kind = op & 0xF8, n = rd16(b, at + 1), first = body->nverts, v;
 
+			if (end - at < 3 || (uint32_t) n * (1 + tex_mtx + pos_w + nrm_w) > end - at - 3)
+				return MII_E_FORMAT;   /* its vertices within the object */
 			ob->dl[at - prim] = (uint8_t) (kind | 1);   /* GX_VTXFMT1: the head keeps VTXFMT0 */
 			at += 3;
 			for (v = 0; v < n; ++v) {
@@ -512,7 +523,8 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
 			for (t = 0; t < body->ntris[m]; ++t) {
 				const uint16_t *c = body->tris[m] + 3 * t;
 
-				body->full_tris += c[0] != c[1] && c[1] != c[2] && c[0] != c[2];
+				body->full_tris += !same_spot(body, c[0], c[1]) && !same_spot(body, c[1], c[2]) &&
+								   !same_spot(body, c[0], c[2]);
 			}
 	}
 	return r;
@@ -520,7 +532,8 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
 
 /* ---- CHR0 v3 ------------------------------------------------------------------ */
 
-/* Code bits: 1 identity, 5 rotation zero, 6 translation zero, 13-21
+/* Code bits: 1 identity, 4 uniform scale, 5 rotation zero, 6 translation
+ * zero, 13-21
  * constant X Y Z of scale, rotation, translation, 22-24 has scale,
  * rotation, translation, 25-26 the rotation keys' format (2: u16 frame in
  * 32nds, s16 angle and slope in 65536ths of a turn; 3: f32 frame, value,
@@ -702,8 +715,8 @@ int mii_body_attach(mii_body *body, void *data, size_t size) {
 		int n;
 
 		group_entry(&b, root + 8, i, &folder, &fat);
-		if (strcmp(folder, "3DModels(NW4R)"))
-			continue;
+		if (model || strcmp(folder, "3DModels(NW4R)"))
+			continue;   /* the first model only */
 		n = group_count(&b, fat);
 		if (n > 0) {
 			const char *name;
@@ -735,6 +748,7 @@ int mii_body_attach(mii_body *body, void *data, size_t size) {
 			uint32_t c;
 
 			group_entry(&b, fat, j, &name, &c);
+			b.bad = 0;   /* one bad animation skips that one only */
 			if (!in(&b, c, 0x28) || memcmp(body->data + c, "CHR0", 4))
 				continue;
 			if (read_anim(&b, c, body, name, &body->anim[body->nanims]) == MII_OK)
@@ -803,7 +817,7 @@ static const mii_anim *pick_anim(const mii_body *body, int anim1, float frame, f
 	if (anim < 0 || anim >= body->nanims)
 		anim = body->wait_anim;   /* found once, at load */
 	a = anim >= 0 ? &body->anim[anim] : NULL;
-	if (a && anim1 > 0) {
+	if (a && anim1 > 0 && anim1 <= body->nanims) {
 		*f = fmodf(frame, (float) a->frames);
 		if (*f < 0)
 			*f += a->frames;
@@ -1139,8 +1153,32 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 	float min = 1e9f;
 	int i;
 
+	int pal_size;
+	void *pal_pos, *pal_nrm, *last_pm, *last_w;
+
 	if (!model || !body || !body->nverts)
 		return MII_E_ARG;
+	/* The palettes: an entry per matrix id the body uses, rounded up to 8
+	 * (48 and 36 bytes an entry: every palette starts 32-byte aligned),
+	 * MII_PALETTES of them. All made before anything is freed: on failure
+	 * the model keeps the body it had. */
+	pal_size = (body->nmatrices + 7) & ~7;
+#ifndef MII_NO_OGC
+	pal_pos = memalign(32, sizeof(float) * 12 * pal_size * MII_PALETTES);
+	pal_nrm = memalign(32, sizeof(float) * 9 * pal_size * MII_PALETTES);
+#else
+	pal_pos = malloc(sizeof(float) * 12 * pal_size * MII_PALETTES);
+	pal_nrm = malloc(sizeof(float) * 9 * pal_size * MII_PALETTES);
+#endif
+	last_pm = malloc(sizeof(float) * 12 * body->nbones);
+	last_w = malloc(sizeof(float) * 12 * body->nbones);
+	if (!pal_pos || !pal_nrm || !last_pm || !last_w) {
+		free(pal_pos);
+		free(pal_nrm);
+		free(last_pm);
+		free(last_w);
+		return MII_E_MEM;
+	}
 	model->body = body;
 	body_scales(model);
 	for (i = MII_HEAD_PARTS; i < MII_PARTS; ++i)
@@ -1148,28 +1186,16 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 	free(model->skin_pos);
 	free(model->skin_nrm);
 	model->skin_pos = model->skin_nrm = NULL;   /* mii_body_skin makes them if it is called */
-	/* The palettes: an entry per matrix id the body uses, rounded up to 8
-	 * (48 and 36 bytes an entry: every palette starts 32-byte aligned),
-	 * MII_PALETTES of them. */
-	model->pal_size = (body->nmatrices + 7) & ~7;
 	free(model->pal_pos);
 	free(model->pal_nrm);
-#ifndef MII_NO_OGC
-	model->pal_pos = memalign(32, sizeof(float) * 12 * model->pal_size * MII_PALETTES);
-	model->pal_nrm = memalign(32, sizeof(float) * 9 * model->pal_size * MII_PALETTES);
-#else
-	model->pal_pos = malloc(sizeof(float) * 12 * model->pal_size * MII_PALETTES);
-	model->pal_nrm = malloc(sizeof(float) * 9 * model->pal_size * MII_PALETTES);
-#endif
 	free(model->last_pm);
 	free(model->last_w);
-	model->last_pm = malloc(sizeof(float) * 12 * body->nbones);
-	model->last_w = malloc(sizeof(float) * 12 * body->nbones);
+	model->pal_size = pal_size;
+	model->pal_pos = pal_pos;
+	model->pal_nrm = pal_nrm;
+	model->last_pm = last_pm;
+	model->last_w = last_w;
 	model->posed = 0;
-	if (!model->pal_pos || !model->pal_nrm || !model->last_pm || !model->last_w) {
-		model->body = NULL;
-		return MII_E_MEM;
-	}
 	model->pal_next = 0;
 	/* The feet on Y = 0 in the standing pose. */
 	model->ground = 0;
@@ -1367,6 +1393,8 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 			for (j = 0; j < 3; ++j)
 				sd[j] /= sl;
 			sl = -(sd[0] * pos[3 * a] + sd[1] * pos[3 * a + 1] + sd[2] * pos[3 * a + 2]);
+			/* Weighted 100 times the edge's length squared: an open edge
+			 * (a sleeve's, a collar's) folds only along itself. */
 			quad_plane(q + 10 * a, sd, sl, 100 * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
 			quad_plane(q + 10 * b, sd, sl, 100 * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
 		}
@@ -1429,7 +1457,7 @@ static int lod_run(mii_body *body, const uint8_t *dl, int vs, int tex_mtx, int p
 				tri_normal(pp[0], pp[1], pp[2], n0);
 				pp[h] = pos + 3 * bv;
 				tri_normal(pp[0], pp[1], pp[2], n1);
-				if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.5 *
+				if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.5 *   /* cos 60 degrees */
 						sqrt(n0[0] * n0[0] + n0[1] * n0[1] + n0[2] * n0[2]) *
 						sqrt(n1[0] * n1[0] + n1[1] * n1[1] + n1[2] * n1[2]))
 					ok = 0;
@@ -1561,6 +1589,7 @@ static int lod_object(mii_body *body, int k, const float *world, const float *to
 	pos_w = (lo >> 9 & 3) == 2 ? 1 : 2;
 	vs = 1 + tex_mtx + pos_w + ((lo >> 11 & 3) == 2 ? 1 : 2);
 	memset(runs, 0, sizeof(runs));
+	memset(runs_len, 0, sizeof(runs_len));
 	while (at < ob->dl_size && r == MII_OK) {
 		uint32_t h0, h1, p0, p1;
 		int rv = 0;
@@ -1582,8 +1611,10 @@ static int lod_object(mii_body *body, int k, const float *world, const float *to
 			at += 3 + (uint32_t) (ob->dl[at + 1] << 8 | ob->dl[at + 2]) * vs;
 		}
 		p1 = at;
-		if (nr >= 16)
-			return MII_E_FORMAT;
+		if (nr >= 16) {   /* more runs than these bodies have: the ones made are freed below */
+			r = MII_E_FORMAT;
+			break;
+		}
 		r = lod_run(body, ob->dl, vs, tex_mtx, pos_w, h0, h1, p0, p1, world + 3 * verts, tol, n, runs[nr],
 					runs_len[nr]);
 		for (l = 0; l < n; ++l)

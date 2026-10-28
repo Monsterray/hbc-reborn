@@ -1062,7 +1062,6 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 	Mtx44 proj;
 	Mtx view;
 	guVector eye = { 0, 260, 520 }, up = { 0, 1, 0 }, at = { 0, 0, -700 };
-	float half_h = (float) rmode->efbHeight / 2, focal = 1 / tanf(22.5f * (float) M_PI / 180);
 	GXColor sky = { 150, 190, 230, 255 };
 
 	if (!models || !lane || !cache) {
@@ -1208,7 +1207,9 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 					vz = -(view[2][0] * x + view[2][2] * z + view[2][3]);
 					if (vz < 30)
 						continue;
-					px = 120 * focal * half_h / vz;
+					guMtxIdentity(place);
+					guMtxTransApply(place, place, x, 0, z);
+					px = mii_pixels_tall(models[i], view, place, proj, rmode->efbHeight);
 					lod = mii_body_lod_for(&bodies[sex], px);
 					want = px >= 150 ? 128 : px >= 60 ? 64 : 32;
 					if (want != models[i]->mask_size)   /* drawn before a later frame */
@@ -1219,8 +1220,6 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 					pose.lod = lod;
 					pose.reuse = (lod >= 4 && (frames + i) % 4) || (lod == 3 && (frames + i) % 2);
 					pose.yaw = dir ? (float) M_PI : 0;
-					guMtxIdentity(place);
-					guMtxTransApply(place, place, x, 0, z);
 					mii_draw(models[i], &pose, view, place);
 					++at_lod[lod];
 					++drawn;

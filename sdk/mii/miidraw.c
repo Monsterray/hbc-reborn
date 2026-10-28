@@ -264,7 +264,7 @@ void mii_cache_free(mii_cache *cache) {
 
 	if (!cache)
 		return;
-	for (e = cache->head; e; e = next) {   /* any a model still holds: its model is gone */
+	for (e = cache->head; e; e = next) {   /* all of them: the models were freed first */
 		next = e->next;
 		free(e->buf[0]);
 		free(e->buf[1]);
@@ -351,7 +351,16 @@ static void unshare(void *owner) {
 	free(e);
 }
 
+#ifndef MII_NO_OGC
+/* A texture was freed: a new one may come at its address, and the GPU's
+ * texture cache still hold the old texels. The next draw invalidates it. */
+static int tex_freed;
+#endif
+
 static void tex_free(mii_tex *t) {
+#ifndef MII_NO_OGC
+	tex_freed |= t->gx != NULL;
+#endif
 	if (t->shared) {
 		unshare(t->shared);
 #ifndef MII_NO_OGC
@@ -1295,7 +1304,7 @@ int mii_strips(const uint16_t *tri, int ntri, uint16_t *out, uint16_t *lens) {
 					x = third;
 				}
 			}
-			if (found < 0)
+			if (found < 0 || len == 0xFFFF)   /* a GX count is 16 bits */
 				break;
 			used[found] = 1;
 			--left;
@@ -2408,16 +2417,22 @@ static void mtx_scale(Mtx m, float x, float y, float z) {
 	guMtxScale(m, x, y, z);
 }
 
-static void load(Mtx view, Mtx model) {
+/* view times model into a matrix slot: positions, and normals by the
+ * inverse transpose. */
+static void load_to(Mtx view, Mtx model, int slot) {
 	Mtx mv, inv, nrm;
 
 	guMtxConcat(view, model, mv);
-	GX_LoadPosMtxImm(mv, GX_PNMTX0);
+	GX_LoadPosMtxImm(mv, slot);
 	if (guMtxInverse(mv, inv))
 		guMtxTranspose(inv, nrm);
 	else
 		guMtxCopy(mv, nrm);
-	GX_LoadNrmMtxImm(nrm, GX_PNMTX0);
+	GX_LoadNrmMtxImm(nrm, slot);
+}
+
+static void load(Mtx view, Mtx model) {
+	load_to(view, model, GX_PNMTX0);
 }
 
 /* A part's state: its texture (on texmap; a NULL tex with texmap
@@ -2464,15 +2479,14 @@ static const uint8_t *part_list(const mii_mesh *mesh, int lod, uint32_t *size) {
 }
 
 static void draw_mesh_lod(const mii_mesh *mesh, const GXTexObj *tex, int lod) {
+	const uint8_t *d;
+	uint32_t size;
+
 	if (!mesh->count || !mesh->dl)
 		return;
 	part_state(mesh, tex, GX_TEXMAP0);
-	if (lod > 0 && mesh->lods) {
-		lod = lod < mesh->lods ? lod : mesh->lods;
-		GX_CallDispList((uint8_t *) mesh->dl + mesh->lod_at[lod - 1], mesh->lod_size[lod - 1]);
-	} else {   /* the whole list only: the levels follow it in dl */
-		GX_CallDispList(mesh->dl, mesh->lods ? mesh->lod_at[0] : mesh->dl_size);
-	}
+	d = part_list(mesh, lod, &size);
+	GX_CallDispList((void *) d, size);
 }
 
 static void draw_mesh(const mii_mesh *mesh, const GXTexObj *tex) {
@@ -2484,6 +2498,10 @@ static void setup(Mtx view) {
 	guVector pos = { -900, 1100, 1400 }, vpos;
 
 	GX_InvVtxCache();   /* the arrays may be new at an address a freed model used */
+	if (tex_freed) {    /* and the textures */
+		GX_InvalidateTexAll();
+		tex_freed = 0;
+	}
 
 	/* One white light from the front, upper left, as RFL's icons light a
 	 * head, in view space; a grey ambient. */
@@ -2570,6 +2588,10 @@ static void *record_end(void *buf, uint32_t *size) {
 	return keep;
 }
 
+/* The head's opaque parts, in drawing order. */
+static const int head_opaque[] = { MII_PART_BEARD, MII_PART_NOSE, MII_PART_FOREHEAD, MII_PART_HAIR,
+								   MII_PART_CAP, MII_PART_FACELINE };
+
 /* A head level as two display lists: the opaque parts (the forehead on
  * PNMTX1); then, after the face's mask (drawn by each draw: expressions,
  * and faces drawn later, change it), the nose line and the glasses.
@@ -2577,13 +2599,12 @@ static void *record_end(void *buf, uint32_t *size) {
  * What a list records is what libogc sends while it records: state it has
  * marked changed goes out only at the next primitive, and after
  * GX_EndDispList libogc puts back its own copy of the state from before.
- * So a list sets, before its first triangles, all it relies on (the
- * current matrix too, which libogc already thought set), and nothing at
- * its end: what follows a call (the matrix, culling, Z) is set again by
- * the caller through libogc, which then sends it. */
+ * So the first list sets, before its first triangles, all it relies on
+ * (the current matrix too, which libogc already thought set), and nothing
+ * at its end: what follows a call (the matrix, culling, Z) is set again by
+ * the caller through libogc, which then sends it. The second list draws on
+ * the matrix draw_head makes current for the face's layers (head_mtx). */
 static int compile_head(mii_model *model, int lod) {
-	static const int opaque[] = { MII_PART_BEARD, MII_PART_NOSE, MII_PART_FOREHEAD, MII_PART_HAIR,
-								  MII_PART_CAP, MII_PART_FACELINE };
 	uint32_t cap = 1024;
 	uint8_t *buf;
 	unsigned i;
@@ -2594,10 +2615,10 @@ static int compile_head(mii_model *model, int lod) {
 	if (!(buf = record_begin(cap)))
 		return 0;
 	GX_SetCurrentMtx(GX_PNMTX0);   /* sent with the first part */
-	for (i = 0; i < sizeof(opaque) / sizeof(opaque[0]); ++i) {
-		const mii_mesh *p = &model->part[opaque[i]];
+	for (i = 0; i < sizeof(head_opaque) / sizeof(head_opaque[0]); ++i) {
+		const mii_mesh *p = &model->part[head_opaque[i]];
 
-		if (opaque[i] == MII_PART_FOREHEAD && lod > 0 && p->lods) {
+		if (head_opaque[i] == MII_PART_FOREHEAD && lod > 0) {
 			GX_SetCurrentMtx(GX_PNMTX1);
 			record_part(p, NULL, GX_TEXMAP0, lod);
 			GX_SetCurrentMtx(GX_PNMTX0);
@@ -2606,8 +2627,13 @@ static int compile_head(mii_model *model, int lod) {
 		record_part(p, p->tex >= 0 && p->tex < MII_TEX_COUNT ? &model->tex[p->tex].obj : NULL, GX_TEXMAP0, lod);
 	}
 	model->head_dl[lod][0] = record_end(buf, &model->head_dl_size[lod][0]);
-	if (!model->head_dl[lod][0] || !(buf = record_begin(cap)))
+	if (!model->head_dl[lod][0])
 		return 0;
+	if (!(buf = record_begin(cap))) {
+		free(model->head_dl[lod][0]);   /* both lists or neither */
+		model->head_dl[lod][0] = NULL;
+		return 0;
+	}
 	if (model->part[MII_PART_NOSELINE].count)
 		record_part(&model->part[MII_PART_NOSELINE], &model->tex[MII_TEX_NOSELINE].obj, GX_TEXMAP0, lod);
 	if (model->part[MII_PART_GLASS].count) {
@@ -2623,49 +2649,51 @@ static int compile_head(mii_model *model, int lod) {
 	return 1;
 }
 
-static void load_to(Mtx view, Mtx model, int slot) {
-	Mtx mv, inv, nrm;
+/* The head's matrices for a level: the head in GX_PNMTX0; at a coarser
+ * level, the forehead in GX_PNMTX1 and the face's layers in GX_PNMTX2.
+ * - A coarser head's hair may come in by its level's tolerance: the
+ *   forehead (the scalp under it) is drawn that much smaller, about the
+ *   head's middle (some 30 units out, at (0, 35, 0)), or it shows through.
+ * - The layers over the face (mask, nose line, glasses) test Z but write
+ *   none: drawn just in front of the faceline, they must not fight it or
+ *   each other. A coarser faceline and mask each move by up to the level's
+ *   tolerance, so the layers are drawn that much (and a fifth) nearer the
+ *   camera. */
+static void head_mtx(Mtx view, Mtx head, int level) {
+	float tol, k;
+	Mtx in, t, mv, inv, nrm;
 
-	guMtxConcat(view, model, mv);
-	GX_LoadPosMtxImm(mv, slot);
+	load_to(view, head, GX_PNMTX0);
+	if (level <= 0)
+		return;
+	tol = head_tol[level - 1];
+	k = 1 - tol / 30;
+	guMtxScale(in, k, k, k);
+	guMtxTransApply(in, in, 0, 35 * (1 - k), 0);
+	guMtxConcat(head, in, t);
+	load_to(view, t, GX_PNMTX1);
+	guMtxConcat(view, head, mv);
 	if (guMtxInverse(mv, inv))
 		guMtxTranspose(inv, nrm);
 	else
 		guMtxCopy(mv, nrm);
-	GX_LoadNrmMtxImm(nrm, slot);
+	mv[2][3] += 1.2f * tol;
+	GX_LoadPosMtxImm(mv, GX_PNMTX2);
+	GX_LoadNrmMtxImm(nrm, GX_PNMTX2);
 }
 
 static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head, int lod) {
-	static const int opaque[] = { MII_PART_BEARD, MII_PART_NOSE, MII_PART_FOREHEAD, MII_PART_HAIR,
-								  MII_PART_CAP, MII_PART_FACELINE };
 	static const int translucent[] = { MII_PART_MASK, MII_PART_NOSELINE, MII_PART_GLASS };
 	mii_model *mm = (mii_model *) model;   /* the lists are made on first use */
-	int level = lod > 0 && model->part[MII_PART_FACELINE].lods ?
-				(lod < MII_HEAD_LODS ? lod : MII_HEAD_LODS) : 0;
+	int built = model->part[MII_PART_FACELINE].lods;
+	int level = lod > 0 && built ? (lod < built ? lod : built) : 0;   /* as far as built */
 	unsigned i;
 
 	if (expression < 0 || expression >= MII_EXPR_COUNT || !model->mask[expression].gx)
 		expression = MII_EXPR_NORMAL;   /* not built (mii_model_opts.expressions) */
+	head_mtx(view, head, level);
 	/* The display lists, once there is a face to put between them. */
 	if (model->mask[expression].gx && (model->head_dl[level][0] || compile_head(mm, level))) {
-		load_to(view, head, GX_PNMTX0);
-		if (level > 0) {
-			float k = 1 - head_tol[level - 1] / 30;
-			Mtx in, t, mv, inv, nrm;
-
-			guMtxScale(in, k, k, k);   /* the forehead, as below */
-			guMtxTransApply(in, in, 0, 35 * (1 - k), 0);
-			guMtxConcat(head, in, t);
-			load_to(view, t, GX_PNMTX1);
-			guMtxConcat(view, head, mv);   /* the face's layers, nearer the camera */
-			if (guMtxInverse(mv, inv))
-				guMtxTranspose(inv, nrm);
-			else
-				guMtxCopy(mv, nrm);
-			mv[2][3] += 1.2f * head_tol[level - 1];
-			GX_LoadPosMtxImm(mv, GX_PNMTX2);
-			GX_LoadNrmMtxImm(nrm, GX_PNMTX2);
-		}
 		GX_CallDispList(model->head_dl[level][0], model->head_dl_size[level][0]);
 		GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);   /* the layers over the face */
 		if (level > 0)
@@ -2680,55 +2708,36 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 		return;
 	}
 
-	load(view, head);
-	for (i = 0; i < sizeof(opaque) / sizeof(opaque[0]); ++i) {
-		const mii_mesh *p = &model->part[opaque[i]];
+	/* Without lists (no face yet, or no memory for them): part by part. */
+	for (i = 0; i < sizeof(head_opaque) / sizeof(head_opaque[0]); ++i) {
+		const mii_mesh *p = &model->part[head_opaque[i]];
 
-		/* A coarser head's hair may come in by its level's tolerance: the
-		 * forehead (the scalp under it) is drawn that much smaller, about
-		 * the head's middle (some 30 units out), or it shows through. */
-		if (opaque[i] == MII_PART_FOREHEAD && lod > 0 && p->lods) {
-			Mtx in, t;
-			float k = 1 - head_tol[(lod < p->lods ? lod : p->lods) - 1] / 30;
-
-			guMtxScale(in, k, k, k);
-			guMtxTransApply(in, in, 0, 35 * (1 - k), 0);   /* about (0, 35, 0) */
-			guMtxConcat(head, in, t);
-			load(view, t);
-			draw_mesh_lod(p, NULL, lod);
-			load(view, head);
+		if (head_opaque[i] == MII_PART_FOREHEAD && level > 0) {
+			GX_SetCurrentMtx(GX_PNMTX1);
+			draw_mesh_lod(p, NULL, level);
+			GX_SetCurrentMtx(GX_PNMTX0);
 			continue;
 		}
-		draw_mesh_lod(p, p->tex >= 0 && p->tex < MII_TEX_COUNT ? &model->tex[p->tex].obj : NULL, lod);
+		draw_mesh_lod(p, p->tex >= 0 && p->tex < MII_TEX_COUNT ? &model->tex[p->tex].obj : NULL, level);
 	}
-	/* The layers over the face test Z but write none: drawn just in front of
-	 * the faceline, they must not fight it or each other. A coarser head's
-	 * faceline and mask each move by up to the level's tolerance, so its
-	 * layers are drawn that much (and a fifth) nearer the camera. */
-	if (lod > 0 && model->part[MII_PART_FACELINE].lods) {
-		Mtx mv;
-
-		guMtxConcat(view, head, mv);
-		mv[2][3] += 1.2f * head_tol[(lod < MII_HEAD_LODS ? lod : MII_HEAD_LODS) - 1];
-		GX_LoadPosMtxImm(mv, GX_PNMTX0);
-	}
+	if (level > 0)
+		GX_SetCurrentMtx(GX_PNMTX2);
 	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
 	for (i = 0; i < sizeof(translucent) / sizeof(translucent[0]); ++i) {
 		const mii_mesh *p = &model->part[translucent[i]];
 
 		if (!p->count)
 			continue;
-		if (translucent[i] == MII_PART_GLASS)
-			GX_SetCullMode(GX_CULL_NONE);
-		if (expression < 0 || expression >= MII_EXPR_COUNT || !model->mask[expression].gx)
-			expression = MII_EXPR_NORMAL;   /* not built (mii_model_opts.expressions) */
 		if (translucent[i] == MII_PART_MASK && !model->mask[expression].gx)
 			continue;   /* a GPU face not drawn yet (mii_model_make_faces) */
+		if (translucent[i] == MII_PART_GLASS)
+			GX_SetCullMode(GX_CULL_NONE);
 		draw_mesh_lod(p, translucent[i] == MII_PART_MASK ? &model->mask[expression].obj :
-					  &model->tex[p->tex].obj, lod);
+					  &model->tex[p->tex].obj, level);
 	}
 	GX_SetCullMode(GX_CULL_BACK);
 	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+	GX_SetCurrentMtx(GX_PNMTX0);
 }
 
 /* A Wii body (miibody.c), skinned on the GPU as NW4R draws a model: each
@@ -3051,6 +3060,27 @@ int mii_view(const mii_model *model, const mii_pose *pose, float aspect, float m
 	guPerspective(proj, 20, aspect, near, eye.z + r);
 	guLookAt(view, &eye, &up, &target);
 	return MII_OK;
+}
+
+float mii_pixels_tall(const mii_model *model, Mtx view, Mtx place, Mtx44 proj, float viewport_h) {
+	float top, half, at[3] = { 0, 0, 0 }, up = 1, z;
+	int i;
+
+	if (!model || !view || !proj)
+		return 0;
+	mii_model_bounds(model, 0, &top, &half);
+	if (place) {
+		/* The Mii's middle, and its height, as placed. */
+		for (i = 0; i < 3; ++i)
+			at[i] = place[i][1] * top / 2 + place[i][3];
+		up = sqrtf(place[0][1] * place[0][1] + place[1][1] * place[1][1] + place[2][1] * place[2][1]);
+	} else {
+		at[1] = top / 2;
+	}
+	z = -(view[2][0] * at[0] + view[2][1] * at[1] + view[2][2] * at[2] + view[2][3]);
+	if (z < 1)   /* at or behind the camera: as near as can be */
+		return 1e9f;
+	return top * up * proj[1][1] * viewport_h / 2 / z;
 }
 
 int mii_capture(const mii_model *model, const mii_pose *pose, int w, int h, float margin,

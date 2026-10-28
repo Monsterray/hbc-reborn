@@ -28,7 +28,7 @@ from NW4R's model drawing:
 
 | | 1.1.x | 2.0 |
 |---|---|---|
-| Body | CPU skinning (0.8 ms), 54 KB of vertices through the FIFO a frame | the MDL0's own display lists, matrix palette on the GPU: about 1 KB a frame, no per-vertex CPU work. CPU skinning stays as the host tests' reference |
+| Body | CPU skinning (0.8 ms), 54 KB of vertices through the FIFO a frame | the MDL0's own display lists, matrix palette on the GPU: about 1 KB a frame, no per-vertex CPU work. CPU skinning stays as the host tests' reference (done: HBC 1.11.3) |
 | Passes | `mii_draw` does both | `mii_draw_opa` and `mii_draw_xlu`; `mii_draw` = both, in order |
 | GX state | about 15 changes the app must undo | `mii_draw_setup` / `mii_draw_done`: one documented state, set and handed back |
 | Depth | the app must know to give a wide range | `mii_view` reports the range the Mii needs; documented and checked |
@@ -82,8 +82,10 @@ HBC will offer both modes, with a setting.
      `mii_model_make_faces`): HBC 1.11.9. 200 walking Miis hold 60 fps;
      the CPU's posing is now the limit.
    - Levels by likeness (half a pixel where drawn), a fourth level, strips,
-     paired-single posing, head display lists: HBC 1.11.10. 400 walking
-     Miis at 48 fps, 800 at 27; a far Mii costs the CPU about 16 us.
+     paired-single posing, head display lists: HBC 1.11.10; a far Mii costs
+     the CPU about 16 us.
+   - The SDK's audit, `mii_pixels_tall`: HBC 1.12.0. With levels chosen by
+     a Mii's real height on screen, 200 walking Miis at 60 fps, 400 at 38.
 2. **API:** `mii_draw_opa`, `mii_draw_xlu`, `mii_draw_setup`,
    `mii_draw_done`, `mii_draw_in_rect` with the two modes; `mii_view`'s
    depth needs.

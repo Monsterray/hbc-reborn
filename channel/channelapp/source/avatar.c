@@ -341,6 +341,8 @@ static void check_pose(const mii_pose *pose) {
 	if (!model.body)
 		return;
 	mii_body_skin(&model, pose);   // the CPU reference; the GPU drew from the palette
+	if (!model.skin_pos)
+		return;   // no memory for it
 	for (i = 0; i < 3 * model.body->nverts; ++i) {
 		float p = model.skin_pos[i], n = model.skin_nrm[i];
 

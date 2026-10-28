@@ -13,15 +13,23 @@
  *                                 (the head alone: mii_icon)
  *   mii_draw(model, ...)          or draw it straight into your 3D scene
  *
+ * Many Miis (a crowd, a plaza): build them with mii_model_build and
+ * mii_model_opts: one mii_cache for all of them (identical parts are kept
+ * once), only the expressions you draw, levels of detail (opts.lods with
+ * mii_body_make_lods; each frame pose.lod = mii_body_lod_for), and the
+ * faces drawn by the GPU (opts.gpu_faces, then mii_model_make_faces between
+ * frames). sdk/mii/README.md, "Many Miis", has the numbers.
+ *
  * How it draws (docs/research/mii-rendering.md has the sources):
  *   - The head is RFL's (the Wii's face library): each part's shape from
  *     RFL_Res.dat, placed by the faceline's nose, beard and hair anchors and
  *     the Mii's sizes and positions, coloured from RFL's tables.
- *   - The face (eyes, eyebrows, mouth, mustache, mole) is composited on the
- *     CPU into one texture per expression, as RFL lays them out; the parts
- *     RFL colours with TEV tricks (skin under make-up, the cap) are baked
- *     into plain textures. So drawing needs only "texture times light":
- *     no EFB format change, no TEV state beyond one stage.
+ *   - The face (eyes, eyebrows, mouth, mustache, mole) is one texture per
+ *     expression, laid out as RFL lays them out: composited on the CPU, or
+ *     drawn by the GPU (gpu_faces) as RFL does. The parts RFL colours with
+ *     TEV tricks (skin under make-up, the cap) are baked into plain
+ *     textures. So drawing needs only "texture times light": no EFB format
+ *     change, no TEV state beyond one stage.
  *   - The body: RFL has none. With the Mii Channel's own (maleBody.brres,
  *     femaleBody.brres, which Save Mii faces copies beside RFL_Res.dat:
  *     mii_body_load, mii_model_set_body) it is the Wii's, posed by the Mii
@@ -33,11 +41,14 @@
  *
  * Calling:
  *   - Every call that can fail returns >= 0 or a negative MII_E_* (mii.h).
- *   - mii_model_make takes about 0.1 s and 1 MiB (seven expressions, and
- *     each part as a display list): call it outside the frame loop, from
- *     any thread (it writes no GX commands). Drawing replays the lists, so
- *     a whole Mii puts about 2 KB into the GX FIFO, not its 240 KB of
- *     vertices (a frame's commands should stay well under the FIFO).
+ *   - mii_model_make takes about 0.1 s and, with all seven expressions at
+ *     128 px, about 280 KB (one expression: about 70 KB; with a cache
+ *     shared by many Miis, 12 to 31 KB each). Call it outside the frame
+ *     loop, from any thread (it writes no GX commands; Miis sharing a
+ *     cache are built and freed on one thread at a time). Drawing replays
+ *     display lists: a whole Mii puts a few KB into the GX FIFO, not its
+ *     vertices, and costs the CPU about 16 us (a frame's commands should
+ *     stay well under the FIFO).
  *   - mii_capture and mii_draw leave GX state changed (see each): restore
  *     yours after them.
  *
@@ -63,7 +74,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.2.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0: crowds */
+#define MIIDRAW_VERSION "1.2.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -150,7 +161,7 @@ typedef struct {
 	uint8_t *dl[MII_BODY_OBJS];
 	uint32_t dl_size[MII_BODY_OBJS];
 	int tris;              /* triangles, all objects */
-	float err;             /* the farthest a vertex was moved, in body units */
+	float err;             /* the largest fold this level made, in body units */
 } mii_body_lod;
 
 /* A pose's bones, local (each one's rotation and translation from its
@@ -162,6 +173,8 @@ typedef struct {
 	float r[MII_BODY_BONES][3][3], t[MII_BODY_BONES][3];
 } mii_pose_memo;
 
+/* A loaded body. Read-only to the app once loaded: drawing writes only its
+ * pose memo (below). */
 typedef struct {
 	uint8_t *data;         /* the file, kept: animation keys point into it */
 	uint32_t size;
@@ -215,6 +228,8 @@ int mii_body_anim(const mii_body *body, const char *name);
  * shipped: each step folds a vertex into a neighbour on the same bone, the
  * fold that moves the surface least (quadric error over the area behind
  * it), keeping open edges and turning no triangle more than 60 degrees.
+ * It frees the levels made before: not while the GPU may still draw them.
+ * With your own tolerances, n is how many (1 to MII_BODY_LODS).
  * 0 or MII_E_*. */
 int mii_body_make_lods(mii_body *body, const float *tolerances, int n);
 /* The level for a Mii this many pixels tall on screen: 0 (the whole body)
@@ -270,7 +285,8 @@ typedef struct {
 
 enum { MII_TEX_FACE, MII_TEX_CAP, MII_TEX_NOSELINE, MII_TEX_GLASS, MII_TEX_COUNT };
 
-/* A texture as linear RGBA bytes (and, on the Wii, GX's RGB5A3 tiles). */
+/* A texture: on the Wii, GX's RGB5A3 tiles (rgba NULL once built); on a PC,
+ * linear RGBA bytes. */
 typedef struct {
 	int w, h;
 	int wrap_s, wrap_t;    /* 0 clamp, 1 repeat, 2 mirror (GX's values) */
@@ -300,6 +316,8 @@ enum {
 	MII_PARTS
 };
 
+/* A built Mii. Read what you need (m, the bounds below); the rest is the
+ * library's own, written by building and drawing. */
 typedef struct {
 	mii m;
 	mii_mesh part[MII_PARTS];
@@ -372,7 +390,7 @@ typedef struct {
 	 * Miis sharing a part through a cache share its levels. */
 	int lods;
 	/* 1: the faces drawn by the GPU, as RFL does (RFLiMakeTexture): about
-	 * 0.2 ms each against 1 to 6 ms on the CPU. They need the EFB, so
+	 * 0.08 ms each against 1 to 6 ms on the CPU. They need the EFB, so
 	 * mii_model_build leaves them to mii_model_make_faces, which the thread
 	 * that draws calls between frames (as mii_capture). Until then the
 	 * model draws without a face. A PC build draws them on the CPU. */
@@ -408,8 +426,8 @@ void mii_mesh_free(mii_mesh *mesh);
  * not what it works out). Greedy: from the triangle with the fewest free
  * neighbours, on through the neighbour across the strip's last edge, the
  * winding kept. out gets the strips' vertices, lens each strip's length;
- * returns how many strips, or -1 (no memory). out needs 3 * ntri entries,
- * lens ntri. */
+ * returns how many strips (each at most 65535 vertices), or -1 (no
+ * memory). out needs 3 * ntri entries, lens ntri. */
 int mii_strips(const uint16_t *tri, int ntri, uint16_t *out, uint16_t *lens);
 
 /* ---- Posing ---------------------------------------------------------------- */
@@ -457,17 +475,21 @@ typedef struct {
 float mii_fade_weight(float seconds, float length);
 
 /* The pose's bones in the world, for a Wii body (portable: tests use it):
- * each bone's rotation and position, the body scale applied. */
+ * each bone's rotation and position, the body scale applied. This and the
+ * two below write the body's pose memo, as drawing does: one thread per
+ * body. */
 void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]);
 /* The posed vertices into model->skin_pos and skin_nrm (3 floats each): the
- * CPU reference the GPU's palette is tested against. */
+ * CPU reference the GPU's palette is tested against. Without the memory
+ * for them they stay NULL. */
 void mii_body_skin(mii_model *model, const mii_pose *pose);
 /* Each bone's matrices in the body's space for the pose: position = rotation
  * times the bone's own scale, then its position; normal = the rotation (unit
  * length kept: the GPU does not renormalise). What the GPU draws with,
  * before the camera and the model's placement. */
 void mii_body_matrices(const mii_model *model, const mii_pose *pose, float pos[][3][4], float nrm[][3][3]);
-/* The same, from a pose mii_body_pose worked out. */
+/* The same, from a pose mii_body_pose worked out (model, its body and the
+ * arrays must be valid: no checks). */
 void mii_body_matrices_posed(const mii_model *model, float rot[][3][3], float at[][3], float pos[][3][4],
 							 float nrm[][3][3]);
 #ifndef MII_NO_OGC
@@ -495,9 +517,12 @@ void mii_model_bounds(const mii_model *model, int head_only, float *top, float *
  * a Wii body, GX_VTXFMT1 (its own); GX_LIGHT0; one colour
  * channel (COLOR0 lit by GX_LIGHT0, ALPHA0 unlit) and its ambient and
  * material colours; one texture coordinate generation (TEXCOORD0 from TEX0,
- * identity); one TEV stage, its order and operation; GX_TEXMAP0; GX_PNMTX0's
- * position and normal matrices and the current matrix (GX_PNMTX0); Z (on,
- * LEQUAL, update) and its compare after texturing (GX_SetZCompLoc false);
+ * identity); one TEV stage, its order and operation; GX_TEXMAP0; the
+ * position and normal matrices of GX_PNMTX0 and, for a coarser head
+ * (pose.lod), GX_PNMTX1 and GX_PNMTX2, and the current matrix (GX_PNMTX0);
+ * with a Wii body, the GX_POSMTXARRAY, GX_NRMMTXARRAY and GX_TEXMTXARRAY
+ * arrays; Z (on, LEQUAL, update) and its compare after texturing
+ * (GX_SetZCompLoc false);
  * blending (source alpha) and the alpha compare (alpha > 0); culling.
  * It assumes the default TEV swap tables, no indirect stages and no fog.
  *
@@ -528,6 +553,13 @@ extern mii_profile_ticks mii_profile;
 int mii_view(const mii_model *model, const mii_pose *pose, float aspect, float margin, Mtx44 proj,
 			 Mtx view);
 
+/* How many pixels tall the Mii stands on screen, drawn with this camera
+ * (`view`), placing (`place`, or NULL) and perspective projection, in a
+ * viewport `viewport_h` pixels tall: what mii_body_lod_for and
+ * mii_model_set_mask_size go by. Measured at the Mii's middle; a Mii at or
+ * behind the camera is as near as can be. */
+float mii_pixels_tall(const mii_model *model, Mtx view, Mtx place, Mtx44 proj, float viewport_h);
+
 /* Draws the Mii into the EFB's top-left w x h pixels and copies that, with
  * alpha (clear where there is no Mii), to `dst` as GX_TF_RGBA8 (w*h*4 bytes,
  * 32-byte aligned; w and h multiples of 4, at most 640 x 528), clearing the
@@ -545,7 +577,8 @@ int mii_capture(const mii_model *model, const mii_pose *pose, int w, int h, floa
 				float stretch_x, GXColor clear, void *dst);
 
 /* A head icon, as the Wii Menu's: size x size, the head framed as RFL frames
- * it, on `background` (alpha 0 for none). Same rules as mii_capture. */
+ * it, on `background` (alpha 0 for none). Same rules as mii_capture; the
+ * corner is cleared to opaque black after. */
 int mii_icon(const mii_model *model, int expression, int size, GXColor background, void *dst);
 
 /* Draws a model's faces with the GPU (mii_model_opts.gpu_faces), as RFL's

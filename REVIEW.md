@@ -161,6 +161,63 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.12.0: release; Miis by the hundred, and the SDK's audit
+
+1.12.0 releases what 1.11.2 to 1.11.10 built in sdk/mii (`MIIDRAW_VERSION`
+1.2.0): the Mii Channel's body skinned on the GPU with cross-fades, a Mii
+that keeps only what it draws, parts shared between Miis, levels of detail
+made from the user's own files, faces drawn by the GPU, and the drawing done
+by the hardware. 200 walking Miis hold 60 fps on the bench Wii.
+
+- **Audit of sdk/mii** (two independent reads of miidraw.c and miibody.c,
+  the docs and their users). Fixed:
+  - A body's display list was walked by its own counts: a damaged
+    primitive count read past its object (into the next file bytes, and the
+    levels of detail past the copied list). Each load and primitive must now
+    fit in its object.
+  - A second model in a `.brres` was read over the first (its arrays
+    leaked, counts grew). The first only.
+  - One bad animation made every animation after it fail (a sticky flag).
+  - `mii_model_set_body` freed the built body before its own allocations:
+    out of memory, a Mii had no body at all. It allocates first now, and on
+    failure the model is unchanged.
+  - `mii_body_make_lods` leaked its runs on a list with too many.
+  - A head drawn at a level past those it was built with (body 4 levels,
+    head 2, `pose.lod` 4) shrank its forehead and moved its face's layers by
+    level 4's amount over level 2's triangles. The level is now clamped once,
+    and one function (`head_mtx`) loads the head's matrices for both the
+    display-list and the part-by-part paths.
+  - Out of memory between a head level's two lists left the first: the
+    nose line and glasses never drew again. Both or neither.
+  - The GPU's texture cache was never invalidated on `mii_draw`'s path: a
+    face built where a freed one was could show the old texels. The next
+    draw after a texture is freed invalidates it.
+  - `mii_strips` stops a strip at 65535 vertices (a GX count).
+  - The whole body's triangle count now leaves out strips' turning
+    triangles by position (each corner is its own skin vertex, so the
+    index test never fired): `full_tris` is the real count.
+  - Out of range, `pose.anim` stands at Wait's first frame, as documented.
+- **Easier to use:**
+  - `mii_pixels_tall(model, view, place, proj, viewport_h)`: how tall a Mii
+    stands on screen, what `mii_body_lod_for` and the face size go by. The
+    walk test used 120 units for a Mii's height; a Mii is about 170 (what
+    the levels' half-pixel tolerances assume), so it chose levels a third
+    too coarse. With the right sizes, bench Wii, 10 s each way: 200 Miis
+    59.9 fps (CPU 3.8 ms, GPU 5.7 ms a frame), 400 Miis 38.3 fps (CPU 8.6
+    ms, GPU 8.4 ms). 1.11.10's 48 fps for 400 was with the coarser levels.
+  - miidraw.h's overview names the crowd path and current numbers (it said
+    1 MiB a Mii and CPU faces); each struct says what is the app's and what
+    the library's; `mii_draw` lists the matrices and arrays it changes
+    (`GX_PNMTX1`, `GX_PNMTX2`, the matrix arrays); `mii_body_make_lods`
+    says it frees the levels before; the pose functions say they write the
+    body's memo; `mii_icon` clears to black.
+  - sdk/mii/README.md: a crowd example (cache, levels, GPU faces, reuse).
+  - docs/mii.md's CPU cost and docs/mii-sdk-2.md's step 1 brought up to date.
+- **Checked:** PC suite (198 tests); 16,000 damaged bodies under ASan and
+  UBSan; bench Wii `mii_app draw` (paired-single pose within 0.00002 of
+  the portable code, GPU faces within 0.08 of the CPU's on average, every
+  level drawn, no failures) and `walk 200,400`.
+
 ### 1.11.10: levels by likeness, a fourth level, and the hardware doing the drawing
 
 The user found the smallest head disfigured and asked for a fourth level,
