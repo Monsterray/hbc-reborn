@@ -30,6 +30,10 @@
             levels of detail: COUNTS random Miis walking in from the horizon to
             the bottom of the screen, then away into it, SECONDS each way;
             "max" builds until memory runs out; TV pictures every 3 s
+  parade [SECONDS [COLS [GAP]]]
+            ranks of COLS (20) Miis GAP (900) apart walking round from the
+            horizon to the bottom of the screen, SECONDS (60) each way, over
+            lines on the grass where each level of detail begins
   remote-add ID / remote-remove ID
             copy the database's Mii with that ID to Wii Remote 1, or take it
             off; written and read back
@@ -181,7 +185,7 @@ def main():
             print(f"{name}.png: {w} x {h}", flush=True)
     elif step == "gpuprobe" and len(sys.argv) > 2:
         ok = app_ok(run_app(out, step, *sys.argv[2:4], label=step, wait_s=900))
-    elif step in ("crowd", "walk") and len(sys.argv) > 2:
+    elif step in ("crowd", "walk", "parade") and (len(sys.argv) > 2 or step == "parade"):
         import threading
         done = threading.Event()
 

@@ -161,6 +161,41 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.12.1: the levels where they look right, and the hair whole
+
+The user watched Miis walk through the levels on the bench Wii and chose
+where each should begin; and saw level 2 tear now and then on short hair.
+
+- **`mii_app parade [SECONDS [COLS [GAP]]]`** (and `tests/wii_mii.py
+  parade`): ranks of 20 Miis 900 apart walking round from the horizon to
+  the bottom of the screen (out of sight before they come round again), then
+  the other way, seen from higher up so the grass shows between the ranks.
+  A line across the grass marks where each level begins for a Mii of middle
+  height: white level 1, yellow 2, orange 3, red 4, found from
+  `mii_body_lod_for` itself.
+- **Where the levels begin** (`mii_body_lod_for`, sdk/mii 1.2.1): under 90,
+  39, 30.5 and 25 pixels tall, was 150, 90, 50 and 25. Level 1 at the old
+  level 2's point; level 2 halfway (in distance) from there to level 4's,
+  level 3 halfway on. The tolerances stay half a pixel at the old points,
+  so each level is drawn smaller than it was made for.
+- **The hair cracked.** Its thin pieces (bangs, sideburns) folded apart
+  and the sky showed through, under a pixel wide at level 2's size, so it
+  sparkled as a Mii walked; worst on short styles.
+  - A PC check (every one of the 72 styles, opaque parts on magenta from
+    above-front, above-back and the side, a crack being a gap with the head
+    on both sides): 47 crack pixels at level 2, 478 at level 3.
+  - Not the forehead shrunk under coarse hair (off: 46 and 441), not the
+    face's layers over the hair (21 pixels), not the hair's outline (kept
+    whole: 47 and 464).
+  - The hair now folds at half the tolerance: 6 and 243. About 30 more
+    hair triangles a Mii at level 2.
+  - Heads, 50 random Miis: 494 triangles to 376, 338, 267, 175 (were 357,
+    306, 216, 124). Against the whole head at 90, 39, 30 and 25 pixels,
+    colour off by 1.7, 2.9, 6.0, 13.9 of 255 and silhouettes 99.8, 99.5,
+    98.6, 95.5% the same (level 4 was 24 and 91.4%).
+- **Bench Wii**, parade (120 Miis, 120 s each way): 59.9 frames a second
+  both ways, CPU 2.6 ms, GPU 4.1 ms a frame (3.9 before the hair change).
+
 ### 1.12.0: release; Miis by the hundred, and the SDK's audit
 
 1.12.0 releases what 1.11.2 to 1.11.10 built in sdk/mii (`MIIDRAW_VERSION`

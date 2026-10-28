@@ -1652,8 +1652,10 @@ static int lod_object(mii_body *body, int k, const float *world, const float *to
 }
 
 int mii_body_make_lods(mii_body *body, const float *tolerances, int n) {
-	/* Half a pixel at the largest each level is drawn (mii_body_lod_for: a
-	 * Mii 150, 90, 50 and 25 pixels tall, about 170 units), as the head's. */
+	/* Half a pixel at a Mii 150, 90, 50 and 25 pixels tall (about 170
+	 * units), as the head's; mii_body_lod_for draws each level smaller than
+	 * that (from 90, 39, 30.5 and 25), so each is a little finer than it
+	 * need be. */
 	static const float half_pixel[MII_BODY_LODS] = { 0.57f, 0.94f, 1.7f, 3.4f };
 	float rot[MII_BODY_BONES][3][3], at[MII_BODY_BONES][3], *world;
 	int i, k, vbase = 0, r = 0;
@@ -1718,7 +1720,9 @@ int mii_body_make_lods(mii_body *body, const float *tolerances, int n) {
 }
 
 int mii_body_lod_for(const mii_body *body, float pixels_tall) {
-	static const float from[MII_BODY_LODS] = { 150, 90, 50, 25 };   /* each level's height and under */
+	/* Each level's height and under: level 1 from 90 px; 2 and 3 halfway,
+	 * in distance, from the last to 25 (39 and 30.5); 4 from 25. */
+	static const float from[MII_BODY_LODS] = { 90, 39.1f, 30.5f, 25 };
 	int l = 0;
 
 	while (body && l < body->nlods && pixels_tall < from[l])

@@ -1322,8 +1322,9 @@ int mii_strips(const uint16_t *tri, int ntri, uint16_t *out, uint16_t *lens) {
 /* ---- Coarser heads ------------------------------------------------------------ */
 
 /* How far each coarser level may change a head part, in head units: half
- * a pixel at the largest the level is drawn (mii_body_lod_for: a Mii 150,
- * 90, 50 and 25 pixels tall, about 170 units). */
+ * a pixel at a Mii 150, 90, 50 and 25 pixels tall (about 170 units). The
+ * levels are drawn smaller than that (mii_body_lod_for: from 90, 39, 30.5
+ * and 25 pixels), so each is a little finer than it need be. */
 static const float head_tol[MII_HEAD_LODS] = { 0.57f, 0.94f, 1.7f, 3.4f };
 
 static void quad_add_plane(double *q, const double n[3], double d, double w) {
@@ -1655,9 +1656,9 @@ done:
 	return alive;
 }
 
-/* A part's coarser levels, each from the last (head_tol): their corners
- * after the full list in idx. */
-static int head_lods(mii_mesh *mesh, int textured, int n) {
+/* A part's coarser levels, each from the last (head_tol times `scale`):
+ * their corners after the full list in idx. */
+static int head_lods(mii_mesh *mesh, int textured, int n, float scale) {
 	const float *tol = head_tol;
 	uint16_t *all;
 	uint32_t at = mesh->count;
@@ -1676,7 +1677,7 @@ static int head_lods(mii_mesh *mesh, int textured, int n) {
 			memmove(all + at, all + from, sizeof(uint16_t) * 3 * prev);
 			got = prev;
 		} else {
-			got = simplify(mesh, textured, all + from, prev, tol[l], all + at);
+			got = simplify(mesh, textured, all + from, prev, tol[l] * scale, all + at);
 			if (got < 0)
 				return MII_E_MEM;
 		}
@@ -2286,7 +2287,12 @@ int mii_model_build(const mii_res *res, const mii *m, const mii_model_opts *opts
 
 		if (mesh_twin(out->cache, &out->part[i], lods))
 			continue;
-		if (lods && (r = head_lods(&out->part[i], out->part[i].tex >= 0, lods)) < 0)   /* coarser heads */
+		/* The hair at half the tolerance: its thin pieces (bangs,
+		 * sideburns) folded at the whole of it parted, and the sky showed
+		 * through the cracks, sparkling as a Mii walked (level 2, short
+		 * styles; 72 styles in three views: 47 crack pixels against 6). */
+		if (lods && (r = head_lods(&out->part[i], out->part[i].tex >= 0, lods,
+								   i == MII_PART_HAIR ? 0.5f : 1)) < 0)   /* coarser heads */
 			goto fail;
 	}
 

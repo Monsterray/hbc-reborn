@@ -86,6 +86,8 @@ HBC will offer both modes, with a setting.
      the CPU about 16 us.
    - The SDK's audit, `mii_pixels_tall`: HBC 1.12.0. With levels chosen by
      a Mii's real height on screen, 200 walking Miis at 60 fps, 400 at 38.
+   - Switch points chosen by eye on the bench Wii (`mii_app parade`: 90,
+     39, 30.5 and 25 pixels), the hair at half the tolerance: HBC 1.12.1.
 2. **API:** `mii_draw_opa`, `mii_draw_xlu`, `mii_draw_setup`,
    `mii_draw_done`, `mii_draw_in_rect` with the two modes; `mii_view`'s
    depth needs.
