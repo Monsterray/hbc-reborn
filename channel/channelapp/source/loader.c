@@ -865,6 +865,8 @@ static void ld_error(const loader_result *result, view *sub_view,
 void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 	char caption[PATH_MAX + 32];
 	char filename[PATH_MAX];
+	char shown[64];
+	const char *note = NULL;
 
 	ld_load_arg ta;
 	s32 res;
@@ -939,7 +941,14 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		ta.args_len = ta_tcp.args_len;
 		ta.fd = ta_tcp.s;
 
-		sprintf (caption, _("Receiving from %s"), ta_tcp.client);
+		// What the sender called it (HBCA), with where it came from below;
+		// a plain Wiiload sender names nothing until the data is in.
+		if (devnet_upload_caption (shown, sizeof (shown))) {
+			snprintf (caption, sizeof (caption), "%s %s", _("Receiving"), shown);
+			note = ta_tcp.client;
+		} else {
+			sprintf (caption, _("Receiving from %s"), ta_tcp.client);
+		}
 	} else {
 		return;
 	}
@@ -999,7 +1008,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		return;
 	}
 
-	v = dialog_progress (sub_view, caption, ta.data_len + ta.args_len);
+	v = dialog_progress (sub_view, caption, note, ta.data_len + ta.args_len);
 
 	dialog_fade (v, true);
 

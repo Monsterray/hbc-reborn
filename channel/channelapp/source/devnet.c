@@ -46,6 +46,7 @@ static hbc_netlog_block kept;
 // The next Wiiload upload's name, from its sender (HBCA), and when it came.
 #define UPLOAD_NAME_TTL_S 120
 static char upload_name[64];
+static u16 upload_name_len;  // with the file after the name's NUL, if any
 static u32 upload_flags;
 static u64 upload_name_at;
 // What became of the last upload (HBCS "upload"), counted from 1.
@@ -446,6 +447,8 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		// The name of the Wiiload upload that follows, for the Message
 		// Board's play log: hbc.py sends the app's folder or file name.
 		// Flags (protocol 6): DEVNET_UPLOAD_YES installs a ZIP unasked.
+		// A NUL and the file may follow the name, for the receive dialog;
+		// an older HBC keeps it but reads only the name.
 		char name[sizeof(upload_name)];
 		u16 len = get_u16(hdr + 4), flags = get_u16(hdr + 6);
 		u32 level;
@@ -458,6 +461,7 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		name[len] = 0;
 		_CPU_ISR_Disable(level);
 		memcpy(upload_name, name, len + 1);
+		upload_name_len = len;
 		upload_flags = flags;
 		upload_name_at = gettime();
 		_CPU_ISR_Restore(level);
@@ -578,6 +582,23 @@ bool devnet_take_upload_name(char *out, size_t size) {
 	if (have)
 		strlcpy(out, upload_name, size);
 	upload_name[0] = 0;
+	_CPU_ISR_Restore(level);
+	return have;
+}
+
+bool devnet_upload_caption(char *out, size_t size) {
+	bool have;
+	u32 level;
+	size_t n;
+
+	_CPU_ISR_Disable(level);
+	have = upload_name[0] && upload_name_at &&
+			diff_sec(upload_name_at, gettime()) < UPLOAD_NAME_TTL_S;
+	if (have) {
+		n = strlen(upload_name);
+		strlcpy(out, n + 1 < upload_name_len ? upload_name + n + 1 : upload_name,
+				size);
+	}
 	_CPU_ISR_Restore(level);
 	return have;
 }

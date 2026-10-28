@@ -112,6 +112,12 @@ start picks one at random; `hbc.py transfer-style bounce` forces one for
 testing). A moving name rests a second at its start, and a bouncing one at
 each end; "Receiving" and the percentage stay put.
 
+When receiving a Wiiload upload from `hbc.py`, the popup heading shows the
+file name, including its app folder for `boot.dol` or `boot.elf`. The sender's
+IP address appears below the progress bar at the lower left, separate from
+the percentage on the right. A sender that supplies no name keeps the
+existing “Receiving from <address>” heading.
+
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame
 fails the transfer and leaves no partial file. On an 802.11g Wii a typical

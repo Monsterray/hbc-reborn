@@ -106,8 +106,9 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z,
 void widget_grid_app_entry (widget *w, s16 x, s16 y, s16 z,
 						const app_entry *entry);
 
+// note, when not NULL, is a line at the lower left, under the bar.
 void widget_progress (widget *w, s16 x, s16 y, s16 z,
-						const char *caption, u32 max);
+						const char *caption, const char *note, u32 max);
 void widget_gradient (widget *w, s16 x, s16 y, s16 z,
 						u16 width, u16 height,
 						u32 c1, u32 c2, u32 c3, u32 c4);

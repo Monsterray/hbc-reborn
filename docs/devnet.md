@@ -46,7 +46,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCF` | op (1), flags (1), path length (2), size (4), 0 (4) | path, then the data for a put | see below |
 | `HBCN` | log port (2), zero | none | empty; sets the app log target |
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
-| `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
+| `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes in all with an optional NUL and file after it | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). The receive dialog shows the file (hbc.py sends `<app>/boot.dol`) with the sender's address below, else the name; an older HBC reads the name alone. Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
 | `HBCM` | zero | none | HOME > HBC > Save Mii faces: copies the Wii Menu's `RFL_Res.dat` to `sd:/mii/RFL_Res.dat`, and (1.10.26) the Mii Channel's `maleBody.brres` and `femaleBody.brres` beside it; the reply body is the message the toast shows, with status 0 or the error (HBC 1.10.20; [mii.md](mii.md#the-face-models-rfl_resdat)) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |

@@ -34,7 +34,8 @@ void dialogs_deinit (void);
 void dialog_fade (view *v, bool fade_in);
 
 view * dialog_app (const app_entry *entry, const view *sub_view);
-view * dialog_progress (const view *sub_view, const char *caption, u32 max);
+view * dialog_progress (const view *sub_view, const char *caption,
+						const char *note, u32 max);
 void dialog_set_progress (const view *v, u32 progress);
 view * dialog_about (const view *sub_view);
 
