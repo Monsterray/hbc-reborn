@@ -10,10 +10,11 @@
 //      HBC never ships them: the user saves the Wii's own copy to the SD card
 //      with HOME > HBC > Save Mii faces (miires.c), and every app reads that.
 //   2. mii_db_load and mii_db_get: the Mii, from the Mii Channel's database.
-//   3. mii_model_make: shapes, face textures for each expression, a body;
-//      then mii_body_load and mii_model_set_body: the Mii Channel's own body
-//      for the Mii's sex (saved beside the faces), with its animations. About
-//      0.1 s and 1 MiB, so a background thread does 1 to 3.
+//   3. mii_model_build: shapes, face textures for the three expressions it
+//      shows (normal, smile, blink), a body; then mii_body_load and
+//      mii_model_set_body: the Mii Channel's own body for the Mii's sex
+//      (saved beside the faces), with its animations. About 0.1 s, so a
+//      background thread does 1 to 3.
 //   4. Each frame avatar_frame poses it and queues a GFXE_DRAW entity where
 //      a sprite would go. When HBC's frame reaches it, avatar_draw sets the
 //      viewport to that rectangle and a thin band of depth (gfx.c's
@@ -138,7 +139,11 @@ static void *loader(void *arg) {
 		state = AV_NONE;
 		return NULL;
 	}
-	r = mii_model_make(&res, &m, 128, &model);
+	{
+		mii_model_opts o = { 128, MII_EXPR_BIT(MII_EXPR_SMILE) | MII_EXPR_BIT(MII_EXPR_BLINK), NULL, 0, 0 };
+
+		r = mii_model_build(&res, &m, &o, &model);
+	}
 	mii_res_free(&res);   // the model keeps all it needs
 	if (r < 0) {
 		hlog("Avatar: the Mii in slot %d did not build (%s)\n", slot, mii_strerror(r));
@@ -218,7 +223,15 @@ static struct {
 	float blink_at, smile_until, next_smile;
 	float wave_from, next_wave;
 	float raise;
+	// The animation last shown and its frame; on a change, a cross-fade
+	// from it (still playing) for FADE_S.
+	int last_anim;
+	float last_frame;
+	int from_anim;
+	float from_frame, from_t;
 } a;
+
+#define FADE_S 0.4f   // how long a change of animation blends
 
 static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float sy, float sw, float sh) {
 	float t = a.t, dt = t - a.last;
@@ -281,6 +294,22 @@ static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float 
 		p->anim = wave >= 0 && anim_greet ? anim_greet : anim_wait;
 		p->frame = (wave >= 0 && anim_greet ? wave : t) * 60;
 		p->bob = 0;
+		// Into the wave and back out: a cross-fade, not a snap.
+		if (a.last_anim && p->anim != a.last_anim) {
+			a.from_anim = a.last_anim;
+			a.from_frame = a.last_frame;
+			a.from_t = t;
+		}
+		a.last_anim = p->anim;
+		a.last_frame = p->frame;
+		p->from_weight = a.from_anim ? mii_fade_weight(t - a.from_t, FADE_S) : 0;
+		if (p->from_weight > 0) {
+			p->from_anim = a.from_anim;
+			// Wait loops, so it plays on as it fades. The wave is done: it
+			// holds its last pose (frames wrap, so playing on would fade
+			// toward the wave starting over, the arm going up again).
+			p->from_frame = a.from_anim == anim_greet ? a.from_frame : a.from_frame + (t - a.from_t) * 60;
+		}
 	}
 
 	// The face: smiles now and then; blinks every few seconds.
@@ -311,6 +340,9 @@ static void check_pose(const mii_pose *pose) {
 
 	if (!model.body)
 		return;
+	mii_body_skin(&model, pose);   // the CPU reference; the GPU drew from the palette
+	if (!model.skin_pos)
+		return;   // no memory for it
 	for (i = 0; i < 3 * model.body->nverts; ++i) {
 		float p = model.skin_pos[i], n = model.skin_nrm[i];
 
@@ -389,6 +421,7 @@ const gfx_queue_entry *avatar_frame(bool pointer, s32 px, s32 py, bool a_down) {
 		a.smile_until -= 3600;
 		a.next_smile -= 3600;
 		a.wave_from -= 3600;
+		a.from_t -= 3600;
 		a.next_wave -= 3600;
 	}
 

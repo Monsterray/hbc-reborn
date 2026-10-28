@@ -161,6 +161,430 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.12.0: release; Miis by the hundred, and the SDK's audit
+
+1.12.0 releases what 1.11.2 to 1.11.10 built in sdk/mii (`MIIDRAW_VERSION`
+1.2.0): the Mii Channel's body skinned on the GPU with cross-fades, a Mii
+that keeps only what it draws, parts shared between Miis, levels of detail
+made from the user's own files, faces drawn by the GPU, and the drawing done
+by the hardware. 200 walking Miis hold 60 fps on the bench Wii.
+
+- **Audit of sdk/mii** (two independent reads of miidraw.c and miibody.c,
+  the docs and their users). Fixed:
+  - A body's display list was walked by its own counts: a damaged
+    primitive count read past its object (into the next file bytes, and the
+    levels of detail past the copied list). Each load and primitive must now
+    fit in its object.
+  - A second model in a `.brres` was read over the first (its arrays
+    leaked, counts grew). The first only.
+  - One bad animation made every animation after it fail (a sticky flag).
+  - `mii_model_set_body` freed the built body before its own allocations:
+    out of memory, a Mii had no body at all. It allocates first now, and on
+    failure the model is unchanged.
+  - `mii_body_make_lods` leaked its runs on a list with too many.
+  - A head drawn at a level past those it was built with (body 4 levels,
+    head 2, `pose.lod` 4) shrank its forehead and moved its face's layers by
+    level 4's amount over level 2's triangles. The level is now clamped once,
+    and one function (`head_mtx`) loads the head's matrices for both the
+    display-list and the part-by-part paths.
+  - Out of memory between a head level's two lists left the first: the
+    nose line and glasses never drew again. Both or neither.
+  - The GPU's texture cache was never invalidated on `mii_draw`'s path: a
+    face built where a freed one was could show the old texels. The next
+    draw after a texture is freed invalidates it.
+  - `mii_strips` stops a strip at 65535 vertices (a GX count).
+  - The whole body's triangle count now leaves out strips' turning
+    triangles by position (each corner is its own skin vertex, so the
+    index test never fired): `full_tris` is the real count.
+  - Out of range, `pose.anim` stands at Wait's first frame, as documented.
+- **Easier to use:**
+  - `mii_pixels_tall(model, view, place, proj, viewport_h)`: how tall a Mii
+    stands on screen, what `mii_body_lod_for` and the face size go by. The
+    walk test used 120 units for a Mii's height; a Mii is about 170 (what
+    the levels' half-pixel tolerances assume), so it chose levels a third
+    too coarse. With the right sizes, bench Wii, 10 s each way: 200 Miis
+    59.9 fps (CPU 3.8 ms, GPU 5.7 ms a frame), 400 Miis 38.3 fps (CPU 8.6
+    ms, GPU 8.4 ms). 1.11.10's 48 fps for 400 was with the coarser levels.
+  - miidraw.h's overview names the crowd path and current numbers (it said
+    1 MiB a Mii and CPU faces); each struct says what is the app's and what
+    the library's; `mii_draw` lists the matrices and arrays it changes
+    (`GX_PNMTX1`, `GX_PNMTX2`, the matrix arrays); `mii_body_make_lods`
+    says it frees the levels before; the pose functions say they write the
+    body's memo; `mii_icon` clears to black.
+  - sdk/mii/README.md: a crowd example (cache, levels, GPU faces, reuse).
+  - docs/mii.md's CPU cost and docs/mii-sdk-2.md's step 1 brought up to date.
+- **Checked:** PC suite (198 tests); 16,000 damaged bodies under ASan and
+  UBSan; bench Wii `mii_app draw` (paired-single pose within 0.00002 of
+  the portable code, GPU faces within 0.08 of the CPU's on average, every
+  level drawn, no failures) and `walk 200,400`.
+
+### 1.11.10: levels by likeness, a fourth level, and the hardware doing the drawing
+
+The user found the smallest head disfigured and asked for a fourth level,
+and for the CPU's time to come down with the hardware's help.
+
+- **Levels by likeness, not by share.** Each level now folds while a fold
+  changes the part by no more than half a pixel at the largest the level is
+  drawn: 0.57, 0.94, 1.7 and 3.4 units for a Mii under 150, 90, 50 and 25
+  pixels tall. This is the same for heads and bodies.
+  - A fold's change is a distance: its quadric over the area behind it.
+    On a textured part it is also how far the texture under the folded
+    vertex moves, interpolated from the triangles that take its place, so
+    the evenly mapped face folds and the eyes do not move.
+  - Each part's levels depend on the part alone, so the cache's shared
+    levels still hold.
+  - The face layers are pulled toward the camera, and the forehead shrunk,
+    by the level's own tolerance, not a fixed amount.
+  - PC likeness measure (50 random Miis, rendered whole and at each level
+    at its drawn size). The old level 3 had 102 triangles, off by 34 with
+    87% overlap.
+
+    | Head level | Triangles | Colour off by (worst Mii) | Silhouette overlap |
+    |---|---|---|---|
+    | 1 | 357 | 2.2 (5.6) | 99.6% |
+    | 2 | 306 | 4.5 (9.8) | 99.0% |
+    | 3 | 216 | 10.2 (19.4) | 96.9% |
+    | 4 | 124 | 24.0 (41.6) | 91.4% |
+
+  - The body: 748 triangles to 486, 410, 318 and 241. The old share-based
+    level 4 folded the limbs flat; this one keeps them round.
+- **Strips** (`mii_strips`): every list sdk/mii writes (head parts, body
+  levels) is triangle strips. The GPU transforms each vertex it is sent,
+  and its vertex cache holds fetched data, not transformed vertices.
+  - Heads send 40% fewer vertices, body levels about 45% fewer.
+  - The host test expands the strips back: every triangle, the same way
+    round.
+- **The CPU, profiled on the Wii** (`-DMII_PROFILE`, `mii_profile`), a Mii
+  a frame:
+
+  | Stage | Before | After | What did it |
+  |---|---|---|---|
+  | Posing | 13.8 us | 6.9 us | bones on the paired-single unit (`mii_body_world`: each a `ps_guMtxConcat`, the scale `ps_guMtxApplyScale`); `bodyWait` found once |
+  | Palette | 5.7 us | 4.3 us | `dcbz` (`DCZeroRange`) on its lines: written whole, never read from memory first |
+  | Head | 8.2 us | 2.2-3.0 us | each level two display lists |
+  | Body, setup | 2.4 us | 2.4 us | |
+  | Total | about 32 us | about 16 us | |
+
+  - The paired-single pose matches the portable code to 0.00001 on the Wii
+    (a draw test check). One Mii's bones take 3.0 us against 65.6 us.
+- **Head display lists, and what recording taught.**
+  - The lists are made at a level's first draw: the parts' state, then
+    their triangles inline (a list cannot call another).
+  - A list records what libogc sends while it records. State it has marked
+    changed goes out only at the next primitive, and GX_EndDispList puts
+    back libogc's copy from before.
+  - So a list's last settings (the current matrix, the cull mode) never
+    reached it, and a setting libogc thought current (PNMTX0) was not
+    recorded. The heads after a coarse one drew on the wrong matrix and the
+    picture broke.
+  - Each list now sets all it relies on before its first triangles; the
+    caller restores the rest through libogc.
+  - The face's mask stays out of the lists (drawn between the two), and
+    each list is copied to its exact size.
+- **Bench Wii**, `mii_app walk`, 20 s each way:
+
+  | Miis | Before (1.11.9) | Now |
+  |---|---|---|
+  | 200 | 60 fps | 60 fps |
+  | 400 | 30 fps | 48 fps |
+  | 800 | 20 fps | 27 fps |
+
+  - GPU probe, 200 standing Miis, GPU time after the CPU: whole 11.5 ms
+    (was 16.2), level 3 3.9 ms (was 6.9).
+  - Fuzzing: 16,000 damaged bodies (about 13,600 parsed) through the new
+    levels and strips under ASan and UBSan, clean.
+  - HBC's avatar on the bench Wii: drawn whole, 60 frames a second for
+    90 s with no bad frame, 63 us of CPU a frame (about 128 before).
+
+### 1.11.9: coarser heads, faces drawn by the GPU, the skin in one colour
+
+- **Coarser heads** (`mii_model_opts.lods`, drawn by `mii_pose.lod`):
+  - 1.11.8's probe found the GPU's time in a crowd was vertices, mostly
+    heads (about 480 triangles each). Each head part gets levels of about
+    60, 35 and 20% of its triangles.
+  - Each step folds the cheapest node into a neighbour: quadric error plus
+    how far it moves the texture, so the eyes and mouth stay put. Open edges
+    are kept, and no triangle turns more than 60 degrees.
+  - The lists follow the whole one in the part's display list. The cache
+    keeps them, and a Mii with the same part takes them without simplifying
+    again (`mesh_twin`).
+  - At a coarser level the face's layers are drawn a unit nearer the
+    camera a level, and the forehead (scalp) 4% smaller a level, so the
+    simpler hair still covers it.
+  - On the bench Wii a head went 514, 307, 183 and 107 triangles.
+  - Two bugs on the way, both found on the bench:
+    - The whole list's call ran the levels after it too (200 Miis'
+      GPU time 13 to 24 ms).
+    - The texture term rescanned every corner (170 ms a Mii). Per-node
+      lists fixed it: about 20 ms, and less with the cache.
+- **Faces drawn by the GPU** (`mii_model_opts.gpu_faces`,
+  `mii_model_make_faces`), as RFL's `RFLiMakeTexture`:
+  - The parts are drawn as quads into the EFB's corner, from their own
+    I4/I8/IA4/IA8/RGB5A3 textures.
+  - TEV mixes the channels with the default swap tables: eye red, blue and
+    green give colour 0, the eye colour and white; mouth red, green and
+    blue give its two colours and white.
+  - Blending is front to back, premultiplied (INVDSTALPHA, ONE), which
+    equals the CPU's back-to-front "over". The copy-out is RGB5A3.
+  - The face layout is shared with the CPU path (`face_layout`).
+  - It needs the EFB, so it runs between frames on the drawing thread.
+    `mii_model_set_mask_size` only marks the face, and the old one draws
+    until the new one is made.
+  - Bench Wii: 7 faces in 0.57 ms against about 44 ms on the CPU. They
+    match the CPU's to a mean of 0.10 of 255 (largest 37, at an edge).
+- **The skin in one colour.** The face texture is RGB5A3 (5 bits a channel
+  where opaque), and the forehead and nose were full-precision colours. On
+  the TV the forehead stood out, redder on dark skin: (82, 46, 28) against
+  the face's (82, 49, 24). They now take the colour as RGB5A3 keeps it. A
+  host test checks all six skins against the decoded texture.
+- **Tearing in `mii_app walk`**, reported by the user:
+  - The test now shows two framebuffers, copying to the one not on screen
+    and flipping at the vertical blank.
+  - The tearing seen was the front ranks walking through the camera: the
+    near plane cut them open. The front rank now stops at the bottom of the
+    screen.
+  - A lossless 60 fps capture of the whole walk (`tears.py`, every frame
+    against its neighbours) found no torn frame and no combing.
+
+Bench Wii, `mii_app walk` (GPU faces, body and head levels, 20 s each way):
+
+| Miis | Toward | Away | CPU a frame | Face rebuilds |
+|---|---|---|---|---|
+| 200 | 59.9 fps | 59.9 fps | 6.0 ms | 0.11-0.21 ms each |
+| 400 | 30.0 | 30.0 | 11.9 ms | 0.13-0.23 ms |
+| 800 | 20.0 | 20.0 | 28.5 ms | 0.17-0.27 ms |
+
+- Building: 100 Miis with head levels in 2.8 s, their 100 faces by the GPU
+  in 8 ms.
+- GPU probe, 200 standing Miis, GPU time after the CPU: whole 13.0 ms,
+  heads only 9.8 ms, at level 3 1.7 ms.
+- The count is now limited by the CPU's posing (about 30 us a Mii at level
+  3), not the GPU.
+
+### 1.11.8: levels of detail from the user's own body, and a crowd walking in and out
+
+- **`mii_body_make_lods`**: coarser bodies for Miis far off, made on the
+  Wii from the user's own `maleBody.brres` / `femaleBody.brres`, so nothing
+  Nintendo made is shipped.
+  - Each level is a new display list over the body's own vertex arrays:
+    the object's matrix loads, then GX_TRIANGLES whose corners are the
+    original vertices' bytes. A few KB a body, about 0.1 s to make.
+  - Each step folds a vertex into a neighbour on the same bone (quadric
+    error, measured in that bone's own thickness), keeping open edges and
+    turning no triangle more than 60 degrees.
+  - A list that loads other bones into its slots part way (the female
+    shirt) is simplified run by run.
+  - Default: Wii Party's first three steps, 62, 37 and 21% of the
+    triangles:
+
+    | Body | Full | Level 1 | Level 2 | Level 3 |
+    |---|---|---|---|---|
+    | Male | 748 | 462 | 274 | 155 |
+    | Female | 762 | 470 | 282 | 160 |
+
+  - A fourth level (Wii Party's 11.5%, about 85 triangles) folded the
+    limbs flat on the bench Wii and in a PC render: under 8 triangles a
+    bone. Wii Party's 240 come from a 2,092-triangle body.
+- **`mii_pose.lod`** and **`mii_body_lod_for`** (a level per screen
+  height: 150, 90 and 50 pixels).
+- **Checks**:
+  - Host test: each level's every corner is byte for byte a vertex of its
+    object's own list; fewer triangles each level.
+  - Fuzzing: 16,000 damaged bodies (about 13,600 parsed) through LODs and
+    the pose memo under ASan and UBSan, clean.
+- **`mii_app walk COUNTS|max SECONDS`** (`wii_mii.py walk`), as the user
+  asked:
+  - The crowd, in ranks of 8 through one `mii_cache`, walks in from the
+    horizon to the bottom of the screen, then turns and walks off into it.
+  - Each Mii takes its level and face size from its height on screen, and
+    reuses its pose every second frame at level 3.
+  - Faces are rebuilt to a 2 ms budget a frame.
+- **`mii_app gpuprobe COUNT DISTANCE`**: where the GPU's time goes.
+
+Bench Wii:
+
+| Miis | Toward: fps, CPU, GPU after | Away: fps, CPU, GPU after | KB a Mii |
+|---|---|---|---|
+| 100 | 59.9, 3.7 ms, 5.0 ms | 59.9, 3.2 ms, 5.3 ms | 21 |
+| 200 | 50.4, 6.9 ms, 8.8 ms | 54.3, 6.0 ms, 10.4 ms | 19 |
+| 300 | 33.0, 14.1 ms, 8.2 ms | 30.0, 14.8 ms, 9.7 ms | 18 |
+| 400 | 29.9, 19.8 ms, 8.1 ms | 28.9, 23.6 ms, 8.9 ms | 17 |
+| 800 (4 levels) | 15.6, 47.8 ms | 14.9, 51.6 ms | 24 |
+| 5,855 (memory full) | 7.4 | 2.2 | 12 |
+
+- The pose memo answered 87-94% of poses.
+- A 128 px face takes 4.4-6.6 ms to build, 64 px about 1 ms.
+
+GPU probe, 200 Miis standing, at 1,500 and at 200 (the same both ways):
+
+| Drawn | CPU | GPU after it |
+|---|---|---|
+| Whole | 6.2 ms | 13.1 ms |
+| Heads only | 1.6 ms | 9.9 ms |
+| Whole, scissored to one pixel | 6.2 ms | 13.1 ms |
+| Whole, bodies at level 3 | 6.2 ms | 9.7 ms |
+
+The GPU's limit is vertices and commands, not pixels, and the heads (about
+480 triangles each) are most of it. Next: coarser heads for Miis far off,
+and faces made by the GPU (docs/mii-sdk-2.md).
+
+### 1.11.7: packed parts, shared parts, a pose worked out once
+
+- **Textures as RGB5A3**, RFL's format for its faces: half of RGBA8.
+  `mii_tex_rgb5a3` is portable; the host test decodes it back within its
+  bits (colour 8 of 255, alpha 19).
+- **Meshes packed** (`mii_mesh.pack`), as RFL keeps its shapes: the
+  distinct vertices (a head's 1,438 corners have about 330), positions s16
+  with as many fraction bits as fit, normals s8, coordinates s16, drawn
+  indexed (8-bit indexes under 256 vertices). The host test unpacks them
+  within 0.004 (position) of the floats. On the Wii the floats then go.
+- **The built body's parts are freed** when a Wii body replaces them.
+- **`mii_cache`** (`mii_model_opts.cache`): Miis share any part, texture or
+  face that comes out byte for byte the same, found by a hash of its
+  contents. 100 random Miis use 1,029 parts and 418 are distinct.
+- **`mii_model_set_mask_size`**: a model's faces rebuilt at another size
+  (for a Mii far off), in its cache.
+- **A pose worked out once a draw.** `draw_body` posed every bone twice
+  (the palette, then the head). Posing is nearly all of the CPU's part:
+  on a PC 1.40 of 1.48 us.
+- **The body remembers its last 16 poses** (`mii_body.memo`): Miis at the
+  same frame of the same animation pose once. The host test finds a pose
+  again, bit for bit the same.
+- **`mii_pose.reuse`**: the bones as the model's last draw posed them, for
+  a Mii far off posed every few frames.
+
+What a Wii keeps per Mii now (PC accounting, 50 random Miis, male body):
+
+| Faces | Built | Before (1.11.5) | Now |
+|---|---|---|---|
+| 128 px | every expression | 1,100 KB | 281 KB |
+| 128 px | normal only | | 67 KB |
+| 32 px | normal only | | 37 KB |
+
+On the bench Wii (1.11.6 + the packing, every expression, 128 px), a crowd
+used 277-316 KB a Mii, against 1.36 MB in 1.11.5, and 160 Miis fit; the
+faces, the icons and the female body drew right.
+
+### 1.11.6: a Mii keeps only what it draws
+
+Where a Mii's memory went (sdk/mii 1.1.1, 128 px faces, 50 random Miis
+built on a PC from a Wii's own RFL_Res.dat and the male body):
+
+| What | KB a Mii |
+|---|---|
+| Faces, 7 expressions: a linear RGBA copy + the GPU's RGBA8 copy | 448 + 448 |
+| The other textures, both copies | 41 + 41 |
+| Head meshes: F32 vertices + the display lists built from them | 45 + 45 |
+| Body: CPU-skinning buffers + 4 matrix palettes of 64 | 24 + 21 |
+
+That is 1.1 MB of the 1.36 MB measured on the bench Wii (1.11.5).
+
+- On the Wii, `tex_upload` frees the linear copy once the GPU's is made:
+  nothing on a Wii reads it. A PC keeps it (the host tests read it).
+- `mii_model_build` with `mii_model_opts`: the face size (now also 32 px)
+  and which expressions to build, as RFLInitCharModel's expression flags do.
+  The normal face is always built, and an expression not built draws as
+  it. `mii_model_make` is unchanged: every expression.
+- HBC's avatar builds the three it shows (normal, smile, blink).
+- `mii_body_skin` (the CPU reference) makes its buffers on its first call.
+  `mii_model_set_body` finds the ground without them.
+- Palettes hold the body's 15 matrix ids, rounded to 16, not 64.
+
+Expected: about 0.53 MB less per Mii from the copies, and about 0.38 MB
+less again for a Mii built with two expressions (128 px). The bench crowd
+run measures it.
+
+### 1.11.5: what a Mii costs: crowds on the bench Wii, and a Mii made through the SDK
+
+- **`mii_app crowd COUNTS SECONDS MASK`** (`tests/wii_mii.py crowd`): COUNTS
+  random Miis, half female, walking (`bodyWalk`) with the Mii Channel's
+  bodies, all drawn in place each frame. Bench Wii, sdk/mii 2.0 step 1
+  (GPU-skinned bodies):
+
+  | Faces | Miis | Frames a second | CPU a frame | GPU after the CPU |
+  |---|---|---|---|---|
+  | 128 px | 20 | 60.0 | 2.8 ms | 0.09 ms |
+  | 128 px | 40 | 60.0 | 5.8 ms | 0.08 ms |
+  | 128 px | 60 | did not build (memory, at 53) | | |
+  | 64 px | 20 / 60 / 100 | 59.9 | 2.8 / 8.6 / 14.4 ms | 0.08 ms |
+  | 64 px | 120 | did not build (memory, at 105) | | |
+
+  - CPU: about 0.14 ms per Mii each frame (posing 20 bones from the
+    animation keys, the palette, the head's state and lists). It is the
+    limit: 60 frames a second holds to about 110 Miis.
+  - GPU: it keeps up as the CPU sends (0.08 ms after it at any count).
+  - Memory: about 1.36 MB per Mii with 128 px faces, 0.70 MB with 64 px
+    (measured between counts: `mallinfo` counts the MEM1-MEM2 gap once
+    the heap reaches MEM2, so its totals are not memory in use). Memory,
+    not time, ends the crowd: about 53 or 105 Miis. Shared once: RFL_Res.dat
+    (686 KB), each body (180 KB).
+- **The smooth mode's cost** (a 2x supersampled `mii_capture`, 128 x 256):
+  0.57 ms a Mii a frame, about 4.5 times drawing in place, and a 128 KB
+  texture each.
+- **A Mii made through the SDK on the bench Wii**: Clio (slot 2, female),
+  added (`wii_mii.py add`) and designed (`edit`), each changing only her
+  slot and the database's CRC (right). `draw 2` now poses the Mii Channel
+  body for the Mii's sex: her female body waving, her icons.
+- **How Nintendo draws many Miis** (Wii Fit Plus, Wii Party, Wii Sports,
+  from the user's backups; static analysis):
+  - RFL heads on NW4R bodies.
+  - Bodies in levels of detail on one 28-bone skeleton: Wii Party has
+    2,092, 1,296, 776, 448 and 240 triangles, with separate cheap hands.
+    One animation set drives every level.
+  - Blob or silhouette shadows.
+  - Big crowds are baked meshes and textures, not Miis.
+  - The Mii Channel body is one level (about 750 triangles, 20 bones).
+
+### 1.11.4: the avatar out of its wave without a jump
+
+The user saw the Mii jump from the wave back to standing. The fade played
+the finished wave on, and frames wrap: 96 frames in, Greeting went back to
+its first frame, so the fade blended toward the wave starting over (the arm
+going up). A finished one-shot animation now holds its last frame while it
+fades out (a looping one still plays on); the fade is 0.4 s. Host check at
+60 frames a second, both bodies: the largest per-frame vertex step out of
+the wave is 0.98 (Wait alone moves 0.35), where playing it on gave 10.4.
+The `mii_pose` docs and the SDK README say to hold a finished one-shot.
+Bench Wii: 5 minutes at 60 fps.
+
+### 1.11.3: sdk/mii 2.0 step 1: the body skinned on the GPU, and cross-fades
+
+Branch `mii-sdk-2` (docs/mii-sdk-2.md).
+
+- **The GPU body.**
+  - What the Mii Channel bodies hold: two MDL0 objects, vertex descriptor
+    0x1403 (a matrix index, a texture matrix index, positions and normals
+    indexed by 8 bits); every vertex on one bone (no weights); matrix ids
+    0 to 14; 9 or fewer matrix slots per group. Their display lists load
+    position, normal and texture matrices by id (0x20, 0x28, 0x30) and
+    draw on VTXFMT0.
+  - sdk/mii keeps each object's list (32-byte aligned, primitives moved
+    to VTXFMT1 so the head's VTXFMT0 stays as it is) and the vertex
+    arrays, and each frame fills a palette: view x placement x the bone's
+    rotation and scale, its position. `GX_POSMTXARRAY` and
+    `GX_TEXMTXARRAY` point at it (the texture loads read it, unused),
+    `GX_NRMMTXARRAY` at the normal palette. A ring of 4 palettes, so a
+    model can be drawn up to 4 times between `GX_DrawDone`.
+  - Normals use the bone's rotation alone, unit length (the GPU does not
+    renormalise). Host check over 12,000 poses of each body:
+    - positions match CPU skinning within 0.00024;
+    - normals within 7 degrees at the tallest, broadest Mii, exact at
+      middle height and build;
+    - every primitive moved to VTXFMT1.
+  - The parser now rejects light matrix loads (0x38) and matrix ids past
+    `MII_BODY_MATRICES`.
+  - Bench Wii: 5 minutes at 60 fps, the body right in every grab, avatar
+    CPU time 0.73 to 0.13 ms a frame. Dolphin: the same picture as CPU
+    skinning.
+- **Cross-fades.** A change of animation snapped. `mii_pose.from_anim`,
+  `from_frame` and `from_weight` now blend the pose before into the new
+  one: per bone, rotations as quaternions (normalised lerp, the short
+  way), positions linearly. `mii_fade_weight(seconds, length)` eases it
+  (smoothstep). HBC's avatar fades over 0.3 s into and out of its wave,
+  the old animation playing on as it fades. Host check: a pose faded into
+  itself is unchanged (0.00003), weight 1 is the pose before (0.00004),
+  and a fade's steps stay small.
+
 ### 1.11.1: the Mii's face whole on a real Wii
 
 The user saw the avatar's face broken on the TV: eyes as stray lines,

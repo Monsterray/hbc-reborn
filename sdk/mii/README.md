@@ -214,7 +214,13 @@ if (ok) {
   (`MII_EXPR_*`), the parts RFL colours with TEV tricks baked into plain
   textures, a body in the Mii's colours (shirt in the favourite colour,
   trousers grey or gold for a special Mii) scaled by height and build, and
-  each part as a GX display list. About 1 MiB.
+  each part as a GX display list. As RFL keeps them: textures RGB5A3,
+  shapes as s16 vertices drawn indexed. About 280 KB with 128 px faces;
+  most of it is the seven faces.
+- **`mii_model_build`** takes `mii_model_opts`: the face size (32 to 256
+  px) and which expressions to build (`MII_EXPR_BIT`; the normal face is
+  always built, and one not built draws as it). With 128 px faces and the
+  normal one only, a Mii takes about 67 KB; with 32 px, about 37 KB.
 - **Ways to draw it:**
   - In place, each frame: `mii_view()` gives the projection and camera
     that frame the Mii in a viewport of the aspect you pass; set your
@@ -232,11 +238,18 @@ if (ok) {
 - **The Wii's own bodies.** With `sd:/mii/maleBody.brres` and
   `femaleBody.brres` (Save Mii faces copies them from the Mii Channel too),
   `mii_body_load` reads one and `mii_model_set_body` puts it under a model:
-  Nintendo's skeleton, the shirt and trousers skinned on the CPU, and the
-  Mii Channel's animations. Pose it with `pose.anim = 1 +
+  Nintendo's skeleton, the shirt and trousers skinned on the GPU from the
+  Mii Channel's own display lists (a matrix per bone a frame), and its
+  animations. Pose it with `pose.anim = 1 +
   mii_body_anim(&body, "bodyWait")` (or `bodyGreeting`, `bodyWalk`,
   `bodyRun`, `bodyTalk`, ...) and `pose.frame` at 60 a second; 0 stands
-  still. Height and build scale each bone as Nintendo's later libraries do.
+  still. When you change animation, cross-fade instead of snapping: keep
+  the one before in `pose.from_anim` / `from_frame` with
+  `pose.from_weight = mii_fade_weight(seconds_since, 0.4f)`. A looping
+  animation plays on as it fades; a finished one-shot (a wave) holds its
+  last frame, since frames wrap and it would otherwise fade toward its own
+  start.
+  Height and build scale each bone as Nintendo's later libraries do.
   Without the files the model keeps a body of the library's own.
 
   ```c
@@ -247,13 +260,67 @@ if (ok) {
   pose.anim = 1 + mii_body_anim(&body, "bodyWait");
   pose.frame = seconds * 60;
   ```
+- **Many Miis.** A crowd is what the Wii's CPU and memory allow, not its
+  GPU, until the CPU's part is small. What helps, all measured on the
+  bench Wii (REVIEW.md, 1.11.6 to 1.11.10):
+  - One `mii_cache` for the crowd (`mii_model_opts.cache`): Miis share
+    each part that comes out the same, byte for byte (the same hair, face
+    shape, textures). With 32 px faces and the normal one only, a random
+    Mii then takes about 12 to 20 KB; the bench Wii held 5,855.
+  - `mii_body_make_lods(&body, NULL, 0)` once per body,
+    `mii_model_opts.lods = MII_HEAD_LODS` for each Mii, then each frame
+    `pose.lod = mii_body_lod_for(&body, pixels_tall)`: four coarser levels
+    of body and head for Miis under 150, 90, 50 and 25 pixels tall, each
+    changing the Mii by no more than half a pixel at that size, made on the
+    Wii from the user's own files. A head of about 480 triangles goes to
+    about 360, 300, 220 and 120, the body's 750 to about 490, 410, 320 and
+    240, all drawn as strips. The GPU's time in a crowd is vertices.
+  - Drawing is the hardware's work: the bones on the paired-single unit,
+    each head level a display list the GPU fetches itself, the matrix
+    palette's cache lines claimed with `dcbz`. A Mii far off costs the CPU
+    about 16 us a frame. Build with `-DMII_PROFILE` to see where
+    (`mii_profile`).
+  - `mii_model_opts.gpu_faces = 1`: faces drawn by the GPU, as RFL draws
+    them (`RFLiMakeTexture`): about 0.08 ms each against 1 to 6 ms on the
+    CPU, within 0.1 of 255 of the CPU's on average. They use the EFB, so
+    call `mii_model_make_faces` between frames on the thread that draws.
+  - Faces by distance: `mii_model_set_mask_size` (32 px far, 128 near);
+    with GPU faces it marks them, and `mii_model_make_faces` draws them
+    between frames.
+  - Walk in step: Miis at the same frame of the same animation pose once
+    (the body remembers its last 16 poses), so give a crowd a few phases,
+    not one each.
+  - `pose.reuse` for a Mii far off: draw it with the bones its last draw
+    posed, posing every second or fourth frame.
+
+  ```c
+  /* Once: a cache for the crowd, the bodies' levels. */
+  mii_cache *cache = mii_cache_new();
+  mii_body_make_lods(&body, NULL, 0);
+  mii_model_opts o = { 32, MII_EXPR_BIT(MII_EXPR_NORMAL), cache, MII_HEAD_LODS, 1 };
+  for (i = 0; i < n; ++i)
+      if (mii_model_build(&res, &miis[i], &o, &crowd[i]) == MII_OK)
+          mii_model_set_body(&crowd[i], &body);
+
+  /* Each frame, before drawing: faces still to draw (the GPU, between frames). */
+  for (i = 0; i < n; ++i)
+      if (crowd[i].faces_pending)
+          mii_model_make_faces(&crowd[i], &res, clear_colour);
+  /* ... set your GX state, projection and camera, then for each Mii: */
+  float px = mii_pixels_tall(&crowd[i], view, place, proj, rmode->efbHeight);
+  pose.lod = mii_body_lod_for(&body, px);
+  pose.reuse = pose.lod >= 3 && (frame + i) % 2;   /* far: pose every other frame */
+  mii_draw(&crowd[i], &pose, view, place);
+
+  /* At the end: the models, then the cache and the body. */
+  ```
 - **Your GX FIFO in MEM1.** Make it a static array
   (`static u8 fifo[SIZE] ATTRIBUTE_ALIGN(32);`), not `memalign` from the
   heap: once MEM1's part of the heap runs out, the heap gives MEM2, and a
   GPU fed its commands from MEM2 stalled at random on a real Wii (never in
   Dolphin). HBC lost days to this when linking this library grew its .bss
-  (REVIEW.md, 1.10.26). A Mii adds about 54 KB of commands a frame; keep a
-  frame well under the FIFO's size.
+  (REVIEW.md, 1.10.26). A Mii adds under 2 KB of commands a frame (its
+  lists and arrays stay in memory, where the GPU reads them).
 - **Builds with libogc 3 and libogc2.** HBC uses libogc 3; every function
   here also compiles and links with devkitPPC r41-2 and libogc2.
 - **Between frames.** `mii_capture` and `mii_icon` draw in the EFB's corner

@@ -145,6 +145,72 @@ class MiiDrawTest(unittest.TestCase):
             self.assertGreater(min(covered), 20, e)
             self.assertLess(max(covered), 100, e)
         self.assertTrue((out / "mii.obj").stat().st_size > 1000)
+        # mii_model_opts: the normal face and those asked for, at their size.
+        self.assertIn("opts: expressions 0x21, 32 px", r.stdout)
+        self.check_pack(r.stdout)
+        self.check_head_lods(r.stdout, real=False)
+        # The cache: the same Mii twice shares everything (each part, the
+        # face); faces rebuilt at 32 px replace the 128 px ones in it; with
+        # both models freed, nothing is left.
+        m = re.search(r"cache: (\d+) of (\d+) parts and the face shared; entries (\d+) (\d+) (\d+) (\d+), "
+                      r"users (\d+) (\d+) (\d+) (\d+); bytes (\d+) then (\d+)", r.stdout)
+        self.assertTrue(m, r.stdout)
+        self.assertEqual(m[1], m[2])
+        entries, users = [int(m[k]) for k in range(3, 7)], [int(m[k]) for k in range(7, 11)]
+        self.assertGreaterEqual(users[0], 2 * entries[0])   # synthetic parts repeat within a Mii too
+        self.assertEqual(entries[2], entries[0])     # 32 px faces in place of the 128 px ones
+        self.assertGreater(entries[1], entries[0])   # one model moved: both sizes held
+        self.assertEqual((entries[3], users[3]), (0, 0))
+        self.assertLess(int(m[12]), int(m[11]))
+
+    def check_head_lods(self, stdout, real):
+        # Coarser heads: valid levels, never more triangles than the level
+        # before; with the Wii's own faces, each level fewer and the last
+        # under 60% of the whole (each level may change a part by half a
+        # pixel where it is drawn, so how far they go depends on the Mii).
+        m = re.search(r"headlod: (\d+) (\d+) (\d+) (\d+) (\d+) triangles, (\d+) bad", stdout)
+        self.assertTrue(m, stdout)
+        tris = [int(m[k]) for k in range(1, 6)]
+        self.assertEqual(m[6], "0", stdout)
+        self.assertEqual(tris, sorted(tris, reverse=True), stdout)
+        if real:
+            self.assertEqual(len(set(tris)), 5, stdout)
+            self.assertLess(tris[3], tris[0] * 0.6, stdout)
+        return tris
+
+    def test_head_lods_real_faces(self):
+        if not os.environ.get("MII_REAL_RES"):
+            self.skipTest("set MII_REAL_RES to your own RFL_Res.dat")
+        for sex in ("0", "1"):
+            r, _ = self.run_host(os.environ["MII_REAL_RES"], "-d", sex, "64", "64", "5")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            print("head levels:", self.check_head_lods(r.stdout, real=True))
+            # Strips: every triangle back, the same way round, and far fewer
+            # vertices sent than as separate triangles.
+            m = re.search(r"strips: (\d+) triangles sent as (\d+) vertices \((\d+) as triangles\), (\d+) wrong",
+                          r.stdout)
+            self.assertTrue(m, r.stdout)
+            self.assertEqual(m[4], "0", r.stdout)
+            self.assertLess(int(m[2]), int(m[3]) * 0.6, r.stdout)
+            print("strips:", m[0])
+            # The forehead and nose are the face texture's colour as the Wii
+            # draws it, so they do not stand apart from the face.
+            self.assertIn("skin: 6 of 6 the face texture's colour", r.stdout)
+
+    def check_pack(self, stdout):
+        # Packed meshes: fewer vertices than corners, each within its fixed
+        # point's step; RGB5A3 within its bits (4-bit colour: 8; alpha 3 bits: 18).
+        m = re.search(r"pack: (\d+) corners, (\d+) vertices; largest error: position ([\d.]+), "
+                      r"normal ([\d.]+), coordinate ([\d.]+); rgb5a3 colour (\d+), alpha (\d+)", stdout)
+        self.assertTrue(m, stdout)
+        corners, verts = int(m[1]), int(m[2])
+        self.assertLess(verts, corners)
+        self.assertLess(float(m[3]), 0.01)
+        self.assertLess(float(m[4]), 0.01)
+        self.assertLess(float(m[5]), 0.001)
+        self.assertLessEqual(int(m[6]), 8)
+        self.assertLessEqual(int(m[7]), 19)
+        return corners, verts
 
     def test_damaged_resource_refused(self):
         good = resource()
@@ -156,7 +222,38 @@ class MiiDrawTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertTrue(r.stdout.startswith("res: ") or r.stdout.count("model: "), r.stdout)
 
-    def run_body(self, body, anim=None, frame=0, **extra):
+    def test_body_lods(self):
+        # Levels of detail from the user's own bodies: four, each list the
+        # body's own vertices, fewer triangles each level (each may move the
+        # surface half a pixel where it is drawn), the last under 40%.
+        if not os.environ.get("MII_REAL_BODIES"):
+            self.skipTest("set MII_REAL_BODIES")
+        for name in ("maleBody.brres", "femaleBody.brres"):
+            r = self.run_body(pathlib.Path(os.environ["MII_REAL_BODIES"]) / name, MII_LOD="1")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            full = int(re.search(r"lod 0: (\d+) triangles", r.stdout)[1])
+            levels = re.findall(r"lod (\d): (\d+) triangles, (\d+) vertices sent, moved at most ([\d.]+), "
+                                r"(\d+) bad", r.stdout)
+            self.assertEqual(len(levels), 4, r.stdout)
+            last = full
+            for level, tris, sent, moved, bad in levels:
+                tris = int(tris)
+                self.assertEqual(bad, "0", r.stdout)
+                self.assertLess(tris, last, r.stdout)
+                self.assertLess(int(sent), 3 * tris * 0.7, r.stdout)   # strips, not separate triangles
+                last = tris
+            self.assertLess(last, full * 0.4, r.stdout)
+            print(name, r.stdout.split("lod 0", 1)[1].strip().replace("\n", "; "))
+
+    def test_pose_memo(self):
+        # A Mii posed at a frame another Mii was posed at takes the body's
+        # remembered pose: the same bones, bit for bit.
+        if not os.environ.get("MII_REAL_BODIES"):
+            self.skipTest("set MII_REAL_BODIES")
+        r = self.run_body(pathlib.Path(os.environ["MII_REAL_BODIES"]) / "maleBody.brres")
+        self.assertIn("memo: hits 1, same 1", r.stdout)
+
+    def run_body(self, body, anim=None, frame=0, size=("64", "64"), **extra):
         res = self.dir / "RFL_Res.dat"
         res.write_bytes(resource())
         env = dict(os.environ, MII_BODY=str(body), MII_FRAME=str(frame), **extra)
@@ -164,7 +261,7 @@ class MiiDrawTest(unittest.TestCase):
             env["MII_ANIM"] = anim
         out = self.dir / "out"
         out.mkdir(exist_ok=True)
-        return subprocess.run([str(self.exe), str(res), "-d", "0", "64", "64", "5", str(out)],
+        return subprocess.run([str(self.exe), str(res), "-d", "0", size[0], size[1], "5", str(out)],
                               capture_output=True, text=True, timeout=120, env=env)
 
     def test_body_refused(self):
@@ -192,6 +289,41 @@ class MiiDrawTest(unittest.TestCase):
             # vertex finite and near the body (the GPU is fed them as they
             # are). Not every animation: bodySlap_03 throws the body 2737
             # units.
+            # The GPU's way (sdk/mii 2.0): every vertex through its bone's
+            # palette matrix lands where CPU skinning puts it; its normal
+            # points within 7 degrees (the GPU leaves out the scale's
+            # inverse; exact at middle height and build); every primitive
+            # of the display lists moved to GX_VTXFMT1.
+            for size, least in ((("64", "64"), 0.9999), (("127", "127"), 0.99), (("0", "0"), 0.99)):
+                r = self.run_body(body, size=size, MII_PALETTE="1")
+                self.assertEqual(r.returncode, 0, r.stdout)
+                m = re.search(r"palette: (\d+) poses, objects (\d+), matrices (\d+), worst position ([\d.]+), "
+                              r"least normal dot ([\d.]+), primitives (\d+), on VTXFMT1 (\d+)", r.stdout)
+                self.assertTrue(m, r.stdout)
+                self.assertEqual(int(m.group(2)), 2, m.group(0))
+                self.assertLess(float(m.group(4)), 0.01, m.group(0))
+                self.assertGreater(float(m.group(5)), least, (size, m.group(0)))
+                self.assertGreater(int(m.group(6)), 0, m.group(0))
+                self.assertEqual(m.group(6), m.group(7), m.group(0))
+            # Cross-fades: a pose faded into itself unchanged (the
+            # quaternion round trip), weight 1 is the animation before
+            # alone, and a fade from Wait to Greeting moves in small steps
+            # (60 of them; the hand travels about 100 units).
+            r = self.run_body(body, MII_FADE="1")
+            self.assertEqual(r.returncode, 0, r.stdout)
+            m = re.search(r"fade: self ([\d.]+), whole ([\d.]+), largest step ([\d.]+)", r.stdout)
+            self.assertTrue(m, r.stdout)
+            self.assertLess(float(m.group(1)), 0.001, m.group(0))
+            self.assertLess(float(m.group(2)), 0.001, m.group(0))
+            self.assertLess(float(m.group(3)), 5, m.group(0))
+            # Out of the wave as HBC does it (Greeting held at its last
+            # frame, Wait fading in over 0.4 s): no frame jumps. Playing
+            # the finished wave on wraps it to its start: about 10 units in
+            # one frame, the jump the user saw.
+            m = re.search(r"out of the wave: largest frame step: wait alone ([\d.]+), held ([\d.]+), "
+                          r"played on ([\d.]+)", r.stdout)
+            self.assertTrue(m, r.stdout)
+            self.assertLess(float(m.group(2)), 2, m.group(0))
             for anim in ("bodyWait", "bodyGreeting"):
                 r = self.run_body(body, anim, MII_SWEEP="1")
                 self.assertEqual(r.returncode, 0, r.stdout)
