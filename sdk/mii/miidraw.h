@@ -74,7 +74,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.2.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds */
+#define MIIDRAW_VERSION "1.2.1"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -221,9 +221,9 @@ int mii_body_anim(const mii_body *body, const char *name);
 /* Makes coarser levels of the body, as games draw a crowd's far Miis (Wii
  * Party's bodies go 2,092, 1,296, 776, 448, 240 triangles), up to
  * MII_BODY_LODS: each level folds while a fold moves the surface by no
- * more than its tolerance (body units, finest first). NULL: half a pixel
- * at the largest each level is drawn (mii_body_lod_for), 0.57, 0.94, 1.7
- * and 3.4, so each looks as the whole body does at its size; n 0: all
+ * more than its tolerance (body units, finest first). NULL: 0.57, 0.94,
+ * 1.7 and 3.4, half a pixel at a Mii 150, 90, 50 and 25 pixels tall,
+ * finer than each level needs where mii_body_lod_for draws it; n 0: all
  * four. Built here from the user's own body, so nothing Nintendo made is
  * shipped: each step folds a vertex into a neighbour on the same bone, the
  * fold that moves the surface least (quadric error over the area behind
@@ -232,9 +232,10 @@ int mii_body_anim(const mii_body *body, const char *name);
  * With your own tolerances, n is how many (1 to MII_BODY_LODS).
  * 0 or MII_E_*. */
 int mii_body_make_lods(mii_body *body, const float *tolerances, int n);
-/* The level for a Mii this many pixels tall on screen: 0 (the whole body)
- * from 150, then one level more under each of 150, 90, 50 and 25, as far
- * as made. */
+/* The level for a Mii this many pixels tall on screen (mii_pixels_tall):
+ * 0 (the whole body) from 90, then one level more under each of 90, 39,
+ * 30.5 and 25, as far as made. Chosen by eye on a real Wii, Miis walking
+ * through the levels (tests/mii_app parade). */
 int mii_body_lod_for(const mii_body *body, float pixels_tall);
 
 /* ---- A Mii, built -------------------------------------------------------- */
@@ -384,7 +385,8 @@ typedef struct {
 	mii_cache *cache;      /* share identical parts with other Miis built with it, or NULL */
 	/* Coarser heads for Miis far off, drawn by mii_pose.lod: 0 to
 	 * MII_HEAD_LODS levels, each changing the head by no more than half a
-	 * pixel where it is drawn (a Mii under 150, 90, 50 and 25 pixels tall).
+	 * pixel at a Mii 150, 90, 50 and 25 pixels tall (drawn smaller: from
+	 * 90, 39, 30.5 and 25), the hair by a quarter.
 	 * A head is about 480 triangles, more than a far body: in a crowd the
 	 * GPU's time is mostly heads (REVIEW.md, 1.11.8). Some ms to build;
 	 * Miis sharing a part through a cache share its levels. */

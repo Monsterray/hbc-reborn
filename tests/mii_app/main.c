@@ -32,6 +32,12 @@
 //                                  a crowd walking in from the horizon,
 //                                  then off into it, with levels of
 //                                  detail (walk_test)
+//   mii_app.dol parade [SECONDS [COLS [GAP]]]
+//                                  ranks of COLS (20) Miis GAP (900)
+//                                  apart, walking round from the horizon
+//                                  to the bottom of the screen, then the
+//                                  other way, over lines on the grass
+//                                  where each level of detail begins
 //   mii_app.dol remote-rewrite     write Wii Remote 1's own Miis back
 //                                  unchanged, after saving its memory to
 //                                  sd:/mii_test/remote_backup.bin
@@ -995,8 +1001,12 @@ static void crowd_test(const char *counts, int seconds, int mask, void *xfb, GXR
 	mii_res_free(&res);
 }
 
-/* The ground: stripes across the walk, so distance reads on the TV. */
-static void ground(Mtx view) {
+/* The ground: stripes across the walk, so distance reads on the TV; and a
+ * line across it at each z in `lines` (n of them, 0 for none), where a Mii
+ * of middle height crosses into the next level of detail. */
+static void ground(Mtx view, const float *lines, int n) {
+	static const GXColor line_color[] = { { 255, 255, 255, 255 }, { 255, 230, 0, 255 },
+										  { 255, 120, 0, 255 }, { 230, 0, 0, 255 } };
 	int i;
 
 	GX_ClearVtxDesc();
@@ -1027,6 +1037,37 @@ static void ground(Mtx view) {
 		GX_Position3f32(-3000, 0, z1); GX_Color4u8(70, g, 60, 255);
 	}
 	GX_End();
+	if (n <= 0)
+		return;
+	GX_SetLineWidth(36, GX_TO_ZERO);   /* 6 pixels: sixths of a pixel */
+	GX_Begin(GX_LINES, GX_VTXFMT2, 2 * n);
+	for (i = 0; i < n; ++i) {
+		GXColor c = line_color[i % 4];
+
+		GX_Position3f32(-3000, 2, lines[i]); GX_Color4u8(c.r, c.g, c.b, 255);
+		GX_Position3f32(3000, 2, lines[i]); GX_Color4u8(c.r, c.g, c.b, 255);
+	}
+	GX_End();
+}
+
+/* Where on the walk (the z at x 0) mii_body_lod_for starts giving `level`
+ * for this Mii: the level rises as it walks away, so halve [far, near]
+ * until it is found. */
+static float z_at_level(const mii_model *model, Mtx view, Mtx44 proj, float h, int level, float far, float near) {
+	int k;
+
+	for (k = 0; k < 40; ++k) {
+		float mid = (far + near) / 2;
+		Mtx place;
+
+		guMtxIdentity(place);
+		guMtxTransApply(place, place, 0, 0, mid);
+		if (mii_body_lod_for(model->body, mii_pixels_tall(model, view, place, proj, h)) < level)
+			near = mid;
+		else
+			far = mid;
+	}
+	return (far + near) / 2;
 }
 
 /* How far the heap has grown: newlib takes MEM1's arena, then MEM2's
@@ -1048,11 +1089,17 @@ static u32 heap_grown(u32 *m1, u32 *m2) {
  * the Miis at each level, pose memo hits, face rebuilds, memory. A count
  * that cannot be built is the memory limit; under 15 frames a second
  * stops. `walk max SECONDS` builds until memory runs out and walks those. */
-static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rmode) {
+static void walk_test(const char *counts, int seconds, int cols, float gap, float col_gap, int parade, void *xfb,
+					  GXRModeObj *rmode) {
 	static u8 fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
 	static mii_res res;
 	static mii_body bodies[2];
-	enum { MAXN = 6000, COLS = 8 };
+	enum { MAXN = 6000 };
+	/* The walk: the front rank from the horizon to the bottom of the
+	 * screen; a parade's ranks go on round, the length of it, seen from
+	 * higher up so the grass shows between them, in at the horizon and out
+	 * below the screen (from 170 a whole Mii is under its bottom edge). */
+	const float far = parade ? -6000 : -4200, near = parade ? 170 : 180;
 	mii_model **models = calloc(MAXN, sizeof(mii_model *));   /* each its own: memory counts them */
 	float *lane = calloc(MAXN, sizeof(float));
 	mii_cache *cache = mii_cache_new();
@@ -1063,6 +1110,12 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 	Mtx view;
 	guVector eye = { 0, 260, 520 }, up = { 0, 1, 0 }, at = { 0, 0, -700 };
 	GXColor sky = { 150, 190, 230, 255 };
+	float lod_line[4];
+
+	if (parade) {
+		eye = (guVector) { 0, 500, 600 };
+		at = (guVector) { 0, 0, -1400 };
+	}
 
 	if (!models || !lane || !cache) {
 		say("walk: no memory to start\n");
@@ -1102,7 +1155,7 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 		u64 t0;
 		int dir, step_built;
 
-		count = max_mode ? MAXN : atoi(p);
+		count = max_mode ? MAXN : parade ? cols * (int) ((near - far) / gap) : atoi(p);
 		if (!max_mode) {
 			while (*p && *p != ',')
 				++p;
@@ -1162,12 +1215,23 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 			}
 			count = built;   /* max: walk what fit */
 		}
+		{   /* the lines: where a Mii of middle height changes level */
+			int best = 0;
+
+			for (i = 1; i < count; ++i)
+				if (abs(models[i]->m.height - 64) < abs(models[best]->m.height - 64))
+					best = i;
+			for (i = 0; i < 4; ++i)
+				lod_line[i] = z_at_level(models[best], view, proj, rmode->efbHeight, i + 1, far, near);
+			say("walk %d: level lines (a Mii of height %d) at z %.0f %.0f %.0f %.0f\n", count,
+				models[best]->m.height, lod_line[0], lod_line[1], lod_line[2], lod_line[3]);
+		}
 		for (dir = 0; dir < 2; ++dir) {   /* 0: in from the horizon; 1: away into it */
 			u64 start = gettime(), cpu = 0, gpu = 0, cpu_max = 0, remask_t = 0;
 			u32 hits0 = bodies[0].memo_hits + bodies[1].memo_hits, miss0 = bodies[0].memo_misses + bodies[1].memo_misses;
 			long at_lod[MII_BODY_LODS + 1] = { 0 }, drawn = 0;
 			int frames = 0, remasks = 0;
-			float fps, far = -4200, near = 180;
+			float fps;
 
 			while (diff_sec(start, gettime()) < (u32) seconds) {
 				float t = diff_usec(start, gettime()) / 1e6f / seconds;   /* 0 to 1 */
@@ -1175,7 +1239,8 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 				 * where it stops (walking on past, the front ranks went through
 				 * the camera and its near plane cut them open), or back. */
 				float front = dir ? near - t * (near - far) : far + t * (near - far);
-				float speed = (near - far) / seconds;   /* units a second */
+				float speed = parade ? 150 : (near - far) / seconds;   /* units a second */
+				float walked = speed * diff_usec(start, gettime()) / 1e6f;
 				float gait = speed / 90 < 2 ? speed / 90 : 2;   /* bodyWalk covers about 90 a second */
 				u64 budget = secs_to_ticks(2) / 1000;   /* 2 ms of face rebuilds a frame */
 				u64 a, b, c, remask_frame = 0;
@@ -1196,13 +1261,22 @@ static void walk_test(const char *counts, int seconds, void *xfb, GXRModeObj *rm
 				a = gettime();
 				GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
 				GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
-				ground(view);
+				ground(view, lod_line, 4);
 				for (i = 0; i < count; ++i) {
-					int rank = i / COLS, col = i % COLS, sex = i & 1, lod, want;
-					float x = (col - (COLS - 1) / 2.0f) * 70 + (lane[i] - 0.5f) * 30;
-					float z = dir ? front - rank * 90 : front - rank * 90, vz, px;
+					int rank = i / cols, col = i % cols, sex = i & 1, lod, want;
+					float x = (col - (cols - 1) / 2.0f) * col_gap + (lane[i] - 0.5f) * col_gap * 0.4f;
+
+					if (parade)   /* in line, no jitter */
+						x = (col - (cols - 1) / 2.0f) * col_gap;
+					float z = front - rank * gap, vz, px;
 					mii_pose pose;
 					Mtx place;
+
+					if (parade) {   /* round and round: in at the horizon, out at the bottom */
+						float u = fmodf(walked + rank * gap, near - far);
+
+						z = dir ? near - u : far + u;
+					}
 
 					vz = -(view[2][0] * x + view[2][2] * z + view[2][3]);
 					if (vz < 30)
@@ -1439,7 +1513,10 @@ int main(int argc, char **argv) {
 	else if (argc >= 3 && !strcmp(argv[1], "gpuprobe"))
 		gpu_probe(atoi(argv[2]), argc > 3 ? (float) atof(argv[3]) : 1500, xfb, rmode);
 	else if (argc >= 3 && !strcmp(argv[1], "walk"))
-		walk_test(argv[2], argc > 3 ? atoi(argv[3]) : 15, xfb, rmode);
+		walk_test(argv[2], argc > 3 ? atoi(argv[3]) : 15, 8, 90, 70, 0, xfb, rmode);
+	else if (argc >= 2 && !strcmp(argv[1], "parade"))
+		walk_test("parade", argc > 2 ? atoi(argv[2]) : 60, argc > 3 ? atoi(argv[3]) : 20,
+				  argc > 4 ? (float) atof(argv[4]) : 900, 90, 1, xfb, rmode);
 	else if (argc >= 3 && !strcmp(argv[1], "crowd"))
 		crowd_test(argv[2], argc > 3 ? atoi(argv[3]) : 10, argc > 4 ? atoi(argv[4]) : 128, xfb, rmode);
 	else
