@@ -103,20 +103,24 @@ def wad_title(image):
 
 class Dolphin:
     def __init__(self, image, sd=False, mmu=False, extra=(), files=None):
-        """extra: more -C settings; files: {path in the profile: text}, such
-        as a controller mapping (tests/dolphin_meta.py)."""
+        """extra: more -C settings; files: {path in the profile: text or
+        bytes}, such as a controller mapping (tests/dolphin_meta.py) or a
+        NAND file (tests/dolphin_mii_picker.py)."""
         self.dolphin = find_dolphin()
         self.profile = pathlib.Path(tempfile.mkdtemp(prefix="hbc-dolphin-"))
         for rel, text in (files or {}).items():
             (self.profile / rel).parent.mkdir(parents=True, exist_ok=True)
-            (self.profile / rel).write_text(text)
+            if isinstance(text, bytes):
+                (self.profile / rel).write_bytes(text)
+            else:
+                (self.profile / rel).write_text(text)
         settings = SETTINGS + (SD_SETTINGS if sd else []) + list(extra)
         if mmu:
             settings.append("Dolphin.Core.MMU=True")
         if str(image).lower().endswith(".wad"):
             settings.append("Dolphin.Core.EnableCheats=True")
         if sd:
-            (self.profile / "Load/WiiSDSync/apps").mkdir(parents=True)
+            (self.profile / "Load/WiiSDSync/apps").mkdir(parents=True, exist_ok=True)
         args = ["-b", "-e", str(image), "-u", str(self.profile)]
         for setting in settings:
             args += ["-C", setting]

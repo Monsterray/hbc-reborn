@@ -62,7 +62,7 @@ void i18n_set_mo(const void *mo_file) {
 	mo.target = (struct mo_entry*)(mo_data + (u32)mo.target);
 }
 
-const char *i18n(char *english_string) {
+const char *i18n(const char *english_string) {
 	int i;
 
 	if(!mo_inited)

@@ -123,6 +123,12 @@ void gfx_init () {
 	GXColor gxbackground = { 0, 0, 0, 0xff };
 
 	memset (gp_fifo, 0, DEFAULT_FIFO_SIZE);
+	// The zeros went into the cache, the commands go past it (the write
+	// gather pipe): flushed now, or a dirty line written back later puts
+	// 32 bytes of zeros over commands not yet read (a hazard libogc's
+	// own template avoids with an uncached pointer; found while chasing
+	// 1.12.2's Mii sliver, which was the small-data base, newrvl.ld).
+	DCFlushRange (gp_fifo, DEFAULT_FIFO_SIZE);
 
 	GX_Init (gp_fifo, DEFAULT_FIFO_SIZE);
 	GX_SetCopyClear (gxbackground, 0x00ffffff);

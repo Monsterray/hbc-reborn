@@ -14,6 +14,7 @@ TARGET_APP = channelapp
 TARGET_CHAN = channelapp-channel
 
 WIIPAX = ../../wiipax/client/wiipax
+PYTHON ?= python3
 
 BASE_ADDR = 0x81330000
 
@@ -60,6 +61,11 @@ LDFLAGS_COMMON = -Wl,-z,noexecstack
 LDFLAGS_STUB = $(MACHDEP) $(LDFLAGS_COMMON) -Wl,-Ttext=0x80001800 -Wl,--section-start,.sbss=0x80005000 -Wl,-e,_start -nostartfiles -nodefaultlibs
 LDFLAGS_APP = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) \
 	      $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp.map
+# make DEBUG_POISON=1: poison fresh and freed heap memory (source/poison.c)
+ifeq ($(DEBUG_POISON),1)
+CFLAGS += -DDEBUG_POISON $(if $(POISON_MODE),-DPOISON_MODE=$(POISON_MODE))
+LDFLAGS_APP += -Wl,--wrap=malloc,--wrap=memalign,--wrap=free
+endif
 LDFLAGS_CHAN = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) -Wl,-e,_stub_start $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp_chan.map
 
 FILES_STUB = $(wildcard $(DIR_STUB)/*.S) $(wildcard $(DIR_STUB)/*.c)
@@ -86,14 +92,14 @@ FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
 FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
-		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o \
+		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o $(DIR_BUILD)/miifx.o \
 		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
 FILES_CHAN = $(DIR_CHAN)/nandloader.S
 FILES_CHAN_OBJ = $(DIR_BUILD)/nandloader.o $(FILES_SRC_OBJ)
 
-.PHONY: all channel world clean upload gdb debug
+.PHONY: all channel world clean upload gdb debug memmap
 
 all:
 	@[ -d $(DIR_BUILD) ] || mkdir $(DIR_BUILD)
@@ -128,6 +134,12 @@ $(TARGET_STUB).elf: $(FILES_STUB_OBJ) Makefile
 $(TARGET_APP)_nopax.elf: $(FILES_SRC_OBJ) newrvl.ld $(AGENT)/libhbcagent.a
 	@echo $(@F)
 	@$(CC) $(FILES_SRC_OBJ) $(LDFLAGS_APP) -o $@
+
+# make memmap: each symbol's address, size, section and object file, from
+# the map (tools/memmap.py).
+memmap: $(TARGET_APP)_nopax.elf
+	@NM="$(PREFIX)nm" "$(PYTHON)" ../../tools/memmap.py $(TARGET_APP).map $< > $(TARGET_APP)_memmap.csv
+	@echo $(TARGET_APP)_memmap.csv
 
 $(AGENT)/libhbcagent.a: FORCE
 	@$(MAKE) --no-print-directory -C $(AGENT) EXTRA_CFLAGS="$(EXTRA_CFLAGS)"
@@ -225,12 +237,16 @@ $(DIR_BUILD)/miibody.o: $(MII)/miibody.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
+$(DIR_BUILD)/miifx.o: $(MII)/miifx.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
 -include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 
 clean:
 	rm -f title_id.h
 	rm -rf $(DIR_BUILD) \
-		*.elf *.dol *.bin *.map i18n/merge/* $(POTPL).gen
+		*.elf *.dol *.bin *.map *_memmap.csv i18n/merge/* $(POTPL).gen
 	@$(MAKE) -C banner clean
 
 wiiload:
@@ -241,7 +257,7 @@ upload: wiiload
 
 $(POTPL).gen: source/*.c
 	@echo "GETTEXT $(POTPL).gen"
-	@xgettext --from-code=UTF-8 -C -o $(POTPL).gen --keyword=_ source/*.c
+	@xgettext --from-code=UTF-8 -C -o $(POTPL).gen --keyword=_ --keyword=N_ source/*.c
 	@sed -i.bak s/CHARSET/UTF-8/g $(POTPL).gen
 
 $(POTPL): $(POTPL).gen

@@ -12,8 +12,8 @@ LDFLAGS = -mrvl -mcpu=750 -meabi -mhard-float -Wl,-z,noexecstack \
 mii_app.dol: mii_app.elf
 	$(ELF2DOL) $< $@
 
-mii_app.elf: main.c ../../sdk/mii/mii.c ../../sdk/mii/mii.h ../../sdk/mii/miidraw.c ../../sdk/mii/miidraw.h ../../sdk/mii/miibody.c
-	$(CC) $(CFLAGS) main.c ../../sdk/mii/mii.c ../../sdk/mii/miidraw.c ../../sdk/mii/miibody.c $(LDFLAGS) -lfat -lwiiuse -lbte -logc -lm -o $@
+mii_app.elf: main.c ../../sdk/mii/mii.c ../../sdk/mii/mii.h ../../sdk/mii/miidraw.c ../../sdk/mii/miidraw.h ../../sdk/mii/miibody.c ../../sdk/mii/miifx.c
+	$(CC) $(CFLAGS) main.c ../../sdk/mii/mii.c ../../sdk/mii/miidraw.c ../../sdk/mii/miibody.c ../../sdk/mii/miifx.c $(LDFLAGS) -lfat -lwiiuse -lbte -logc -lm -o $@
 
 clean:
 	rm -f mii_app.elf mii_app.dol

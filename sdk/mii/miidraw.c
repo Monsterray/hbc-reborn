@@ -18,6 +18,12 @@
 #ifndef MII_NO_OGC
 #include <malloc.h>
 #include <ogc/cache.h>
+/* libogc's paired-single ps_guMtxConcat loads a constant through r13 with a
+ * psq_l, whose offset has 12 bits; with the stock linker scripts the offset
+ * is out of range, gets cut short, and every product is wrong (README,
+ * "Building"). The C one has no such load. */
+#undef guMtxConcat
+#define guMtxConcat c_guMtxConcat
 #endif
 
 #ifndef M_PI
@@ -1997,11 +2003,12 @@ int mii_model_make_faces(mii_model *model, const mii_res *res, GXColor clear) {
 		for (k = 0; k < 5; ++k)
 			free(tx[k].data);
 	}
-	/* Back to the defaults mii_draw and most apps expect, RGB8, and the
-	 * corner in the caller's clear colour (a clearing copy into a scratch
-	 * buffer). */
+	/* Back to the defaults mii_draw and most apps expect, RGB8 and Z writes
+	 * on (a copy clears Z only while they are on), and the corner in the
+	 * caller's clear colour (a clearing copy into a scratch buffer). */
 	for (k = 0; k < 4; ++k)
 		GX_SetTevSwapMode(GX_TEVSTAGE0 + k, GX_TEV_SWAP0, GX_TEV_SWAP0);
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
 	GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
 	GX_PixModeSync();
 	{
@@ -2358,6 +2365,7 @@ void mii_model_free(mii_model *model) {
 	free(model->skin_nrm);
 	free(model->pal_pos);
 	free(model->pal_nrm);
+	free(model->pal_env);
 	free(model->last_pm);
 	free(model->last_w);
 #ifndef MII_NO_OGC
@@ -2746,6 +2754,53 @@ static void draw_head(const mii_model *model, int expression, Mtx view, Mtx head
 	GX_SetCurrentMtx(GX_PNMTX0);
 }
 
+/* The Wii body's shadow (mii_body_shadow): the Mii Channel's mt_shadow, a
+ * quad of its colour whose alpha is the texture's intensity, blended over
+ * what is under it, testing Z but not writing it, after the Mii. */
+static void draw_shadow(const mii_model *model, const mii_pose *pose, Mtx view, Mtx root) {
+	const mii_body *body = model->body;
+	static const float corner[4][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
+	float sm[3][4];
+	Mtx m;
+	GXTexObj tex;
+	int i;
+
+	if (!mii_body_shadow(model, pose, sm))
+		return;
+	guMtxConcat(root, sm, m);
+	guMtxConcat(view, m, m);
+	GX_LoadPosMtxImm(m, GX_PNMTX0);
+	GX_SetCurrentMtx(GX_PNMTX0);
+	GX_InitTexObj(&tex, body->shadow_tex.gx, body->shadow_tex.w, body->shadow_tex.h, GX_TF_I8, GX_CLAMP,
+				  GX_CLAMP, GX_FALSE);
+	GX_InitTexObjLOD(&tex, GX_LINEAR, GX_LINEAR, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
+	GX_LoadTexObj(&tex, GX_TEXMAP0);
+	GX_SetNumTexGens(1);
+	GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+	GX_SetTevColor(GX_TEVREG0, (GXColor) { body->shadow_rgb[0], body->shadow_rgb[1], body->shadow_rgb[2], 255 });
+	GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLORNULL);
+	GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_C0);
+	GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+	GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
+	GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
+	GX_SetCullMode(GX_CULL_NONE);
+	GX_ClearVtxDesc();
+	GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+	GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+	GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+	GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+	GX_Begin(GX_QUADS, GX_VTXFMT1, 4);
+	for (i = 0; i < 4; ++i) {
+		GX_Position3f32(corner[i][0], 0, corner[i][1]);
+		GX_TexCoord2f32((corner[i][0] + 1) / 2, (corner[i][1] + 1) / 2);
+	}
+	GX_End();
+	GX_SetCullMode(GX_CULL_BACK);
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+	GX_ClearVtxDesc();
+}
+
 /* A Wii body (miibody.c), skinned on the GPU as NW4R draws a model: each
  * MDL0 object's own display list, whose indexed loads take each bone's
  * matrices from this frame's palette by matrix id (GX_POSMTXARRAY,
@@ -2759,7 +2814,10 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 	float (*bp)[3][4] = mm->last_pm, (*bw)[3][4] = mm->last_w;
 	float (*pp)[3][4] = mm->pal_pos + mm->pal_size * mm->pal_next;
 	float (*pn)[3][3] = mm->pal_nrm + mm->pal_size * mm->pal_next;
+	float (*pe)[3][4] = mm->pal_env + mm->pal_size * mm->pal_next;
+	int env = body->env.gx != NULL;
 	Mtx mv, inv, nmv, head, t;
+	GXTexObj tex;
 	int i, j, k, id;
 
 	PROF_T(t0);
@@ -2790,6 +2848,8 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 	 * them from memory first. */
 	DCZeroRange(pp, sizeof(float) * 12 * mm->pal_size);
 	DCZeroRange(pn, sizeof(float) * 9 * mm->pal_size);
+	if (env)
+		DCZeroRange(pe, sizeof(float) * 12 * mm->pal_size);
 	guMtxConcat(view, root, mv);
 	if (guMtxInverse(mv, inv))
 		guMtxTranspose(inv, nmv);
@@ -2800,41 +2860,71 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 
 		if (bone < 0) {   /* an id no bone has: never drawn with, kept harmless */
 			guMtxCopy(mv, pp[id]);
-			for (i = 0; i < 3; ++i)
-				for (j = 0; j < 3; ++j)
-					pn[id][i][j] = nmv[i][j];
-			continue;
+			guMtxCopy(nmv, t);
+		} else {
+			guMtxConcat(mv, bp[bone], pp[id]);
+			guMtxConcat(nmv, bw[bone], t);   /* the normals: the rotations only */
 		}
-		guMtxConcat(mv, bp[bone], pp[id]);
-		guMtxConcat(nmv, bw[bone], t);   /* the normals: the rotations only */
 		for (i = 0; i < 3; ++i)
 			for (j = 0; j < 3; ++j)
 				pn[id][i][j] = t[i][j];
+		if (env)   /* the normal as the camera sees it, to the texture: s = (1 + x) / 2, t = (1 - y) / 2 */
+			for (i = 0; i < 2; ++i) {
+				float l = sqrtf(t[i][0] * t[i][0] + t[i][1] * t[i][1] + t[i][2] * t[i][2]);
+				float h = l > 0 ? (i ? -0.5f : 0.5f) / l : 0;
+
+				for (j = 0; j < 3; ++j)
+					pe[id][i][j] = t[i][j] * h;
+				pe[id][i][3] = 0.5f;
+			}
 	}
 	DCFlushRange(pp, sizeof(float) * 12 * mm->pal_size);
 	DCFlushRange(pn, sizeof(float) * 9 * mm->pal_size);
+	if (env)
+		DCFlushRange(pe, sizeof(float) * 12 * mm->pal_size);
 	PROF_ADD(palette, t1);
 	PROF_T(t2);
 	GX_SetArray(GX_POSMTXARRAY, pp, sizeof(float) * 12);
 	GX_SetArray(GX_NRMMTXARRAY, pn, sizeof(float) * 9);
-	/* The lists load texture matrices by the same ids; nothing uses them
-	 * (no texgen here), but the GPU still reads them: from the palette. */
-	GX_SetArray(GX_TEXMTXARRAY, pp, sizeof(float) * 12);
+	/* The lists load texture matrices by the same ids: each one's normal
+	 * to the env texture (or, without one, nothing reads them: the
+	 * palette). */
+	GX_SetArray(GX_TEXMTXARRAY, env ? (void *) pe : (void *) pp, sizeof(float) * 12);
 	GX_InvVtxCache();   /* matrices and vertices come through the vertex cache */
 
-	/* No texture: no texture coordinate generated either (the vertices
-	 * carry none; a texgen reading an input the vertex lacks is not a
-	 * valid setup, though Dolphin quietly reads a default). */
-	GX_SetNumTexGens(0);
-	GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-	GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+	if (env) {
+		/* As the Mii Channel's outer and pants: no lamp, the colour (TEV
+		 * register 0) plus the texel squared, the texel where the normal
+		 * points as the camera sees it (the vertices' texture matrix
+		 * indexes pick each bone's). */
+		GX_InitTexObj(&tex, body->env.gx, body->env.w, body->env.h, GX_TF_I8, GX_CLAMP, GX_CLAMP, GX_FALSE);
+		GX_InitTexObjLOD(&tex, GX_LINEAR, GX_LINEAR, 0, 0, 0, GX_FALSE, GX_FALSE, GX_ANISO_1);
+		GX_LoadTexObj(&tex, GX_TEXMAP0);
+		GX_SetNumTexGens(1);
+		GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_NRM, GX_TEXMTX0);
+		GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLORNULL);
+		GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_TEXC, GX_CC_C0);
+		GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+		GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_A0);
+		GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+	} else {
+		/* No texture: no texture coordinate generated either (the vertices
+		 * carry none; a texgen reading an input the vertex lacks is not a
+		 * valid setup, though Dolphin quietly reads a default). */
+		GX_SetNumTexGens(0);
+		GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+		GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+	}
 	for (k = 0; k < body->nobjs; ++k) {
 		const mii_body_obj *o = &body->obj[k];
 		const mii_body_array *pa = &body->pos_array[o->pos], *na = &body->nrm_array[o->nrm];
 		uint32_t col = o->mesh ? model->pants : model->shirt;
 		const mii_body_lod *l = pose->lod > 0 && pose->lod <= body->nlods ? &body->lod[pose->lod - 1] : NULL;
 
-		GX_SetChanMatColor(GX_COLOR0A0, (GXColor) { col >> 24, col >> 16, col >> 8, 255 });
+		if (env)
+			GX_SetTevColor(GX_TEVREG0, (GXColor) { col >> 24, col >> 16, col >> 8, 255 });
+		else
+			GX_SetChanMatColor(GX_COLOR0A0, (GXColor) { col >> 24, col >> 16, col >> 8, 255 });
 		GX_ClearVtxDesc();
 		GX_SetVtxDesc(GX_VA_PTNMTXIDX, GX_DIRECT);
 		for (i = 0; i < 8; ++i)
@@ -2852,6 +2942,7 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 			GX_CallDispList(o->dl, o->dl_size);
 	}
 	GX_SetNumTexGens(1);
+	GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
 	GX_SetCurrentMtx(GX_PNMTX0);
 
 	PROF_ADD(body, t2);
@@ -2868,6 +2959,8 @@ static void draw_body(const mii_model *model, const mii_pose *pose, Mtx view, Mt
 		draw_head(model, pose->expression, view, head, pose->lod);
 		PROF_ADD(head, t3);
 	}
+	if (pose->shadow)
+		draw_shadow(model, pose, view, root);
 }
 
 void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place) {
@@ -2979,8 +3072,8 @@ void mii_draw(const mii_model *model, const mii_pose *pose, Mtx view, Mtx place)
 
 /* ---- Capture ------------------------------------------------------------------ */
 
-static int capture(const mii_model *model, const mii_pose *pose, int w, int h, float fovy,
-				   guVector eye, guVector target, float stretch_x, GXColor bg, GXColor clear,
+static int capture(const mii_model *model, const mii_pose *pose, const mii_fx_state *fx, int w, int h,
+				   float fovy, guVector eye, guVector target, float stretch_x, GXColor bg, GXColor clear,
 				   void *dst) {
 	int ss = 2 * w <= 640 && 2 * h <= 528 ? 2 : 1;   /* supersampled, box-filtered down */
 	int ew = w * ss, eh = h * ss;
@@ -3001,7 +3094,9 @@ static int capture(const mii_model *model, const mii_pose *pose, int w, int h, f
 	GX_SetColorUpdate(GX_TRUE);
 	GX_SetAlphaUpdate(GX_TRUE);
 	/* Clear the area to the background: a copy that clears it (to dst, which
-	 * the real copy overwrites below). */
+	 * the real copy overwrites below), Z too whatever the caller left (a
+	 * copy clears Z only while Z writes are on). */
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
 	GX_SetCopyClear(bg, 0x00FFFFFF);
 	GX_SetTexCopySrc(0, 0, ew, eh);
 	GX_SetTexCopyDst(w, h, GX_TF_RGBA8, ss > 1 ? GX_TRUE : GX_FALSE);
@@ -3014,6 +3109,8 @@ static int capture(const mii_model *model, const mii_pose *pose, int w, int h, f
 	/* Every pixel the Mii covers is opaque in the copy. */
 	GX_SetDstAlpha(GX_TRUE, 255);
 	mii_draw(model, pose, view, NULL);
+	if (fx)
+		mii_fx_draw(fx, view);
 	GX_SetDstAlpha(GX_FALSE, 0);
 
 	GX_SetCopyClear(clear, 0x00FFFFFF);
@@ -3101,11 +3198,16 @@ int mii_capture(const mii_model *model, const mii_pose *pose, int w, int h, floa
 	if (stretch_x <= 0)
 		stretch_x = 1;
 	frame(model, pose, (float) w * stretch_x / h, margin, &eye, &target);
-	return capture(model, pose, w, h, 20, eye, target, stretch_x,
+	return capture(model, pose, NULL, w, h, 20, eye, target, stretch_x,
 				   (GXColor) { 0, 0, 0, 0 }, clear, dst);
 }
 
 int mii_icon(const mii_model *model, int expression, int size, GXColor background, void *dst) {
+	return mii_icon_fx(model, expression, NULL, size, background, dst);
+}
+
+int mii_icon_fx(const mii_model *model, int expression, const mii_fx_state *fx, int size, GXColor background,
+				void *dst) {
 	/* RFLiMakeIcon: fovy 2 atan2(43.2, 500), the camera at (0, 34.5, 600)
 	 * looking at (0, 34.5, 0). */
 	mii_pose pose;
@@ -3114,7 +3216,7 @@ int mii_icon(const mii_model *model, int expression, int size, GXColor backgroun
 	memset(&pose, 0, sizeof(pose));
 	pose.head_only = 1;
 	pose.expression = expression;
-	return capture(model, &pose, size, size, 2 * atan2f(43.2f, 500) * 180 / (float) M_PI, eye, target,
+	return capture(model, &pose, fx, size, size, 2 * atan2f(43.2f, 500) * 180 / (float) M_PI, eye, target,
 				   1, background, (GXColor) { 0, 0, 0, 255 }, dst);
 }
 

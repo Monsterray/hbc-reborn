@@ -104,7 +104,7 @@ class MiiDrawTest(unittest.TestCase):
         cls.exe = cls.dir / ("miidraw_host.exe" if os.name == "nt" else "miidraw_host")
         subprocess.run([CC, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
                         "-D_CRT_SECURE_NO_WARNINGS", "-DMII_NO_OGC", "-I", str(root / "sdk/mii"),
-                        str(root / "sdk/mii/mii.c"), str(root / "sdk/mii/miidraw.c"), str(root / "sdk/mii/miibody.c"),
+                        str(root / "sdk/mii/mii.c"), str(root / "sdk/mii/miidraw.c"), str(root / "sdk/mii/miibody.c"), str(root / "sdk/mii/miifx.c"),
                         str(root / "tests/miidraw_host/main.c"), "-o", str(cls.exe)]
                        + ([] if os.name == "nt" else ["-lm"]),
                        check=True, env=dict(os.environ, TMP=cls.tmp.name, TEMP=cls.tmp.name))
@@ -283,8 +283,77 @@ class MiiDrawTest(unittest.TestCase):
             r = self.run_body(body)
             self.assertEqual(r.returncode, 0, r.stdout)
             self.assertIn("body: 20 bones", r.stdout)
-            anims = [line for line in r.stdout.splitlines() if line.startswith("anim ")]
-            self.assertGreaterEqual(len(anims), 19, r.stdout)
+            # The Mii Channel's look (sdk/mii 1.4.0): env0 (32 x 32 I8) for
+            # the shirt and trousers, the shadow's 64 x 64 texture, its quad
+            # (75 square) on shadow_model and its colour from mt_shadow's
+            # TEV register 0. The shadow sized by the animation: gone as the
+            # Mii is lifted (bodyGetDown scales it to 0.01), wider as it
+            # falls flat (bodySlip_00), on the ground throughout.
+            self.assertIn("look: env 32x32, shadow shadow_model 64x64 half 37.5 rgb 32 40 38", r.stdout)
+            self.assertIn("shadow bodyWait: 120 frames, none 0, width 37.5 to 37.5, y 0.10 to 0.10", r.stdout)
+            m = re.search(r"shadow bodyGetDown: \d+ frames, none (\d+), width ([\d.]+) to", r.stdout)
+            self.assertTrue(m and int(m.group(1)) > 0 and float(m.group(2)) < 5, r.stdout)
+            m = re.search(r"shadow bodySlip_00: \d+ frames, none 0, width [\d.]+ to ([\d.]+), y 0.10 to 0.10",
+                          r.stdout)
+            self.assertTrue(m and float(m.group(1)) > 45, r.stdout)
+            # Where effects go (mii_fx_place): on the head bone, about 108
+            # up, its X up the neck and its Y out of the face (+Z); the
+            # ground at the feet; for an icon, the chin at the origin, the
+            # face to the front.
+            m = re.search(r"place: head [-\d.]+ ([\d.]+) [-\d.]+, up -?0.0\d 1.00 -?0.0\d, "
+                          r"face -?0.0\d -?0.0\d 1.00, ground y 0.0", r.stdout)
+            self.assertTrue(m and 90 < float(m.group(1)) < 130, r.stdout)
+            self.assertIn("place icon: head 0.0 0.0 0.0, face 0.00 0.00 1.00", r.stdout)
+            # pose.reuse (sdk/mii 1.5.0): mii_body_pose and mii_fx_place
+            # take the bones as the last draw posed them, the frame unread
+            # and the memo untouched; a model never drawn poses from the
+            # fields.
+            self.assertIn("reuse: same 1, place same 1, memo calls 0, undrawn same 0", r.stdout)
+            # mii_fx_place_in: the Mii's place (a quarter turn about Y,
+            # moved) times its own: (x, y, z) to (z + 100, y + 5, -x - 50),
+            # the face's axis turned with it; NULL is mii_fx_place.
+            m = re.search(r"place in: own ([-\d.]+) ([-\d.]+) ([-\d.]+), placed ([-\d.]+) ([-\d.]+) ([-\d.]+), "
+                          r"face ([-\d.]+) ([-\d.]+) ([-\d.]+), null same 1", r.stdout)
+            self.assertTrue(m, r.stdout)
+            x, y, z, px, py, pz, fx_, fy, fz = map(float, m.groups())
+            for got, want in ((px, z + 100), (py, y + 5), (pz, -x - 50), (fx_, 1), (fy, 0), (fz, 0)):
+                self.assertAlmostEqual(got, want, delta=0.02, msg=r.stdout)
+            effects = os.environ.get("MII_REAL_EFFECTS")
+            if effects:
+                # The effects there (your own effect files): the sneeze's
+                # splash about 110 in front of the face; talk's balloons in
+                # front of the mouth; the zzz up over the head.
+                r = self.run_body(body, MII_FX_DIR=effects)
+                fx = {m.group(1): tuple(map(float, m.group(3, 4, 5))) for m in re.finditer(
+                    r"fx (\w+): (\d+) shown, side ([-\d.]+), up ([-\d.]+), forward ([-\d.]+)", r.stdout)}
+                self.assertEqual(len(fx), 3, r.stdout)
+                side, up, fwd = fx["Nc_sneeze01"]
+                self.assertTrue(80 < fwd < 140 and 0 < up < 50, fx)
+                side, up, fwd = fx["Nc_talk01"]
+                self.assertTrue(fwd > 20 and -20 < up < 80, fx)
+                side, up, fwd = fx["Nc_zzz01"]
+                self.assertTrue(up > 60, fx)
+            # Faces for the animations (sdk/mii's own choice): eyes shut
+            # asleep (5), a smile (1), the mouth going (99 then 6),
+            # surprise then sorrow slipping (4, 3); none for Wait.
+            self.assertIn("faces: Catnap_00 5, Greeting 1, Talk 99 6, Slip_00 4 3, Wait 99, none 99", r.stdout)
+            anims =[line for line in r.stdout.splitlines() if line.startswith("anim ")]
+            # All 21, Wallow and Slip_00 too (their rotation keys are the
+            # 4-byte kind, sdk/mii 1.3.0).
+            self.assertGreaterEqual(len(anims), 21, r.stdout)
+            names = {line.split(":")[0][5:] for line in anims}
+            self.assertLessEqual({"bodyWallow", "bodySlip_00"}, names, r.stdout)
+            # The loop flag (CHR0 0x20): Wait, Walk, Run, Talk, Talk_01,
+            # Catnap_00 and Wallow go round; the rest play once.
+            loops = {line.split(":")[0][5:] for line in anims if line.endswith(", loops")}
+            self.assertEqual(loops, {"bodyWait", "bodyWalk", "bodyRun", "bodyTalk", "bodyTalk_01",
+                                     "bodyCatnap_00", "bodyWallow"}, r.stdout)
+            # mii_anim_frame: Wait wraps (as drawing does), Greeting (96
+            # frames, 1.6 s) holds its end and says it is done.
+            self.assertIn("frame bodyWait 10.0 s: 600.00\n", r.stdout)
+            self.assertIn("frame bodyGreeting 1.5 s: 90.00\n", r.stdout)
+            self.assertIn("frame bodyGreeting 1.6 s: 95.99 done\n", r.stdout)
+            self.assertIn("frame bodyGreeting 10.0 s: 95.99 done\n", r.stdout)
             # HBC's two animations at thousands of frames: every posed
             # vertex finite and near the body (the GPU is fed them as they
             # are). Not every animation: bodySlap_03 throws the body 2737
@@ -324,7 +393,7 @@ class MiiDrawTest(unittest.TestCase):
                           r"played on ([\d.]+)", r.stdout)
             self.assertTrue(m, r.stdout)
             self.assertLess(float(m.group(2)), 2, m.group(0))
-            for anim in ("bodyWait", "bodyGreeting"):
+            for anim in ("bodyWait", "bodyGreeting", "bodyWallow", "bodySlip_00"):
                 r = self.run_body(body, anim, MII_SWEEP="1")
                 self.assertEqual(r.returncode, 0, r.stdout)
                 m = re.search(r"sweep: (\d+) poses, (\d+) non-finite, largest position ([\d.]+), "

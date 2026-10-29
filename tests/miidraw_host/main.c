@@ -382,11 +382,123 @@ int main(int argc, char **argv) {
 		printf("body: %d bones, %d skin vertices, %d + %d triangles, %d animations\n", body.nbones,
 			   body.nverts, body.ntris[0], body.ntris[1], body.nanims);
 		for (a = 0; a < body.nanims; ++a)
-			printf("anim %s: %d frames\n", body.anim[a].name, body.anim[a].frames);
+			printf("anim %s: %d frames%s\n", body.anim[a].name, body.anim[a].frames,
+				   body.anim[a].loop ? ", loops" : "");
+		{
+			/* mii_anim_frame: Wait (loops) and Greeting (once) through 10 s. */
+			static const float at[] = { 0, 1, 1.5f, 1.6f, 2.5f, 10 };
+			static const char *names[] = { "bodyWait", "bodyGreeting" };
+
+			for (a = 0; a < 2; ++a)
+				for (j = 0; j < 6; ++j) {
+					int done;
+					float f = mii_anim_frame(&body, 1 + mii_body_anim(&body, names[a]), at[j], &done);
+
+					printf("frame %s %.1f s: %.2f%s\n", names[a], at[j], f, done ? " done" : "");
+				}
+		}
 		if ((r = mii_model_set_body(&md, &body)) < 0) {
 			printf("set_body: %s\n", mii_strerror(r));
 			return 1;
 		}
+		/* The Mii Channel's look (sdk/mii 1.4.0): its textures and shadow,
+		 * and the shadow through animations that size it. */
+		printf("look: env %dx%d, shadow %s %dx%d half %.1f rgb %d %d %d, ground %.2f\n", body.env.w, body.env.h,
+			   body.shadow >= 0 ? body.bone[body.shadow].name : "none", body.shadow_tex.w, body.shadow_tex.h,
+			   body.shadow_half, body.shadow_rgb[0], body.shadow_rgb[1], body.shadow_rgb[2], md.ground);
+		{
+			static const char *names[] = { "bodyWait", "bodyGetDown", "bodySlip_00", "bodySlap_00" };
+
+			for (a = 0; a < 4; ++a) {
+				int an = mii_body_anim(&body, names[a]), f, n = an >= 0 ? body.anim[an].frames : 0;
+				float lo = 1e9f, hi = 0, ylo = 1e9f, yhi = -1e9f, sm[3][4];
+				int none = 0;
+
+				for (f = 0; f < n; ++f) {
+					memset(&pose, 0, sizeof(pose));
+					pose.anim = 1 + an;
+					pose.frame = (float) f;
+					if (!mii_body_shadow(&md, &pose, sm)) {
+						++none;
+						continue;
+					}
+					{
+						float w = sqrtf(sm[0][0] * sm[0][0] + sm[1][0] * sm[1][0] + sm[2][0] * sm[2][0]);
+
+						lo = w < lo ? w : lo;
+						hi = w > hi ? w : hi;
+						ylo = sm[1][3] < ylo ? sm[1][3] : ylo;
+						yhi = sm[1][3] > yhi ? sm[1][3] : yhi;
+					}
+				}
+				printf("shadow %s: %d frames, none %d, width %.1f to %.1f, y %.2f to %.2f\n", names[a], n, none,
+					   lo, hi, ylo, yhi);
+			}
+		}
+		{   /* Where effects go (mii_fx_place): the head bone (its X up the
+			 * neck, Y out of the face) and the ground under the feet;
+			 * the chin at the origin for an icon. */
+			float at[3][4], g[3][4];
+
+			memset(&pose, 0, sizeof(pose));
+			mii_fx_place(&md, &pose, 1, at);
+			mii_fx_place(&md, &pose, 0, g);
+			printf("place: head %.1f %.1f %.1f, up %.2f %.2f %.2f, face %.2f %.2f %.2f, ground y %.1f\n",
+				   at[0][3], at[1][3], at[2][3], at[0][0], at[1][0], at[2][0], at[0][1], at[1][1], at[2][1], g[1][3]);
+			pose.head_only = 1;
+			mii_fx_place(&md, &pose, 1, at);
+			printf("place icon: head %.1f %.1f %.1f, face %.2f %.2f %.2f\n", at[0][3], at[1][3], at[2][3], at[0][1],
+				   at[1][1], at[2][1]);
+			if (getenv("MII_FX_DIR")) {
+				/* The effects played there: where their particles are, a
+				 * few frames on, from the chin (Wait's first frame: the
+				 * face to +Z, the top of the head about 70 up). */
+				static mii_fx fx;
+				static mii_fx_state fs;
+				static mii_fx_particle pt[MII_FX_PARTICLES];
+				static const char *names[] = { "Nc_sneeze01", "Nc_talk01", "Nc_zzz01" };
+				char e1[512], e2[512];
+				int n2, q;
+
+				snprintf(e1, sizeof(e1), "%s/effect_nigaoe.breff", getenv("MII_FX_DIR"));
+				snprintf(e2, sizeof(e2), "%s/effect_nigaoe.breft", getenv("MII_FX_DIR"));
+				if (mii_fx_load(&fx, e1, e2) < 0) {
+					printf("fx: no files\n");
+					return 1;
+				}
+				pose.head_only = 0;
+				mii_fx_place(&md, &pose, 1, at);
+				for (q = 0; q < 3; ++q) {
+					float sum[3] = { 0, 0, 0 };
+					int shown = 0;
+
+					mii_fx_init(&fs, &fx, 1);
+					mii_fx_play(&fs, mii_fx_find(&fx, names[q]), at);
+					for (k = 0; k < (q == 2 ? 40 : 4); ++k)
+						mii_fx_step(&fs, 1);
+					n2 = mii_fx_particles(&fs, pt, MII_FX_PARTICLES);
+					for (j = 0; j < n2; ++j)
+						if (!pt[j].hidden) {
+							for (k = 0; k < 3; ++k)
+								sum[k] += pt[j].pos[k] - at[k][3];
+							++shown;
+						}
+					printf("fx %s: %d shown, side %.0f, up %.0f, forward %.0f\n", names[q], shown,
+						   shown ? sum[0] / shown : 0, shown ? sum[1] / shown : 0, shown ? sum[2] / shown : 0);
+				}
+				mii_fx_free(&fx);
+			}
+		}
+		/* Faces for the animations (mii_anim_expression); 99 where none. */
+		printf("faces: Catnap_00 %d, Greeting %d, Talk %d %d, Slip_00 %d %d, Wait %d, none %d\n",
+			   mii_anim_expression(&body, 1 + mii_body_anim(&body, "bodyCatnap_00"), 100, 99),
+			   mii_anim_expression(&body, 1 + mii_body_anim(&body, "bodyGreeting"), 10, 99),
+			   mii_anim_expression(&body, 1 + mii_body_anim(&body, "bodyTalk"), 3, 99),
+			   mii_anim_expression(&body, 1 + mii_body_anim(&body, "bodyTalk"), 10, 99),
+			   mii_anim_expression(&body, 1 + mii_body_anim(&body, "bodySlip_00"), 5, 99),
+			   mii_anim_expression(&body, 1 + mii_body_anim(&body, "bodySlip_00"), 50, 99),
+			   mii_anim_expression(&body, 1 + mii_body_anim(&body, "bodyWait"), 10, 99),
+			   mii_anim_expression(&body, 0, 10, 99));
 		{   /* The body's pose memo: a frame posed again is found, and is the same. */
 			static float r1[MII_BODY_BONES][3][3], p1[MII_BODY_BONES][3];
 			int walk = 1 + mii_body_anim(&body, "bodyWalk"), f;
@@ -404,6 +516,53 @@ int main(int argc, char **argv) {
 			mii_body_pose(&md, &pose, rot, pos);
 			printf("memo: hits %u, same %d\n", (unsigned) body.memo_hits,
 				   !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) && !memcmp(pos, p1, sizeof(float) * 3 * body.nbones));
+		}
+		{   /* pose.reuse: the bones as the last draw left them (here set as
+			 * draw_body sets them: each bone's rotation and position), the
+			 * frame unread and the memo untouched; mii_fx_place on them. */
+			static float r1[MII_BODY_BONES][3][3], p1[MII_BODY_BONES][3];
+			float at1[3][4], at2[3][4];
+			uint32_t calls;
+			int f, c, same;
+
+			memset(&pose, 0, sizeof(pose));
+			pose.anim = 1 + mii_body_anim(&body, "bodyWalk");
+			pose.frame = 10.5f;
+			mii_body_pose(&md, &pose, r1, p1);
+			mii_fx_place(&md, &pose, 1, at1);
+			for (k = 0; k < body.nbones; ++k)
+				for (f = 0; f < 3; ++f) {
+					for (c = 0; c < 3; ++c)
+						md.last_w[k][f][c] = r1[k][f][c];
+					md.last_w[k][f][3] = p1[k][f];
+				}
+			md.posed = 1;
+			calls = body.memo_hits + body.memo_misses;
+			pose.frame = 40;
+			pose.reuse = 1;
+			mii_body_pose(&md, &pose, rot, pos);
+			mii_fx_place(&md, &pose, 1, at2);
+			same = !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) &&
+				   !memcmp(pos, p1, sizeof(float) * 3 * body.nbones);
+			printf("reuse: same %d, place same %d, memo calls %u", same, !memcmp(at1, at2, sizeof(at1)),
+				   (unsigned) (body.memo_hits + body.memo_misses - calls));
+			md.posed = 0;   /* never drawn: the fields */
+			mii_body_pose(&md, &pose, rot, pos);
+			printf(", undrawn same %d\n", !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) &&
+										   !memcmp(pos, p1, sizeof(float) * 3 * body.nbones));
+		}
+		{   /* mii_fx_place_in: the Mii's place times its own; NULL as
+			 * mii_fx_place. The place: turned a quarter about Y, moved. */
+			const float place[3][4] = { { 0, 0, 1, 100 }, { 0, 1, 0, 5 }, { -1, 0, 0, -50 } };
+			float own[3][4], in[3][4], none[3][4];
+
+			memset(&pose, 0, sizeof(pose));
+			mii_fx_place(&md, &pose, 1, own);
+			mii_fx_place_in(&md, &pose, 1, place, in);
+			mii_fx_place_in(&md, &pose, 1, NULL, none);
+			printf("place in: own %.2f %.2f %.2f, placed %.2f %.2f %.2f, face %.2f %.2f %.2f, null same %d\n",
+				   own[0][3], own[1][3], own[2][3], in[0][3], in[1][3], in[2][3], in[0][1], in[1][1], in[2][1],
+				   !memcmp(own, none, sizeof(own)));
 		}
 		if (getenv("MII_LOD")) {
 			/* Levels of detail: each level's lists are the object's own matrix

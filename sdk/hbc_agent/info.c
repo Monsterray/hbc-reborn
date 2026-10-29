@@ -311,31 +311,36 @@ static void usb_page(ov_page *pg) {
 // ---- Network --------------------------------------------------------------
 
 // IOS's network device: an interface option (GetInterfaceOpt, ioctlv 0x1c).
+// buf must be whole cache lines.
 static s32 if_opt(s32 fd, u32 opt, void *buf, u32 size) {
-	static u32 in[2] __attribute__((aligned(32)));
-	static u32 len __attribute__((aligned(32)));
-	static ioctlv v[3] __attribute__((aligned(32)));
+	// Whole cache lines of their own: libogc invalidates the vectors and the
+	// output after the call, which would drop a neighbour's writes to a
+	// shared line.
+	static struct {
+		ioctlv v[3];
+		u32 in[2];
+		u32 len;
+	} __attribute__((aligned(32))) io;
 	s32 res;
 
-	in[0] = 0xfffe;
-	in[1] = opt;
-	len = size;
-	v[0].data = in;
-	v[0].len = sizeof(in);
-	v[1].data = buf;
-	v[1].len = size;
-	v[2].data = &len;
-	v[2].len = sizeof(len);
+	io.in[0] = 0xfffe;
+	io.in[1] = opt;
+	io.len = size;
+	io.v[0].data = io.in;
+	io.v[0].len = sizeof(io.in);
+	io.v[1].data = buf;
+	io.v[1].len = size;
+	io.v[2].data = &io.len;
+	io.v[2].len = sizeof(io.len);
 	// Cleared first: Dolphin reads the routing table's starting offset from
 	// the buffer, and IOS fills only what it has.
 	memset(buf, 0, size);
-	DCFlushRange(in, sizeof(in));
-	DCFlushRange(&len, sizeof(len));
+	DCFlushRange(&io, sizeof(io));
 	DCFlushRange(buf, size);
-	res = IOS_Ioctlv(fd, 0x1c, 1, 2, v);
+	res = IOS_Ioctlv(fd, 0x1c, 1, 2, io.v);
 	DCInvalidateRange(buf, size);
-	DCInvalidateRange(&len, sizeof(len));
-	return res < 0 ? res : (s32) len;
+	DCInvalidateRange(&io.len, sizeof(io.len));
+	return res < 0 ? res : (s32) io.len;
 }
 
 // A handle of our own on IOS's network device, opened once and never

@@ -34,5 +34,14 @@ void controls_rumble(int rumble);
 s32 controls_sticky(void);
 void controls_set_ir_threshold(int on);
 
+// Presses from the PC (devnet.c's HBCB, `hbc.py buttons`), PADS_* masks:
+// controls_scan presses one a frame and lets it go the next. Returns false
+// when the queue is full.
+bool controls_queue_press(u32 buttons);
+
+// The power or reset button was pressed (main.c): the Mii playground and
+// picker close, so main's loop sees it (and an app sent from the PC).
+bool main_exit_asked(void);
+
 #endif
 

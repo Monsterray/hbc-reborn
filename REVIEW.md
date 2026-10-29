@@ -161,6 +161,91 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### libogc 3.2.1: back to 3.1.0 until a fixed release
+
+On 2026-10-28 the shared toolchain went to libogc 3.2.1 (with devkitPPC r51).
+HBC 1.12.1, built on it and installed on the bench Wii, then crashed now and
+then on its way out (opening an app, going to the Wii Menu): its red Guru
+Meditation box, the network gone quiet, and after the reset no SD card until
+an IOS reload. The user had libogc put back to 3.1.0 the same day, the 3.2.1
+package deleted from pacman's cache, and `IgnorePkg = libogc` set in
+`C:\devkitPro\msys2\etc\pacman.conf`.
+
+- **The bug found: `WPAD_Shutdown` frees the Remotes too early.** 3.2.1's
+  `WPAD_Shutdown` calls the new `wiiuse_cleanup`, which frees every Remote's
+  state, its command queue and its socket, before `BTE_Shutdown()`, so a
+  Bluetooth callback in between writes to freed memory. It also leaves
+  wiiuse.c's own `static __wm` pointing at the freed array, and the next
+  `WPAD_Init` reuses it. 3.1.0 took that state from the LWP workspace and
+  never freed it. HBC calls `WPAD_Shutdown` once, in `controls_deinit()` on
+  every way out. Evidence: `tests/wii_agent_stop.py` "restart" (stop, IOS
+  reload, `WPAD_Init` again) failed in all 3 runs with agent_app on 3.2.1,
+  passed with the same source on 3.1.0, and passed 3 of 3 on 3.2.1 with
+  `-Wl,--wrap=wiiuse_cleanup` and an empty `__wrap_wiiuse_cleanup`.
+- **Changed, not proven harmful: timeslicing.** From 3.2.0 the first
+  `LWP_CreateThread` whose priority lacks bit 0x80 turns on timeslicing for
+  the whole system (10 ms, from the timer interrupt). HBC's threads were
+  written for 3.0 and 3.1, where same-priority threads never cut into each
+  other. A run with every thread given the bit was clean, but each round
+  also left through the installed, unfixed HBC, so nothing was shown.
+- **Ruled out:** the SD driver's 3.2.1 changes (renamed command types, the
+  SWITCH_FUNC buffer on the stack; `ipc.c` invalidates every vector on the
+  reply); the console font (`panic.c` borrows it; the same 4 KiB in both).
+- **Kept from the hunt:** `panic.c` draws its words with the blinking box
+  (a queued GPU copy wiped them, so the box showed no text);
+  `tests/wii_launch_stress.py` (launch an app and come back, N rounds,
+  `--hbc` sends a build before each); `AGENT_APP_DOL` for
+  `tests/agent_checks.py`; agent_app's `OGC=` builds against another libogc.
+
+**Trigger:** before taking any libogc past 3.1.0, check that its
+`WPAD_Shutdown` no longer frees the Remotes before Bluetooth stops (and that
+`wiiuse_init` starts afresh), then run `tests/wii_agent_stop.py` and
+`tests/wii_launch_stress.py` on the bench with HBC installed as the channel.
+
+### 1.12.2: the Mii drawn as a sliver, and two libogc 3.1.0 bugs under it
+
+After a change of Mii, or the playground's Slap_03, the avatar's body drew
+as a thin upright sliver, on the Wii and in Dolphin, in some builds and not
+others. Poisoned heap and stack, ASan and UBSan on the PC, and a check of
+every paired-single result against C found nothing; a Dolphin GDB
+watchpoint on the bone matrices found the cause.
+
+- **libogc's `ps_guMtxConcat` reads a word at `r13`.** `gu_psasm.S` loads
+  `Unit01` (0, 1) with `psq_l UNIT01,Unit01@sdarel(r13),0,0`. `psq_l` has a
+  12-bit offset, then the W bit and the I field; the 16-bit SDA relocation
+  writes all of them. devkitPPC's linker scripts leave `_SDA_BASE_` at ld's
+  default, `.sdata` + 32 KiB, so `Unit01`'s offset is -32768 and the
+  instruction came out as `psq_l f31,0(r13),1,0`: one float from `r13`,
+  1.0 for the other. Every concatenation added that float, times the
+  translation, into its products. In HBC the word at `r13` was a particle
+  of the Mii's effects, so the poof of a new Mii and Slap_03's dust bent
+  the body. **Fixes:** `newrvl.ld` sets `_SDA_BASE_` at `.sdata`'s start
+  (`tests/test_memory_layout.py` checks the base, that `Unit01` is within
+  2047 bytes of it, and the instruction's offset, W and I); sdk/mii 1.4.1
+  calls `c_guMtxConcat`, so apps on the stock scripts (mii_app, the
+  example, outside users) are safe too, and its README says how to check
+  an app. **Trigger:** report it to libogc (load `Unit01` through a
+  register); when a fixed release is taken, sdk/mii may go back to the
+  paired-single product.
+- **A thread that ends keeps the FPU.** libogc 3.1.0 switches the FPU
+  lazily: SPRG3 names its owner, and `KThreadExit` never clears it. After
+  `LWP_JoinThread` frees the thread, the next FP instruction anywhere saves
+  the registers into the freed block. `fpurelease.h` clears the owner as
+  the avatar loader's and the picker worker's last act (the threads that
+  use floats); it refuses to build on another libogc. It was not the
+  sliver (that build still sliced). **Trigger:** with any libogc past 3.1,
+  check `KThreadExit` and drop the header if it clears SPRG3.
+- **Kept from the hunt:** `make DEBUG_POISON=1` (`poison.c`: a NaN pattern
+  in fresh and freed blocks and the unused stack); `make memmap`
+  (`tools/memmap.py`: each symbol's address, size and object file).
+- **The audit after** (HBC 1.12.3): the agent's network-option buffers
+  and two Message Board read buffers are whole cache lines (libogc
+  invalidates ioctlv vectors and read buffers after the call); a new Mii
+  keeps the loaded effects and clears only what is playing, with the
+  effect handles in one place; devnet's thread reads the avatar's body
+  under a lock, as a reload frees it; the playground's captions are
+  translated.
+
 ### 1.12.1: the levels where they look right, and the hair whole
 
 The user watched Miis walk through the levels on the bench Wii and chose

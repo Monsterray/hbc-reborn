@@ -12,6 +12,10 @@
  *   mii_capture(model, ...)       draw it, posed, into a texture with alpha
  *                                 (the head alone: mii_icon)
  *   mii_draw(model, ...)          or draw it straight into your 3D scene
+ *   mii_fx_load(&fx, NULL, NULL)  the Mii Channel's particle effects (a
+ *                                 sneeze, speech balloons, dust, Zzz),
+ *                                 played by mii_fx_step, drawn by
+ *                                 mii_fx_draw (miifx.c)
  *
  * Many Miis (a crowd, a plaza): build them with mii_model_build and
  * mii_model_opts: one mii_cache for all of them (identical parts are kept
@@ -52,9 +56,10 @@
  *   - mii_capture and mii_draw leave GX state changed (see each): restore
  *     yours after them.
  *
- * Building: compile miidraw.c with mii.c. With -DMII_NO_OGC the parts that
- * touch only bytes (the resource, meshes, the composited face) build on a
- * PC, for tools and tests. This file and miidraw.c are in the public domain.
+ * Building: compile miidraw.c with mii.c (and miibody.c, miifx.c for the
+ * bodies and the effects). With -DMII_NO_OGC the parts that touch only
+ * bytes (the resource, meshes, the composited face, the effects' simulation)
+ * build on a PC, for tools and tests. This file and miidraw.c are in the public domain.
  */
 
 #ifndef MIIDRAW_H
@@ -74,7 +79,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.2.1"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole */
+#define MIIDRAW_VERSION "1.5.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole; 1.3.0: animations loop or play once (mii_anim_frame), 4-byte rotation keys (bodyWallow); 1.4.0: the Mii Channel's look (env shading, the shadow, faces for the animations); 1.4.1: the C matrix product, not libogc's paired-single one; 1.5.0: Z writes left on (the effects, GPU faces: a crowd in the clear colour), mii_fx_place_in, mii_fx_state.replaced, pose.reuse for mii_body_pose and mii_fx_place */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -123,6 +128,7 @@ typedef struct {
 typedef struct {
 	char name[24];
 	int frames;
+	int loop;              /* 1: plays round and round (bodyWait); 0: once (bodyGreeting) */
 	struct {
 		uint32_t code;     /* CHR0 v3 code: what is animated, constant, its format */
 		float c[9];        /* constants: scale, rotation, translation (X Y Z each) */
@@ -166,12 +172,20 @@ typedef struct {
 
 /* A pose's bones, local (each one's rotation and translation from its
  * parent, before any Mii's scale): what the animation keys give, worked out
- * once for every Mii at that frame. */
+ * once for every Mii at that frame. s is each bone's own animated scale,
+ * not passed to its children (only shadow_model's changes: the shadow
+ * shrinks as a Mii leaves the ground). */
 typedef struct {
 	const void *a, *a2;    /* the animations (NULL: none), */
 	float f, f2, w;        /* their frames and the fade */
-	float r[MII_BODY_BONES][3][3], t[MII_BODY_BONES][3];
+	float r[MII_BODY_BONES][3][3], t[MII_BODY_BONES][3], s[MII_BODY_BONES][3];
 } mii_pose_memo;
+
+/* An I8 texture of the body's file, as the GPU reads it (32-byte aligned). */
+typedef struct {
+	uint8_t *gx;           /* NULL: the file has none */
+	uint16_t w, h;
+} mii_body_tex;
 
 /* A loaded body. Read-only to the app once loaded: drawing writes only its
  * pose memo (below). */
@@ -202,6 +216,15 @@ typedef struct {
 	int memo_next;
 	int wait_anim;         /* bodyWait's index (or -1): a pose's anim 0 */
 	uint32_t memo_hits, memo_misses;
+	/* The Mii Channel's look (sdk/mii 1.4.0), from the file's materials:
+	 * env, the light the shirt and trousers reflect (outer and pants: their
+	 * colour plus the texel squared, the texel picked by the normal as the
+	 * camera sees it); the shadow, a quad on the floor under shadow_model
+	 * (its texture's intensity the alpha, in shadow_rgb). */
+	mii_body_tex env, shadow_tex;
+	int shadow;            /* shadow_model's bone index, or -1 */
+	float shadow_half;     /* half the quad's side (37.5) */
+	uint8_t shadow_rgb[3];
 	/* Levels of detail (mii_body_make_lods): lod[0] is level 1. */
 	int full_tris;         /* the whole body's triangles */
 	int nlods;
@@ -217,6 +240,17 @@ int mii_body_load(mii_body *body, const char *path);
 void mii_body_free(mii_body *body);
 /* The animation named so ("bodyWait"), or -1. */
 int mii_body_anim(const mii_body *body, const char *name);
+/* The frame for pose.frame (and from_frame) `seconds` into animation anim
+ * (1 + its index, as pose.anim), at 60 a second: a looping one wraps round;
+ * a one-shot plays once and holds its last frame. *done (may be NULL) says
+ * a one-shot has ended (never for a looping one). */
+float mii_anim_frame(const mii_body *body, int anim, float seconds, int *done);
+/* A face for animation anim (1 + its index) at this frame, or `other` where
+ * it calls for none (Wait, Walk): eyes shut through Catnap_00, a smile for
+ * Greeting, surprise as a Mii is flung or slips, the mouth going for Talk.
+ * This library's choice, by eye: the Mii Channel's program picks its faces
+ * and the file does not say (sdk/mii 1.4.0). */
+int mii_anim_expression(const mii_body *body, int anim, float frame, int other);
 
 /* Makes coarser levels of the body, as games draw a crowd's far Miis (Wii
  * Party's bodies go 2,092, 1,296, 776, 448, 240 triangles), up to
@@ -341,6 +375,7 @@ typedef struct {
 	 * GX_DrawDone. */
 	float (*pal_pos)[3][4];
 	float (*pal_nrm)[3][3];
+	float (*pal_env)[3][4];   /* the texture matrices: each id's normal to the env texture */
 	/* The bones as the last draw posed them (mii_pose.reuse): each one's
 	 * matrices, and the head's place. */
 	float (*last_pm)[3][4];
@@ -458,18 +493,26 @@ typedef struct {
 	 * quaternion (the short way), its position linearly. 0: no fade.
 	 * Frames wrap: let a looping animation (bodyWait) play on as it fades,
 	 * but hold a finished one-shot (bodyGreeting) at its last frame, or the
-	 * fade blends toward it starting over. */
+	 * fade blends toward it starting over; mii_anim_frame does both. */
 	int from_anim;
 	float from_frame;
 	float from_weight;
 	/* 1: the bones as this model's last draw posed them, the fields above
 	 * unread but the head's angles and the expression: a Mii far off posed
-	 * every second or fourth frame costs about a third. */
+	 * every second or fourth frame costs about a third. mii_body_pose and
+	 * mii_fx_place take them too: effects placed after the Mii is drawn
+	 * (with reuse 1) follow it without posing it again. */
 	int reuse;
 	/* 0 the whole Mii; 1 to 4 coarser levels for a Mii far off
 	 * (mii_body_lod_for): the Wii body's (mii_body_make_lods) and the
 	 * head's (mii_model_opts.lods), each as far as it has levels. */
 	int lod;
+	/* 1: the Wii body's shadow under it (mii_body_shadow), drawn after the
+	 * Mii, see-through, testing Z but not writing it. */
+	int shadow;
+	/* The ground this far under the Mii's feet (body units; a Mii picked up
+	 * and carried): the shadow stays on it, smaller the higher the Mii. */
+	float shadow_drop;
 } mii_pose;
 
 /* The weight for a cross-fade `seconds` after a change of animation that
@@ -477,9 +520,11 @@ typedef struct {
 float mii_fade_weight(float seconds, float length);
 
 /* The pose's bones in the world, for a Wii body (portable: tests use it):
- * each bone's rotation and position, the body scale applied. This and the
- * two below write the body's pose memo, as drawing does: one thread per
- * body. */
+ * each bone's rotation and position, the body scale applied. With
+ * pose.reuse and a model drawn before, the bones as its last draw posed
+ * them (mii_draw: the fields that pose unread), so effects placed after a
+ * draw pose nothing again. This and the two below write the body's pose
+ * memo, as drawing does: one thread per body. */
 void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]);
 /* The posed vertices into model->skin_pos and skin_nrm (3 floats each): the
  * CPU reference the GPU's palette is tested against. Without the memory
@@ -494,16 +539,248 @@ void mii_body_matrices(const mii_model *model, const mii_pose *pose, float pos[]
  * arrays must be valid: no checks). */
 void mii_body_matrices_posed(const mii_model *model, float rot[][3][3], float at[][3], float pos[][3][4],
 							 float nrm[][3][3]);
+/* Where the shadow lies for the pose: a matrix taking the unit square (X
+ * and Z from -1 to 1, Y 0) to the body's space, as the Mii Channel's
+ * shadow_model has it: on the ground under the Mii, as wide as its build,
+ * and sized by the animation (bodyGetDown shrinks it to nothing as the Mii
+ * is lifted, bodySlip_00 stretches it as it falls flat). 0 without a
+ * shadow in the body's file (or a bone scaled to nothing); 1 and m. */
+int mii_body_shadow(const mii_model *model, const mii_pose *pose, float m[3][4]);
+/* Where to play an effect for the pose, in the Mii's own space: as
+ * mii_draw draws it with no `place`. head 1: on the head bone as posed
+ * (what the Mii Channel's animations also give as pSphere14), its X up the
+ * neck, Y out of the face: the sneeze 110 in front of the face and where
+ * it points, talk's balloons before the mouth, zzz over the head; for a
+ * head_only pose, the chin at the origin, facing the front. head 0: on the
+ * ground under the Mii's lowest bone (its feet, or its back after a fall),
+ * upright: dust. Turned with the Mii and sized by its height. Move a
+ * playing effect with it each frame (mii_fx_move). With pose.reuse, on the
+ * bones as the model's last draw posed them (mii_body_pose). 0 or
+ * MII_E_ARG.
+ *
+ * mii_fx_play's `at` is in the world: for a Mii drawn with a `place`, use
+ * mii_fx_place_in, or the effects play at the world's origin. */
+int mii_fx_place(const mii_model *model, const mii_pose *pose, int head, float at[3][4]);
+/* mii_fx_place for a Mii drawn with mii_draw's `place` (NULL: none, as
+ * mii_fx_place): at = place times the Mii's own. */
+int mii_fx_place_in(const mii_model *model, const mii_pose *pose, int head, const float place[3][4],
+					float at[3][4]);
 #ifndef MII_NO_OGC
 /* Each bone in the body's space as a matrix (rotation and position, the
- * scale not applied): mii_body_pose, on the Wii's paired-single unit (each
- * bone its parent's matrix times its own, ps_guMtxConcat). What mii_draw
- * poses with. */
+ * scale not applied): mii_body_pose, each bone its parent's matrix times
+ * its own. What mii_draw poses with. */
 void mii_body_world(const mii_model *model, const mii_pose *pose, Mtx world[]);
 #endif
 
 /* The bounds of a standing Mii (feet at 0), for framing a camera. */
 void mii_model_bounds(const mii_model *model, int head_only, float *top, float *half_width);
+
+/* ---- Effects (miifx.c) ----------------------------------------------------- */
+
+/* The Mii Channel's particle effects: effect_nigaoe.breff (the emitters) and
+ * effect_nigaoe.breft (their textures), in its Character.szs. Nintendo's,
+ * like the bodies: the user copies their own to sd:/mii, never ship them.
+ * 14 emitters: Nc_sneeze01 (the splash of a sneeze), Nc_talk01 (speech
+ * balloons; it starts nc_talk01_b three times), Nc_bodyslip01,
+ * Nc_run_smoke01, Nc_slapsmoke01 and 02 (dust), Nc_zzz01 (a Z rising every
+ * 53 frames, until stopped), Nc_favor_pants01, 02 and their fm (female)
+ * twins, Nc_favor_on01 (the sparkles of a favourite), Nc_change_parts01 (a
+ * ring of sparkles as a face part changes).
+ *
+ * NW4R's EffectSystem files, version 5. What is played is what these files
+ * use: point, disc and cylinder emitters (others emit from their centre),
+ * even spreads, rate, start, interval and length, particle life, speed
+ * outward, along the Y axis, at random, along the normal and along a set
+ * direction (with their cones), the curves for colour, alpha, size, scale,
+ * rotation and the texture (a flip-book), child emitters, and the fields
+ * speed (drag), gravity, spin and vortex (vortex roughly). Particles are
+ * camera-facing billboards. Not played: alpha flicker, lighting, the second
+ * texture layer and indirect textures, alpha-compare curves, the "particle"
+ * kind of child, baked curves, LOD, momentum random, EMITTER_TIMING curves,
+ * pre-roll, draw order (oldest first always), stripes and other particle
+ * types (all drawn as billboards).
+ *
+ * The emitter's own scale, rotation and translation place it in the space
+ * of the matrix the app gives (mii_fx_play): the Mii Channel's program
+ * picks one per effect, and the files do not say which. The head bone
+ * suits Nc_talk01; the body's root (the feet on Y = 0) suits the dust.
+ * Particles live in the world: moving the matrix (mii_fx_move) moves where
+ * new ones start, not the ones already out. Fields with coord 0 (gravity,
+ * vortex) push along the world's axes as given. */
+#define MII_FX_BREFF_PATH "sd:/mii/effect_nigaoe.breff"
+#define MII_FX_BREFT_PATH "sd:/mii/effect_nigaoe.breft"
+#define MII_FX_EMITTERS 256    /* emitters a file may hold */
+#define MII_FX_TEXTURES 32     /* textures a file may hold */
+#define MII_FX_TRACKS 16       /* curves per emitter, particle and emitter each */
+#define MII_FX_NAMES 8         /* names a texture or child curve may use */
+#define MII_FX_INSTANCES 16    /* emitters playing at once */
+#define MII_FX_PARTICLES 128   /* particles at once */
+
+/* A curve's key, as read: values unpacked by component (colours 0 to 255). */
+typedef struct {
+	uint16_t frame;
+	uint8_t interp;        /* 0 linear, 1 smooth, 2 step */
+	uint8_t random;        /* 1: the value is drawn from range entry `ref` */
+	uint8_t child;         /* a child key: 1 an emitter (0, a particle, is not played) */
+	uint16_t ref;          /* a texture or child key: the curve's name index; random: the range entry */
+	float v[6];
+} mii_fx_key;
+
+/* A range entry: each component lo + span * a random 0..1, negated half the
+ * time with sign. */
+typedef struct {
+	float lo[6], span[6];
+	uint8_t sign;
+} mii_fx_range;
+
+/* One curve ("track"): what it drives (kind), over how many frames. */
+typedef struct {
+	uint8_t kind;          /* NW4R's kind number; 0xFF for one not played */
+	uint8_t type;          /* 0 u8, 3 f32, 4 texture, 5 child, 6 rotation */
+	uint8_t mask;          /* the components it sets */
+	uint8_t flags;         /* 0x20 loops for ever, 0x40 ping-pong, 0x80 stretched over the life */
+	uint8_t loop;          /* times round */
+	uint8_t coord, target; /* fields: 1 the emitter's axes (else the world's); 1 moves the position (else the speed) */
+	uint16_t frames;
+	uint16_t nkeys, nranges;
+	uint32_t key, range;   /* the first of each in mii_fx's arrays */
+	float dir[3];          /* gravity's direction */
+	int16_t ref[MII_FX_NAMES];   /* the names as textures (texture curve) or emitters (child), -1 if missing */
+} mii_fx_curve;
+
+/* One emitter, as read. */
+typedef struct {
+	char name[32];
+	uint32_t common, emit_flag;   /* NW4R's flags; emit_flag's low byte is the form (0 disc, 7 cylinder, 9 point) */
+	uint16_t emit_life;    /* frames it emits (with common & 4 or 65535: for ever) */
+	uint16_t ptcl_life, start, interval, div;
+	int8_t life_rnd, emit_rnd, vel_rnd, size_rnd;   /* percentages */
+	float emit;            /* particles per emission */
+	float param[6];        /* the form's: radius, inner %, start and end angle, then per form */
+	float v_radial, v_yaxis, v_random, v_normal, v_normal_cone, v_spec, v_spec_cone, spec_dir[3];
+	float scale[3], rot[3], trans[3];   /* its place (radians) */
+	uint32_t seed;         /* 0: random */
+	uint8_t bb;            /* billboard: 0 normal, 2 turned along the motion (1, 3: as 0) */
+	uint16_t draw;         /* 1 Z test, 2 Z update, 4 Z before the texture, 0x400 hidden */
+	uint8_t cmp[3];        /* alpha compare: GXCompare, GXCompare, GXAlphaOp */
+	uint8_t ref[2];        /* and its references */
+	uint8_t blend[4];      /* GXBlendMode, source and destination GXBlendFactor, GXLogicOp */
+	uint8_t zfunc;
+	uint8_t color[2][4];   /* primary and secondary, rgba */
+	float size[2], pscale[2], prot[3];   /* a particle's size, scale and rotation at birth */
+	uint16_t wrap;         /* S in bits 0-1, T in 2-3: 0 clamp, 1 repeat, 2 mirror */
+	int tex;               /* its texture, or -1 */
+	int ntracks, ninit;    /* particle curves, the first ninit applied at birth only */
+	int nemit_tracks;      /* emitter curves (translation, emission, ...) after them */
+	uint32_t track;        /* the first, in mii_fx's curves */
+} mii_fx_emitter;
+
+/* A texture as the GPU reads it (format GX_TF_*: I4 to RGBA8, CMPR; level 0). */
+typedef struct {
+	char name[24];
+	uint16_t w, h;
+	uint8_t fmt;
+	uint32_t size;
+	void *gx;              /* 32-byte aligned, out of the cache (on a PC, a copy); NULL: a format not drawn */
+} mii_fx_tex;
+
+/* The loaded files. Read-only once loaded; any number of mii_fx_states can
+ * play from one. */
+typedef struct {
+	int nemitters;
+	mii_fx_emitter *emitter;
+	int ntex;
+	mii_fx_tex tex[MII_FX_TEXTURES];
+	int ncurves, nkeys, nranges;
+	mii_fx_curve *curve;
+	mii_fx_key *key;
+	mii_fx_range *range;
+} mii_fx;
+
+/* Checks and reads the two files in memory (breft may be NULL: nothing
+ * drawn). Everything is copied: free yours after. 0 or MII_E_FORMAT (any
+ * count or offset out of place), MII_E_MEM, MII_E_ARG. */
+int mii_fx_attach(mii_fx *fx, const void *breff, size_t breff_size, const void *breft, size_t breft_size);
+/* Reads them (NULL: MII_FX_BREFF_PATH, MII_FX_BREFT_PATH). MII_E_NO_FILE
+ * without them. */
+int mii_fx_load(mii_fx *fx, const char *breff_path, const char *breft_path);
+void mii_fx_free(mii_fx *fx);
+/* The emitter named so ("Nc_sneeze01"), or -1. */
+int mii_fx_find(const mii_fx *fx, const char *name);
+
+/* Emitters playing and their particles: fixed pools (no allocation once
+ * started); when one is full the oldest goes. About 25 KB. */
+typedef struct {
+	int16_t emitter;       /* -1: free */
+	uint16_t gen;
+	uint32_t tick, serial, stepped, rng;
+	float at[3][4];
+	float accum;           /* particles owed */
+	int emitted;
+} mii_fx_inst;
+
+typedef struct {
+	int16_t emitter;       /* -1: free */
+	int16_t tex;
+	uint16_t age, life;    /* frames */
+	uint32_t serial, seed;
+	float pos[3], vel[3];  /* in the world, units a frame */
+	float m[3][4];         /* the emitter's place at its birth */
+	float at[3][3];        /* the app's matrix then, without its translation (for children) */
+	float size[2], scale[2], rot[3];
+	float color[2][4];     /* primary and secondary rgba, 0 to 255 */
+} mii_fx_ptcl;
+
+typedef struct {
+	const mii_fx *fx;
+	uint32_t seed, serial, frame;
+	uint16_t gen;
+	float frac;            /* part of a frame owed */
+	/* Emitters started in the place of one still playing, since
+	 * mii_fx_init: every one of MII_FX_INSTANCES busy, the oldest went
+	 * (its handle no longer plays). By mii_fx_play, and by the children a
+	 * particle starts in mii_fx_step. Read it, never written by the app. */
+	uint32_t replaced;
+	mii_fx_inst inst[MII_FX_INSTANCES];
+	mii_fx_ptcl ptcl[MII_FX_PARTICLES];
+} mii_fx_state;
+
+/* Empties s, to play from fx. The same seed plays the same: the random
+ * numbers are the library's own. */
+void mii_fx_init(mii_fx_state *s, const mii_fx *fx, uint32_t seed);
+/* Starts an emitter, placed by `at` (a 3 x 4 matrix to the world, NULL:
+ * none; its scale scales the particles too; mii_fx_place_in for a Mii's).
+ * It starts emitting at the next mii_fx_step. With every emitter busy it
+ * takes the oldest one's place (s->replaced counts them). A handle (> 0),
+ * or MII_E_ARG. */
+int mii_fx_play(mii_fx_state *s, int emitter, const float at[3][4]);
+/* Moves a playing emitter (the head it follows has moved). */
+void mii_fx_move(mii_fx_state *s, int handle, const float at[3][4]);
+/* Stops it emitting (Nc_zzz01 never stops on its own); its particles live
+ * on. */
+void mii_fx_stop(mii_fx_state *s, int handle);
+/* 1 while it still emits. */
+int mii_fx_playing(const mii_fx_state *s, int handle);
+/* Moves time on: frames at 60 a second (1.2 a frame at 50 Hz), at most 8
+ * at once. The children particles start take the oldest emitters' places
+ * as mii_fx_play does (s->replaced). */
+void mii_fx_step(mii_fx_state *s, float frames);
+
+/* A live particle, as drawn. */
+typedef struct {
+	float pos[3];          /* its centre, in the world */
+	float size[2];         /* width and height, in the world */
+	float rot;             /* about the line of sight, radians */
+	uint8_t color[4];      /* primary rgba: the texture's white */
+	uint8_t color2[3];     /* secondary rgb: the texture's black */
+	int tex;               /* in fx->tex, or -1 */
+	int emitter, age, life;
+	int hidden;            /* never drawn (Nc_talk01, which only carries the balloons) */
+} mii_fx_particle;
+
+/* The live particles, oldest first, up to max into out (NULL for none);
+ * returns how many live. */
+int mii_fx_particles(const mii_fx_state *s, mii_fx_particle *out, int max);
 
 #ifndef MII_NO_OGC
 
@@ -582,15 +859,42 @@ int mii_capture(const mii_model *model, const mii_pose *pose, int w, int h, floa
  * it, on `background` (alpha 0 for none). Same rules as mii_capture; the
  * corner is cleared to opaque black after. */
 int mii_icon(const mii_model *model, int expression, int size, GXColor background, void *dst);
+/* The same with effects (miifx.c) drawn over the head, as they are now in
+ * fx (NULL: none): play them placed by mii_fx_place on a head_only pose,
+ * scaled down (by about half) to stay inside the icon. */
+int mii_icon_fx(const mii_model *model, int expression, const mii_fx_state *fx, int size, GXColor background,
+				void *dst);
 
 /* Draws a model's faces with the GPU (mii_model_opts.gpu_faces), as RFL's
  * RFLiMakeTexture: the parts as quads into the EFB's corner, coloured by
  * TEV, copied out as RGB5A3. Call it between frames, on the thread that
  * draws: after your last copy, before you draw the next frame. It leaves
  * the corner in `clear` (your clear colour), the pixel format RGB8_Z24,
- * and changes the viewport, scissor, projection, copy filter, vertex
- * format, channels, TEV, blending, Z and culling: set yours again. */
+ * Z on (LEQUAL, update), and changes the viewport, scissor, projection,
+ * copy filter, vertex format, channels, TEV, blending and culling: set
+ * yours again. */
 int mii_model_make_faces(mii_model *model, const mii_res *res, GXColor clear);
+
+/* Draws the effects' particles with your projection loaded and `view` the
+ * camera: each a square facing the camera, turned by its rotation, its
+ * colour lerp(secondary, primary, the texture's intensity), its alpha the
+ * primary's times the texture's, blended or alpha-tested as its emitter
+ * says (the dust: opaque, cut out where alpha is under 8 or 10). Draw it
+ * after the scene's opaque parts.
+ *
+ * It changes, so set yours again after: the vertex descriptor (direct F32
+ * positions and texture coordinates) and GX_VTXFMT2's format; GX_PNMTX0
+ * (identity: the corners are worked out in view space) and the current
+ * matrix; no colour channels (GX_SetNumChans(0)); one texture coordinate
+ * generation (TEXCOORD0 from TEX0, identity); one TEV stage, its order,
+ * operation and konstant selection (K1), GX_TEVREG0 and GX_KCOLOR1;
+ * GX_TEXMAP0; blending and the alpha compare as the last emitter's file
+ * says; culling (none). Z goes as each emitter's file says and is left on
+ * (LEQUAL, update, compared before texturing): a copy clears Z only while
+ * Z writes are on, so an emitter's mode left to the frame's copy would
+ * keep that frame's Z, the next frame drawing nothing where it stood. It
+ * assumes the default TEV swap tables, no indirect stages and no fog. */
+void mii_fx_draw(const mii_fx_state *s, Mtx view);
 
 #endif /* MII_NO_OGC */
 

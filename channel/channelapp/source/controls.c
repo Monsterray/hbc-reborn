@@ -15,6 +15,11 @@ WPADData *wpads[WPAD_MAX_WIIMOTES];
 
 static int rumbling = 0;
 
+#define QUEUED_MAX 64
+static u32 queued[QUEUED_MAX];
+static volatile u32 queued_head, queued_tail;
+static u32 queued_up;
+
 void controls_init (void) {
 	int i;
 
@@ -152,6 +157,17 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 		}
 	}
 
+	// A press from the PC: down this frame, up the next.
+	if (queued_up) {
+		bu |= queued_up;
+		queued_up = 0;
+	} else if (queued_tail != queued_head) {
+		queued_up = queued[queued_tail % QUEUED_MAX];
+		bd |= queued_up;
+		bh |= queued_up;
+		++queued_tail;
+	}
+
 	if(last_owner >= 0 && last_owner != pointer_owner && rumbling) {
 		WPAD_Rumble (last_owner, 0);
 		if(pointer_owner >= 0)
@@ -166,6 +182,14 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 
 	if (up)
 		*up = bu;
+}
+
+bool controls_queue_press(u32 buttons) {
+	if (queued_head - queued_tail >= QUEUED_MAX)
+		return false;
+	queued[queued_head % QUEUED_MAX] = buttons;
+	++queued_head;
+	return true;
 }
 
 bool controls_ir (s32 *x, s32 *y, f32 *roll) {

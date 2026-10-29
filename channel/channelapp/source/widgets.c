@@ -378,6 +378,31 @@ void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 	}
 }
 
+// A Mii in the Mii picker (miipick.c): its coin, and the glow ring around
+// it while it has the focus.
+void widget_mii_coin(widget *w, s16 x, s16 y, s16 z, gfx_entity *coin,
+						gfx_entity *ring) {
+	widget_layer *l;
+
+	widget_init(w, WT_APP_ENTRY, true, x, y, z, coin->w, coin->h, 2);
+	w->flags |= WF_RUMBLE;
+
+	l = &w->layers[0];
+	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
+	l->flags_invert = 0;
+	l->gfx_entry_count = 1;
+	l->gfx_entries = (gfx_queue_entry *) pmalloc (sizeof (gfx_queue_entry));
+	gfx_qe_entity (&l->gfx_entries[0], ring, -(ring->w - coin->w) / 2,
+					-(ring->h - coin->h) / 2, 0, COL_DEFAULT);
+
+	l = &w->layers[1];
+	l->flags = 0;
+	l->flags_invert = 0;
+	l->gfx_entry_count = 1;
+	l->gfx_entries = (gfx_queue_entry *) pmalloc (sizeof (gfx_queue_entry));
+	gfx_qe_entity (&l->gfx_entries[0], coin, 0, 0, 1, COL_DEFAULT);
+}
+
 void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 	const char *line1, *line2;
 	int l1, l2;

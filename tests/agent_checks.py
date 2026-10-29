@@ -22,8 +22,10 @@ root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tools"))
 import hbc  # noqa: E402
 
-APP = root / "tests/agent_app/agent_app.dol"
-ELF = root / "tests/agent_app/agent_app.elf"
+# AGENT_APP_DOL picks another build (tests/agent_app's Makefile variants);
+# its .elf beside it gives the crash report's names.
+APP = pathlib.Path(os.environ.get("AGENT_APP_DOL") or root / "tests/agent_app/agent_app.dol")
+ELF = APP.with_suffix(".elf")
 
 
 def raw_move(wii, src, dst, flags=0):
