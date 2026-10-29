@@ -8,6 +8,7 @@
 #include "../config.h"
 #include "controls.h"
 #include "devfile.h"
+#include "transfer_arc.h"
 #include "i18n.h"
 #include "font.h"
 #include <ogc/lwp_watchdog.h>
@@ -188,11 +189,12 @@ bool view_force_transfer_style(const char *style) {
 }
 
 #define LINE_W 360
+#define LINE_TEXT_W (LINE_W - 40)   // the progress circle and an 8-pixel gap
 #define NAME_STEP_MS 133   // per character the name moves
 #define NAME_HOLD_MS 1000  // at the start of each name, and at a bounce's ends
 
 static bool line_fits(const char *s) {
-	return font_get_char_count(FONT_LABEL, s, LINE_W) == font_get_char_count(FONT_LABEL, s, 0xffff);
+	return font_get_char_count(FONT_LABEL, s, LINE_TEXT_W) == font_get_char_count(FONT_LABEL, s, 0xffff);
 }
 
 // Bytes of s that start a character, so a window never splits UTF-8.
@@ -235,89 +237,88 @@ static void name_window(char *out, int size, const char *name, int span, int roo
 	snprintf(out, size, "%.*s", char_start(name + off, room), name + off);
 }
 
-// What hbc.py is moving, at the bottom right of every screen, so a transfer
-// in the background shows: "Receiving boot.dol 42%", "Sending save.dat".
+// What hbc.py is moving, with a fixed progress circle beside the name.
 static void transfer_line(void) {
-	static gfx_queue_entry glyphs[64], pct_glyphs[8];
-	static char shown[112], fitted[52];   // the direction and name room is for
-	static int count, pct_count, room, span;
-	static u64 since;   // when this name first showed
-	char line[96] = "", part[64], pct[8] = "", key[112];
-	bool split = false;   // a long name: the percentage drawn on its own
+	static gfx_queue_entry glyphs[64], arc_entry;
+	static gfx_entity arc;
+	static u8 arc_pixels[TRANSFER_ARC_SIZE * TRANSFER_ARC_SIZE * 4] ATTRIBUTE_ALIGN(32);
+	static char shown[112], fitted[52];
+	static int count, room, span, last_fill = -1, last_start = -1;
+	static u64 since;
+	char line[96] = "", part[64], key[112];
+	char identity[52];
+	bool scrolling = false;
 	const char *name, *verb;
 	u32 done, total;
 	char dir = devfile_progress(&name, &done, &total);
+	u16 x = view_width - 40 - theme_gfx[THEME_GECKO_ACTIVE]->w -
+			theme_gfx[THEME_LAN_ACTIVE]->w - LINE_W;
+	u16 y = 412 + theme_gfx[THEME_LAN_ACTIVE]->h / 2;
 
 	if (name_style < 0)
-		name_style = (u32) gettime() % 3;   // this start's pick
+		name_style = (u32) gettime() % 3;
 	if (dir) {
 		verb = dir == 'p' ? _("Receiving") : _("Sending");
-		if (total)
-			snprintf(pct, sizeof(pct), "  %u%%", (unsigned) ((u64) done * 100 / total));
-		// How much of a new name fits beside the verb and "  100%".
-		snprintf(part, sizeof(part), "%c%s", dir, name);
-		if (strcmp(part, fitted)) {
-			strcpy(fitted, part);
-			since = gettime();   // each new name starts still
+		snprintf(identity, sizeof(identity), "%c%s", dir, name);
+		if (strcmp(identity, fitted)) {
+			strcpy(fitted, identity);
+			since = gettime();
 			for (room = strlen(name); room > 1; --room) {
-				snprintf(line, sizeof(line), "%s %.*s  100%%", verb, room, name);
+				snprintf(line, sizeof(line), "%s %.*s", verb, room, name);
 				if (line_fits(line))
 					break;
 			}
-			// And how much of its end fits: where a bounce turns back.
 			for (span = 0; span < (int) strlen(name) - 1; ++span) {
 				if ((name[span] & 0xc0) == 0x80)
-					continue;   // inside a UTF-8 character
-				snprintf(line, sizeof(line), "%s %s  100%%", verb, name + span);
+					continue;
+				snprintf(line, sizeof(line), "%s %s", verb, name + span);
 				if (line_fits(line))
 					break;
 			}
 		}
 		if (room >= (int) strlen(name)) {
-			snprintf(line, sizeof(line), "%s %s%s", verb, name, pct);
+			snprintf(line, sizeof(line), "%s %s", verb, name);
 		} else {
-			// The word stays at the left edge and the percentage at the
-			// right; the name moves between them. Letters differ in width:
-			// a window further along the name may not fit where its start
-			// did, so narrow it until it does beside "  100%".
 			int r = room;
 
-			split = true;
+			scrolling = true;
 			do {
 				name_window(part, sizeof(part), name, span, r,
 							ticks_to_millisecs(diff_ticks(since, gettime())));
-				snprintf(line, sizeof(line), "%s %s  100%%", verb, part);
+				snprintf(line, sizeof(line), "%s %s", verb, part);
 			} while (!line_fits(line) && --r > 1);
-			snprintf(line, sizeof(line), "%s %s", verb, part);
 		}
 	} else {
 		fitted[0] = 0;
 	}
-	snprintf(key, sizeof(key), "%d%s|%s", split, line, pct);
+	snprintf(key, sizeof(key), "%d%s", scrolling, line);
 	if (strcmp(key, shown)) {
-		// Left of the USB Gecko and network icons (browser.c), on their line.
-		u16 x = view_width - 40 - theme_gfx[THEME_GECKO_ACTIVE]->w -
-				theme_gfx[THEME_LAN_ACTIVE]->w - LINE_W;
-		u16 y = 412 + theme_gfx[THEME_LAN_ACTIVE]->h / 2;
-
 		strcpy(shown, key);
-		count = line[0] ? font_get_char_count(FONT_LABEL, line, LINE_W) : 0;
+		count = line[0] ? font_get_char_count(FONT_LABEL, line, LINE_TEXT_W) : 0;
 		if (count > 64)
 			count = 64;
 		if (count)
-			font_plot_string(glyphs, count, FONT_LABEL, line, x, y, 0, LINE_W,
-							 split ? FA_LEFT : FA_RIGHT, FA_EM_CENTERED);
-		pct_count = split && pct[0] ? font_get_char_count(FONT_LABEL, pct, LINE_W) : 0;
-		if (pct_count > 8)
-			pct_count = 8;
-		if (pct_count)
-			font_plot_string(pct_glyphs, pct_count, FONT_LABEL, pct, x, y, 0, LINE_W,
-							 FA_RIGHT, FA_EM_CENTERED);
+			font_plot_string(glyphs, count, FONT_LABEL, line, x, y, 0, LINE_TEXT_W,
+							 scrolling ? FA_LEFT : FA_RIGHT, FA_EM_CENTERED);
 	}
 	if (count)
 		gfx_frame_push(glyphs, count);
-	if (pct_count)
-		gfx_frame_push(pct_glyphs, pct_count);
+	if (dir) {
+		unsigned fill = total ? transfer_arc_amount(done, total) : TRANSFER_ARC_TURN / 4;
+		unsigned start = total ? 0 : (ticks_to_millisecs(gettime()) / 8) % TRANSFER_ARC_TURN;
+		float width = TRANSFER_ARC_SIZE;
+
+		// Updating only the circle leaves cached text and its scroll timing alone.
+		if ((int) fill != last_fill || (int) start != last_start) {
+			transfer_arc_render(arc_pixels, fill, start);
+			gfx_gen_tex(&arc, TRANSFER_ARC_SIZE, TRANSFER_ARC_SIZE, arc_pixels, GFXT_RGBA8);
+			last_fill = fill;
+			last_start = start;
+		}
+		gfx_qe_entity(&arc_entry, &arc, x + LINE_W - width,
+					  y - TRANSFER_ARC_SIZE / 2, 0, theme_fonts[FONT_LABEL].color);
+		gfx_frame_push(&arc_entry, 1);
+	}
 }
 
 void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {

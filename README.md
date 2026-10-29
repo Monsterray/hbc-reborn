@@ -106,11 +106,14 @@ second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslas
 remove disappears. The menu reloads once the writes stop (a second of
 quiet), on the page it shows, so a whole folder's upload is one quiet reload.
 While a file moves, HBC shows it at the bottom right of the screen
-("Receiving boot.dol 42%", "Sending save.dat"). A name too long for the
+("Receiving boot.dol", "Sending save.dat") beside a progress arc in the
+text colour on a faded circular track. The circle stays round in 4:3 and
+16:9. The arc fills clockwise from the top; it rotates while the transfer
+size is unknown and disappears when the transfer ends. A name too long for the
 line scrolls round, bounces from end to end, or ends in "..." (each HBC
 start picks one at random; `hbc.py transfer-style bounce` forces one for
 testing). A moving name rests a second at its start, and a bouncing one at
-each end; "Receiving" and the percentage stay put.
+each end; "Receiving" and the progress circle stay put.
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame
