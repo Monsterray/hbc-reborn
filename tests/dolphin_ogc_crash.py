@@ -182,7 +182,7 @@ def main():
         port = probe.getsockname()[1]
     dolphin_smoke.SETTINGS.append(f"Dolphin.General.GDBPort={port}")
     # MMU on, as dolphin_smoke.py --agent: a store to 0x10 faults only then.
-    run = dolphin_smoke.Dolphin(dol, mmu=True)
+    run = dolphin_smoke.Dolphin(dol, mmu=True, net=False)
     result = 1
     try:
         gdb = GDB(port)
