@@ -1,8 +1,10 @@
 # sdk/mii 2.0: drawing a Mii the standard way
 
-The plan for sdk/mii 2.0.0 (HBC 1.12.0). It makes the right way to draw a
-Mii the easy way, for every app (WiiStation first). Status: in progress on
-branch `mii-sdk-2`, started from HBC 1.11.1.
+The plan for sdk/mii 2.0.0. It makes the right way to draw a Mii the easy
+way, for every app (WiiStation first). Status: steps 1 and 1b are done and
+shipped as the 1.x releases (HBC 1.11.3 to 1.12.5, sdk/mii 1.5.0); steps 2
+to 6, the 2.0 API, are not started. Begun on branch `mii-sdk-2` from HBC
+1.11.1; the work since is on master.
 
 ## What "standard" means here
 
@@ -88,6 +90,19 @@ HBC will offer both modes, with a setting.
      a Mii's real height on screen, 200 walking Miis at 60 fps, 400 at 38.
    - Switch points chosen by eye on the bench Wii (`mii_app parade`: 90,
      39, 30.5 and 25 pixels), the hair at half the tolerance: HBC 1.12.1.
+   1c. **The Mii Channel's look and effects.** Done (HBC 1.12.2 to 1.12.5):
+   - Animations that loop or play once (`mii_anim_frame`, 1.3.0); the
+     body's own shading, its shadow and faces for the animations (1.4.0);
+     the particle effects (`miifx.c`, 1.4.0).
+   - The bones by libogc's C matrix product (1.4.1): its paired-single one
+     reads a word at `r13` with the stock linker scripts (libogc issue
+     devkitPro/libogc#281), which drew HBC's avatar as a sliver.
+   - `mii_fx_place_in`, `mii_fx_state.replaced`, and `pose.reuse` for
+     placing effects; Z writes on at the app's copy, or the Miis leave the
+     last frame's depth behind (1.5.0).
+   - `mii_app party`: each Mii doing something different, with effects.
+     150 hold 60 fps and 300 hold 30 on the bench Wii; posing (about 70 us
+     a Mii) is the limit.
 2. **API:** `mii_draw_opa`, `mii_draw_xlu`, `mii_draw_setup`,
    `mii_draw_done`, `mii_draw_in_rect` with the two modes; `mii_view`'s
    depth needs.

@@ -40,6 +40,12 @@
             effects their animations call for): counts rising to MAX, then
             the largest at half the TV's rate held for the rest of SECONDS
             (120); TV pictures every 4 s and a 15 s video of the hold
+  sizes [SECONDS]
+            the shadow at every height and build: the database's first man
+            and woman, each shortest/thinnest, tallest/widest,
+            tallest/thinnest, shortest/widest and middling (in memory
+            only), side by side with their shadows for SECONDS (20); each
+            shadow checked under the feet; TV pictures every 3 s
   remote-add ID / remote-remove ID
             copy the database's Mii with that ID to Wii Remote 1, or take it
             off; written and read back
@@ -51,7 +57,7 @@
             put a backup's RFL_DB.dat back (tests/nandput: same size only,
             read back and compared), then compare a new copy with it
 
-usage: tests/wii_mii.py backup | check | draw [SLOT] | party [SECONDS [MAX]] | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
+usage: tests/wii_mii.py backup | check | draw [SLOT] | party [SECONDS [MAX]] | sizes [SECONDS] | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
 queue: wiibench.py add --wii dev --name mii-STEP --cwd REPO --timeout 1200 -- C:/Python312/python.exe tests/wii_mii.py STEP
 """
 
@@ -192,7 +198,7 @@ def main():
             print(f"{name}.png: {w} x {h}", flush=True)
     elif step == "gpuprobe" and len(sys.argv) > 2:
         ok = app_ok(run_app(out, step, *sys.argv[2:4], label=step, wait_s=900))
-    elif step in ("crowd", "walk", "parade") and (len(sys.argv) > 2 or step == "parade"):
+    elif step in ("crowd", "walk", "parade", "sizes") and (len(sys.argv) > 2 or step in ("parade", "sizes")):
         import threading
         done = threading.Event()
 

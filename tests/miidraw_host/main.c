@@ -435,6 +435,66 @@ int main(int argc, char **argv) {
 					   lo, hi, ylo, yhi);
 			}
 		}
+		{   /* The shadow under the feet at every height and build (sdk/mii
+			 * 1.5.1): in Wait the lowest skinned vertex against the
+			 * shadow's height, and in Wait and Walk the ankles' midpoint
+			 * against its centre. Back to this Mii's own after. */
+			static const char *names[] = { "bodyWait", "bodyWalk" };
+			int h0 = md.m.height, b0 = md.m.build, ankle[2] = { -1, -1 }, sizes = 0;
+			float dy = 0, dc = 0, sm[3][4];
+			int hy = 0, by = 0, hc = 0, bc = 0, h, bd;
+
+			for (j = 0; j < body.nbones; ++j)
+				if (!strncmp(body.bone[j].name, "ankle", 5))
+					ankle[ankle[0] >= 0] = j;
+			for (h = 0; h <= 128 && ankle[1] >= 0; h += 8)
+				for (bd = 0; bd <= 128; bd += 8) {
+					md.m.height = (uint8_t) h;
+					md.m.build = (uint8_t) bd;
+					if (mii_model_set_body(&md, &body) < 0)
+						continue;
+					++sizes;
+					for (a = 0; a < 2; ++a) {
+						int an = mii_body_anim(&body, names[a]), f, n = an >= 0 ? body.anim[an].frames : 0;
+
+						for (f = 0; f < n; f += 4) {
+							float d, cx, cz, low = FLT_MAX;
+
+							memset(&pose, 0, sizeof(pose));
+							pose.anim = 1 + an;
+							pose.frame = (float) f;
+							if (!mii_body_shadow(&md, &pose, sm))
+								continue;
+							mii_body_pose(&md, &pose, rot, pos);
+							cx = (pos[ankle[0]][0] + pos[ankle[1]][0]) / 2 - sm[0][3];
+							cz = (pos[ankle[0]][2] + pos[ankle[1]][2]) / 2 - sm[2][3];
+							if ((d = sqrtf(cx * cx + cz * cz)) > dc) {
+								dc = d;
+								hc = h;
+								bc = bd;
+							}
+							if (a)
+								continue;
+							mii_body_skin(&md, &pose);
+							for (k = 0; md.skin_pos && k < body.nverts; ++k)
+								low = md.skin_pos[3 * k + 1] < low ? md.skin_pos[3 * k + 1] : low;
+							if ((d = fabsf(sm[1][3] - low)) > dy) {
+								dy = d;
+								hy = h;
+								by = bd;
+							}
+						}
+					}
+				}
+			md.m.height = (uint8_t) h0;
+			md.m.build = (uint8_t) b0;
+			if ((r = mii_model_set_body(&md, &body)) < 0) {
+				printf("set_body: %s\n", mii_strerror(r));
+				return 1;
+			}
+			printf("shadow sizes: %d, y off %.2f at height %d build %d, centre off %.2f at height %d build %d\n",
+				   sizes, dy, hy, by, dc, hc, bc);
+		}
 		{   /* Where effects go (mii_fx_place): the head bone (its X up the
 			 * neck, Y out of the face) and the ground under the feet;
 			 * the chin at the origin for an icon. */

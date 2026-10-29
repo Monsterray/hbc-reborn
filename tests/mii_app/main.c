@@ -49,6 +49,11 @@
 //                                  particles; the largest count at the TV's
 //                                  full rate and at half of it, then that
 //                                  one held for the rest of SECONDS (120)
+//   mii_app.dol sizes [SECONDS]    the database's first man and woman, each
+//                                  shortest/thinnest, tallest/widest,
+//                                  tallest/thinnest, shortest/widest and
+//                                  middling (in memory only), with their
+//                                  shadows: each shadow under the feet
 //   mii_app.dol remote-rewrite     write Wii Remote 1's own Miis back
 //                                  unchanged, after saving its memory to
 //                                  sd:/mii_test/remote_backup.bin
@@ -2138,6 +2143,188 @@ out:
 	mii_res_free(&res);
 }
 
+/* The shadow at every height and build (sdk/mii 1.5.1): the database's
+ * first man and first woman, each in five sizes side by side (shortest and
+ * thinnest, tallest and widest, tallest and thinnest, shortest and widest,
+ * the middle), heights and builds changed in memory only, standing on the
+ * grass with their shadows, seen from above and to the side. For each, the
+ * shadow (mii_body_shadow) against the feet: its height against the lowest
+ * skinned vertex, its centre against the ankles' midpoint (within 1.5 and
+ * 5, as tests/test_miidraw.py's sweep). SECONDS (20) on the screen. */
+static void sizes_test(int seconds, GXRModeObj *rmode) {
+	static u8 fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
+	static const u8 size[5][2] = { { 0, 0 }, { 128, 128 }, { 128, 0 }, { 0, 128 }, { 64, 64 } };
+	static mii_res res;
+	static mii_body bodies[2];
+	static mii_model models[2][5];
+	static mii_db db;
+	static mii who[2];
+	GXColor sky = { 150, 190, 230, 255 };
+	const mii_body *bod[2] = { NULL, NULL };
+	int r, i, k, rows = 0, built[2] = { 0, 0 }, wait[2] = { 0, 0 }, have[2] = { 0, 0 };
+	float top = 100, hw = 30, dist;
+	Mtx44 proj;
+	Mtx view, place;
+	guVector eye, up = { 0, 1, 0 }, at;
+	u64 start;
+
+	DCFlushRange(fifo, sizeof(fifo));   // .bss's zeros, cached: not over the commands later
+	GX_Init(fifo, sizeof(fifo));
+	GX_SetCopyClear(sky, 0x00ffffff);
+	GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
+	GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
+	GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
+	GX_SetDispCopyDst(rmode->fbWidth, rmode->xfbHeight);
+	GX_SetDispCopyYScale((f32) rmode->xfbHeight / (f32) rmode->efbHeight);
+	GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+	GX_SetFieldMode(rmode->field_rendering, rmode->viHeight == 2 * rmode->xfbHeight ? GX_ENABLE : GX_DISABLE);
+	GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+	GX_SetColorUpdate(GX_TRUE);
+	if ((r = mii_res_load(&res, NULL)) < 0) {
+		result("mii_res_load sd:/mii/RFL_Res.dat (HOME > HBC > Save Mii faces)", r);
+		return;
+	}
+	if ((r = mii_db_load(&db)) < 0) {
+		result("mii_db_load", r);
+		mii_res_free(&res);
+		return;
+	}
+	for (i = 0; i < MII_DB_SLOTS; ++i) {   /* the first of each sex */
+		mii m;
+
+		if (mii_db_get(&db, i, &m) == MII_OK && !have[m.sex == MII_FEMALE]) {
+			who[m.sex == MII_FEMALE] = m;
+			have[m.sex == MII_FEMALE] = 1;
+		}
+	}
+	mii_db_free(&db);
+	for (i = 0; i < 2; ++i) {
+		if (!have[i])
+			continue;
+		r = mii_body_load(&bodies[i], i ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH);
+		if (r < 0) {
+			result(i ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH, r);
+			continue;
+		}
+		bod[i] = &bodies[i];
+		wait[i] = 1 + mii_body_anim(bod[i], "bodyWait");
+		for (k = 0; k < 5; ++k) {
+			mii m = who[i];
+			mii_model_opts o = { 64, MII_EXPR_BIT(MII_EXPR_NORMAL), NULL, 0, 1 };
+
+			m.height = size[k][0];
+			m.build = size[k][1];
+			if ((r = mii_model_build(&res, &m, &o, &models[i][k])) < 0) {
+				result("mii_model_build", r);
+				break;
+			}
+			++built[i];
+			if ((r = mii_model_set_body(&models[i][k], bod[i])) < 0) {
+				result("mii_model_set_body", r);
+				break;
+			}
+			mii_model_make_faces(&models[i][k], &res, sky);
+		}
+		if (built[i] < 5 || !models[i][4].body)
+			built[i] = -built[i];   /* freed, not drawn */
+		else
+			++rows;
+	}
+	if (!rows) {
+		say("sizes: no man or woman in the database with a body\n");
+		++failures;
+		goto out;
+	}
+
+	/* The shadow under each, at Wait's first frame. */
+	for (i = 0; i < 2; ++i)
+		for (k = 0; built[i] == 5 && k < 5; ++k) {
+			mii_model *md = &models[i][k];
+			const mii_body *b = md->body;
+			float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3], sm[3][4], low = 1e9f, fx = 0, fz = 0, dy, dc;
+			int j, n = 0;
+			mii_pose pose;
+
+			memset(&pose, 0, sizeof(pose));
+			pose.anim = wait[i];
+			if (!mii_body_shadow(md, &pose, sm)) {
+				say("sizes: %s height %d build %d: no shadow\n", i ? "woman" : "man", size[k][0], size[k][1]);
+				++failures;
+				continue;
+			}
+			mii_body_pose(md, &pose, rot, pos);
+			for (j = 0; j < b->nbones; ++j)
+				if (!strncmp(b->bone[j].name, "ankle", 5)) {
+					fx += pos[j][0];
+					fz += pos[j][2];
+					++n;
+				}
+			mii_body_skin(md, &pose);
+			for (j = 0; md->skin_pos && j < b->nverts; ++j)
+				low = md->skin_pos[3 * j + 1] < low ? md->skin_pos[3 * j + 1] : low;
+			fx = n ? fx / n : 0;
+			fz = n ? fz / n : 0;
+			dy = fabsf(sm[1][3] - low);
+			dc = sqrtf((sm[0][3] - fx) * (sm[0][3] - fx) + (sm[2][3] - fz) * (sm[2][3] - fz));
+			say("sizes: %s height %3d build %3d: ground %.1f; shadow y %.2f, half side %.1f, centre %.1f %.1f; "
+				"feet y %.2f, ankles %.1f %.1f: off %.2f up, %.2f across\n", i ? "woman" : "man", size[k][0],
+				size[k][1], md->ground, sm[1][3], sqrtf(sm[0][0] * sm[0][0] + sm[2][0] * sm[2][0]), sm[0][3],
+				sm[2][3], low, fx, fz, dy, dc);
+			if (dy > 1.5f || dc > 5)
+				++failures;
+		}
+
+	/* A row each, 160 apart (the widest shadow is 135 across); seen from
+	 * above, in front and to the right. */
+	mii_model_bounds(&models[built[0] == 5 ? 0 : 1][1], 0, &top, &hw);
+	at = (guVector) { 0, top * 0.35f, rows > 1 ? -100 : 0 };
+	guPerspective(proj, 40, (f32) rmode->fbWidth / rmode->efbHeight, 20, 20000);
+	for (dist = 200; dist < 8000; dist *= 1.03f) {
+		eye = (guVector) { at.x + dist * 0.35f, at.y + dist * 0.55f, at.z + dist * 0.76f };
+		guLookAt(view, &eye, &up, &at);
+		if (party_seen(view, proj, -390, top, -200, 0.97f) && party_seen(view, proj, 390, top, -200, 0.97f) &&
+				party_seen(view, proj, -390, 0, 70, 0.97f) && party_seen(view, proj, 390, 0, 70, 0.97f))
+			break;
+	}
+	start = gettime();
+	while (diff_usec(start, gettime()) < seconds * 1e6f) {
+		float now = diff_usec(start, gettime()) / 1e6f;
+
+		GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);   /* as the GPU faces left them: back to the screen's */
+		GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+		GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
+		GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
+		GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+		ground(view, NULL, 0);
+		for (i = 0; i < 2; ++i)
+			for (k = 0; built[i] == 5 && k < 5; ++k) {
+				mii_pose pose;
+				int done;
+
+				memset(&pose, 0, sizeof(pose));
+				pose.anim = wait[i];
+				pose.frame = mii_anim_frame(bod[i], wait[i], now, &done);
+				pose.shadow = 1;
+				guMtxIdentity(place);
+				place[0][3] = (k - 2) * 160.0f;
+				place[2][3] = rows > 1 ? -200.0f * i : 0;
+				mii_draw(&models[i][k], &pose, view, place);
+			}
+		GX_DrawDone();
+		present(rmode);
+	}
+	say("sizes: %d rows of 5 on the screen for %d s\n", rows, seconds);
+out:
+	GX_DrawDone();
+	for (i = 0; i < 2; ++i) {
+		for (k = 0; k < (built[i] < 0 ? -built[i] : built[i]); ++k)
+			mii_model_free(&models[i][k]);
+		if (bod[i])
+			mii_body_free(&bodies[i]);
+	}
+	mii_res_free(&res);
+}
+
 int main(int argc, char **argv) {
 	static char *sd_argv[8];
 	void *xfb;
@@ -2201,6 +2388,8 @@ int main(int argc, char **argv) {
 				  argc > 4 ? (float) atof(argv[4]) : 900, 90, 1, xfb, rmode);
 	else if (argc >= 2 && !strcmp(argv[1], "party"))
 		party_test(argc > 2 ? atoi(argv[2]) : 120, argc > 3 ? atoi(argv[3]) : PARTY_MAXN, rmode);
+	else if (argc >= 2 && !strcmp(argv[1], "sizes"))
+		sizes_test(argc > 2 ? atoi(argv[2]) : 20, rmode);
 	else if (argc >= 3 && !strcmp(argv[1], "crowd"))
 		crowd_test(argv[2], argc > 3 ? atoi(argv[3]) : 10, argc > 4 ? atoi(argv[4]) : 128, xfb, rmode);
 	else
