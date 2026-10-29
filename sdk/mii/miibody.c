@@ -423,7 +423,55 @@ static int read_object(buf *b, uint32_t o, mii_body *body, const float *pos, int
 	return b->bad || !verts ? MII_E_FORMAT : MII_OK;
 }
 
-static int read_model(buf *b, uint32_t m, mii_body *body) {
+/* The materials' look, as names to find in the file's textures: the
+ * see-through one's (the shadow) and its colour (TEV register 0, in its
+ * display list), and an opaque one's (env0, the light the shirt and
+ * trousers reflect). Any of it missing: drawn as before. */
+static void read_materials(buf *b, uint32_t grp, mii_body *body, const char **env, const char **shadow) {
+	int n = group_count(b, grp), i;
+
+	for (i = 0; i < n && i < 16; ++i) {
+		const char *name;
+		uint32_t e, ref, dl, k;
+		int xlu;
+
+		group_entry(b, grp, i, &name, &e);
+		if (!rd32(b, e + 0x2C))
+			continue;   /* no texture */
+		xlu = rd32(b, e + 0x10) >> 31;
+		ref = e + rd32(b, e + 0x30);
+		name = rdname(b, ref + rd32(b, ref));
+		if (b->bad)
+			return;
+		if (!xlu) {
+			if (!*env)
+				*env = name;
+			continue;
+		}
+		if (*shadow)
+			continue;
+		*shadow = name;
+		body->shadow_rgb[0] = body->shadow_rgb[1] = body->shadow_rgb[2] = 32;
+		dl = e + rd32(b, e + 0x38);
+		for (k = 0; k + 5 <= 0x180 && in(b, dl + k, 5); ++k) {   /* BP writes: 61 rr vvvvvv */
+			uint32_t v = (uint32_t) rd8(b, dl + k + 2) << 16 | (uint32_t) rd8(b, dl + k + 3) << 8 |
+						 rd8(b, dl + k + 4);
+
+			if (rd8(b, dl + k) != 0x61 || v >> 23 & 1)
+				continue;   /* not a BP write, or a constant (konst) colour */
+			if (rd8(b, dl + k + 1) == 0xE2) {
+				body->shadow_rgb[0] = (uint8_t) ((v & 0x7FF) > 255 ? 255 : v & 0x7FF);
+				k += 4;
+			} else if (rd8(b, dl + k + 1) == 0xE3) {
+				body->shadow_rgb[2] = (uint8_t) ((v & 0x7FF) > 255 ? 255 : v & 0x7FF);
+				body->shadow_rgb[1] = (uint8_t) ((v >> 12 & 0x7FF) > 255 ? 255 : v >> 12 & 0x7FF);
+				k += 4;
+			}
+		}
+	}
+}
+
+static int read_model(buf *b, uint32_t m, mii_body *body, const char **env, const char **shadow) {
 	uint32_t ver = rd32(b, m + 8), sec[14];
 	int bi, vi, ni, oi, count, i, r, nv, no;
 	uint32_t vg, ng, og;
@@ -439,6 +487,10 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
 		return MII_E_FORMAT;
 	if ((r = read_bones(b, m + sec[bi], body)) < 0)
 		return r;
+	if (sec[count == 11 ? 6 : 8]) {   /* the look is extra: a fault in it fails nothing */
+		read_materials(b, m + sec[count == 11 ? 6 : 8], body, env, shadow);
+		b->bad = 0;
+	}
 	memset(body->matrix_bone, -1, sizeof(body->matrix_bone));
 	for (i = 0; i < body->nbones; ++i)
 		if (body->bone[i].matrix >= 0 && body->bone[i].matrix < MII_BODY_MATRICES)
@@ -497,9 +549,19 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
 
 			group_entry(b, og, i, &name, &o);
 			node = (int32_t) rd32(b, o + 8);
-			if (node >= 0)
-				continue;   /* single-bone objects: the shadow quad */
 			pv = (int16_t) rd16(b, o + 0x48);
+			if (node >= 0) {   /* single-bone objects: the shadow quad, flat on its bone */
+				int k;
+
+				if (node < MII_BODY_MATRICES && body->matrix_bone[node] >= 0 && pv >= 0 && pv < nv &&
+						pos[pv] && body->shadow < 0) {
+					body->shadow = body->matrix_bone[node];
+					for (k = 0; k < npos[pv]; ++k)
+						if (fabsf(pos[pv][3 * k]) > body->shadow_half)
+							body->shadow_half = fabsf(pos[pv][3 * k]);
+				}
+				continue;
+			}
 			pn = (int16_t) rd16(b, o + 0x4A);
 			if (pv < 0 || pv >= nv || pn < 0 || pn >= no || !pos[pv]) {
 				r = MII_E_FORMAT;
@@ -535,9 +597,12 @@ static int read_model(buf *b, uint32_t m, mii_body *body) {
 /* Code bits: 1 identity, 4 uniform scale, 5 rotation zero, 6 translation
  * zero, 13-21
  * constant X Y Z of scale, rotation, translation, 22-24 has scale,
- * rotation, translation, 25-26 the rotation keys' format (2: u16 frame in
- * 32nds, s16 angle and slope in 65536ths of a turn; 3: f32 frame, value,
- * slope). Translation and scale keys are f32 frame, value, slope. */
+ * rotation, translation, 25-26 the rotation keys' format (1: a u32 of 8
+ * bits frame, 12 bits angle in 4096ths of a turn, 12 bits signed slope in
+ * 32nds of a degree a frame, as bodyWallow's; 2: u16 frame in 32nds, s16
+ * angle and slope in 65536ths of a turn; 3: f32 frame, value, slope), each
+ * after a header of 8 bytes (u16 count). Translation and scale keys are f32
+ * frame, value, slope. */
 static float key_f(const uint8_t *p);
 
 static int read_anim(buf *b, uint32_t c, mii_body *body, const char *name, mii_anim *a) {
@@ -549,6 +614,7 @@ static int read_anim(buf *b, uint32_t c, mii_body *body, const char *name, mii_a
 	memset(a, 0, sizeof(*a));
 	snprintf(a->name, sizeof(a->name), "%s", name);
 	a->frames = rd16(b, c + 0x1C);
+	a->loop = rd32(b, c + 0x20) != 0;
 	n = group_count(b, grp);
 	if (n < 0 || a->frames <= 0)
 		return MII_E_FORMAT;
@@ -582,11 +648,11 @@ static int read_anim(buf *b, uint32_t c, mii_body *body, const char *name, mii_a
 					uint32_t k = e + rd32(b, p), j;
 					unsigned keys = rd16(b, k), fmt = comp == 1 ? (code >> 25 & 3) : 3;
 
-					if (comp == 1 && fmt != 2 && fmt != 3)
+					if (comp == 1 && !fmt)
 						return MII_E_FORMAT;
 					/* At most a key a frame (keys_at reads them each draw). */
 					if (!keys || keys > (unsigned) a->frames + 1 ||
-							!in(b, k + 8, keys * (fmt == 2 ? 6 : 12)))
+							!in(b, k + 8, keys * (fmt == 1 ? 4 : fmt == 2 ? 6 : 12)))
 						return MII_E_FORMAT;
 					/* Float keys finite and in reach: an infinite or huge
 					 * angle would never come within 180 of the last. */
@@ -613,17 +679,25 @@ static float key_f(const uint8_t *p) {
 	return f;
 }
 
-/* Hermite between keys; rot6: the 6-byte rotation keys; angle: a rotation,
+/* Hermite between keys; fmt: the keys' format (above: 1, 2, or 3 for f32);
+ * angle: a rotation,
  * which takes the short way round between keys (the right ankle's X in
  * bodyWait goes 179.1, -179.2, 179.1 degrees: a nod, not two spins). */
-static float keys_at(const uint8_t *k, int rot6, int angle, float f) {
+static float keys_at(const uint8_t *k, unsigned fmt, int angle, float f) {
 	unsigned n = (unsigned) (k[0] << 8 | k[1]), i;
 	float f0 = 0, v0 = 0, t0 = 0;
 
 	for (i = 0; i < n; ++i) {
 		float fi, vi, ti;
 
-		if (rot6) {
+		if (fmt == 1) {
+			const uint8_t *e = k + 8 + 4 * i;
+			int slope = (e[2] & 0xF) << 8 | e[3];
+
+			fi = e[0];
+			vi = (float) (e[1] << 4 | e[2] >> 4) * 360 / 4096;
+			ti = (float) (slope >= 0x800 ? slope - 0x1000 : slope) / 32;
+		} else if (fmt == 2) {
 			const uint8_t *e = k + 8 + 6 * i;
 
 			fi = (float) (e[0] << 8 | e[1]) / 32;
@@ -658,10 +732,23 @@ static float track_at(const mii_anim *a, int bone, int slot, float f) {
 
 	if (!k)
 		return a->track[bone].c[slot];
-	return keys_at(k, slot >= 3 && slot < 6 && (a->track[bone].code >> 25 & 3) == 2, slot >= 3 && slot < 6, f);
+	return keys_at(k, slot >= 3 && slot < 6 ? a->track[bone].code >> 25 & 3 : 3, slot >= 3 && slot < 6, f);
 }
 
 /* ---- Loading -------------------------------------------------------------- */
+
+/* A TEX0 of format I8 (all the bodies' are) into tex; anything else is
+ * left out. */
+static void read_tex(buf *b, uint32_t t, mii_body_tex *tex) {
+	uint32_t w = rd16(b, t + 0x1C), h = rd16(b, t + 0x1E), data = t + rd32(b, t + 0x10);
+
+	if (b->bad || memcmp(b->d + t, "TEX0", 4) || rd32(b, t + 0x20) != 1 || !w || !h || w > 1024 || h > 1024 ||
+			w % 8 || h % 4 || !in(b, data, w * h) || tex->gx)
+		return;
+	tex->gx = gpu_copy(b->d + data, w * h, NULL);
+	tex->w = (uint16_t) w;
+	tex->h = (uint16_t) h;
+}
 
 void mii_body_free(mii_body *body) {
 	int i;
@@ -675,6 +762,8 @@ void mii_body_free(mii_body *body) {
 	free(body->tris[0]);
 	free(body->tris[1]);
 	free(body->memo);
+	free(body->env.gx);
+	free(body->shadow_tex.gx);
 	for (i = 0; i < MII_BODY_LODS; ++i) {
 		int k;
 
@@ -694,6 +783,7 @@ int mii_body_attach(mii_body *body, void *data, size_t size) {
 	buf b;
 	int nf, i, j, r = MII_E_FORMAT, model = 0;
 	uint32_t root;
+	const char *env = NULL, *shadow = NULL;
 
 	if (!body || !data)
 		return MII_E_ARG;
@@ -703,6 +793,7 @@ int mii_body_attach(mii_body *body, void *data, size_t size) {
 	b.d = data;
 	b.size = (uint32_t) size;
 	b.bad = 0;
+	body->shadow = -1;
 	if (size < 0x20 || size > 0x1000000 || memcmp(data, "bres", 4))
 		goto fail;
 	root = rd16(&b, 0x0C);
@@ -724,7 +815,7 @@ int mii_body_attach(mii_body *body, void *data, size_t size) {
 
 			group_entry(&b, fat, 0, &name, &m);
 			if (in(&b, m, 0x40) && !memcmp(body->data + m, "MDL0", 4)) {
-				if ((r = read_model(&b, m, body)) < 0)
+				if ((r = read_model(&b, m, body, &env, &shadow)) < 0)
 					goto fail;
 				model = 1;
 			}
@@ -755,6 +846,29 @@ int mii_body_attach(mii_body *body, void *data, size_t size) {
 				++body->nanims;
 		}
 	}
+	for (i = 0; i < nf; ++i) {   /* the materials' textures, by name */
+		const char *folder;
+		uint32_t fat;
+		int n;
+
+		group_entry(&b, root + 8, i, &folder, &fat);
+		if (strcmp(folder, "Textures(NW4R)"))
+			continue;
+		n = group_count(&b, fat);
+		for (j = 0; j < n; ++j) {
+			const char *name;
+			uint32_t t;
+
+			group_entry(&b, fat, j, &name, &t);
+			b.bad = 0;
+			if (env && !strcmp(name, env))
+				read_tex(&b, t, &body->env);
+			if (shadow && !strcmp(name, shadow))
+				read_tex(&b, t, &body->shadow_tex);
+		}
+	}
+	if (!body->shadow_tex.gx || body->shadow_half <= 0)
+		body->shadow = -1;
 	body->wait_anim = mii_body_anim(body, "bodyWait");
 	return MII_OK;
 fail:
@@ -825,8 +939,9 @@ static const mii_anim *pick_anim(const mii_body *body, int anim1, float frame, f
 	return a;
 }
 
-/* A bone's own rotation (degrees) and translation at frame f of a. */
-static void bone_local(const mii_body *body, const mii_anim *a, float f, int i, float r[3], float t[3]) {
+/* A bone's own rotation (degrees), translation and scale at frame f of a. */
+static void bone_local(const mii_body *body, const mii_anim *a, float f, int i, float r[3], float t[3],
+					   float s[3]) {
 	const mii_bone *bn = &body->bone[i];
 	/* The roots only place a Mii in the plaza (aslope_root tilts it for
 	 * the sloped ground): they stay as bound. */
@@ -835,8 +950,13 @@ static void bone_local(const mii_body *body, const mii_anim *a, float f, int i, 
 
 	memcpy(r, bn->r, sizeof(float) * 3);
 	memcpy(t, bn->t, sizeof(float) * 3);
+	memcpy(s, bn->s, sizeof(float) * 3);
 	if (animated) {
 		uint32_t code = a->track[i].code;
+
+		if (code >> 22 & 1)
+			for (k = 0; k < 3; ++k)
+				s[k] = track_at(a, i, k, f);
 
 		if (code & 2) {
 			r[0] = r[1] = r[2] = t[0] = t[1] = t[2] = 0;
@@ -919,6 +1039,23 @@ static void blend_rot(m33 a, m33 b, float w, m33 out) {
 	quat_m33(q, out);
 }
 
+float mii_anim_frame(const mii_body *body, int anim, float seconds, int *done) {
+	const mii_anim *a = anim > 0 && anim <= body->nanims ? &body->anim[anim - 1] : NULL;
+	float f = seconds > 0 ? seconds * 60 : 0;
+
+	if (done)
+		*done = 0;
+	if (!a || a->loop)
+		return f;   /* frames wrap as they are drawn */
+	if (f >= a->frames - 0.01f) {
+		/* The end, a hair before it: frames wrap at a->frames. */
+		if (done)
+			*done = 1;
+		return a->frames - 0.01f;
+	}
+	return f;
+}
+
 float mii_fade_weight(float seconds, float length) {
 	float x;
 
@@ -926,6 +1063,53 @@ float mii_fade_weight(float seconds, float length) {
 		return 0;
 	x = seconds > 0 ? 1 - seconds / length : 1;
 	return x * x * (3 - 2 * x);   /* eased in and out */
+}
+
+/* Faces for the animations: nothing in the body's file says which (no
+ * SRT0, PAT0 or CLR0; the Mii Channel's own program changes them), so
+ * these are this library's, by eye: parts of an animation (as fractions of
+ * its length) and the face they get. An animation named by its start. */
+static const struct {
+	const char *anim;
+	float from, to;
+	int expr;
+} face_cues[] = {
+	{ "bodyCatnap_00", 0, 1, MII_EXPR_BLINK },        /* asleep */
+	{ "bodyCatnap_01", 0, 0.5f, MII_EXPR_BLINK },     /* waking */
+	{ "bodyCatnap_01", 0.5f, 0.7f, MII_EXPR_SURPRISE },
+	{ "bodyGreeting", 0, 1, MII_EXPR_SMILE },
+	{ "bodySlap_00", 0.45f, 1, MII_EXPR_ANGER },      /* flung, and cross about it */
+	{ "bodySlap_01", 0.45f, 1, MII_EXPR_SMILE },      /* flung, and liked it */
+	{ "bodySlap_02", 0.45f, 1, MII_EXPR_SMILE },
+	{ "bodySlap_03", 0.45f, 1, MII_EXPR_ANGER },
+	{ "bodySlap_04", 0.45f, 1, MII_EXPR_SMILE },
+	{ "bodySlap_05", 0.45f, 1, MII_EXPR_SORROW },
+	{ "bodySlap_", 0, 0.45f, MII_EXPR_SURPRISE },     /* flung (Slap_06: only that) */
+	{ "bodySlip_", 0, 0.55f, MII_EXPR_SURPRISE },     /* falling */
+	{ "bodySlip_", 0.55f, 1, MII_EXPR_SORROW },
+	{ "bodysnart_", 0.2f, 0.45f, MII_EXPR_OPEN_MOUTH },  /* the sneeze coming */
+	{ "bodysnart_", 0.45f, 0.65f, MII_EXPR_BLINK },
+	{ "bodyWallow", 0, 1, MII_EXPR_SURPRISE },        /* held up */
+};
+
+int mii_anim_expression(const mii_body *body, int anim, float frame, int other) {
+	const mii_anim *a;
+	float x;
+	size_t i;
+
+	if (!body || anim < 1 || anim > body->nanims)
+		return other;
+	a = &body->anim[anim - 1];
+	if (!strncmp(a->name, "bodyTalk", 8))   /* the mouth opening and closing, about four times a second */
+		return (int) (frame / 7) % 2 ? MII_EXPR_OPEN_MOUTH : other;
+	x = fmodf(frame, (float) a->frames) / a->frames;
+	if (x < 0)
+		x += 1;
+	for (i = 0; i < sizeof(face_cues) / sizeof(face_cues[0]); ++i)
+		if (!strncmp(a->name, face_cues[i].anim, strlen(face_cues[i].anim)) && x >= face_cues[i].from &&
+				x < face_cues[i].to)
+			return face_cues[i].expr;
+	return other;
 }
 
 /* Each bone's local rotation and translation for the pose (no Mii's scale
@@ -970,17 +1154,19 @@ static const mii_pose_memo *pose_locals(const mii_body *body, const mii_pose *po
 	for (i = 0; i < body->nbones; ++i) {
 		float r[3];
 
-		bone_local(body, a, f, i, r, out->t[i]);
+		bone_local(body, a, f, i, r, out->t[i], out->s[i]);
 		rot_xyz(out->r[i], r);
 		if (w > 0) {   /* the cross-fade from the animation before */
-			float r2[3], t2[3];
+			float r2[3], t2[3], s2[3];
 			m33 from;
 
-			bone_local(body, a2, f2, i, r2, t2);
+			bone_local(body, a2, f2, i, r2, t2, s2);
 			rot_xyz(from, r2);
 			blend_rot(out->r[i], from, w, out->r[i]);
-			for (k = 0; k < 3; ++k)
+			for (k = 0; k < 3; ++k) {
 				out->t[i][k] += (t2[k] - out->t[i][k]) * w;
+				out->s[i][k] += (s2[k] - out->s[i][k]) * w;
+			}
 		}
 	}
 	return out;
@@ -1016,6 +1202,90 @@ void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][
 	}
 	for (i = 0; i < body->nbones; ++i)
 		pos[i][1] += model->ground;
+}
+
+int mii_body_shadow(const mii_model *model, const mii_pose *pose, float m[3][4]) {
+	const mii_body *body = model ? model->body : NULL;
+	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3], w;
+	const mii_pose_memo *lp;
+	mii_pose_memo own;
+	const float *sc;
+	int sb, r, j;
+
+	if (!body || body->shadow < 0 || body->shadow >= body->nbones || !m)
+		return 0;
+	sb = body->shadow;
+	mii_body_pose(model, pose, rot, pos);
+	lp = pose_locals(body, pose, &own);   /* the memo mii_body_pose just filled */
+	sc = lp->s[sb];
+	if (fabsf(sc[0]) < 0.02f && fabsf(sc[2]) < 0.02f)
+		return 0;
+	/* As wide as the Mii: its build's width, the chest's. */
+	w = body->shadow_half * model->bone_scale[body->chest >= 0 ? body->chest : body->head][1];
+	for (r = 0; r < 3; ++r) {
+		for (j = 0; j < 3; ++j)
+			m[r][j] = rot[sb][r][j] * sc[j] * w;
+		m[r][3] = pos[sb][r];
+	}
+	if (pose && pose->shadow_drop > 0) {   /* on the ground below: smaller, as a light overhead casts it */
+		float k = 1 / (1 + pose->shadow_drop / 120);
+
+		for (r = 0; r < 3; ++r)
+			for (j = 0; j < 3; ++j)
+				m[r][j] *= k;
+		m[1][3] -= pose->shadow_drop;
+	}
+	m[1][3] += 0.1f;   /* a hair over the ground under it */
+	return 1;
+}
+
+int mii_fx_place(const mii_model *model, const mii_pose *pose, int head, float at[3][4]) {
+	/* The head bone's axes as bound: X up the neck, Y out of the face, Z
+	 * to the Mii's left. */
+	static const float bind_head[3][3] = { { 0, 0, 1 }, { 1, 0, 0 }, { 0, 1, 0 } };
+	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3], f[3][3], o[3] = { 0, 0, 0 }, k = 1, cy, sy;
+	const mii_body *body = model ? model->body : NULL;
+	int i, j, wb = body && !(pose && pose->head_only);
+
+	if (!model || !at)
+		return MII_E_ARG;
+	memcpy(f, bind_head, sizeof(f));
+	if (!head)   /* the ground: upright, turned with the Mii */
+		for (i = 0; i < 3; ++i)
+			for (j = 0; j < 3; ++j)
+				f[i][j] = i == j;
+	if (wb) {
+		k = model->bone_scale[body->chest >= 0 ? body->chest : body->head][0];
+		mii_body_pose(model, pose, rot, pos);
+		if (head) {   /* the head bone as posed: the files' pSphere14 */
+			memcpy(f, rot[body->head], sizeof(f));
+			memcpy(o, pos[body->head], sizeof(o));
+		} else {      /* under the lowest bone: the feet, or a Mii flat on the ground */
+			int lo = 0;
+
+			for (i = 1; i < body->nbones; ++i)
+				if (body->bone[i].parent >= 0 && i != body->shadow && (lo == 0 || pos[i][1] < pos[lo][1]))
+					lo = i;
+			o[0] = pos[lo][0];
+			o[2] = pos[lo][2];
+		}
+	} else if (head && !(pose && pose->head_only)) {
+		o[1] = model->head_y;   /* the built body: where the chin sits */
+	}
+	if (!(pose && pose->head_only))
+		o[1] += pose ? pose->bob : 0;
+	/* Turned with the Mii about Y, as mii_draw turns it. */
+	cy = cosf(pose ? pose->yaw : 0);
+	sy = sinf(pose ? pose->yaw : 0);
+	for (j = 0; j < 3; ++j) {
+		at[0][j] = (cy * f[0][j] + sy * f[2][j]) * k;
+		at[1][j] = f[1][j] * k;
+		at[2][j] = (-sy * f[0][j] + cy * f[2][j]) * k;
+	}
+	at[0][3] = cy * o[0] + sy * o[2];
+	at[1][3] = o[1];
+	at[2][3] = -sy * o[0] + cy * o[2];
+	return MII_OK;
 }
 
 #ifndef MII_NO_OGC
@@ -1154,7 +1424,7 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 	int i;
 
 	int pal_size;
-	void *pal_pos, *pal_nrm, *last_pm, *last_w;
+	void *pal_pos, *pal_nrm, *pal_env, *last_pm, *last_w;
 
 	if (!model || !body || !body->nverts)
 		return MII_E_ARG;
@@ -1166,15 +1436,18 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 #ifndef MII_NO_OGC
 	pal_pos = memalign(32, sizeof(float) * 12 * pal_size * MII_PALETTES);
 	pal_nrm = memalign(32, sizeof(float) * 9 * pal_size * MII_PALETTES);
+	pal_env = memalign(32, sizeof(float) * 12 * pal_size * MII_PALETTES);
 #else
 	pal_pos = malloc(sizeof(float) * 12 * pal_size * MII_PALETTES);
 	pal_nrm = malloc(sizeof(float) * 9 * pal_size * MII_PALETTES);
+	pal_env = malloc(sizeof(float) * 12 * pal_size * MII_PALETTES);
 #endif
 	last_pm = malloc(sizeof(float) * 12 * body->nbones);
 	last_w = malloc(sizeof(float) * 12 * body->nbones);
-	if (!pal_pos || !pal_nrm || !last_pm || !last_w) {
+	if (!pal_pos || !pal_nrm || !pal_env || !last_pm || !last_w) {
 		free(pal_pos);
 		free(pal_nrm);
+		free(pal_env);
 		free(last_pm);
 		free(last_w);
 		return MII_E_MEM;
@@ -1188,11 +1461,13 @@ int mii_model_set_body(mii_model *model, const mii_body *body) {
 	model->skin_pos = model->skin_nrm = NULL;   /* mii_body_skin makes them if it is called */
 	free(model->pal_pos);
 	free(model->pal_nrm);
+	free(model->pal_env);
 	free(model->last_pm);
 	free(model->last_w);
 	model->pal_size = pal_size;
 	model->pal_pos = pal_pos;
 	model->pal_nrm = pal_nrm;
+	model->pal_env = pal_env;
 	model->last_pm = last_pm;
 	model->last_w = last_w;
 	model->posed = 0;
@@ -1678,10 +1953,10 @@ int mii_body_make_lods(mii_body *body, const float *tolerances, int n) {
 	/* The bind pose in the body's space: where the folds are measured. */
 	for (i = 0; i < body->nbones; ++i) {
 		const mii_bone *bn = &body->bone[i];
-		float r3[3], t[3];
+		float r3[3], t[3], sc[3];
 		m33 local;
 
-		bone_local(body, NULL, 0, i, r3, t);
+		bone_local(body, NULL, 0, i, r3, t, sc);
 		rot_xyz(local, r3);
 		if (bn->parent < 0) {
 			memcpy(rot[i], local, sizeof(local));

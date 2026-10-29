@@ -48,7 +48,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
 | `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
-| `HBCM` | zero | none | HOME > HBC > Save Mii faces: copies the Wii Menu's `RFL_Res.dat` to `sd:/mii/RFL_Res.dat`, and (1.10.26) the Mii Channel's `maleBody.brres` and `femaleBody.brres` beside it; the reply body is the message the toast shows, with status 0 or the error (HBC 1.10.20; [mii.md](mii.md#the-face-models-rfl_resdat)) |
+| `HBCM` | zero | none | HOME > HBC > Save Mii faces: copies the Wii Menu's `RFL_Res.dat` to `sd:/mii/RFL_Res.dat`, and (1.10.26) the Mii Channel's `maleBody.brres` and `femaleBody.brres` beside it (1.12.2: and its `effect_nigaoe.breff` and `.breft`, when it has them); the reply body is the message the toast shows, with status 0 or the error (HBC 1.10.20; [mii.md](mii.md#the-face-models-rfl_resdat)) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
 | `HBCH` | pages (u16 at 4: bit 0 System, 1 Video, 2 Storage, 3 USB, 4 Network; 0 for all) | none | JSON: the hardware and settings DEV > Info shows, `{"System":{"Console":"...",...},"Video":{...},"Storage":{...},"USB":{...},"Network":{...}}` (HBC 1.9.6 and its agent). In an app that never started libogc's USB, the USB page starts it and leaves it running. |
 

@@ -97,10 +97,7 @@ void _panic(u32 file, u32 line)
 
 	hex(file, &guru[17]);
 	hex(line, &guru[26]);
-		
-	putsc(42, "Software Failure.   Press reset button to continue.");
-	putsc(62, guru);
-		
+
 	// wait for reset button
 	while(read32(0xcc003000)&0x10000) {
 		// blink
@@ -122,6 +119,11 @@ void _panic(u32 file, u32 line)
 			for(y=84; y<90; y++)
 				for(x=14; x<306; x++)
 					fb[y*320+x] = bcolor;
+
+			// with the box: a copy the GPU had queued can land on this
+			// framebuffer after the first drawing and wipe the words
+			putsc(42, "Software Failure.   Press reset button to continue.");
+			putsc(62, guru);
 
 			count = 0;
 		}

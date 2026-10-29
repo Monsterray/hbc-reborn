@@ -27,6 +27,7 @@ korean-key
 /channel/channelapp/build/
 /channel/channelapp/dist/
 /channel/channelapp/stub.bin
+/channel/channelapp/*_memmap.csv
 /channel/channelapp/i18n/merge
 /channel/channelapp/i18n/*.gen
 /channel/channelapp/banner/twintig

@@ -50,6 +50,9 @@ s8 view_widget_at_xy (const view *v, s32 x, s32 y);
 s8 view_widget_at_ir (const view *v);
 
 void view_show_throbber(bool show);
+// The HBC logo along the bottom; the Mii playground hides it (its buttons
+// are there).
+void view_show_logo(bool show);
 // How this start shows a file name too wide for the transfer line:
 // "scroll", "bounce" or "truncate" (picked at random), or "none" yet.
 const char *view_transfer_style(void);

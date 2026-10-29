@@ -38,6 +38,8 @@ typedef struct {
 	int sort_order;
 	int browse_mode;
 	char app_sel[64];
+	// The avatar's Mii, chosen in the Mii picker: its creation ID in hex.
+	char avatar_mii[17];
 } settings_t;
 
 typedef struct {

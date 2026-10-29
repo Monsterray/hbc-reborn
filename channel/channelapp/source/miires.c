@@ -1,7 +1,8 @@
 // "Save Mii faces": copies the Wii's own Mii models to sd:/mii for apps that
 // draw Miis (docs/research/mii-rendering.md, docs/research/mii-bodies.md,
 // sdk/mii): the faces, RFL_Res.dat, from the Wii Menu, and the bodies,
-// maleBody.brres and femaleBody.brres, from the Mii Channel. The files are
+// maleBody.brres and femaleBody.brres, with its effects (effect_nigaoe.breff
+// and .breft, 1.12.2), from the Mii Channel. The files are
 // Nintendo's and stay on the user's own SD card; they are never shipped with
 // an app.
 //
@@ -337,6 +338,18 @@ static s32 save_bodies(char *where, size_t where_len) {
 		}
 		snprintf(dest, sizeof(dest), DEST_DIR "/%s", files[k]);
 		r = save(dest, arc + off, len);
+	}
+	// Its effects too (sneezes, talk balloons, smoke: sdk/mii's player),
+	// when this Mii Channel has them; the bodies do without.
+	for (k = 0; k < 2 && !r; ++k) {
+		static const char *effects[] = { "effect_nigaoe.breff", "effect_nigaoe.breft" };
+		u32 off, len;
+		char dest[48];
+
+		if (find_mem(arc, arc_size, effects[k], &off, &len) && len >= 16 && !memcmp(arc + off, "REF", 3)) {
+			snprintf(dest, sizeof(dest), DEST_DIR "/%s", effects[k]);
+			save(dest, arc + off, len);
+		}
 	}
 	free(arc);
 	return r;

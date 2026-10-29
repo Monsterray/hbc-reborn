@@ -33,6 +33,7 @@ u32 cursor_shade_data_size;
 
 static gfx_queue_entry entry_bg;
 static gfx_queue_entry entry_logo;
+static bool logo_shown = true;
 static gfx_queue_entry entry_throbber;
 
 static gfx_entity gradient_subview;
@@ -398,7 +399,7 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 #ifdef HBC_HANG_DIAG
 	hbc_agent_alive ();
 #endif
-	av = avatar_frame (wm, x, y, (bd & PADS_A) != 0);
+	av = avatar_frame (wm, x, y, bd, bh);
 
 	gfx_frame_start ();
 
@@ -410,7 +411,8 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 	if (av)
 		gfx_frame_push (av, 1);
 
-	gfx_frame_push (&entry_logo, 1);
+	if (logo_shown)
+		gfx_frame_push (&entry_logo, 1);
 
 	view_push_view (v, alpha);
 
@@ -576,6 +578,10 @@ s8 view_widget_at_ir (const view *v) {
 		return -1;
 
 	return view_widget_at_xy (v, x - v->coords.x, y - v->coords.y);
+}
+
+void view_show_logo(bool show) {
+	logo_shown = show;
 }
 
 void view_show_throbber(bool show) {

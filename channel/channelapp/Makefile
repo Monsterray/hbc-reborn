@@ -14,6 +14,7 @@ TARGET_APP = channelapp
 TARGET_CHAN = channelapp-channel
 
 WIIPAX = ../../wiipax/client/wiipax
+PYTHON ?= python3
 
 BASE_ADDR = 0x81330000
 
@@ -60,6 +61,11 @@ LDFLAGS_COMMON = -Wl,-z,noexecstack
 LDFLAGS_STUB = $(MACHDEP) $(LDFLAGS_COMMON) -Wl,-Ttext=0x80001800 -Wl,--section-start,.sbss=0x80005000 -Wl,-e,_start -nostartfiles -nodefaultlibs
 LDFLAGS_APP = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) \
 	      $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp.map
+# make DEBUG_POISON=1: poison fresh and freed heap memory (source/poison.c)
+ifeq ($(DEBUG_POISON),1)
+CFLAGS += -DDEBUG_POISON $(if $(POISON_MODE),-DPOISON_MODE=$(POISON_MODE))
+LDFLAGS_APP += -Wl,--wrap=malloc,--wrap=memalign,--wrap=free
+endif
 LDFLAGS_CHAN = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) -Wl,-e,_stub_start $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp_chan.map
 
 FILES_STUB = $(wildcard $(DIR_STUB)/*.S) $(wildcard $(DIR_STUB)/*.c)
@@ -86,7 +92,7 @@ FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
 FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
-		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o \
+		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o $(DIR_BUILD)/miifx.o \
 		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
@@ -125,9 +131,13 @@ $(TARGET_STUB).elf: $(FILES_STUB_OBJ) Makefile
 	@echo $(@F)
 	@$(CC) $(FILES_STUB_OBJ) $(LDFLAGS_STUB) -o $@
 
+# Each symbol's address, size, section and object file, from the map
+# (tools/memmap.py): a build without Python only goes without it.
 $(TARGET_APP)_nopax.elf: $(FILES_SRC_OBJ) newrvl.ld $(AGENT)/libhbcagent.a
 	@echo $(@F)
 	@$(CC) $(FILES_SRC_OBJ) $(LDFLAGS_APP) -o $@
+	-@NM="$(PREFIX)nm" "$(PYTHON)" ../../tools/memmap.py $(TARGET_APP).map $@ > $(TARGET_APP)_memmap.csv \
+		|| rm -f $(TARGET_APP)_memmap.csv
 
 $(AGENT)/libhbcagent.a: FORCE
 	@$(MAKE) --no-print-directory -C $(AGENT) EXTRA_CFLAGS="$(EXTRA_CFLAGS)"
@@ -225,12 +235,16 @@ $(DIR_BUILD)/miibody.o: $(MII)/miibody.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
+$(DIR_BUILD)/miifx.o: $(MII)/miifx.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
 -include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 
 clean:
 	rm -f title_id.h
 	rm -rf $(DIR_BUILD) \
-		*.elf *.dol *.bin *.map i18n/merge/* $(POTPL).gen
+		*.elf *.dol *.bin *.map *_memmap.csv i18n/merge/* $(POTPL).gen
 	@$(MAKE) -C banner clean
 
 wiiload:

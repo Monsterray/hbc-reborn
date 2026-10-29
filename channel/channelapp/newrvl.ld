@@ -195,8 +195,17 @@ SECTIONS
 		can access them all, and initialized data all before uninitialized, so
 		we can shorten the on-disk segment size.  */
 
+	/* The small-data base at the section's start, not ld's default of
+	   .sdata + 32 KiB: libogc's ps_guMtxConcat loads its (0, 1) pair with a
+	   psq_l, whose displacement is 12 bits. With the default base the
+	   -32768 offset is truncated into the W bit and offset 0, so the
+	   matrix code adds whatever lies at r13 into every concatenation
+	   (HBC 1.12.2: the Mii drawn as a sliver while a particle sat there).
+	   .sdata and .sbss together are far under 2 KiB, so every small-data
+	   offset fits both the 16-bit and the 12-bit forms. */
 	.sdata     :
 	{
+		_SDA_BASE_ = .;
 		*(.sdata)
 		*(.sdata.*)
 		*(.gnu.linkonce.s.*)

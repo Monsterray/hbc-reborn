@@ -11,7 +11,8 @@ typedef enum {
 	HOME_NETWORK,
 	HOME_SYSTEM_MENU,
 	HOME_RESTART,
-	HOME_SHUTDOWN
+	HOME_SHUTDOWN,
+	HOME_PLAYGROUND     // the Mii playground (miiplay.c)
 } home_action;
 
 // Sets up the agent's overlay for HBC; call once, after the video is up.

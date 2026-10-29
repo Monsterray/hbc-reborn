@@ -161,6 +161,47 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### libogc 3.2.1: back to 3.1.0 until a fixed release
+
+On 2026-10-28 the shared toolchain went to libogc 3.2.1 (with devkitPPC r51).
+HBC 1.12.1, built on it and installed on the bench Wii, then crashed now and
+then on its way out (opening an app, going to the Wii Menu): its red Guru
+Meditation box, the network gone quiet, and after the reset no SD card until
+an IOS reload. The user had libogc put back to 3.1.0 the same day, the 3.2.1
+package deleted from pacman's cache, and `IgnorePkg = libogc` set in
+`C:\devkitPro\msys2\etc\pacman.conf`.
+
+- **The bug found: `WPAD_Shutdown` frees the Remotes too early.** 3.2.1's
+  `WPAD_Shutdown` calls the new `wiiuse_cleanup`, which frees every Remote's
+  state, its command queue and its socket, before `BTE_Shutdown()`, so a
+  Bluetooth callback in between writes to freed memory. It also leaves
+  wiiuse.c's own `static __wm` pointing at the freed array, and the next
+  `WPAD_Init` reuses it. 3.1.0 took that state from the LWP workspace and
+  never freed it. HBC calls `WPAD_Shutdown` once, in `controls_deinit()` on
+  every way out. Evidence: `tests/wii_agent_stop.py` "restart" (stop, IOS
+  reload, `WPAD_Init` again) failed in all 3 runs with agent_app on 3.2.1,
+  passed with the same source on 3.1.0, and passed 3 of 3 on 3.2.1 with
+  `-Wl,--wrap=wiiuse_cleanup` and an empty `__wrap_wiiuse_cleanup`.
+- **Changed, not proven harmful: timeslicing.** From 3.2.0 the first
+  `LWP_CreateThread` whose priority lacks bit 0x80 turns on timeslicing for
+  the whole system (10 ms, from the timer interrupt). HBC's threads were
+  written for 3.0 and 3.1, where same-priority threads never cut into each
+  other. A run with every thread given the bit was clean, but each round
+  also left through the installed, unfixed HBC, so nothing was shown.
+- **Ruled out:** the SD driver's 3.2.1 changes (renamed command types, the
+  SWITCH_FUNC buffer on the stack; `ipc.c` invalidates every vector on the
+  reply); the console font (`panic.c` borrows it; the same 4 KiB in both).
+- **Kept from the hunt:** `panic.c` draws its words with the blinking box
+  (a queued GPU copy wiped them, so the box showed no text);
+  `tests/wii_launch_stress.py` (launch an app and come back, N rounds,
+  `--hbc` sends a build before each); `AGENT_APP_DOL` for
+  `tests/agent_checks.py`; agent_app's `OGC=` builds against another libogc.
+
+**Trigger:** before taking any libogc past 3.1.0, check that its
+`WPAD_Shutdown` no longer frees the Remotes before Bluetooth stops (and that
+`wiiuse_init` starts afresh), then run `tests/wii_agent_stop.py` and
+`tests/wii_launch_stress.py` on the bench with HBC installed as the channel.
+
 ### 1.12.1: the levels where they look right, and the hair whole
 
 The user watched Miis walk through the levels on the bench Wii and chose

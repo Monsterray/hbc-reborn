@@ -25,6 +25,9 @@
 #include "loader.h"
 #include "miires.h"
 #include "avatar.h"
+#include "miipick.h"
+#include "miiplay.h"
+#include "controls.h"
 #include "tcp.h"
 #include "zmem.h"
 #include "usbmsd.h"
@@ -172,6 +175,14 @@ int agent_overlay_state(char *buf, int size);
 // Each Wii Remote's command queue, as the overlay sees it.
 int agent_remote_diag(char *buf, int size);
 
+// n plus what a piece of the status added, kept inside the buffer: a
+// piece cut short is cut, the next ones write nothing (the app list alone
+// can be kilobytes; past the end, size - n wrapped round and they wrote on).
+static s32 grow(s32 n, size_t size, int add) {
+	n += add > 0 ? add : 0;
+	return n < (s32) size ? n : (s32) size - 1;
+}
+
 static s32 status_json(char *buf, size_t size) {
 	u32 level;
 	bool mounted[DEVICE_COUNT] = { false };
@@ -196,66 +207,66 @@ static s32 status_json(char *buf, size_t size) {
 			ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff,
 			(unsigned) loader_net_starts(), entry_count);
 	if (active >= 0 && active < DEVICE_COUNT)
-		n += snprintf(buf + n, size - n, "\"%s\"", device_names[active]);
+		n = grow(n, size, snprintf(buf + n, size - n, "\"%s\"", device_names[active]));
 	else
-		n += snprintf(buf + n, size - n, "null");
+		n = grow(n, size, snprintf(buf + n, size - n, "null"));
 
 	// Only the active device is mounted; the others are last seen inserted.
-	n += snprintf(buf + n, size - n, ",\"inserted\":[");
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"inserted\":["));
 	for (i = 0; i < DEVICE_COUNT; ++i)
 		if (mounted[i] || i == active)
-			n += snprintf(buf + n, size - n, "%s\"%s\"",
-					buf[n - 1] == '[' ? "" : ",", device_names[i]);
+			n = grow(n, size, snprintf(buf + n, size - n, "%s\"%s\"",
+					buf[n - 1] == '[' ? "" : ",", device_names[i]));
 
 	if (log_port)
-		n += snprintf(buf + n, size - n, "],\"log\":\"%u.%u.%u.%u:%u\"",
+		n = grow(n, size, snprintf(buf + n, size - n, "],\"log\":\"%u.%u.%u.%u:%u\"",
 				log_ip >> 24, (log_ip >> 16) & 0xff, (log_ip >> 8) & 0xff,
-				log_ip & 0xff, log_port);
+				log_ip & 0xff, log_port));
 	else
-		n += snprintf(buf + n, size - n, "],\"log\":null");
+		n = grow(n, size, snprintf(buf + n, size - n, "],\"log\":null"));
 
 	if (devfile_last.op)
-		n += snprintf(buf + n, size - n, ",\"last\":{\"op\":\"%c\",\"bytes\":%u,"
+		n = grow(n, size, snprintf(buf + n, size - n, ",\"last\":{\"op\":\"%c\",\"bytes\":%u,"
 				"\"wire\":%u,\"ms\":%u,\"net_ms\":%u,\"disk_ms\":%u,\"cpu_ms\":%u}",
 				devfile_last.op, devfile_last.bytes, devfile_last.st.wire, MS(devfile_last.total),
-				MS(devfile_last.st.net), MS(devfile_last.st.disk), MS(devfile_last.st.cpu));
-	n += snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"zlib_peak\":%u,\"zlib_heap\":%u,"
+				MS(devfile_last.st.net), MS(devfile_last.st.disk), MS(devfile_last.st.cpu)));
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"zlib_peak\":%u,\"zlib_heap\":%u,"
 			"\"tcp_last_failure\":\"%s\"", zmem_where(), zmem_peak(), zmem_heap_peak(),
-			tcp_last_failure());
-	n += snprintf(buf + n, size - n, ",\"startup\":{");
+			tcp_last_failure()));
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"startup\":{"));
 	for (i = 0; i < (int) boot_count; ++i)
-		n += snprintf(buf + n, size - n, "%s\"%s\":%u", i ? "," : "",
-				boot_marks[i].name, boot_marks[i].ms);
-	n += snprintf(buf + n, size - n, "}");
-	n += crash_json(buf + n, size - n);
-	n += usbmsd_json(buf + n, size - n);
-	n += snprintf(buf + n, size - n, ",\"unmountable\":{");
+		n = grow(n, size, snprintf(buf + n, size - n, "%s\"%s\":%u", i ? "," : "",
+				boot_marks[i].name, boot_marks[i].ms));
+	n = grow(n, size, snprintf(buf + n, size - n, "}"));
+	n = grow(n, size, crash_json(buf + n, size - n));
+	n = grow(n, size, usbmsd_json(buf + n, size - n));
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"unmountable\":{"));
 	for (i = 0; i < DEVICE_COUNT; ++i)
 		if (app_entry_mount_why(i))
-			n += snprintf(buf + n, size - n, "%s\"%s\":\"%s\"", buf[n - 1] == '{' ? "" : ",",
-						  device_names[i], app_entry_mount_why(i));
-	n += snprintf(buf + n, size - n, "}");
+			n = grow(n, size, snprintf(buf + n, size - n, "%s\"%s\":\"%s\"", buf[n - 1] == '{' ? "" : ",",
+						  device_names[i], app_entry_mount_why(i)));
+	n = grow(n, size, snprintf(buf + n, size - n, "}"));
 	if (upload.seq) {
 		char text[sizeof(upload.text)];
 
 		json_text(text, upload.text, sizeof(text));
-		n += snprintf(buf + n, size - n, ",\"upload\":{\"seq\":%u,\"result\":\"%s\","
+		n = grow(n, size, snprintf(buf + n, size - n, ",\"upload\":{\"seq\":%u,\"result\":\"%s\","
 				"\"error\":%s%s%s,\"text\":\"%s\",\"ago_ms\":%u}", (unsigned) upload.seq,
 				upload.result, upload.error ? "\"" : "", upload.error ? upload.error : "null",
-				upload.error ? "\"" : "", text, MS(diff_ticks(upload.at, gettime())));
+				upload.error ? "\"" : "", text, MS(diff_ticks(upload.at, gettime()))));
 	} else {
-		n += snprintf(buf + n, size - n, ",\"upload\":null");
+		n = grow(n, size, snprintf(buf + n, size - n, ",\"upload\":null"));
 	}
 	if (have_lastlog)
-		n += snprintf(buf + n, size - n, ",\"lastlog\":{\"why\":\"%s\",\"bytes\":%u}",
-				lastlog_why(lastlog.why), (unsigned) lastlog.len);
+		n = grow(n, size, snprintf(buf + n, size - n, ",\"lastlog\":{\"why\":\"%s\",\"bytes\":%u}",
+				lastlog_why(lastlog.why), (unsigned) lastlog.len));
 	else
-		n += snprintf(buf + n, size - n, ",\"lastlog\":null");
-	n += agent_overlay_cost_json(buf + n, size - n);
-	n += agent_overlay_state(buf + n, size - n);
-	n += snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style());
+		n = grow(n, size, snprintf(buf + n, size - n, ",\"lastlog\":null"));
+	n = grow(n, size, agent_overlay_cost_json(buf + n, size - n));
+	n = grow(n, size, agent_overlay_state(buf + n, size - n));
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style()));
 	// The Wii's clock, the one file times (op L, S) come from.
-	n += snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL));
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL)));
 	{
 		// The Mii beside the app list (avatar.c).
 		avatar_info av;
@@ -263,20 +274,24 @@ static s32 status_json(char *buf, size_t size) {
 
 		avatar_get_info(&av);
 		json_text(name, av.name, sizeof(name));
-		n += snprintf(buf + n, size - n, ",\"avatar\":{\"state\":\"%s\",\"mii\":\"%s\","
+		n = grow(n, size, snprintf(buf + n, size - n, ",\"avatar\":{\"state\":\"%s\",\"mii\":\"%s\","
 					  "\"slot\":%d,\"frame_us\":%u,\"interval_us\":%u,\"frames\":%u,\"bad\":%u,"
-					  "\"bad_at\":\"%s\"}",
+					  "\"bad_at\":\"%s\"",
 					  av.state, name, av.slot, (unsigned) av.frame_us, (unsigned) av.interval_us,
-					  (unsigned) av.frames, (unsigned) av.bad, av.bad_at);
+					  (unsigned) av.frames, (unsigned) av.bad, av.bad_at));
+		n = grow(n, size, avatar_anims_json(buf + n, size - n));
+		n = grow(n, size, snprintf(buf + n, size - n, "}"));
 	}
+	n = grow(n, size, miipick_status_json(buf + n, size - n));
+	n = grow(n, size, miiplay_status_json(buf + n, size - n));
 	_CPU_ISR_Disable(level);
-	n += snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
 				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",
-				  app_list_slides, app_list_reloads);
+				  app_list_slides, app_list_reloads));
 	_CPU_ISR_Restore(level);
-	n += snprintf(buf + n, size - n, ",\"remotes\":");
-	n += agent_remote_diag(buf + n, size - n);
-	n += snprintf(buf + n, size - n, "}");
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"remotes\":"));
+	n = grow(n, size, agent_remote_diag(buf + n, size - n));
+	n = grow(n, size, snprintf(buf + n, size - n, "}"));
 
 	return n;
 }
@@ -399,7 +414,8 @@ static void set_log_target(u32 ip, u16 port) {
 }
 
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
-	char json[2560];
+	// Static: the loader thread, the only caller, has an 8 KB stack.
+	static char json[16384];
 
 	// `hbc.py key` and `screen`: HOME-overlay presses and the TV picture,
 	// answered by the agent that draws HBC's HOME menu (home.c).
@@ -413,6 +429,54 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	}
 
 	// HBCT: header bytes 4-15, a transfer line style name, for tests.
+	// HBCB: header bytes 4-5, a count of keys that follow: HBC's own menu
+	// pressed from the PC (`hbc.py buttons`), one a frame: u d l r (the
+	// D-pad), a b 1 2 + -, m for A on the avatar (the Mii picker), and p
+	// for the Mii playground.
+	if (!memcmp(hdr, "HBCB", 4)) {
+		static const char keys[] = "udlrab12+-";
+		static const u32 pads[] = { PADS_UP, PADS_DOWN, PADS_LEFT, PADS_RIGHT, PADS_A,
+									PADS_B, PADS_1, PADS_2, PADS_PLUS, PADS_MINUS };
+		char buf[64];
+		u16 len = get_u16(hdr + 4);
+		int i, res = 0;
+
+		if (!len || len > sizeof(buf) || !tcp_read(s, (u8 *) buf, len, NULL, NULL)) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return true;
+		}
+		for (i = 0; i < len && !res; ++i) {
+			const char *k = buf[i] ? strchr(keys, buf[i]) : NULL;
+
+			if (buf[i] == 'm')
+				avatar_ask_picker();
+			else if (buf[i] == 'p')
+				miiplay_ask();
+			else if (!k)
+				res = -EINVAL;
+			else if (!controls_queue_press(pads[k - keys]))
+				res = -ENOSPC;
+		}
+		devfile_reply(s, res, NULL, 0);
+		return true;
+	}
+
+	// HBCD: header bytes 4-5, the length of the name that follows: the
+	// avatar plays that animation of the Mii Channel body once (`hbc.py anim`).
+	if (!memcmp(hdr, "HBCD", 4)) {
+		char name[24];
+		u16 len = get_u16(hdr + 4);
+
+		if (!len || len >= sizeof(name) || !tcp_read(s, (u8 *) name, len, NULL, NULL)) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return true;
+		}
+		name[len] = 0;
+		avatar_play(name);
+		devfile_reply(s, 0, NULL, 0);
+		return true;
+	}
+
 	if (!memcmp(hdr, "HBCT", 4)) {
 		char style[13];
 

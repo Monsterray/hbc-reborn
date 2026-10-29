@@ -248,9 +248,32 @@ if (ok) {
   `pose.from_weight = mii_fade_weight(seconds_since, 0.4f)`. A looping
   animation plays on as it fades; a finished one-shot (a wave) holds its
   last frame, since frames wrap and it would otherwise fade toward its own
-  start.
+  start. Each `mii_anim` says which it is (`loop`, from the file: `bodyWait`,
+  `bodyWalk`, `bodyRun`, `bodyTalk`, `bodyTalk_01` and `bodyCatnap_00` go
+  round; the rest play once), and `mii_anim_frame(&body, anim, seconds,
+  &done)` gives the frame for either: wrapped for a looping one, held at
+  the end for a one-shot, with `done` set once it has ended.
   Height and build scale each bone as Nintendo's later libraries do.
   Without the files the model keeps a body of the library's own.
+- **The Mii Channel's look** (1.4.0), read from the body's own materials:
+  - **Shading.** The shirt and trousers use no lamp. Each one's colour is
+    lifted by the square of `env0`, a 32 × 32 light texture, looked up by
+    where each normal points as the camera sees it. This gives the soft
+    highlight on the chest. A body file without `env0` is lit as before.
+  - **Shadow.** `pose.shadow = 1` draws the body's own shadow under the
+    feet: a 75-unit square with a radial texture, in the material's colour.
+    The animation sizes it: it shrinks to nothing as the Mii is lifted
+    (`bodyGetDown`) and stretches as the Mii falls flat (`bodySlip_00`). For
+    a Mii carried above the ground, set `pose.shadow_drop` to the distance
+    down to the ground; the shadow stays there and is smaller the higher the
+    Mii is. `mii_body_shadow` gives its placement, for drawing it yourself.
+  - **Faces.** `mii_anim_expression(&body, pose.anim, pose.frame, face)`
+    gives a face for the animation: eyes shut asleep (`bodyCatnap_00`), a
+    smile for `bodyGreeting`, surprise when flung or slipping, the mouth
+    going for `bodyTalk`. Where the animation calls for none, it returns
+    your `face`. The file does not say which face goes with which animation,
+    so these choices are the library's own (see
+    [For someone to add](#for-someone-to-add)).
 
   ```c
   static mii_body body;
@@ -259,6 +282,43 @@ if (ok) {
       mii_model_set_body(&model, &body);           /* body outlives model */
   pose.anim = 1 + mii_body_anim(&body, "bodyWait");
   pose.frame = seconds * 60;
+  ```
+- **Effects** (`miifx.c`). The Mii Channel's particle effects: a sneeze's
+  splash, speech balloons, dust from running, slipping and landing, the
+  Zzz of a nap, the sparkles of a favourite and of a changed face part. They
+  are in its `Character.szs/effect` as `effect_nigaoe.breff` (14 emitters)
+  and `effect_nigaoe.breft` (6 textures). These are Nintendo's, like the
+  bodies: the user copies their own to `sd:/mii`, and nothing ships them.
+  `mii_fx_load` reads them. A `mii_fx_state` (about 25 KB, no allocation
+  after that) plays up to 16 emitters and 128 particles; when it is full,
+  the oldest goes. `mii_fx_play` starts an emitter, placed by a matrix that
+  you give. `mii_fx_place(&model, &pose, head, at)` makes it: on the head
+  bone as posed (`head` 1: the sneeze in front of the face and where it
+  points, talk balloons before the mouth, zzz over the head; the same
+  place the animations give as `pSphere14`), or on the ground under the
+  Mii's lowest bone (0: dust where the feet, or the back, hit), turned with
+  the Mii and sized by its height. For a `head_only` pose the chin is the
+  origin. `mii_icon_fx` draws an icon with the effects over it: play them
+  on a `head_only` pose's place, scaled to about half, to keep them inside.
+  `mii_fx_step` moves the effects on, at 60 frames a second. `mii_fx_draw`
+  draws them as squares that face the camera, coloured and blended as the
+  file says. Draw them after the opaque parts of the scene. `Nc_zzz01`
+  goes on until `mii_fx_stop`. On the PC, `mii_fx_particles` lists each
+  particle (`tests/test_miifx.py`).
+
+  ```c
+  static mii_fx fx;
+  static mii_fx_state fxs;
+  if (mii_fx_load(&fx, NULL, NULL) == MII_OK)      /* sd:/mii/effect_nigaoe.* */
+      mii_fx_init(&fxs, &fx, 1);
+  float head[3][4];
+  mii_fx_place(&model, &pose, 1, head);
+  int zzz = mii_fx_play(&fxs, mii_fx_find(&fx, "Nc_zzz01"), head);
+  /* each frame: */
+  mii_fx_place(&model, &pose, 1, head);
+  mii_fx_move(&fxs, zzz, head);                    /* follow the head */
+  mii_fx_step(&fxs, 1);
+  mii_fx_draw(&fxs, view);                         /* after the Miis */
   ```
 - **Many Miis.** A crowd is what the Wii's CPU and memory allow, not its
   GPU, until the CPU's part is small. What helps, all measured on the
@@ -337,13 +397,48 @@ if (ok) {
   texture sees zeros there; drawing it works either way.
 - **On the PC**: with `-DMII_NO_OGC` everything but drawing builds
   (`tests/miidraw_host` writes a Mii's meshes as OBJ and its faces as RGBA;
-  with `MII_BODY`, a Wii body posed by `MII_ANIM` and `MII_FRAME`).
-- **Files**: `miidraw.c` (faces, the built body, drawing) and `miibody.c`
-  (the Wii's bodies) with `mii.c`.
+  with `MII_BODY`, a Wii body posed by `MII_ANIM` and `MII_FRAME`;
+  `tests/miifx_host` plays an effect and prints its particles).
+- **Files**: `miidraw.c` (faces, the built body, drawing), `miibody.c`
+  (the Wii's bodies) and `miifx.c` (the effects) with `mii.c`.
 
 The head's numbers come from RFL as the CC0 decompilations show it; the
 code is this library's own. [docs/research/mii-rendering.md](../../docs/research/mii-rendering.md)
 has the sources.
+
+## For someone to add
+
+The SDK uses everything in the Mii Channel's body and effect files (1.4.0).
+These are the parts it does not have yet. Each one needs knowledge from
+outside those files.
+
+- **Height and build as the Wii does them.** Bones are scaled with the
+  formula of Nintendo's later Mii library, the Wii U's (FFL), because the
+  Wii's own formula is not in the data. It lives in the Mii Channel's
+  program, or in RFL as games use it. To check it: pose a tall, thin Mii
+  and a short, wide one in the Mii Channel in Dolphin, and compare with
+  `mii_body_pose`.
+- **Wii U and 3DS Miis.** `mii_import` takes only the Wii's 74- and 76-byte
+  forms. The Wii U and 3DS store a Mii in 96 bytes (FFLStoreData, Ver3),
+  with more hair styles, eye and lip colours, and a different creation ID.
+  Converting one to a Wii Mii means choosing the nearest Wii part for each
+  new one. Nintendo's own Mii transfer between Wii and Wii U is a reference
+  for those choices.
+- **Wii U drawing.** FFL lights each part with its own material: a rim
+  light, a specular light on the hair, and textures in more formats. The
+  Wii has none of these, so drawing a Wii U Mii as the Wii U does would
+  need FFL's shader values (FFLShaderData) and a TEV version of them.
+- **The Mii Channel's faces and effects timing.** No file says which face
+  or effect goes with which frame of an animation. `mii_anim_expression`
+  and HBC's effect cues are this library's choices, by eye (HBC finds the
+  landings from the bones: dust where the lowest one comes down). The real ones
+  are in the Mii Channel's program, as is the matrix each effect is placed
+  by. Talk and the sneeze fit the head, run smoke the body's root, and zzz
+  neither exactly.
+- **pSphere14.** Nineteen animations move a node that the body does not
+  have. It is the head bone's place in model space, baked in, and the
+  effects on the head are placed by it: `mii_fx_place` uses the head bone,
+  which gives the same place without reading it.
 
 ## Errors
 

@@ -316,6 +316,22 @@ def send_keys(wii, keys):
         recv_reply(conn)
 
 
+def send_buttons(wii, keys):
+    """Presses on HBC's own menu (not an app's), one a frame."""
+    keys = keys.encode("ascii")
+    if not keys or len(keys) > 64 or any(k not in b"udlrab12+-mp" for k in keys):
+        raise HBCError("buttons are up to 64 of u d l r a b 1 2 + - m p")
+    request(wii, b"HBCB" + struct.pack(">H", len(keys)), keys)
+
+
+def play_anim(wii, name):
+    """The avatar plays this animation of the Mii Channel body once."""
+    name = name.encode("ascii")
+    if not name or len(name) > 23:
+        raise HBCError("an animation name is 1 to 23 characters")
+    request(wii, b"HBCD" + struct.pack(">H", len(name)), name)
+
+
 def relaunch_wait(wii, expected, seconds=90):
     """After a send, wait for the old program to stop answering, then for
     HBC `expected` to answer; a same-version rebuild cannot pass early."""
@@ -1472,6 +1488,26 @@ the same overlay, so this works on HBC too.
 
     hbc.py key h          open the HOME overlay
     hbc.py key rra        move right twice and press A""",
+    "buttons": """\
+hbc.py buttons KEYS
+
+Presses buttons on HBC's own menu (the app list and its dialogs, not an
+app's), one a frame: u d l r (the D-pad), a, b, 1, 2, + and -; m, which
+is A on the avatar: it opens the Mii picker; and p, which opens the Mii
+playground (HOME > HBC > Mii playground). Send m or p on its own, then the
+picker's or playground's keys.
+
+    hbc.py buttons m      open the Mii picker
+    hbc.py buttons p      open the Mii playground
+    hbc.py buttons +ra    the next page, right one Mii, choose it""",
+    "anim": """hbc.py anim NAME
+
+The avatar plays the Mii Channel body's animation NAME once, then goes back
+to its own (for looking at them). `hbc.py status` lists the body's
+animations ("anims") and the one shown ("anim"); nothing plays without the
+Mii Channel body (Save Mii faces copies it).
+
+    hbc.py anim bodyCatnap_00""",
     "screen": """\
 hbc.py screen FILE.png
 
@@ -1654,6 +1690,12 @@ def main(argv=None):
         elif cmd == "key":
             need(1, "KEYS")
             send_keys(wii, "".join(args))
+        elif cmd == "buttons":
+            need(1, "KEYS")
+            send_buttons(wii, "".join(args))
+        elif cmd == "anim":
+            need(1, "NAME")
+            play_anim(wii, args[0])
         elif cmd == "screen":
             need(1, "FILE.png")
             width, height, data = screen(wii)

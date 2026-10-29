@@ -611,6 +611,7 @@ static void draw_test(int slot) {
 	u64 t0;
 	int r, n, corners, e;
 
+	DCFlushRange(fifo, sizeof(fifo));   // .bss's zeros, cached: not over the commands later
 	GX_Init(fifo, sizeof(fifo));
 	if ((r = mii_res_load(&res, NULL)) < 0) {
 		result("mii_res_load sd:/mii/RFL_Res.dat (HOME > HBC > Save Mii faces)", r);
@@ -885,6 +886,7 @@ static void crowd_test(const char *counts, int seconds, int mask, void *xfb, GXR
 	struct mallinfo m0 = mallinfo();
 
 	(void) xfb;   /* present() shows two framebuffers of its own */
+	DCFlushRange(fifo, sizeof(fifo));   // .bss's zeros, cached: not over the commands later
 	GX_Init(fifo, sizeof(fifo));
 	GX_SetCopyClear((GXColor) { 40, 60, 90, 255 }, 0x00ffffff);
 	GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
@@ -1122,6 +1124,7 @@ static void walk_test(const char *counts, int seconds, int cols, float gap, floa
 		return;
 	}
 	(void) xfb;   /* present() shows two framebuffers of its own */
+	DCFlushRange(fifo, sizeof(fifo));   // .bss's zeros, cached: not over the commands later
 	GX_Init(fifo, sizeof(fifo));
 	GX_SetCopyClear(sky, 0x00ffffff);
 	GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
@@ -1359,6 +1362,7 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 	guVector eye = { 0, 260, 520 }, up = { 0, 1, 0 }, at = { 0, 0, -700 };
 
 	(void) xfb;   /* present() shows two framebuffers of its own */
+	DCFlushRange(fifo, sizeof(fifo));   // .bss's zeros, cached: not over the commands later
 	GX_Init(fifo, sizeof(fifo));
 	GX_SetCopyClear((GXColor) { 150, 190, 230, 255 }, 0x00ffffff);
 	GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);

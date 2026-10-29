@@ -79,6 +79,7 @@ static hbc_agent_item hbc_items[] = {
 	{ "Shutdown", NULL, pick, (void *) HOME_SHUTDOWN, HBC_AGENT_ITEM_CLOSE },
 	{ "Restart network", NULL, pick, (void *) HOME_NETWORK, HBC_AGENT_ITEM_CLOSE },
 	{ "Save Mii faces", NULL, save_mii_faces, NULL, 0 },
+	{ "Mii playground", NULL, pick, (void *) HOME_PLAYGROUND, HBC_AGENT_ITEM_CLOSE },
 };
 #define BOOTMII_ITEM 4
 

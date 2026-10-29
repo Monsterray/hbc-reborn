@@ -13,6 +13,7 @@ typedef enum {
 	FONT_APPDESC,
 	FONT_BUTTON,
 	FONT_BUTTON_DESEL,
+	FONT_HINT,          // small print: the playground's hint
 
 	FONT_MAX
 } font_id;

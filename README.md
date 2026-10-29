@@ -85,7 +85,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted (files up to 512 MiB; a read-only source is refused first; the copies get new times). An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
-| `mii-faces` | The same as HOME > HBC > Save Mii faces (`HBCM`): HBC copies the Wii Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's bodies (`maleBody.brres`, `femaleBody.brres`) to `sd:/mii`, for apps that draw Miis. The files are Nintendo's: keep them on your own SD card, never ship them. HBC 1.10.20 (bodies 1.10.26). |
+| `mii-faces` | The same as HOME > HBC > Save Mii faces (`HBCM`): HBC copies the Wii Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's bodies (`maleBody.brres`, `femaleBody.brres`) and effects (`effect_nigaoe.breff`, `.breft`) to `sd:/mii`, for apps that draw Miis. The files are Nintendo's: keep them on your own SD card, never ship them. HBC 1.10.20 (bodies 1.10.26, effects 1.12.2). |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |
 | `order [--clear] APPS [FOLDER ...]` | HBC's Custom app order (see [Your own app order](#your-own-app-order)): with only `APPS` (e.g. `sd:/apps`), print the apps in that order with their `<sort_id>`; with folders, give them 10, 20, 30... in the order named, editing or making each `meta.xml`; `--clear` removes every `<sort_id>`. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
@@ -319,7 +319,8 @@ network, which shuts the network down and joins it again (for a Wi-Fi
 connection that went stale), and Save Mii faces, which copies the Wii
 Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's male and
 female bodies with their animations (`maleBody.brres`,
-`femaleBody.brres`) to `sd:/mii` for apps that draw Miis
+`femaleBody.brres`) and effects (`effect_nigaoe.breff`, `.breft`) to
+`sd:/mii` for apps that draw Miis
 ([docs/mii.md](docs/mii.md#the-face-models-rfl_resdat)).
 
 Point a Wii Remote at the screen and HBC's hand cursor follows it, turning as you twist the remote: the
@@ -600,6 +601,7 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | Mii library (`sdk/mii`) on the PC: every field and limit, IDs, CRCs, the database, the hidden database and a Remote's Miis byte for byte (`MII_REAL_DB` adds a Wii's own `RFL_DB.dat`) | `python3 tests/test_mii.py` | C compiler |
 | Mii library in Dolphin: a database on its NAND (add, hidden, remove) and the emulated Wii Remote's Miis, each written and read back | `python3 tests/dolphin_mii.py` (build `tests/mii_app` first) | Dolphin |
 | Mii drawing (`sdk/mii/miidraw.c`) on the PC: a synthetic face resource builds a Mii with every part and each expression's face where RFL puts it, a damaged one is refused (`MII_REAL_RES` and `MII_REAL_DB` add your own files: every Mii builds) | `python3 tests/test_miidraw.py` | C compiler |
+| Mii effects (`sdk/mii/miifx.c`) on the PC: synthetic REFF and REFT files play each feature (forms, rate, curves, fields, the flip-book, child emitters, the pools), damaged or cut files are refused (`MII_REAL_EFFECTS`, a folder with your own `effect_nigaoe.breff` and `.breft`, adds the Mii Channel's) | `python3 tests/test_miifx.py` | C compiler |
 | HBC's avatar on the bench Wii: ready, 60 frames a second for a minute, ten TV pictures | queue `python tests/wii_avatar.py` | the bench queue |
 | Mii drawing on a Wii: `mii_icon` (normal, smiling) and a full-body `mii_capture`, saved to `sd:/mii_test` and checked | `mii_app.dol draw [SLOT]` (Dolphin: with `Graphics.Hacks.EFBToTextureEnable=False`) | Wii or Dolphin |
 | Mii library on the bench Wii: `backup`, `check`, `add`, `remove ID`, `edit ID FIELD=N...`, `hidden`, `remote-add ID`, `remote-remove ID`, `remote-rewrite`, `restore` | queue `python tests/wii_mii.py STEP` (build `tests/mii_app`, `tests/nandget` and `tests/nandput` first; it refuses any other Wii) | the bench queue |

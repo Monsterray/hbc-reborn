@@ -25,6 +25,8 @@
 #include "font.h"
 #include "widgets.h"
 #include "avatar.h"
+#include "miipick.h"
+#include "miiplay.h"
 #include "view.h"
 #include "bubbles.h"
 #include "dialogs.h"
@@ -133,6 +135,10 @@ static void reset_cb(u32 irq, void *ctx) {
 static void power_cb(void) {
 	should_exit = true;
 	shutdown = true;
+}
+
+bool main_exit_asked(void) {
+	return should_exit;
 }
 
 void config_language(void) {
@@ -269,7 +275,6 @@ static void main_pre(void) {
 	widgets_init();
 	view_init();
 	dialogs_init();
-	avatar_init();
 	mark("widgets_views");
 }
 
@@ -356,6 +361,8 @@ void main_real(void) {
 		if (settings.browse_mode == 1)
 			browser_switch_mode();
 	}
+	// After the settings: they name the avatar's Mii.
+	avatar_init(settings.avatar_mii);
 
 #ifdef ENABLE_UPDATES
 	update_check = 60;
@@ -530,6 +537,10 @@ void main_real(void) {
 				loader_tcp_restart ();
 				break;
 
+			case HOME_PLAYGROUND:
+				show_mii_playground ();
+				break;
+
 			case HOME_NONE:
 				break;
 			}
@@ -574,6 +585,24 @@ void main_real(void) {
 				continue;
 			}
 #endif
+			// The Mii playground, asked for by the PC (HBCB p); from the
+			// HOME menu above.
+			if (miiplay_asked()) {
+				show_mii_playground();
+				continue;
+			}
+
+			// A on the avatar, not on a button over it: the Mii picker.
+			if (avatar_clicked() && view_widget_at_ir(v_browser) < 0) {
+				char id[sizeof(settings.avatar_mii)];
+
+				if (show_mii_picker(v_current, avatar_mii_id(), id) >= 0) {
+					strcpy(settings.avatar_mii, id);
+					avatar_choose(id);
+				}
+				continue;
+			}
+
 			if (bd & PADS_1) {
 				dialog_options_result options;
 				options = show_options_dialog(v_current);

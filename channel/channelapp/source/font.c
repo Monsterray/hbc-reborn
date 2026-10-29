@@ -62,6 +62,7 @@ const font_default default_fonts[FONT_MAX] =
 	[FONT_APPDESC]		= { 16, droidbold_ttf, &droidbold_ttf_size},
 	[FONT_BUTTON]		= { 20, droidbold_ttf, &droidbold_ttf_size},
 	[FONT_BUTTON_DESEL]	= { 20, droid_ttf, &droid_ttf_size},
+	[FONT_HINT]			= { 13, droid_ttf, &droid_ttf_size},
 };
 
 #define GLYPH_CACHE_ROOT 64

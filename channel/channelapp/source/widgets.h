@@ -106,6 +106,9 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z,
 void widget_grid_app_entry (widget *w, s16 x, s16 y, s16 z,
 						const app_entry *entry);
 
+void widget_mii_coin (widget *w, s16 x, s16 y, s16 z, gfx_entity *coin,
+						gfx_entity *ring);
+
 void widget_progress (widget *w, s16 x, s16 y, s16 z,
 						const char *caption, u32 max);
 void widget_gradient (widget *w, s16 x, s16 y, s16 z,

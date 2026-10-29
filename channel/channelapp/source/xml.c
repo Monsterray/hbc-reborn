@@ -133,7 +133,8 @@ static const char *targets[FONT_MAX] = {
 	"appname",
 	"appdesc",
 	"button",
-	"button_desel"
+	"button_desel",
+	"hint"
 };
 
 static void _get_font(mxml_node_t *node) {
@@ -406,6 +407,7 @@ bool settings_load(void) {
 	settings.sort_order = 0;
 	settings.browse_mode = 0;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
+	memset(settings.avatar_mii, 0, sizeof(settings.avatar_mii));
 
 	memcpy(&_loaded_settings, &settings, sizeof(settings_t));
 
@@ -464,6 +466,9 @@ bool settings_load(void) {
 		strncpy(settings.app_sel, s, sizeof(settings.app_sel));
 		settings.app_sel[sizeof(settings.app_sel) - 1] = 0;
 	}
+	s = _get_elem_cdata(node, "avatar_mii");
+	if (s && strlen(s) == sizeof(settings.avatar_mii) - 1)
+		strcpy(settings.avatar_mii, s);
 
 	mxmlDelete(root);
 
@@ -515,6 +520,11 @@ bool settings_save(void) {
 	if (strlen(settings.app_sel) > 0) {
 		node = mxmlNewElement(data, "app_sel");
 		mxmlNewText(node, 0, settings.app_sel);
+	}
+
+	if (settings.avatar_mii[0]) {
+		node = mxmlNewElement(data, "avatar_mii");
+		mxmlNewText(node, 0, settings.avatar_mii);
 	}
 
 	size = mxmlSaveString (xml, x, MAX_SETTINGS_XML_SIZE, MXML_NO_CALLBACK);
