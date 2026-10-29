@@ -253,6 +253,28 @@ class MiiDrawTest(unittest.TestCase):
         r = self.run_body(pathlib.Path(os.environ["MII_REAL_BODIES"]) / "maleBody.brres")
         self.assertIn("memo: hits 1, same 1", r.stdout)
 
+    def test_shadow_under_feet(self):
+        # The shadow under the feet at every height and build (sdk/mii
+        # 1.5.1), 0 to 128 every 8, both bodies. On the floor: within 1.5
+        # of the lowest skinned vertex in Wait (it lies 0.1 over Y = 0; Wait
+        # holds the feet up to 0.8 off the bind pose's floor, on a tall thin
+        # Mii; it was ground + 0.1, 33 up a tall wide Mii's legs, 30 under
+        # a short one's feet). Centred under the ankles
+        # within 5 in Wait and Walk: Walk's stride sways the ankles' midpoint
+        # up to 4 from the root the shadow follows, under a seventh of the
+        # narrowest shadow's half side (18).
+        if not os.environ.get("MII_REAL_BODIES"):
+            self.skipTest("set MII_REAL_BODIES")
+        for name in ("maleBody.brres", "femaleBody.brres"):
+            r = self.run_body(pathlib.Path(os.environ["MII_REAL_BODIES"]) / name)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            m = re.search(r"shadow sizes: (\d+), y off ([\d.]+) at .*, centre off ([\d.]+) at", r.stdout)
+            self.assertTrue(m, r.stdout)
+            self.assertEqual(int(m[1]), 17 * 17, m[0])
+            self.assertLess(float(m[2]), 1.5, m[0])
+            self.assertLess(float(m[3]), 5, m[0])
+            print(name, m[0])
+
     def run_body(self, body, anim=None, frame=0, size=("64", "64"), **extra):
         res = self.dir / "RFL_Res.dat"
         res.write_bytes(resource())

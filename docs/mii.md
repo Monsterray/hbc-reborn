@@ -467,9 +467,12 @@ avatar (1.10.21, the Wii's bodies from 1.10.26) is the first user.
   NW4R draws a model: each MDL0 object's own display list (its primitives
   moved to `GX_VTXFMT1`), whose indexed matrix loads take each bone's
   matrices from a per-frame palette (`GX_POSMTXARRAY`, `GX_NRMMTXARRAY`;
-  a ring of `MII_PALETTES`). Under 2 KB through the FIFO and about 16 us
-  of CPU a Mii in a crowd (bones on the paired-single unit, the head as
-  display lists; CPU skinning took 0.73 ms). Levels of detail
+  a ring of `MII_PALETTES`). Under 2 KB through the FIFO, about 16 us of
+  CPU a far Mii that shares its pose, and about 70 us posing one of its
+  own (`mii_app party`: 150 Miis each doing something different hold
+  60 fps, 300 hold 30). The head is display lists; CPU skinning took
+  0.73 ms. The bones use libogc's C matrix product, not its paired-single
+  one (sdk/mii/README.md, "Building"). Levels of detail
   (`mii_body_make_lods`, `mii_model_opts.lods`, `pose.lod`), shared parts
   (`mii_cache`) and `pose.reuse` are for crowds: sdk/mii/README.md, "Many
   Miis". Normals use the bone's

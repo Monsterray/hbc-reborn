@@ -1242,6 +1242,12 @@ int mii_body_shadow(const mii_model *model, const mii_pose *pose, float m[3][4])
 			m[r][j] = rot[sb][r][j] * sc[j] * w;
 		m[r][3] = pos[sb][r];
 	}
+	/* On the ground: shadow_model is no part of the skeleton, and the
+	 * file's Y = 0 is the floor. mii_body_pose lifts every root by
+	 * model->ground to put this Mii's feet (longer or shorter legs) on it;
+	 * the shadow does not move with them (a tall Mii's was 33 up its legs,
+	 * a short one's 30 under the floor). */
+	m[1][3] -= model->ground;
 	if (pose && pose->shadow_drop > 0) {   /* on the ground below: smaller, as a light overhead casts it */
 		float k = 1 / (1 + pose->shadow_drop / 120);
 

@@ -79,7 +79,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.5.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole; 1.3.0: animations loop or play once (mii_anim_frame), 4-byte rotation keys (bodyWallow); 1.4.0: the Mii Channel's look (env shading, the shadow, faces for the animations); 1.4.1: the C matrix product, not libogc's paired-single one; 1.5.0: Z writes left on (the effects, GPU faces: a crowd in the clear colour), mii_fx_place_in, mii_fx_state.replaced, pose.reuse for mii_body_pose and mii_fx_place */
+#define MIIDRAW_VERSION "1.5.1"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole; 1.3.0: animations loop or play once (mii_anim_frame), 4-byte rotation keys (bodyWallow); 1.4.0: the Mii Channel's look (env shading, the shadow, faces for the animations); 1.4.1: the C matrix product, not libogc's paired-single one; 1.5.0: Z writes left on (the effects, GPU faces: a crowd in the clear colour), mii_fx_place_in, mii_fx_state.replaced, pose.reuse for mii_body_pose and mii_fx_place; 1.5.1: the shadow on the floor at every height and build, not lifted with the feet */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -541,7 +541,8 @@ void mii_body_matrices_posed(const mii_model *model, float rot[][3][3], float at
 							 float nrm[][3][3]);
 /* Where the shadow lies for the pose: a matrix taking the unit square (X
  * and Z from -1 to 1, Y 0) to the body's space, as the Mii Channel's
- * shadow_model has it: on the ground under the Mii, as wide as its build,
+ * shadow_model has it: on the ground under the Mii (Y = 0, where the feet
+ * stand at any height and build), as wide as its build,
  * and sized by the animation (bodyGetDown shrinks it to nothing as the Mii
  * is lifted, bodySlip_00 stretches it as it falls flat). 0 without a
  * shadow in the body's file (or a bone scaled to nothing); 1 and m. */

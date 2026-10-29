@@ -270,7 +270,9 @@ if (ok) {
     where each normal points as the camera sees it. This gives the soft
     highlight on the chest. A body file without `env0` is lit as before.
   - **Shadow.** `pose.shadow = 1` draws the body's own shadow under the
-    feet: a 75-unit square with a radial texture, in the material's colour.
+    feet: a 75-unit square with a radial texture, in the material's colour,
+    on the floor at any height and build (1.5.1; before, it rose and sank
+    with the leg length, up a tall Mii's legs, under a short one's feet).
     The animation sizes it: it shrinks to nothing as the Mii is lifted
     (`bodyGetDown`) and stretches as the Mii falls flat (`bodySlip_00`). For
     a Mii carried above the ground, set `pose.shadow_drop` to the distance
@@ -436,7 +438,7 @@ has the sources.
 
 ## For someone to add
 
-The SDK uses everything in the Mii Channel's body and effect files (1.4.0).
+The SDK uses everything in the Mii Channel's body and effect files (1.5.0).
 These are the parts it does not have yet. Each one needs knowledge from
 outside those files.
 

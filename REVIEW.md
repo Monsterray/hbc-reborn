@@ -224,17 +224,18 @@ watchpoint on the bone matrices found the cause.
   2047 bytes of it, and the instruction's offset, W and I); sdk/mii 1.4.1
   calls `c_guMtxConcat`, so apps on the stock scripts (mii_app, the
   example, outside users) are safe too, and its README says how to check
-  an app. **Trigger:** report it to libogc (load `Unit01` through a
-  register); when a fixed release is taken, sdk/mii may go back to the
-  paired-single product.
+  an app. Reported as devkitPro/libogc#281 (load `Unit01` through a
+  register). **Trigger:** when a release with the fix is taken, sdk/mii
+  may go back to the paired-single product.
 - **A thread that ends keeps the FPU.** libogc 3.1.0 switches the FPU
   lazily: SPRG3 names its owner, and `KThreadExit` never clears it. After
   `LWP_JoinThread` frees the thread, the next FP instruction anywhere saves
   the registers into the freed block. `fpurelease.h` clears the owner as
   the avatar loader's and the picker worker's last act (the threads that
   use floats); it refuses to build on another libogc. It was not the
-  sliver (that build still sliced). **Trigger:** with any libogc past 3.1,
-  check `KThreadExit` and drop the header if it clears SPRG3.
+  sliver (that build still sliced). Reported as devkitPro/libogc#282.
+  **Trigger:** with any libogc past 3.1, check `KThreadExit` and drop the
+  header if it clears SPRG3.
 - **Kept from the hunt:** `make DEBUG_POISON=1` (`poison.c`: a NaN pattern
   in fresh and freed blocks and the unused stack); `make memmap`
   (`tools/memmap.py`: each symbol's address, size and object file).
