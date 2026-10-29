@@ -35,7 +35,6 @@
 #include "mii.h"
 #include "miidraw.h"
 #include "miipick.h"
-#include "miiplay.h"   // main_exit_asked
 
 #define MP_COLS 5
 #define MP_ROWS 3
@@ -110,7 +109,7 @@ static int next_to_build(void) {
 	return -1;
 }
 
-static void *worker_body(void *arg);
+static void *worker_body(void *arg) __attribute__((noinline));
 static void *worker(void *arg) {
 	void *r = worker_body(arg);
 

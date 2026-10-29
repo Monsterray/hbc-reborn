@@ -1,6 +1,7 @@
 /* See poison.h. Linked with -Wl,--wrap=malloc,--wrap=memalign,--wrap=free
- * when DEBUG_POISON is set; the wrappers then take every call from every
- * object and library in the link. */
+ * when DEBUG_POISON is set; the wrappers then take those three calls from
+ * every object and library in the link. calloc, realloc and newlib's
+ * _malloc_r are not wrapped: what they hand out is not poisoned. */
 
 #ifdef DEBUG_POISON
 

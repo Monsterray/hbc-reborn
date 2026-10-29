@@ -11,7 +11,8 @@ ps_guMtxConcat loads its (0, 1) pair with a psq_l, whose displacement is 12
 bits; with ld's default base (.sdata + 32 KiB) the -32768 offset of the
 first .sdata object was truncated into the W bit and offset 0, and every
 matrix concatenation added whatever lay at r13 (1.12.2: the Mii drawn as a
-sliver while a particle coordinate sat there)."""
+sliver while a particle coordinate sat there). The object it loads, Unit01,
+must also stay within 2047 bytes of the base."""
 
 import os
 import pathlib
@@ -66,13 +67,17 @@ class MemoryLayoutTest(unittest.TestCase):
         sdata = [int(line.split()[3], 16) for line in headers.splitlines() if len(line.split()) > 3 and line.split()[1] == ".sdata"]
         self.assertEqual(len(sdata), 1, "no .sdata section")
         self.assertEqual(base["_SDA_BASE_"], sdata[0], "newrvl.ld: _SDA_BASE_ is not .sdata's start")
-        # Every paired-single load or store through r13 must use the pair form (W = 0)
-        # with its real offset: the truncated form reads one float at 0(r13).
+        # ps_guMtxConcat's psq_l of Unit01 through r13 must hold Unit01's real
+        # offset: one past 2047 spills into the W bit (one float, not the pair)
+        # or the I field (another GQR's scaling), and ld says nothing.
+        unit = base["Unit01"] - base["_SDA_BASE_"]
+        self.assertTrue(0 <= unit < 2048, f"Unit01 is {unit} bytes past _SDA_BASE_, out of psq_l's reach")
         dis = subprocess.run([OBJDUMP, "-d", str(ELF)], capture_output=True, text=True, check=True).stdout
-        for line in dis.splitlines():
-            if "psq_l" in line and "(r13)" in line or "psq_st" in line and "(r13)" in line:
-                fields = line.split("	")[-1].split(",")
-                self.assertEqual(fields[-2].strip(), "0", f"single-float form through r13: {line.strip()}")
+        loads = [line.strip() for line in dis.splitlines() if "psq_" in line and "(r13)" in line]
+        self.assertTrue(loads, "no psq_l through r13: ps_guMtxConcat not linked?")
+        for line in loads:
+            offset, w, i = line.split()[-1].replace("(r13)", "").split(",")[1:4]
+            self.assertEqual((int(offset), int(w), int(i)), (unit, 0, 0), f"psq through r13 off: {line}")
 
 
 if __name__ == "__main__":

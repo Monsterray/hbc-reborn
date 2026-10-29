@@ -12,10 +12,6 @@ bool show_mii_playground(void);
 void miiplay_ask(void);
 bool miiplay_asked(void);
 
-// The power or reset button was pressed (main.c): the playground and the
-// picker close, so main's loop sees it (and an app sent from the PC).
-bool main_exit_asked(void);
-
 // For HBCS: ,"playground":{...}, with the tab and page shown.
 int miiplay_status_json(char *buf, int size);
 

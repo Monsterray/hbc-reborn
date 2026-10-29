@@ -27,8 +27,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include "poison.h"
-#include "fpurelease.h"
 #include <string.h>
 #include <math.h>
 #include <malloc.h>
@@ -45,6 +43,8 @@
 #include "mii.h"
 #include "miidraw.h"
 #include "avatar.h"
+#include "fpurelease.h"
+#include "poison.h"
 
 // The avatar's rectangle in view units (its width times WIDESCREEN_RATIO on
 // a 16:9 screen).
@@ -63,6 +63,10 @@ static int anim_wait, anim_greet;     // 1 + its animations (0: none)
 static volatile int state = AV_NONE;
 static volatile bool reload_asked;
 static volatile bool stopping;   // avatar_deinit: the loader ends at once
+// Held while the model, body or effects change hands, and by devnet's thread
+// while it reads them (avatar_*_json): the main thread frees them on a
+// reload, and may run in the middle of that thread's read.
+static mutex_t lock = LWP_MUTEX_NULL;
 static char want_id[2 * MII_ID_SIZE + 1];   // the Mii chosen (creation ID, hex), or ""
 static char shown_id[2 * MII_ID_SIZE + 1];
 static bool hit;                // A on it this frame
@@ -79,7 +83,8 @@ static gfx_entity entity;
 static mii_pose pose;   // this frame's, from avatar_frame() for avatar_draw()
 static gfx_queue_entry entry;
 // The Mii Channel's effects (sdk/mii's player), when Save Mii faces saved
-// them: loaded with the first body, kept for every Mii after.
+// them: loaded with the first body, kept for every Mii after (a reload
+// only clears what is playing, fx_reset).
 static mii_fx fx;
 static mii_fx_state fxs;
 static bool fx_ok;
@@ -134,7 +139,7 @@ static int pick_mii(mii *out) {
 	return first >= 0 ? first : MII_E_EMPTY;
 }
 
-static void *loader_body(void *arg);
+static void *loader_body(void *arg) __attribute__((noinline));
 static void *loader(void *arg) {
 	void *r = loader_body(arg);
 
@@ -232,26 +237,41 @@ static void start(void) {
 }
 
 void avatar_init(const char *mii_id) {
+	if (lock == LWP_MUTEX_NULL)
+		LWP_MutexInit(&lock, false);
 	snprintf(want_id, sizeof(want_id), "%s", mii_id ? mii_id : "");
 	start();
 }
 
-void avatar_deinit(void) {
+static void fx_reset(void);
+
+// The Mii gone, the effects (fx) kept for the next.
+static void unload(void) {
 	if (thread != LWP_THREAD_NULL) {
 		stopping = true;
 		LWP_JoinThread(thread, NULL);
 		thread = LWP_THREAD_NULL;
 		stopping = false;
 	}
+	LWP_MutexLock(lock);
 	if (state == AV_READY) {
+		state = AV_NONE;
 		mii_model_free(&model);
 		mii_body_free(&body);
 	}
+	state = AV_NONE;
+	fx_reset();
+	LWP_MutexUnlock(lock);
+}
+
+void avatar_deinit(void) {
+	unload();
+	LWP_MutexLock(lock);
 	if (fx_ok) {
 		mii_fx_free(&fx);
 		fx_ok = false;
 	}
-	state = AV_NONE;
+	LWP_MutexUnlock(lock);
 }
 
 void avatar_reload(void) {
@@ -368,8 +388,24 @@ static const struct {
 // the shadow's) above AIR_UP is in the air; back under AIR_DOWN, landed.
 #define AIR_UP 80
 #define AIR_DOWN 45
+
+// What effects() and landing() remember from frame to frame: handles into
+// fxs, so cleared with it (fx_reset).
+static struct {
+	int last_anim;   // the animation cued last frame, and its frame
+	float last_f;
+	int zzz, talk;   // Nc_zzz01 and Nc_talk01, playing: they follow the head
+	bool up;         // in the air
+} cue;
+
+// No effects playing, and none remembered: for the next Mii.
+static void fx_reset(void) {
+	if (fx_ok)
+		mii_fx_init(&fxs, &fx, 1);
+	memset(&cue, 0, sizeof(cue));
+}
+
 static void landing(const mii_pose *p) {
-	static bool up;
 	static int puff;
 	float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3], low = 1e9f, at[3][4];
 	int i, e;
@@ -379,9 +415,9 @@ static void landing(const mii_pose *p) {
 		if (!strstr(body.bone[i].name, "_root") && i != body.shadow && pos[i][1] < low)
 			low = pos[i][1];
 	if (low > AIR_UP) {
-		up = true;
-	} else if (up && low < AIR_DOWN) {
-		up = false;
+		cue.up = true;
+	} else if (cue.up && low < AIR_DOWN) {
+		cue.up = false;
 		mii_fx_place(&model, p, 0, at);
 		if ((e = mii_fx_find(&fx, puff++ & 1 ? "Nc_slapsmoke02" : "Nc_slapsmoke01")) >= 0)
 			fx_played += mii_fx_play(&fxs, e, at) > 0;
@@ -409,8 +445,6 @@ static void poof(const mii_pose *p) {
 // (round the end, for a looping animation); zzz while napping. dt in
 // seconds.
 static void effects(const mii_pose *p, float dt) {
-	static int last_anim, zzz, talk;
-	static float last_f;
 	float at[3][4], head[3][4], f;
 	const char *name;
 	int i, frames;
@@ -424,12 +458,12 @@ static void effects(const mii_pose *p, float dt) {
 	}
 	mii_fx_place(&model, p, 0, at);
 	mii_fx_place(&model, p, 1, head);
-	if (zzz)
-		mii_fx_move(&fxs, zzz, head);
-	if (talk)
-		mii_fx_move(&fxs, talk, head);
+	if (cue.zzz)
+		mii_fx_move(&fxs, cue.zzz, head);
+	if (cue.talk)
+		mii_fx_move(&fxs, cue.talk, head);
 	if (!anim_wait || p->anim < 1 || p->anim > body.nanims) {
-		last_anim = 0;
+		cue.last_anim = 0;
 		return;
 	}
 	if (!p->head_only)
@@ -437,33 +471,35 @@ static void effects(const mii_pose *p, float dt) {
 	name = body.anim[p->anim - 1].name;
 	frames = body.anim[p->anim - 1].frames;
 	f = fmodf(p->frame, (float) frames);
-	if (p->anim != last_anim) {
-		if (zzz) {
-			mii_fx_stop(&fxs, zzz);
-			zzz = 0;
+	if (p->anim != cue.last_anim) {
+		if (cue.zzz) {
+			mii_fx_stop(&fxs, cue.zzz);
+			cue.zzz = 0;
 		}
-		if (!strcmp(name, "bodyCatnap_00") && (i = mii_fx_find(&fx, "Nc_zzz01")) >= 0)
-			zzz = (zzz = mii_fx_play(&fxs, i, head)) > 0 ? zzz : 0;
-		fx_played += zzz > 0;
-		last_f = -1;   // a cue at frame 0 starts at once
+		if (!strcmp(name, "bodyCatnap_00") && (i = mii_fx_find(&fx, "Nc_zzz01")) >= 0 &&
+				(i = mii_fx_play(&fxs, i, head)) > 0) {
+			cue.zzz = i;
+			++fx_played;
+		}
+		cue.last_f = -1;   // a cue at frame 0 starts at once
 	}
-	if (f != last_f || p->anim != last_anim)
+	if (f != cue.last_f || p->anim != cue.last_anim)
 		for (i = 0; i < (int) (sizeof(fx_cues) / sizeof(fx_cues[0])); ++i) {
 			float q = fx_cues[i].frame;
-			bool cue = f >= last_f ? q > last_f && q <= f : q > last_f || q <= f;
+			bool due = f >= cue.last_f ? q > cue.last_f && q <= f : q > cue.last_f || q <= f;
 			int e;
 
-			if (cue && !strcmp(name, fx_cues[i].anim) && (e = mii_fx_find(&fx, fx_cues[i].fx)) >= 0 &&
+			if (due && !strcmp(name, fx_cues[i].anim) && (e = mii_fx_find(&fx, fx_cues[i].fx)) >= 0 &&
 					(fx_cues[i].head || !p->head_only)) {   // no ground under an icon
 				int h = mii_fx_play(&fxs, e, fx_cues[i].head ? head : at);
 
 				fx_played += h > 0;
 				if (!strcmp(fx_cues[i].fx, "Nc_talk01") && h > 0)
-					talk = h;
+					cue.talk = h;
 			}
 		}
-	last_anim = p->anim;
-	last_f = f;
+	cue.last_anim = p->anim;
+	cue.last_f = f;
 }
 
 static void pose_for(mii_pose *p, bool pointer, s32 px, s32 py, float sx, float sy, float sw, float sh) {
@@ -795,7 +831,7 @@ const gfx_queue_entry *avatar_frame(bool pointer, s32 px, s32 py, u32 down, u32 
 	hit = false;
 	if (reload_asked && state != AV_LOADING) {
 		reload_asked = false;
-		avatar_deinit();
+		unload();
 		start();
 	}
 	if (state != AV_READY)
@@ -944,23 +980,31 @@ const char *avatar_anim_name(int i) {
 }
 
 int avatar_pg_json(char *buf, int size) {
-	return snprintf(buf, size, ",\"x\":%d,\"y\":%d,\"held\":%s,"
+	int n;
+
+	LWP_MutexLock(lock);
+	n = snprintf(buf, size, ",\"x\":%d,\"y\":%d,\"held\":%s,"
 					"\"falling\":%s,\"landed\":\"%s\",\"expression\":%d,\"pose\":%d,\"size\":%d,"
 					"\"floor\":%d,\"effects\":%s,\"particles\":%d,\"played\":%u", (int) pg.x, (int) pg.y,
 					pg.held ? "true" : "false", pg.falling ? "true" : "false", pg.landed ? pg.landed : "", pg.expr,
 					pg.pose, pg.size, (int) pg.floor, fx_ok ? "true" : "false",
 					fx_ok ? mii_fx_particles(&fxs, NULL, 0) : 0, (unsigned) fx_played);
+	LWP_MutexUnlock(lock);
+	return n;
 }
 
 int avatar_anims_json(char *buf, int size) {
 	int i, n;
-	bool ready = state == AV_READY && anim_wait;
+	bool ready;
 
+	LWP_MutexLock(lock);
+	ready = state == AV_READY && anim_wait;
 	n = snprintf(buf, size, ",\"anim\":\"%s\",\"anims\":[",
 				 ready && pose.anim ? body.anim[pose.anim - 1].name : "");
 	for (i = 0; ready && i < body.nanims && n < size; ++i)
 		n += snprintf(buf + n, size - n, "%s\"%s\"", i ? "," : "", body.anim[i].name);
 	if (n < size)
 		n += snprintf(buf + n, size - n, "]");
+	LWP_MutexUnlock(lock);
 	return n < size ? n : size - 1;
 }

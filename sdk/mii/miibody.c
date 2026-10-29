@@ -14,12 +14,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "miidraw.h"
+
 #ifndef MII_NO_OGC
 #include <malloc.h>
 #include <ogc/cache.h>
+/* libogc's paired-single ps_guMtxConcat loads a constant through r13 with a
+ * psq_l, whose offset has 12 bits; with the stock linker scripts the offset
+ * is out of range, gets cut short, and every product is wrong (README,
+ * "Building"). The C one has no such load. */
+#undef guMtxConcat
+#define guMtxConcat c_guMtxConcat
 #endif
-
-#include "miidraw.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

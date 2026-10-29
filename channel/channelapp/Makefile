@@ -99,7 +99,7 @@ FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard
 FILES_CHAN = $(DIR_CHAN)/nandloader.S
 FILES_CHAN_OBJ = $(DIR_BUILD)/nandloader.o $(FILES_SRC_OBJ)
 
-.PHONY: all channel world clean upload gdb debug
+.PHONY: all channel world clean upload gdb debug memmap
 
 all:
 	@[ -d $(DIR_BUILD) ] || mkdir $(DIR_BUILD)
@@ -131,13 +131,15 @@ $(TARGET_STUB).elf: $(FILES_STUB_OBJ) Makefile
 	@echo $(@F)
 	@$(CC) $(FILES_STUB_OBJ) $(LDFLAGS_STUB) -o $@
 
-# Each symbol's address, size, section and object file, from the map
-# (tools/memmap.py): a build without Python only goes without it.
 $(TARGET_APP)_nopax.elf: $(FILES_SRC_OBJ) newrvl.ld $(AGENT)/libhbcagent.a
 	@echo $(@F)
 	@$(CC) $(FILES_SRC_OBJ) $(LDFLAGS_APP) -o $@
-	-@NM="$(PREFIX)nm" "$(PYTHON)" ../../tools/memmap.py $(TARGET_APP).map $@ > $(TARGET_APP)_memmap.csv \
-		|| rm -f $(TARGET_APP)_memmap.csv
+
+# make memmap: each symbol's address, size, section and object file, from
+# the map (tools/memmap.py).
+memmap: $(TARGET_APP)_nopax.elf
+	@NM="$(PREFIX)nm" "$(PYTHON)" ../../tools/memmap.py $(TARGET_APP).map $< > $(TARGET_APP)_memmap.csv
+	@echo $(TARGET_APP)_memmap.csv
 
 $(AGENT)/libhbcagent.a: FORCE
 	@$(MAKE) --no-print-directory -C $(AGENT) EXTRA_CFLAGS="$(EXTRA_CFLAGS)"
@@ -255,7 +257,7 @@ upload: wiiload
 
 $(POTPL).gen: source/*.c
 	@echo "GETTEXT $(POTPL).gen"
-	@xgettext --from-code=UTF-8 -C -o $(POTPL).gen --keyword=_ source/*.c
+	@xgettext --from-code=UTF-8 -C -o $(POTPL).gen --keyword=_ --keyword=N_ source/*.c
 	@sed -i.bak s/CHARSET/UTF-8/g $(POTPL).gen
 
 $(POTPL): $(POTPL).gen

@@ -39,5 +39,9 @@ void controls_set_ir_threshold(int on);
 // when the queue is full.
 bool controls_queue_press(u32 buttons);
 
+// The power or reset button was pressed (main.c): the Mii playground and
+// picker close, so main's loop sees it (and an app sent from the PC).
+bool main_exit_asked(void);
+
 #endif
 

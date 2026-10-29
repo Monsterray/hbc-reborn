@@ -1844,7 +1844,9 @@ static int commit(uint64_t to, const mboard_msg *msg) {
 static char rfl_path[] ATTRIBUTE_ALIGN(32) = "/shared2/menu/FaceLib/RFL_DB.dat";
 
 int mboard_mii(int slot, uint8_t face[MBOARD_FACE_SIZE]) {
-	static u8 head[4] ATTRIBUTE_ALIGN(32), mii[MBOARD_FACE_SIZE + 6] ATTRIBUTE_ALIGN(32);
+	/* Whole cache lines: IOS_Read invalidates what it reads into, and a
+	 * neighbour's writes to a shared line would be dropped. */
+	static u8 head[32] ATTRIBUTE_ALIGN(32), mii[(MBOARD_FACE_SIZE + 31) & ~31] ATTRIBUTE_ALIGN(32);
 	s32 fd, got;
 	int i;
 

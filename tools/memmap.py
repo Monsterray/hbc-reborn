@@ -8,6 +8,8 @@ address and size. A row's object is the input section its address falls in.
 
   tools/memmap.py channelapp.map channelapp_nopax.elf > memmap.csv
 
+(`make -C channel/channelapp memmap` does this for HBC.)
+
 Sort or filter the CSV in a spreadsheet; `--sections` prints each output
 section's range and size instead. NM (default: devkitPPC's powerpc-eabi-nm)
 names the nm to use.

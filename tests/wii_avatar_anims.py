@@ -9,7 +9,8 @@ are missing). For each animation in HBCS "anims" (`hbc.py anim NAME`):
                   three a second, side by side
   tv_NAME.mp4     the TV through the capture card, from a second before
   anims.txt       each one's length, and the frames whose posed body had a
-                  wild vertex (HBCS "bad")
+                  wild vertex (HBCS "bad": counted only in an HBC built with
+                  EXTRA_CFLAGS=-DHBC_DIAG_GPU; always 0 otherwise)
 
 Ends in the installed HBC.
 

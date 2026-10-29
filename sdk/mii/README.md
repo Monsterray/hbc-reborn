@@ -26,6 +26,15 @@ uses them (CI builds it).
   neither.
 - With `-DMII_NO_OGC`, the parts that only touch bytes build on a PC, for
   tools and tests.
+- **Your own matrix maths.** libogc's `guMtxConcat` (paired-single
+  `ps_guMtxConcat`) loads a constant with a `psq_l` through `r13`, whose
+  offset has 12 bits. devkitPPC's linker scripts put the small-data base
+  32 KiB past `.sdata`, so the offset is cut short and the load reads the
+  wrong word: every product it makes is off. The library uses the C one.
+  For your own calls, use `c_guMtxConcat`, or set the base at the start of
+  `.sdata` in your linker script (`_SDA_BASE_ = .;`, as HBC's `newrvl.ld`
+  does). Check with `powerpc-eabi-objdump -d app.elf | grep 'psq_l.*(r13)'`:
+  the last-but-one number must be 0.
 
 ## Use
 

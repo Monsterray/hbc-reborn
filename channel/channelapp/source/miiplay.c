@@ -53,13 +53,16 @@ static gfx_entity btn, btn_focus, arrow_l, arrow_l_focus, arrow_r, arrow_r_focus
 
 enum { TAB_ANIMS, TAB_POSES, TAB_FACES };
 
-static const char *tab_names[PL_TABS] = { "Moves", "Poses", "Faces" };
+// English in HBCS, translated on the buttons.
+static const char *tab_names[PL_TABS] = { N_("Moves"), N_("Poses"), N_("Faces") };
 static const char *pose_names[AV_POSE_COUNT] = {
-	"Stand", "Turn left", "Turn right", "Around", "Look up", "Look down", "Tilt head", "Freeze", "Icon"
+	N_("Stand"), N_("Turn left"), N_("Turn right"), N_("Around"), N_("Look up"), N_("Look down"),
+	N_("Tilt head"), N_("Freeze"), N_("Icon")
 };
 // The faces: its own first, then MII_EXPR_* in order.
 static const char *face_names[1 + MII_EXPR_COUNT] = {
-	"Its own", "Normal", "Smile", "Angry", "Sad", "Surprised", "Blink", "Talking"
+	N_("Its own"), N_("Normal"), N_("Smile"), N_("Angry"), N_("Sad"), N_("Surprised"), N_("Blink"),
+	N_("Talking")
 };
 
 // What the tab shown has: each button's caption and what it does (an
@@ -92,7 +95,7 @@ static void fill(int tab) {
 
 	nitems = 0;
 	if (tab == TAB_ANIMS) {
-		items[nitems++] = (typeof(items[0])) { "Stop", "", 0 };
+		items[nitems++] = (typeof(items[0])) { N_("Stop"), "", 0 };
 		for (i = 0; (name = avatar_anim_name(i)) && nitems < PL_ITEMS; ++i) {
 			items[nitems++] = (typeof(items[0])) {
 				!strncmp(name, "body", 4) && name[4] ? name + 4 : name, name, 0
@@ -154,7 +157,7 @@ static void show(view *v, int tab, int page) {
 
 		widget_free(w);
 		button(w, (view_width - PL_TABS * bw - (PL_TABS - 1) * PL_GAP) / 2 + i * (bw + PL_GAP),
-			   PL_ITEM_Y - btn.h - PL_GAP, i == tab ? FONT_BUTTON : FONT_BUTTON_DESEL, tab_names[i]);
+			   PL_ITEM_Y - btn.h - PL_GAP, i == tab ? FONT_BUTTON : FONT_BUTTON_DESEL, _(tab_names[i]));
 	}
 	// Where they are: page 2 of 5, right of the tabs.
 	widget_free(&v->widgets[PL_PAGE]);
@@ -168,7 +171,8 @@ static void show(view *v, int tab, int page) {
 		widget_free(w);
 		if (k >= nitems)
 			continue;
-		button(w, x0 + i * (bw + PL_GAP), PL_ITEM_Y, FONT_BUTTON, items[k].caption);
+		button(w, x0 + i * (bw + PL_GAP), PL_ITEM_Y, FONT_BUTTON,
+			   items[k].anim && *items[k].anim ? items[k].caption : _(items[k].caption));
 	}
 	widget_set_flag(&v->widgets[PL_PREV], WF_VISIBLE, shown_pages > 1);
 	widget_set_flag(&v->widgets[PL_NEXT], WF_VISIBLE, shown_pages > 1);

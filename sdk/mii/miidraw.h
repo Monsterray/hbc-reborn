@@ -79,7 +79,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.4.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole; 1.3.0: animations loop or play once (mii_anim_frame), 4-byte rotation keys (bodyWallow); 1.4.0: the Mii Channel's look (env shading, the shadow, faces for the animations) */
+#define MIIDRAW_VERSION "1.4.1"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole; 1.3.0: animations loop or play once (mii_anim_frame), 4-byte rotation keys (bodyWallow); 1.4.0: the Mii Channel's look (env shading, the shadow, faces for the animations); 1.4.1: the C matrix product, not libogc's paired-single one */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -554,9 +554,8 @@ int mii_body_shadow(const mii_model *model, const mii_pose *pose, float m[3][4])
 int mii_fx_place(const mii_model *model, const mii_pose *pose, int head, float at[3][4]);
 #ifndef MII_NO_OGC
 /* Each bone in the body's space as a matrix (rotation and position, the
- * scale not applied): mii_body_pose, on the Wii's paired-single unit (each
- * bone its parent's matrix times its own, ps_guMtxConcat). What mii_draw
- * poses with. */
+ * scale not applied): mii_body_pose, each bone its parent's matrix times
+ * its own. What mii_draw poses with. */
 void mii_body_world(const mii_model *model, const mii_pose *pose, Mtx world[]);
 #endif
 
