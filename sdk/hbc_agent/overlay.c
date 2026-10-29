@@ -26,6 +26,7 @@
 #include <wiiuse/wpad.h>
 
 #include "../hbc_agent.h"
+#include "../wpad_menu.h"
 #include "agent_int.h"
 #include "ogc_flavor.h"
 #include "ov_ui.h"
@@ -119,6 +120,8 @@ static bool app_toasted;                // the app set this action's message
 // The overlay turns on IR for every connected remote while it is open (and
 // for any that connect meanwhile), with the IR mapped to the framebuffer,
 // then gives each remote back the data format the app had it in.
+
+static hbc_wpad_menu menu_remotes[4];
 
 static struct {
 	bool set;           // this remote has the overlay's format
@@ -1503,6 +1506,10 @@ static unsigned read_input(void) {
 	WPAD_ScanPads();
 	for (chan = 0; chan < 4; ++chan) {
 		u32 b = WPAD_ButtonsDown(chan);
+		WPADData *d = WPAD_Probe(chan, NULL) == WPAD_ERR_NONE ? WPAD_Data(chan) : NULL;
+
+		hbc_wpad_menu_update(&menu_remotes[chan], d);
+		b = hbc_wpad_menu_buttons(&menu_remotes[chan], b);
 
 		if (b & (WPAD_BUTTON_UP | WPAD_CLASSIC_BUTTON_UP))
 			out |= OV_UP;
