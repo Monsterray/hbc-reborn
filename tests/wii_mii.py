@@ -34,6 +34,12 @@
             ranks of COLS (20) Miis GAP (900) apart walking round from the
             horizon to the bottom of the screen, SECONDS (60) each way, over
             lines on the grass where each level of detail begins
+  party [SECONDS [MAX]]
+            as many Miis as the Wii draws at once, each doing something else
+            (every body animation, expression, head turns, held poses, the
+            effects their animations call for): counts rising to MAX, then
+            the largest at half the TV's rate held for the rest of SECONDS
+            (120); TV pictures every 4 s and a 15 s video of the hold
   remote-add ID / remote-remove ID
             copy the database's Mii with that ID to Wii Remote 1, or take it
             off; written and read back
@@ -45,7 +51,7 @@
             put a backup's RFL_DB.dat back (tests/nandput: same size only,
             read back and compared), then compare a new copy with it
 
-usage: tests/wii_mii.py backup | check | draw [SLOT] | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
+usage: tests/wii_mii.py backup | check | draw [SLOT] | party [SECONDS [MAX]] | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
 queue: wiibench.py add --wii dev --name mii-STEP --cwd REPO --timeout 1200 -- C:/Python312/python.exe tests/wii_mii.py STEP
 """
 
@@ -54,6 +60,7 @@ import os
 import pathlib
 import random
 import re
+import subprocess
 import sys
 
 root = pathlib.Path(__file__).resolve().parents[1]
@@ -199,6 +206,33 @@ def main():
             ok = app_ok(run_app(out, step, *sys.argv[2:5], label=step, wait_s=3600))
         finally:
             done.set()
+    elif step == "party":
+        import threading
+        import time
+        seconds = int(sys.argv[2]) if len(sys.argv) > 2 else 120
+        done = threading.Event()
+
+        def pictures():   # the capture card: stills through the ramp, a video of the hold
+            k, t0, filmed = 0, time.monotonic(), False
+            while not done.wait(4):
+                if not filmed and time.monotonic() - t0 >= max(20, seconds - 20):
+                    filmed = True
+                    subprocess.run([wm.PY, wm.CAPTURE, "video", "15", "--no-audio",
+                                    "--out", str(out / "party_hold.mkv")], capture_output=True)
+                    continue
+                wm.still(out, f"party_{k:03d}")
+                k += 1
+        threading.Thread(target=pictures, daemon=True).start()
+        try:
+            report = run_app(out, step, *sys.argv[2:4], label=step, wait_s=3600)
+        finally:
+            done.set()
+        ok = wm.check(True, app_ok(report), "mii_app party: done, no failures")
+        ok = wm.check(ok, re.search(r"party \d+ \(hold\): ", report) is not None, "the hold was measured")
+        m = re.search(r"full rate \(\d+ fps\): (\d+); at half of it \(\d+ fps\): (\d+)", report)
+        ok = wm.check(ok, m is not None and int(m.group(2)) > 0, "a count held at half the TV's rate")
+        if m:
+            print(f"party: {m.group(1)} Miis at the full rate, {m.group(2)} at half", flush=True)
     elif step == "remote-rewrite":
         ok = app_ok(run_app(out, step, label=step))
         wm.tool("get", "sd:/mii_test/remote_backup.bin", str(out / "remote_backup.bin"), check=False)

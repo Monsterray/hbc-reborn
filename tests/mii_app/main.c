@@ -38,6 +38,17 @@
 //                                  to the bottom of the screen, then the
 //                                  other way, over lines on the grass
 //                                  where each level of detail begins
+//   mii_app.dol party [SECONDS [MAX]]
+//                                  the database's Miis, repeated, with the
+//                                  Mii Channel's bodies and effects, each
+//                                  doing something else (every animation,
+//                                  every expression, head turns, poses held
+//                                  still; the effects the animations call
+//                                  for); counts rising 10, 20, 40 ... MAX
+//                                  (1000), 4 s each: CPU and GPU time, heap,
+//                                  particles; the largest count at the TV's
+//                                  full rate and at half of it, then that
+//                                  one held for the rest of SECONDS (120)
 //   mii_app.dol remote-rewrite     write Wii Remote 1's own Miis back
 //                                  unchanged, after saving its memory to
 //                                  sd:/mii_test/remote_backup.bin
@@ -1460,6 +1471,655 @@ static void gpu_probe(int count, float dist, void *xfb, GXRModeObj *rmode) {
 	mii_res_free(&res);
 }
 
+/* ---- party: as many Miis as the Wii draws at once, each doing something else -- */
+
+/* The effects the animations call for, as HBC's avatar.c cues them (copied,
+ * not linked): on the head (following it) or on the ground under the Mii. */
+static const struct {
+	const char *anim;
+	float frame;
+	const char *fx;
+	int head;
+} party_cues[] = {
+	{ "bodysnart_01", 14, "Nc_sneeze01", 1 },
+	{ "bodyTalk", 0, "Nc_talk01", 1 },
+	{ "bodyTalk_01", 0, "Nc_talk01", 1 },
+	{ "bodyTalk_01", 90, "Nc_talk01", 1 },
+	{ "bodyRun", 13, "Nc_run_smoke01", 0 },
+	{ "bodyRun", 33, "Nc_run_smoke01", 0 },
+	{ "bodySlip_00", 26, "Nc_bodyslip01", 0 },
+	{ "bodySlip_01", 31, "Nc_bodyslip01", 0 },
+};
+#define PARTY_NCUES ((int) (sizeof(party_cues) / sizeof(party_cues[0])))
+#define PARTY_FXS 4        /* effect states, each 16 emitters and 128 particles */
+#define PARTY_MAXN 1000
+#define PARTY_ROLES 64
+#define PARTY_STEP_S 4     /* seconds at each count, the first half second not measured */
+
+enum { ROLE_ANIM, ROLE_EXPR, ROLE_LOOK, ROLE_FROZEN };
+
+typedef struct {
+	int kind;
+	char anim[24];         /* the animation's name (both bodies have the same names) */
+	float frame;           /* ROLE_FROZEN: held at this frame */
+	int expr;
+	unsigned cues;         /* party_cues bits for this animation */
+	int catnap, air;       /* zzz while it plays; dust when it lands (the slaps throw it, GetDown drops it) */
+} party_role;
+
+typedef struct {
+	mii_model *model;
+	const mii_body *body;
+	int role, anim, lod, fxs;
+	float start, last_f, yaw;
+	int zzz, talk, up;
+	Mtx place;
+} party_mii;
+
+static struct {
+	mii_fx fx;
+	mii_fx_state s[PARTY_FXS];
+	int ok, cue_fx[PARTY_NCUES], zzz_fx, slap_fx[2];
+	u32 played, replaced, lost, full_frames;
+} party;
+
+static const char *const expr_names[MII_EXPR_COUNT] = { "Normal", "Smile", "Anger", "Sorrow", "Surprise", "Blink",
+														"OpenMouth" };
+
+/* Starts an effect, counting the plays that took the place of one still
+ * emitting (all 16 of the state's emitters busy: the oldest goes). */
+static int party_play(mii_fx_state *s, int emitter, float at[3][4]) {
+	int i, busy = 0;
+
+	if (emitter < 0)
+		return 0;
+	for (i = 0; i < MII_FX_INSTANCES; ++i)
+		busy += s->inst[i].emitter >= 0;
+	party.replaced += busy == MII_FX_INSTANCES;
+	++party.played;
+	return mii_fx_play(s, emitter, at);
+}
+
+/* An effect's place (mii_fx_place: the body's space) in the world, through
+ * the Mii's place. libogc's paired-single guMtxConcat is broken with the
+ * stock linker script (sdk/mii/README.md): the C one. */
+static void party_place(party_mii *pm, const mii_pose *p, int head, float out[3][4]) {
+	float at[3][4];
+
+	mii_fx_place(pm->model, p, head, at);
+	c_guMtxConcat(pm->place, at, out);
+}
+
+/* The effects for one Mii this frame (after it is drawn: the pose memo has
+ * its bones). restarted: its animation began (again). */
+static void party_effects(party_mii *pm, const party_role *ro, const mii_pose *p, int restarted) {
+	mii_fx_state *s = &party.s[pm->fxs];
+	const mii_anim *a;
+	float head[3][4], g[3][4], f;
+	int i, have_head = 0;
+
+	if (!party.ok || !pm->body || p->anim < 1 || p->anim > pm->body->nanims)
+		return;
+	a = &pm->body->anim[p->anim - 1];
+	f = fmodf(p->frame, (float) a->frames);
+	if (restarted)
+		pm->last_f = -1;   /* a cue at frame 0 starts at once */
+	if (pm->talk && !mii_fx_playing(s, pm->talk))
+		pm->talk = 0;
+	if (pm->zzz && !mii_fx_playing(s, pm->zzz)) {   /* zzz never stops on its own: replaced */
+		++party.lost;
+		pm->zzz = 0;
+	}
+	if (ro->catnap && !pm->zzz && (restarted || f < pm->last_f)) {   /* lost: back next time round */
+		party_place(pm, p, 1, head);
+		have_head = 1;
+		i = party_play(s, party.zzz_fx, head);
+		pm->zzz = i > 0 ? i : 0;
+	}
+	if (pm->zzz || pm->talk) {
+		if (!have_head)
+			party_place(pm, p, 1, head);
+		have_head = 1;
+		if (pm->zzz)
+			mii_fx_move(s, pm->zzz, head);
+		if (pm->talk)
+			mii_fx_move(s, pm->talk, head);
+	}
+	for (i = 0; i < PARTY_NCUES; ++i) {
+		float q = party_cues[i].frame;
+		int due, h;
+
+		if (!(ro->cues & 1u << i))
+			continue;
+		due = f >= pm->last_f ? q > pm->last_f && q <= f : q > pm->last_f || q <= f;
+		if (!due)
+			continue;
+		if (party_cues[i].head) {
+			if (!have_head)
+				party_place(pm, p, 1, head);
+			have_head = 1;
+			h = party_play(s, party.cue_fx[i], head);
+			if (!strcmp(party_cues[i].fx, "Nc_talk01") && h > 0)
+				pm->talk = h;
+		} else {
+			party_place(pm, p, 0, g);
+			party_play(s, party.cue_fx[i], g);
+		}
+	}
+	if (ro->air) {   /* dust where it lands, as it lands (avatar.c's landing) */
+		float rot[MII_BODY_BONES][3][3], pos[MII_BODY_BONES][3], low = 1e9f;
+		const mii_body *b = pm->body;
+
+		mii_body_pose(pm->model, p, rot, pos);
+		for (i = 0; i < b->nbones; ++i)
+			if (!strstr(b->bone[i].name, "_root") && i != b->shadow && pos[i][1] < low)
+				low = pos[i][1];
+		if (low > 80) {
+			pm->up = 1;
+		} else if (pm->up && low < 45) {
+			pm->up = 0;
+			party_place(pm, p, 0, g);
+			party_play(s, party.slap_fx[party.played & 1], g);
+		}
+	}
+	pm->last_f = f;
+}
+
+/* A point through the camera and projection: in front, and |x| and |y| at
+ * most `edge` (normalised device coordinates). */
+static int party_seen(Mtx view, Mtx44 proj, float x, float y, float z, float edge) {
+	float vx = view[0][0] * x + view[0][1] * y + view[0][2] * z + view[0][3];
+	float vy = view[1][0] * x + view[1][1] * y + view[1][2] * z + view[1][3];
+	float vz = view[2][0] * x + view[2][1] * y + view[2][2] * z + view[2][3];
+
+	return vz < -20 && fabsf(proj[0][0] * vx / -vz) <= edge && fabsf(proj[1][1] * vy / -vz) <= edge;
+}
+
+static u32 party_memo(const mii_body *const bod[2], int misses) {
+	u32 n = 0;
+
+	if (bod[0])
+		n += misses ? bod[0]->memo_misses : bod[0]->memo_hits;
+	if (bod[1] && bod[1] != bod[0])
+		n += misses ? bod[1]->memo_misses : bod[1]->memo_hits;
+	return n;
+}
+
+/* `party [SECONDS [MAX]]`: the database's Miis (repeated to the count) with
+ * the Mii Channel's bodies and effects, each doing something else: every
+ * animation of the body (one-shots started again as they end), every
+ * expression, head turns, poses held still; the effects their animations
+ * call for, through PARTY_FXS effect states. Counts rise (10, 20, 40, 60,
+ * ... MAX), PARTY_STEP_S seconds each, in rows on the grass with levels of
+ * detail. For each: frames a second, CPU time (the Miis drawn: posing and
+ * sending; effects: cues and stepping; effects drawn), GPU time after
+ * (GX_DrawDone), heap and particles. The largest count at the TV's full
+ * rate and at half of it are the results; the half rate's count is then
+ * shown for the rest of SECONDS. */
+static void party_test(int seconds, int max, GXRModeObj *rmode) {
+	static u8 fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
+	static const int ramp[] = { 10, 20, 40, 60, 80, 100, 120, 150, 180, 220, 260, 300, 350, 400, 500, 600, 800 };
+	static mii_res res;
+	static mii_body bodies[2];
+	static mii_db db;
+	static party_role roles[PARTY_ROLES];
+	static mii dbm[MII_DB_SLOTS];
+	party_mii *miis = calloc(PARTY_MAXN, sizeof(party_mii));
+	mii_cache *cache = mii_cache_new();
+	const mii_body *bod[2] = { NULL, NULL }, *b0;
+	GXColor sky = { 150, 190, 230, 255 };
+	int r, i, k, ndb = 0, nroles = 0, built = 0, step, best60 = 0, best30 = 0, nramp = 0, steps[24];
+	u32 a1 = (u32) SYS_GetArena1Lo(), a2 = (u32) SYS_GetArena2Lo(), base;
+	u32 seed = 0x50415254;
+	u64 t_begin = gettime();
+	float refresh;
+
+	if (!miis || !cache) {
+		say("party: no memory to start\n");
+		free(miis);
+		if (cache)
+			mii_cache_free(cache);
+		return;
+	}
+	DCFlushRange(fifo, sizeof(fifo));   // .bss's zeros, cached: not over the commands later
+	GX_Init(fifo, sizeof(fifo));
+	GX_SetCopyClear(sky, 0x00ffffff);
+	GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
+	GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
+	GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
+	GX_SetDispCopyDst(rmode->fbWidth, rmode->xfbHeight);
+	GX_SetDispCopyYScale((f32) rmode->xfbHeight / (f32) rmode->efbHeight);
+	GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+	GX_SetFieldMode(rmode->field_rendering, rmode->viHeight == 2 * rmode->xfbHeight ? GX_ENABLE : GX_DISABLE);
+	GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+	GX_SetColorUpdate(GX_TRUE);
+	{   /* the TV's rate, measured */
+		u64 v0;
+
+		VIDEO_WaitVSync();
+		v0 = gettime();
+		for (i = 0; i < 30; ++i)
+			VIDEO_WaitVSync();
+		refresh = 30e6f / diff_usec(v0, gettime());
+	}
+	if ((r = mii_res_load(&res, NULL)) < 0) {
+		result("mii_res_load sd:/mii/RFL_Res.dat (HOME > HBC > Save Mii faces)", r);
+		goto out;
+	}
+	if ((r = mii_db_load(&db)) < 0) {
+		result("mii_db_load", r);
+		goto out;
+	}
+	for (i = 0; i < MII_DB_SLOTS; ++i)
+		if (mii_db_get(&db, i, &dbm[ndb]) == MII_OK)
+			++ndb;
+	mii_db_free(&db);
+	if (!ndb) {
+		say("party: no Miis in the database: random ones instead\n");
+		for (; ndb < 24; ++ndb)
+			mii_random(&dbm[ndb], ndb & 1 ? MII_FEMALE : MII_MALE, MII_ANY, &seed);
+	}
+	for (i = 0; i < 2; ++i) {
+		r = mii_body_load(&bodies[i], i ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH);
+		if (r == MII_OK) {
+			bod[i] = &bodies[i];
+			mii_body_make_lods(&bodies[i], NULL, 0);
+		} else {
+			say("party: no %s (%d, %s)\n", i ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH, r, mii_strerror(r));
+		}
+	}
+	if (!bod[0] && bod[1])
+		bod[0] = bod[1];
+	if (!bod[1] && bod[0])
+		bod[1] = bod[0];
+	if (!bod[0])
+		say("party: going on with the built bodies: no animations, no effects\n");
+	else if (bod[0] == bod[1])
+		say("party: everyone gets the one body there is\n");
+	b0 = bod[0];
+	r = b0 ? mii_fx_load(&party.fx, NULL, NULL) : MII_E_NO_FILE;
+	party.ok = r == MII_OK;
+	if (b0 && !party.ok)
+		say("party: no effects (%d, %s): going on without them\n", r, mii_strerror(r));
+	if (party.ok) {
+		for (i = 0; i < PARTY_NCUES; ++i)
+			party.cue_fx[i] = mii_fx_find(&party.fx, party_cues[i].fx);
+		party.zzz_fx = mii_fx_find(&party.fx, "Nc_zzz01");
+		party.slap_fx[0] = mii_fx_find(&party.fx, "Nc_slapsmoke01");
+		party.slap_fx[1] = mii_fx_find(&party.fx, "Nc_slapsmoke02");
+		for (i = 0; i < PARTY_FXS; ++i)
+			mii_fx_init(&party.s[i], &party.fx, 0x1234 + i);
+	}
+
+	/* The roles, spread evenly: every animation, every expression, head
+	 * turns, poses held still. */
+	for (k = 0; b0 && k < b0->nanims && nroles < PARTY_ROLES - 16; ++k) {
+		party_role *ro = &roles[nroles++];
+		const char *n = b0->anim[k].name;
+
+		memset(ro, 0, sizeof(*ro));
+		ro->kind = ROLE_ANIM;
+		snprintf(ro->anim, sizeof(ro->anim), "%s", n);
+		for (i = 0; i < PARTY_NCUES; ++i)
+			if (!strcmp(n, party_cues[i].anim))
+				ro->cues |= 1u << i;
+		ro->catnap = !strcmp(n, "bodyCatnap_00");
+		ro->air = !strncmp(n, "bodySlap", 8) || !strcmp(n, "bodyGetDown");
+	}
+	for (k = 0; k < MII_EXPR_COUNT; ++k) {
+		party_role *ro = &roles[nroles++];
+
+		memset(ro, 0, sizeof(*ro));
+		ro->kind = ROLE_EXPR;
+		ro->expr = k;
+		snprintf(ro->anim, sizeof(ro->anim), "bodyWait");
+	}
+	for (k = 0; k < 2; ++k) {
+		party_role *ro = &roles[nroles++];
+
+		memset(ro, 0, sizeof(*ro));
+		ro->kind = ROLE_LOOK;
+		ro->expr = k ? MII_EXPR_SMILE : MII_EXPR_NORMAL;
+		snprintf(ro->anim, sizeof(ro->anim), "bodyWait");
+	}
+	for (k = 0; k < 3; ++k) {
+		party_role *ro = &roles[nroles++];
+
+		memset(ro, 0, sizeof(*ro));
+		ro->kind = ROLE_FROZEN;
+		ro->expr = k == 0 ? MII_EXPR_SMILE : k == 1 ? MII_EXPR_SURPRISE : MII_EXPR_BLINK;
+		if (b0 && b0->nanims) {
+			int j = (k + 1) * b0->nanims / 4;
+
+			snprintf(ro->anim, sizeof(ro->anim), "%s", b0->anim[j].name);
+			ro->frame = b0->anim[j].frames / 2.0f;
+		}
+	}
+	say("party: TV %.2f Hz; %d Miis in the database, repeated; %d roles:", refresh, ndb, nroles);
+	for (k = 0; k < nroles; ++k) {
+		const party_role *ro = &roles[k];
+
+		if (ro->kind == ROLE_ANIM)
+			say(" %s", ro->anim);
+		else if (ro->kind == ROLE_EXPR)
+			say(" expr:%s", expr_names[ro->expr]);
+		else if (ro->kind == ROLE_LOOK)
+			say(" look:%s", expr_names[ro->expr]);
+		else
+			say(" held:%s@%.0f", ro->anim[0] ? ro->anim : "arms", ro->frame);
+	}
+	say("\n");
+	if (b0) {
+		say("party: animations (frames, loop):");
+		for (k = 0; k < b0->nanims; ++k)
+			say(" %s %d %d", b0->anim[k].name, b0->anim[k].frames, b0->anim[k].loop);
+		say("\n");
+	}
+	say("party: effects %s; %d states of %d emitters and %d particles\n", party.ok ? "loaded" : "none",
+		PARTY_FXS, MII_FX_INSTANCES, MII_FX_PARTICLES);
+	base = heap_grown(&a1, &a2);
+	say("party: heap %u KB for the faces file, bodies and effects; MEM1 %u KB, MEM2 %u KB free\n", base / 1024,
+		(unsigned) ((u32) SYS_GetArena1Hi() - (u32) SYS_GetArena1Lo()) / 1024,
+		(unsigned) ((u32) SYS_GetArena2Hi() - (u32) SYS_GetArena2Lo()) / 1024);
+
+	if (max < 1 || max > PARTY_MAXN)
+		max = PARTY_MAXN;
+	for (i = 0; i < (int) (sizeof(ramp) / sizeof(ramp[0])) && ramp[i] < max; ++i)
+		steps[nramp++] = ramp[i];
+	steps[nramp++] = max;
+	steps[nramp++] = 0;   /* the hold: best30, set by then */
+
+	for (step = 0; step < nramp; ++step) {
+		int hold = step == nramp - 1, count = hold ? (best30 ? best30 : steps[0]) : steps[step];
+		int cols, rows, frames = 0, missed = 0, ptcl_max = 0, first = built;
+		long at_lod[MII_BODY_LODS + 1] = { 0 };
+		u64 t0, t1 = 0, start, prev, cpu = 0, cpu_max = 0, gpu = 0, gpu_max = 0, t_draw = 0, t_fx = 0, t_fxdraw = 0;
+		u32 hits0 = 0, miss0 = 0, played0 = 0, replaced0 = 0, lost0 = 0, full0 = 0;
+		float fps, W, D, top = 100, hw = 30, dist, pitch = 0.5f, run_s;
+		Mtx44 proj;
+		Mtx view;
+		guVector eye = { 0, 0, 0 }, up = { 0, 1, 0 }, at;
+		struct mallinfo mi;
+
+		/* Build up to the count. */
+		t0 = gettime();
+		for (; built < count; ++built) {
+			const mii *m = &dbm[built % ndb];
+			const mii_body *bb = bod[m->sex == MII_FEMALE];
+			mii_model_opts o = { 64, MII_EXPRS_ALL, cache, MII_HEAD_LODS, 1 };
+			party_mii *pm = &miis[built];
+
+			pm->model = malloc(sizeof(mii_model));
+			r = pm->model ? mii_model_build(&res, m, &o, pm->model) : MII_E_MEM;
+			if (r == MII_OK && bb) {
+				r = mii_model_set_body(pm->model, bb);
+				if (r < 0)
+					mii_model_free(pm->model);
+			}
+			if (r < 0) {
+				free(pm->model);
+				pm->model = NULL;
+				break;
+			}
+			pm->body = pm->model->body;
+			pm->role = built % nroles;
+			pm->fxs = built % PARTY_FXS;
+			pm->start = -(float) ((built / nroles) % 7) * 0.61f;   /* repeats out of step */
+			pm->last_f = -1;
+			pm->yaw = (float) ((built * 37) % 11 - 5) * 0.06f;
+			{
+				const party_role *ro = &roles[pm->role];
+				int j = pm->body && ro->anim[0] ? mii_body_anim(pm->body, ro->anim) : -1;
+
+				pm->anim = j >= 0 ? j + 1 : 0;
+			}
+		}
+		for (i = first; i < built; ++i)   /* their faces, by the GPU, between frames */
+			if (miis[i].model->faces_pending)
+				mii_model_make_faces(miis[i].model, &res, sky);
+		if (built > first) {
+			int e, users;
+			u32 bytes;
+
+			mii_cache_stats(cache, &e, &bytes, &users);
+			say("party %d: built %d in %llu ms; heap %u KB for the Miis (%u KB a Mii); cache %d parts, %u KB\n",
+				count, built - first, ticks_to_millisecs(gettime() - t0), (heap_grown(&a1, &a2) - base) / 1024,
+				(heap_grown(&a1, &a2) - base) / 1024 / built, e, bytes / 1024);
+		}
+		if (built < count) {
+			say("party %d: built %d, then %d (%s): the memory limit\n", count, built, r, mii_strerror(r));
+			if (!hold) {
+				step = nramp - 2;   /* on to the hold */
+				continue;
+			}
+			count = built;
+			if (!count)
+				break;
+		}
+
+		/* Rows on the grass, every other one shifted half a place; the
+		 * camera back along a fixed slope until every corner is in view. */
+		cols = (int) ceilf(sqrtf(count * 2.2f));
+		cols = cols < 4 ? 4 : cols > 36 ? 36 : cols;
+		rows = (count + cols - 1) / cols;
+		mii_model_bounds(miis[0].model, 0, &top, &hw);
+		top *= 1.4f;
+		W = (cols - 1) * 75.0f + 37.5f;
+		D = (rows - 1) * 110.0f;
+		at = (guVector) { 0, top * 0.4f, -D / 2 };
+		guPerspective(proj, 45, (f32) rmode->fbWidth / rmode->efbHeight, 20, 20000);
+		for (dist = 150; dist < 15000; dist *= 1.03f) {
+			eye = (guVector) { 0, at.y + dist * sinf(pitch), at.z + dist * cosf(pitch) };
+			guLookAt(view, &eye, &up, &at);
+			if (party_seen(view, proj, -W / 2 - 40, 0, 40, 0.94f) && party_seen(view, proj, W / 2 + 40, 0, 40, 0.94f) &&
+					party_seen(view, proj, -W / 2 - 40, top, -D - 40, 0.94f) &&
+					party_seen(view, proj, W / 2 + 40, top, -D - 40, 0.94f) &&
+					party_seen(view, proj, 0, top, 40, 0.94f) && party_seen(view, proj, 0, 0, -D - 40, 0.94f))
+				break;
+		}
+		for (i = 0; i < count; ++i) {
+			party_mii *pm = &miis[i];
+			int row = i / cols, col = i % cols;
+			float x = (col - (cols - 1) / 2.0f) * 75 + (row & 1 ? 37.5f : 0) - 18.75f, z = -row * 110.0f, px;
+
+			guMtxIdentity(pm->place);
+			pm->place[0][3] = x;
+			pm->place[2][3] = z;
+			px = mii_pixels_tall(pm->model, view, pm->place, proj, rmode->efbHeight);
+			if (pm->body) {
+				pm->lod = mii_body_lod_for(pm->body, px);
+			} else {   /* the head's levels, where mii_body_lod_for gives the body's */
+				static const float from[4] = { 90, 39.1f, 30.5f, 25 };
+
+				for (pm->lod = 0; pm->lod < 4 && px < from[pm->lod]; ++pm->lod)
+					;
+			}
+		}
+		say("party %d: %d rows of %d, the camera %.0f back\n", count, rows, cols, dist);
+
+		/* Run; the hold for the rest of SECONDS (at least 20 s). */
+		run_s = PARTY_STEP_S;
+		if (hold) {
+			run_s = seconds - diff_usec(t_begin, gettime()) / 1e6f;
+			run_s = run_s < 20 ? 20 : run_s;
+			say("party: holding %d Miis for %.0f s\n", count, run_s);
+		}
+		start = prev = gettime();
+		while (diff_usec(start, gettime()) < run_s * 1e6f) {
+			float now = diff_usec(t_begin, gettime()) / 1e6f, dt = diff_usec(prev, gettime()) / 1e6f;
+			int measured = diff_usec(start, gettime()) >= 500000, n_ptcl = 0;
+			u64 a, b, c, d, e;
+
+			dt = dt > 0.1f ? 0.1f : dt;
+			if (measured && frames && dt > 1.5f / refresh)
+				++missed;
+			prev = gettime();
+			if (measured && !frames) {   /* the first half second was settling: count from here */
+				t1 = prev;
+				t_draw = t_fx = t_fxdraw = 0;
+				for (k = 0; k <= MII_BODY_LODS; ++k)
+					at_lod[k] = 0;
+				hits0 = party_memo(bod, 0);
+				miss0 = party_memo(bod, 1);
+				played0 = party.played;
+				replaced0 = party.replaced;
+				lost0 = party.lost;
+				full0 = party.full_frames;
+#ifdef MII_PROFILE
+				memset(&mii_profile, 0, sizeof(mii_profile));
+#endif
+			}
+			GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
+			GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+			GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
+			a = gettime();
+			GX_SetViewport(0, 0, rmode->fbWidth, rmode->efbHeight, 0, 1);
+			GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+			ground(view, NULL, 0);
+			for (i = 0; i < count; ++i) {
+				party_mii *pm = &miis[i];
+				const party_role *ro = &roles[pm->role];
+				mii_pose pose;
+				int restarted = pm->last_f < 0;
+				u64 q0 = gettime(), q1;
+
+				memset(&pose, 0, sizeof(pose));
+				pose.yaw = pm->yaw;
+				pose.lod = pm->lod;
+				pose.expression = ro->expr;
+				pose.anim = pm->anim;
+				if (ro->kind == ROLE_FROZEN) {
+					pose.frame = ro->frame;
+					if (!pm->body) {   /* the built body: an arm up, both out, a step */
+						pose.arm_raise[0] = 2.3f;
+						pose.arm_raise[1] = (i & 1) ? 1.5f : 0;
+						pose.leg_swing[0] = (i & 2) ? 0.4f : 0;
+					}
+				} else if (pm->body && pm->anim) {
+					const mii_anim *an = &pm->body->anim[pm->anim - 1];
+					int done;
+
+					pose.frame = mii_anim_frame(pm->body, pm->anim, now - pm->start, &done);
+					if (done && now - pm->start > an->frames / 60.0f + 0.8f) {   /* a one-shot again */
+						pm->start = now;
+						pose.frame = 0;
+						restarted = 1;
+						if (pm->zzz) {
+							mii_fx_stop(&party.s[pm->fxs], pm->zzz);
+							pm->zzz = 0;
+						}
+					}
+					if (ro->kind == ROLE_ANIM)
+						pose.expression = mii_anim_expression(pm->body, pm->anim, pose.frame, MII_EXPR_NORMAL);
+				}
+				if (ro->kind == ROLE_LOOK) {
+					pose.head_yaw = 0.8f * sinf(now * 1.3f + i);
+					pose.head_pitch = 0.35f * sinf(now * 0.9f + i * 0.7f);
+				}
+				if (pose.anim && ro->kind != ROLE_FROZEN && !restarted)
+					pose.reuse = (pm->lod >= 4 && (frames + i) % 4) || (pm->lod == 3 && (frames + i) % 2);
+				mii_draw(pm->model, &pose, view, pm->place);
+				q1 = gettime();
+				t_draw += q1 - q0;
+				++at_lod[pm->lod];
+				party_effects(pm, ro, &pose, restarted);
+				t_fx += gettime() - q1;
+			}
+			b = gettime();
+			for (k = 0; party.ok && k < PARTY_FXS; ++k) {
+				int np;
+
+				mii_fx_step(&party.s[k], dt * 60);
+				np = mii_fx_particles(&party.s[k], NULL, 0);
+				n_ptcl += np;
+				party.full_frames += np >= MII_FX_PARTICLES;
+			}
+			c = gettime();
+			t_fx += c - b;
+			for (k = 0; party.ok && k < PARTY_FXS; ++k)
+				mii_fx_draw(&party.s[k], view);
+			d = gettime();
+			t_fxdraw += d - c;
+			GX_DrawDone();
+			e = gettime();
+			present(rmode);
+			if (!measured)
+				continue;
+			cpu += d - a;
+			gpu += e - d;
+			cpu_max = d - a > cpu_max ? d - a : cpu_max;
+			gpu_max = e - d > gpu_max ? e - d : gpu_max;
+			ptcl_max = n_ptcl > ptcl_max ? n_ptcl : ptcl_max;
+			++frames;
+		}
+		if (!frames) {
+			say("party %d: no frames measured\n", count);
+			continue;
+		}
+		fps = frames / (diff_usec(t1, gettime()) / 1e6f);
+		mi = mallinfo();
+		{
+			u32 hits = party_memo(bod, 0) - hits0, miss = party_memo(bod, 1) - miss0;
+
+			say("party %d%s: %.1f fps (%d frames, %d over one TV frame); a frame %.2f ms: CPU %.2f (max %.2f) = Miis drawn "
+				"(posing, sending) %.2f + effects (cues, stepping) %.2f + effects drawn %.2f; GPU after it %.2f "
+				"(max %.2f); levels 0-4 %ld %ld %ld %ld %ld; poses memo %u%% of %u; particles max %d of %d; effects "
+				"played %u, replacing %u, zzz lost %u, frames a particle pool was full %u; heap MEM1 %u KB, MEM2 %u "
+				"KB free (%u KB free inside it)\n",
+				count, hold ? " (hold)" : "", fps, frames, missed, 1000.0f / fps,
+				ticks_to_microsecs(cpu / frames) / 1000.0f, ticks_to_microsecs(cpu_max) / 1000.0f,
+				ticks_to_microsecs(t_draw / frames) / 1000.0f, ticks_to_microsecs(t_fx / frames) / 1000.0f,
+				ticks_to_microsecs(t_fxdraw / frames) / 1000.0f, ticks_to_microsecs(gpu / frames) / 1000.0f,
+				ticks_to_microsecs(gpu_max) / 1000.0f, at_lod[0] / frames, at_lod[1] / frames, at_lod[2] / frames,
+				at_lod[3] / frames, at_lod[4] / frames, hits + miss ? 100 * hits / (hits + miss) : 0, hits + miss,
+				ptcl_max, PARTY_FXS * MII_FX_PARTICLES, party.played - played0, party.replaced - replaced0,
+				party.lost - lost0, party.full_frames - full0,
+				(unsigned) ((u32) SYS_GetArena1Hi() - (u32) SYS_GetArena1Lo()) / 1024,
+				(unsigned) ((u32) SYS_GetArena2Hi() - (u32) SYS_GetArena2Lo()) / 1024, (unsigned) mi.fordblks / 1024);
+		}
+#ifdef MII_PROFILE
+		if (mii_profile.draws) {   /* built with EXTRA_CFLAGS=-DMII_PROFILE: inside mii_draw, ns a Mii */
+			u64 n = mii_profile.draws;
+
+			say("  a Mii: setup %llu, pose %llu, palette %llu, body GX %llu, head %llu ns (%u draws)\n",
+				ticks_to_nanosecs(mii_profile.setup / n), ticks_to_nanosecs(mii_profile.pose / n),
+				ticks_to_nanosecs(mii_profile.palette / n), ticks_to_nanosecs(mii_profile.body / n),
+				ticks_to_nanosecs(mii_profile.head / n), (unsigned) n);
+		}
+#endif
+		if (hold)
+			break;
+		if (fps >= refresh * 0.95f)
+			best60 = count;
+		if (fps >= refresh * 0.475f) {
+			best30 = count;
+		} else {
+			say("party %d: under half the TV's rate: the ramp stops\n", count);
+			step = nramp - 2;
+		}
+	}
+	say("party: the largest count at the full rate (%.0f fps): %d; at half of it (%.0f fps): %d\n", refresh, best60,
+		refresh / 2, best30);
+	say("party: effects played %u, %u of them replacing one still emitting, zzz lost %u; frames a particle pool "
+		"was full %u\n", party.played, party.replaced, party.lost, party.full_frames);
+	result("party: a count held at half the TV's rate", best30 ? MII_OK : MII_E_VERIFY);
+out:
+	GX_DrawDone();
+	for (i = 0; i < built; ++i) {
+		mii_model_free(miis[i].model);
+		free(miis[i].model);
+	}
+	free(miis);
+	mii_cache_free(cache);
+	if (party.ok)
+		mii_fx_free(&party.fx);
+	party.ok = 0;
+	for (i = 0; i < 2; ++i)
+		if (bod[0] == &bodies[i] || bod[1] == &bodies[i])
+			mii_body_free(&bodies[i]);
+	mii_res_free(&res);
+}
+
 int main(int argc, char **argv) {
 	static char *sd_argv[8];
 	void *xfb;
@@ -1521,6 +2181,8 @@ int main(int argc, char **argv) {
 	else if (argc >= 2 && !strcmp(argv[1], "parade"))
 		walk_test("parade", argc > 2 ? atoi(argv[2]) : 60, argc > 3 ? atoi(argv[3]) : 20,
 				  argc > 4 ? (float) atof(argv[4]) : 900, 90, 1, xfb, rmode);
+	else if (argc >= 2 && !strcmp(argv[1], "party"))
+		party_test(argc > 2 ? atoi(argv[2]) : 120, argc > 3 ? atoi(argv[3]) : PARTY_MAXN, rmode);
 	else if (argc >= 3 && !strcmp(argv[1], "crowd"))
 		crowd_test(argv[2], argc > 3 ? atoi(argv[3]) : 10, argc > 4 ? atoi(argv[4]) : 128, xfb, rmode);
 	else
