@@ -24,7 +24,6 @@
 #include "devstream.h"
 #include "tcp.h"
 
-#define DEVFILE_PATH_MAX 256
 #define DEVFILE_PUT_MAX (512 * 1024 * 1024)
 #define DEVFILE_LIST_MAX (256 * 1024)
 #define DEVFILE_CHUNK (32 * 1024)
@@ -40,7 +39,7 @@ devfile_transfer devfile_last;
 // Request state, for aborting before an app launch unmounts the card.
 static volatile bool busy, abort_requested;
 // The file a transfer moves, for devfile_progress().
-static char moving[48];
+static char moving[DEVFILE_PATH_MAX];
 static volatile s32 active_socket = -1;
 static s32 request_prio;
 
@@ -713,8 +712,7 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 
 	gprintf("devnet: %c %s (%u)\n", op, path, size);
 	if (strchr("pPgG", op)) {
-		const char *base = strrchr(path, '/');
-		const char *name = base ? base + 1 : path;
+		const char *name = devfile_display_name(path);
 		size_t len = strlen(name);
 
 		if (len >= sizeof(moving))   // a long name is cut short
