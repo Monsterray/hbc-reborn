@@ -300,18 +300,30 @@ if (ok) {
   bodies: the user copies their own to `sd:/mii`, and nothing ships them.
   `mii_fx_load` reads them. A `mii_fx_state` (about 25 KB, no allocation
   after that) plays up to 16 emitters and 128 particles; when it is full,
-  the oldest goes. `mii_fx_play` starts an emitter, placed by a matrix that
-  you give. `mii_fx_place(&model, &pose, head, at)` makes it: on the head
+  the oldest goes, and `fxs.replaced` counts the emitters that went that
+  way, by `mii_fx_play` or by the children particles start in
+  `mii_fx_step` (1.5.0). `mii_fx_play` starts an emitter, placed by a
+  matrix in the world that you give. `mii_fx_place(&model, &pose, head,
+  at)` makes it in the Mii's own space: on the head
   bone as posed (`head` 1: the sneeze in front of the face and where it
   points, talk balloons before the mouth, zzz over the head; the same
   place the animations give as `pSphere14`), or on the ground under the
   Mii's lowest bone (0: dust where the feet, or the back, hit), turned with
   the Mii and sized by its height. For a `head_only` pose the chin is the
-  origin. `mii_icon_fx` draws an icon with the effects over it: play them
+  origin. That is the world only for a Mii drawn without a `place`: for
+  one drawn with `mii_draw(&model, &pose, view, place)`, use
+  `mii_fx_place_in(&model, &pose, head, place, at)` (1.5.0), or its
+  effects play at the world's origin. Placed after the Mii is drawn, with
+  `pose.reuse = 1`, they take the bones it was drawn with and pose nothing
+  again (`mii_body_pose` too). `mii_icon_fx` draws an icon with the effects over it: play them
   on a `head_only` pose's place, scaled to about half, to keep them inside.
   `mii_fx_step` moves the effects on, at 60 frames a second. `mii_fx_draw`
   draws them as squares that face the camera, coloured and blended as the
-  file says. Draw them after the opaque parts of the scene. `Nc_zzz01`
+  file says, and leaves Z writes on (1.5.0: an emitter's Z mode with
+  writes off, left to the frame's copy, kept that copy from clearing Z,
+  and the next frame drew nothing where the Miis had stood: a crowd of
+  them in the clear colour). Draw them after the opaque parts of the
+  scene. `Nc_zzz01`
   goes on until `mii_fx_stop`. On the PC, `mii_fx_particles` lists each
   particle (`tests/test_miifx.py`).
 
@@ -321,10 +333,11 @@ if (ok) {
   if (mii_fx_load(&fx, NULL, NULL) == MII_OK)      /* sd:/mii/effect_nigaoe.* */
       mii_fx_init(&fxs, &fx, 1);
   float head[3][4];
-  mii_fx_place(&model, &pose, 1, head);
+  mii_fx_place_in(&model, &pose, 1, place, head);  /* place: as mii_draw's, or NULL */
   int zzz = mii_fx_play(&fxs, mii_fx_find(&fx, "Nc_zzz01"), head);
-  /* each frame: */
-  mii_fx_place(&model, &pose, 1, head);
+  /* each frame, after mii_draw(&model, &pose, view, place): */
+  pose.reuse = 1;                                  /* the bones just drawn */
+  mii_fx_place_in(&model, &pose, 1, place, head);
   mii_fx_move(&fxs, zzz, head);                    /* follow the head */
   mii_fx_step(&fxs, 1);
   mii_fx_draw(&fxs, view);                         /* after the Miis */
@@ -363,7 +376,8 @@ if (ok) {
     (the body remembers its last 16 poses), so give a crowd a few phases,
     not one each.
   - `pose.reuse` for a Mii far off: draw it with the bones its last draw
-    posed, posing every second or fourth frame.
+    posed, posing every second or fourth frame. Place its effects after
+    the draw with `reuse` set too: they take those bones, not posed again.
 
   ```c
   /* Once: a cache for the crowd, the bodies' levels. */
@@ -401,6 +415,11 @@ if (ok) {
   state again (pixel format, viewport, scissor, projection, copy filter,
   vertex format, colour channel). `mii_draw` changes the vertex format,
   lighting, TEV, Z, culling and blending.
+- **Z writes on at your copy.** A copy that clears (`GX_CopyDisp(xfb,
+  GX_TRUE)`) clears Z only while Z writes are on (`GX_SetZMode`), on the
+  Wii and in Dolphin. `mii_draw`, `mii_fx_draw` and `mii_model_make_faces`
+  leave them on; if your own drawing ends with them off, turn them on
+  before the copy, or the next frame is drawn against this one's Z.
 - **Testing in Dolphin**: an EFB copy stays on Dolphin's GPU unless
   `Graphics.Hacks.EFBToTextureEnable=False`, so a CPU read of `mii_capture`'s
   texture sees zeros there; drawing it works either way.

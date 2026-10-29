@@ -6,7 +6,9 @@
  * loads the two files (BREFT "-": none) and prints each emitter and
  * texture; with EMITTER (a name), plays it for FRAMES frames and prints
  * every live particle after each. MII_FX_AT (12 numbers, a 3 x 4 matrix
- * row by row) places it; MII_FX_STOP=N stops it after frame N. Exits 0, or
+ * row by row) places it; MII_FX_STOP=N stops it after frame N;
+ * MII_FX_PLAYS=N plays it N times at once (the handle printed and followed
+ * is the last). Each frame's line ends with the state's replaced. Exits 0, or
  * 1 with the error. The files are the user's own (effect_nigaoe.breff and
  * .breft from the Mii Channel), or the test's. */
 
@@ -22,7 +24,7 @@ int main(int argc, char **argv) {
 	static mii_fx_state s;
 	static mii_fx_particle out[MII_FX_PARTICLES];
 	float at[3][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 } };
-	int r, i, j, e, frames, h, n, stop = -1;
+	int r, i, j, e, frames, h, n, stop = -1, plays = 1;
 
 	if (argc != 3 && argc != 5 && argc != 6) {
 		fprintf(stderr, "usage: miifx_host BREFF BREFT [EMITTER FRAMES [SEED]]\n");
@@ -77,13 +79,17 @@ int main(int argc, char **argv) {
 	}
 	if (getenv("MII_FX_STOP"))
 		stop = atoi(getenv("MII_FX_STOP"));
+	if (getenv("MII_FX_PLAYS"))
+		plays = atoi(getenv("MII_FX_PLAYS"));
 	mii_fx_init(&s, &fx, argc == 6 ? (uint32_t) strtoul(argv[5], NULL, 0) : 1);
-	h = mii_fx_play(&s, e, (const float (*)[4]) at);
+	h = 0;
+	for (i = 0; i < plays; ++i)
+		h = mii_fx_play(&s, e, (const float (*)[4]) at);
 	printf("play %s %d\n", argv[3], h);
 	for (i = 0; i < frames; ++i) {
 		mii_fx_step(&s, 1);
 		n = mii_fx_particles(&s, out, MII_FX_PARTICLES);
-		printf("frame %d live %d playing %d\n", i, n, mii_fx_playing(&s, h));
+		printf("frame %d live %d playing %d replaced %u\n", i, n, mii_fx_playing(&s, h), (unsigned) s.replaced);
 		for (j = 0; j < n && j < MII_FX_PARTICLES; ++j) {
 			const mii_fx_particle *p = &out[j];
 

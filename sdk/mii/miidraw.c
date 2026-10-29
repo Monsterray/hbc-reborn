@@ -2003,11 +2003,12 @@ int mii_model_make_faces(mii_model *model, const mii_res *res, GXColor clear) {
 		for (k = 0; k < 5; ++k)
 			free(tx[k].data);
 	}
-	/* Back to the defaults mii_draw and most apps expect, RGB8, and the
-	 * corner in the caller's clear colour (a clearing copy into a scratch
-	 * buffer). */
+	/* Back to the defaults mii_draw and most apps expect, RGB8 and Z writes
+	 * on (a copy clears Z only while they are on), and the corner in the
+	 * caller's clear colour (a clearing copy into a scratch buffer). */
 	for (k = 0; k < 4; ++k)
 		GX_SetTevSwapMode(GX_TEVSTAGE0 + k, GX_TEV_SWAP0, GX_TEV_SWAP0);
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
 	GX_SetPixelFmt(GX_PF_RGB8_Z24, GX_ZC_LINEAR);
 	GX_PixModeSync();
 	{
@@ -3093,7 +3094,9 @@ static int capture(const mii_model *model, const mii_pose *pose, const mii_fx_st
 	GX_SetColorUpdate(GX_TRUE);
 	GX_SetAlphaUpdate(GX_TRUE);
 	/* Clear the area to the background: a copy that clears it (to dst, which
-	 * the real copy overwrites below). */
+	 * the real copy overwrites below), Z too whatever the caller left (a
+	 * copy clears Z only while Z writes are on). */
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
 	GX_SetCopyClear(bg, 0x00FFFFFF);
 	GX_SetTexCopySrc(0, 0, ew, eh);
 	GX_SetTexCopyDst(w, h, GX_TF_RGBA8, ss > 1 ? GX_TRUE : GX_FALSE);

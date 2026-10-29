@@ -1520,38 +1520,34 @@ static struct {
 	mii_fx fx;
 	mii_fx_state s[PARTY_FXS];
 	int ok, cue_fx[PARTY_NCUES], zzz_fx, slap_fx[2];
-	u32 played, replaced, lost, full_frames;
+	u32 played, lost, full_frames, z_kept;
 } party;
 
 static const char *const expr_names[MII_EXPR_COUNT] = { "Normal", "Smile", "Anger", "Sorrow", "Surprise", "Blink",
 														"OpenMouth" };
 
-/* Starts an effect, counting the plays that took the place of one still
- * emitting (all 16 of the state's emitters busy: the oldest goes). */
+/* Starts an effect, counting the plays. */
 static int party_play(mii_fx_state *s, int emitter, float at[3][4]) {
-	int i, busy = 0;
-
 	if (emitter < 0)
 		return 0;
-	for (i = 0; i < MII_FX_INSTANCES; ++i)
-		busy += s->inst[i].emitter >= 0;
-	party.replaced += busy == MII_FX_INSTANCES;
 	++party.played;
 	return mii_fx_play(s, emitter, at);
 }
 
-/* An effect's place (mii_fx_place: the body's space) in the world, through
- * the Mii's place. libogc's paired-single guMtxConcat is broken with the
- * stock linker script (sdk/mii/README.md): the C one. */
-static void party_place(party_mii *pm, const mii_pose *p, int head, float out[3][4]) {
-	float at[3][4];
+/* Emitters that took the place of one still playing (all 16 of a state's
+ * busy: the oldest goes), by plays and by the children particles start. */
+static u32 party_replaced(void) {
+	u32 n = 0;
+	int k;
 
-	mii_fx_place(pm->model, p, head, at);
-	c_guMtxConcat(pm->place, at, out);
+	for (k = 0; party.ok && k < PARTY_FXS; ++k)
+		n += party.s[k].replaced;
+	return n;
 }
 
-/* The effects for one Mii this frame (after it is drawn: the pose memo has
- * its bones). restarted: its animation began (again). */
+/* The effects for one Mii this frame, after it is drawn: p with reuse, so
+ * they are placed on the bones it was drawn with, not posed again.
+ * restarted: its animation began (again). */
 static void party_effects(party_mii *pm, const party_role *ro, const mii_pose *p, int restarted) {
 	mii_fx_state *s = &party.s[pm->fxs];
 	const mii_anim *a;
@@ -1571,14 +1567,14 @@ static void party_effects(party_mii *pm, const party_role *ro, const mii_pose *p
 		pm->zzz = 0;
 	}
 	if (ro->catnap && !pm->zzz && (restarted || f < pm->last_f)) {   /* lost: back next time round */
-		party_place(pm, p, 1, head);
+		mii_fx_place_in(pm->model, p, 1, pm->place, head);
 		have_head = 1;
 		i = party_play(s, party.zzz_fx, head);
 		pm->zzz = i > 0 ? i : 0;
 	}
 	if (pm->zzz || pm->talk) {
 		if (!have_head)
-			party_place(pm, p, 1, head);
+			mii_fx_place_in(pm->model, p, 1, pm->place, head);
 		have_head = 1;
 		if (pm->zzz)
 			mii_fx_move(s, pm->zzz, head);
@@ -1596,13 +1592,13 @@ static void party_effects(party_mii *pm, const party_role *ro, const mii_pose *p
 			continue;
 		if (party_cues[i].head) {
 			if (!have_head)
-				party_place(pm, p, 1, head);
+				mii_fx_place_in(pm->model, p, 1, pm->place, head);
 			have_head = 1;
 			h = party_play(s, party.cue_fx[i], head);
 			if (!strcmp(party_cues[i].fx, "Nc_talk01") && h > 0)
 				pm->talk = h;
 		} else {
-			party_place(pm, p, 0, g);
+			mii_fx_place_in(pm->model, p, 0, pm->place, g);
 			party_play(s, party.cue_fx[i], g);
 		}
 	}
@@ -1618,11 +1614,28 @@ static void party_effects(party_mii *pm, const party_role *ro, const mii_pose *p
 			pm->up = 1;
 		} else if (pm->up && low < 45) {
 			pm->up = 0;
-			party_place(pm, p, 0, g);
+			mii_fx_place_in(pm->model, p, 0, pm->place, g);
 			party_play(s, party.slap_fx[party.played & 1], g);
 		}
 	}
 	pm->last_f = f;
+}
+
+/* After the frame's copy: whether it left Z anywhere on a grid over the
+ * picture. A copy clears Z only while Z updates are on (GX_SetZMode), and
+ * the Z it leaves hides the next frame's grass where Miis stood: they show
+ * as the clear colour, the sky, growing as they move. */
+static int party_z_kept(GXRModeObj *rmode) {
+	int x, y;
+	u32 z;
+
+	for (y = 1; y < 8; ++y)
+		for (x = 1; x < 8; ++x) {
+			GX_PeekZ(x * rmode->fbWidth / 8, y * rmode->efbHeight / 8, &z);
+			if ((z & 0xffffff) != 0xffffff)
+				return 1;
+		}
+	return 0;
 }
 
 /* A point through the camera and projection: in front, and |x| and |y| at
@@ -1834,7 +1847,7 @@ static void party_test(int seconds, int max, GXRModeObj *rmode) {
 		int cols, rows, frames = 0, missed = 0, ptcl_max = 0, first = built;
 		long at_lod[MII_BODY_LODS + 1] = { 0 };
 		u64 t0, t1 = 0, start, prev, cpu = 0, cpu_max = 0, gpu = 0, gpu_max = 0, t_draw = 0, t_fx = 0, t_fxdraw = 0;
-		u32 hits0 = 0, miss0 = 0, played0 = 0, replaced0 = 0, lost0 = 0, full0 = 0;
+		u32 hits0 = 0, miss0 = 0, played0 = 0, replaced0 = 0, lost0 = 0, full0 = 0, kept0 = 0;
 		float fps, W, D, top = 100, hw = 30, dist, pitch = 0.5f, run_s;
 		Mtx44 proj;
 		Mtx view;
@@ -1962,9 +1975,10 @@ static void party_test(int seconds, int max, GXRModeObj *rmode) {
 				hits0 = party_memo(bod, 0);
 				miss0 = party_memo(bod, 1);
 				played0 = party.played;
-				replaced0 = party.replaced;
+				replaced0 = party_replaced();
 				lost0 = party.lost;
 				full0 = party.full_frames;
+				kept0 = party.z_kept;
 #ifdef MII_PROFILE
 				memset(&mii_profile, 0, sizeof(mii_profile));
 #endif
@@ -2022,6 +2036,7 @@ static void party_test(int seconds, int max, GXRModeObj *rmode) {
 				q1 = gettime();
 				t_draw += q1 - q0;
 				++at_lod[pm->lod];
+				pose.reuse = 1;
 				party_effects(pm, ro, &pose, restarted);
 				t_fx += gettime() - q1;
 			}
@@ -2043,6 +2058,7 @@ static void party_test(int seconds, int max, GXRModeObj *rmode) {
 			GX_DrawDone();
 			e = gettime();
 			present(rmode);
+			party.z_kept += party_z_kept(rmode);
 			if (!measured)
 				continue;
 			cpu += d - a;
@@ -2064,16 +2080,16 @@ static void party_test(int seconds, int max, GXRModeObj *rmode) {
 			say("party %d%s: %.1f fps (%d frames, %d over one TV frame); a frame %.2f ms: CPU %.2f (max %.2f) = Miis drawn "
 				"(posing, sending) %.2f + effects (cues, stepping) %.2f + effects drawn %.2f; GPU after it %.2f "
 				"(max %.2f); levels 0-4 %ld %ld %ld %ld %ld; poses memo %u%% of %u; particles max %d of %d; effects "
-				"played %u, replacing %u, zzz lost %u, frames a particle pool was full %u; heap MEM1 %u KB, MEM2 %u "
-				"KB free (%u KB free inside it)\n",
+				"played %u, emitters replaced %u, zzz lost %u, frames a particle pool was full %u; frames whose "
+				"copy left Z %u; heap MEM1 %u KB, MEM2 %u KB free (%u KB free inside it)\n",
 				count, hold ? " (hold)" : "", fps, frames, missed, 1000.0f / fps,
 				ticks_to_microsecs(cpu / frames) / 1000.0f, ticks_to_microsecs(cpu_max) / 1000.0f,
 				ticks_to_microsecs(t_draw / frames) / 1000.0f, ticks_to_microsecs(t_fx / frames) / 1000.0f,
 				ticks_to_microsecs(t_fxdraw / frames) / 1000.0f, ticks_to_microsecs(gpu / frames) / 1000.0f,
 				ticks_to_microsecs(gpu_max) / 1000.0f, at_lod[0] / frames, at_lod[1] / frames, at_lod[2] / frames,
 				at_lod[3] / frames, at_lod[4] / frames, hits + miss ? 100 * hits / (hits + miss) : 0, hits + miss,
-				ptcl_max, PARTY_FXS * MII_FX_PARTICLES, party.played - played0, party.replaced - replaced0,
-				party.lost - lost0, party.full_frames - full0,
+				ptcl_max, PARTY_FXS * MII_FX_PARTICLES, party.played - played0, party_replaced() - replaced0,
+				party.lost - lost0, party.full_frames - full0, party.z_kept - kept0,
 				(unsigned) ((u32) SYS_GetArena1Hi() - (u32) SYS_GetArena1Lo()) / 1024,
 				(unsigned) ((u32) SYS_GetArena2Hi() - (u32) SYS_GetArena2Lo()) / 1024, (unsigned) mi.fordblks / 1024);
 		}
@@ -2100,9 +2116,11 @@ static void party_test(int seconds, int max, GXRModeObj *rmode) {
 	}
 	say("party: the largest count at the full rate (%.0f fps): %d; at half of it (%.0f fps): %d\n", refresh, best60,
 		refresh / 2, best30);
-	say("party: effects played %u, %u of them replacing one still emitting, zzz lost %u; frames a particle pool "
-		"was full %u\n", party.played, party.replaced, party.lost, party.full_frames);
+	say("party: effects played %u, emitters replaced (by plays and children) %u, zzz lost %u; frames a "
+		"particle pool was full %u; frames whose copy left Z %u\n", party.played, party_replaced(), party.lost,
+		party.full_frames, party.z_kept);
 	result("party: a count held at half the TV's rate", best30 ? MII_OK : MII_E_VERIFY);
+	result("party: every frame's copy cleared Z", party.z_kept ? MII_E_VERIFY : MII_OK);
 out:
 	GX_DrawDone();
 	for (i = 0; i < built; ++i) {

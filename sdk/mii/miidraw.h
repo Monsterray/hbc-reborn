@@ -79,7 +79,7 @@
 extern "C" {
 #endif
 
-#define MIIDRAW_VERSION "1.4.1"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole; 1.3.0: animations loop or play once (mii_anim_frame), 4-byte rotation keys (bodyWallow); 1.4.0: the Mii Channel's look (env shading, the shadow, faces for the animations); 1.4.1: the C matrix product, not libogc's paired-single one */
+#define MIIDRAW_VERSION "1.5.0"   /* 1.1.0 (HBC 1.11.0): the Wii's body, mii_view; 1.1.1: its depth; 1.2.0 (HBC 1.12.0): crowds; 1.2.1: levels by eye, hair whole; 1.3.0: animations loop or play once (mii_anim_frame), 4-byte rotation keys (bodyWallow); 1.4.0: the Mii Channel's look (env shading, the shadow, faces for the animations); 1.4.1: the C matrix product, not libogc's paired-single one; 1.5.0: Z writes left on (the effects, GPU faces: a crowd in the clear colour), mii_fx_place_in, mii_fx_state.replaced, pose.reuse for mii_body_pose and mii_fx_place */
 #define MII_RES_PATH "sd:/mii/RFL_Res.dat"
 
 /* ---- The face models ----------------------------------------------------- */
@@ -499,7 +499,9 @@ typedef struct {
 	float from_weight;
 	/* 1: the bones as this model's last draw posed them, the fields above
 	 * unread but the head's angles and the expression: a Mii far off posed
-	 * every second or fourth frame costs about a third. */
+	 * every second or fourth frame costs about a third. mii_body_pose and
+	 * mii_fx_place take them too: effects placed after the Mii is drawn
+	 * (with reuse 1) follow it without posing it again. */
 	int reuse;
 	/* 0 the whole Mii; 1 to 4 coarser levels for a Mii far off
 	 * (mii_body_lod_for): the Wii body's (mii_body_make_lods) and the
@@ -518,9 +520,11 @@ typedef struct {
 float mii_fade_weight(float seconds, float length);
 
 /* The pose's bones in the world, for a Wii body (portable: tests use it):
- * each bone's rotation and position, the body scale applied. This and the
- * two below write the body's pose memo, as drawing does: one thread per
- * body. */
+ * each bone's rotation and position, the body scale applied. With
+ * pose.reuse and a model drawn before, the bones as its last draw posed
+ * them (mii_draw: the fields that pose unread), so effects placed after a
+ * draw pose nothing again. This and the two below write the body's pose
+ * memo, as drawing does: one thread per body. */
 void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][3], float pos[][3]);
 /* The posed vertices into model->skin_pos and skin_nrm (3 floats each): the
  * CPU reference the GPU's palette is tested against. Without the memory
@@ -542,16 +546,25 @@ void mii_body_matrices_posed(const mii_model *model, float rot[][3][3], float at
  * is lifted, bodySlip_00 stretches it as it falls flat). 0 without a
  * shadow in the body's file (or a bone scaled to nothing); 1 and m. */
 int mii_body_shadow(const mii_model *model, const mii_pose *pose, float m[3][4]);
-/* Where to play an effect (mii_fx_play's at) for the pose. head 1: on the
- * head bone as posed (what the Mii Channel's animations also give as
- * pSphere14), its X up the neck, Y out of the face: the sneeze 110 in front
- * of the face and where it points, talk's balloons before the mouth, zzz
- * over the head; for a head_only pose, the chin at the origin, facing the
- * front. head 0: on the ground under the Mii's lowest bone (its feet, or
- * its back after a fall), upright: dust. Turned with the Mii and sized by
- * its height. Move a playing effect with it each frame (mii_fx_move).
- * 0 or MII_E_ARG. */
+/* Where to play an effect for the pose, in the Mii's own space: as
+ * mii_draw draws it with no `place`. head 1: on the head bone as posed
+ * (what the Mii Channel's animations also give as pSphere14), its X up the
+ * neck, Y out of the face: the sneeze 110 in front of the face and where
+ * it points, talk's balloons before the mouth, zzz over the head; for a
+ * head_only pose, the chin at the origin, facing the front. head 0: on the
+ * ground under the Mii's lowest bone (its feet, or its back after a fall),
+ * upright: dust. Turned with the Mii and sized by its height. Move a
+ * playing effect with it each frame (mii_fx_move). With pose.reuse, on the
+ * bones as the model's last draw posed them (mii_body_pose). 0 or
+ * MII_E_ARG.
+ *
+ * mii_fx_play's `at` is in the world: for a Mii drawn with a `place`, use
+ * mii_fx_place_in, or the effects play at the world's origin. */
 int mii_fx_place(const mii_model *model, const mii_pose *pose, int head, float at[3][4]);
+/* mii_fx_place for a Mii drawn with mii_draw's `place` (NULL: none, as
+ * mii_fx_place): at = place times the Mii's own. */
+int mii_fx_place_in(const mii_model *model, const mii_pose *pose, int head, const float place[3][4],
+					float at[3][4]);
 #ifndef MII_NO_OGC
 /* Each bone in the body's space as a matrix (rotation and position, the
  * scale not applied): mii_body_pose, each bone its parent's matrix times
@@ -723,6 +736,11 @@ typedef struct {
 	uint32_t seed, serial, frame;
 	uint16_t gen;
 	float frac;            /* part of a frame owed */
+	/* Emitters started in the place of one still playing, since
+	 * mii_fx_init: every one of MII_FX_INSTANCES busy, the oldest went
+	 * (its handle no longer plays). By mii_fx_play, and by the children a
+	 * particle starts in mii_fx_step. Read it, never written by the app. */
+	uint32_t replaced;
 	mii_fx_inst inst[MII_FX_INSTANCES];
 	mii_fx_ptcl ptcl[MII_FX_PARTICLES];
 } mii_fx_state;
@@ -731,8 +749,10 @@ typedef struct {
  * numbers are the library's own. */
 void mii_fx_init(mii_fx_state *s, const mii_fx *fx, uint32_t seed);
 /* Starts an emitter, placed by `at` (a 3 x 4 matrix to the world, NULL:
- * none; its scale scales the particles too). It starts emitting at the
- * next mii_fx_step. A handle (> 0), or MII_E_ARG. */
+ * none; its scale scales the particles too; mii_fx_place_in for a Mii's).
+ * It starts emitting at the next mii_fx_step. With every emitter busy it
+ * takes the oldest one's place (s->replaced counts them). A handle (> 0),
+ * or MII_E_ARG. */
 int mii_fx_play(mii_fx_state *s, int emitter, const float at[3][4]);
 /* Moves a playing emitter (the head it follows has moved). */
 void mii_fx_move(mii_fx_state *s, int handle, const float at[3][4]);
@@ -742,7 +762,8 @@ void mii_fx_stop(mii_fx_state *s, int handle);
 /* 1 while it still emits. */
 int mii_fx_playing(const mii_fx_state *s, int handle);
 /* Moves time on: frames at 60 a second (1.2 a frame at 50 Hz), at most 8
- * at once. */
+ * at once. The children particles start take the oldest emitters' places
+ * as mii_fx_play does (s->replaced). */
 void mii_fx_step(mii_fx_state *s, float frames);
 
 /* A live particle, as drawn. */
@@ -849,8 +870,9 @@ int mii_icon_fx(const mii_model *model, int expression, const mii_fx_state *fx, 
  * TEV, copied out as RGB5A3. Call it between frames, on the thread that
  * draws: after your last copy, before you draw the next frame. It leaves
  * the corner in `clear` (your clear colour), the pixel format RGB8_Z24,
- * and changes the viewport, scissor, projection, copy filter, vertex
- * format, channels, TEV, blending, Z and culling: set yours again. */
+ * Z on (LEQUAL, update), and changes the viewport, scissor, projection,
+ * copy filter, vertex format, channels, TEV, blending and culling: set
+ * yours again. */
 int mii_model_make_faces(mii_model *model, const mii_res *res, GXColor clear);
 
 /* Draws the effects' particles with your projection loaded and `view` the
@@ -866,9 +888,12 @@ int mii_model_make_faces(mii_model *model, const mii_res *res, GXColor clear);
  * matrix; no colour channels (GX_SetNumChans(0)); one texture coordinate
  * generation (TEXCOORD0 from TEX0, identity); one TEV stage, its order,
  * operation and konstant selection (K1), GX_TEVREG0 and GX_KCOLOR1;
- * GX_TEXMAP0; blending, the alpha compare, Z (test, function, update and
- * GX_SetZCompLoc) as each emitter's file says; culling (none). It assumes
- * the default TEV swap tables, no indirect stages and no fog. */
+ * GX_TEXMAP0; blending and the alpha compare as the last emitter's file
+ * says; culling (none). Z goes as each emitter's file says and is left on
+ * (LEQUAL, update, compared before texturing): a copy clears Z only while
+ * Z writes are on, so an emitter's mode left to the frame's copy would
+ * keep that frame's Z, the next frame drawing nothing where it stood. It
+ * assumes the default TEV swap tables, no indirect stages and no fog. */
 void mii_fx_draw(const mii_fx_state *s, Mtx view);
 
 #endif /* MII_NO_OGC */

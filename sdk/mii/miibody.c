@@ -1187,6 +1187,14 @@ void mii_body_pose(const mii_model *model, const mii_pose *pose, float rot[][3][
 
 	if (!body || !rot || !pos)
 		return;   /* no Wii body set on this model */
+	if (pose && pose->reuse && model->posed) {   /* as the last draw posed it (mii_body_world, unscaled) */
+		for (i = 0; i < body->nbones; ++i)
+			for (k = 0; k < 3; ++k) {
+				memcpy(rot[i][k], model->last_w[i][k], sizeof(rot[i][k]));
+				pos[i][k] = model->last_w[i][k][3];
+			}
+		return;
+	}
 	lp = pose_locals(body, pose, &own);
 	for (i = 0; i < body->nbones; ++i) {
 		const mii_bone *bn = &body->bone[i];
@@ -1292,6 +1300,24 @@ int mii_fx_place(const mii_model *model, const mii_pose *pose, int head, float a
 	at[0][3] = cy * o[0] + sy * o[2];
 	at[1][3] = o[1];
 	at[2][3] = -sy * o[0] + cy * o[2];
+	return MII_OK;
+}
+
+int mii_fx_place_in(const mii_model *model, const mii_pose *pose, int head, const float place[3][4],
+					float at[3][4]) {
+	float own[3][4];
+	int i, j;
+
+	if (!at || mii_fx_place(model, pose, head, own) < 0)
+		return MII_E_ARG;
+	if (!place) {
+		memcpy(at, own, sizeof(own));
+		return MII_OK;
+	}
+	for (i = 0; i < 3; ++i)
+		for (j = 0; j < 4; ++j)
+			at[i][j] = place[i][0] * own[0][j] + place[i][1] * own[1][j] + place[i][2] * own[2][j] +
+					   (j == 3 ? place[i][3] : 0);
 	return MII_OK;
 }
 

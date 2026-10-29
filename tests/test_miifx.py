@@ -354,6 +354,26 @@ class MiiFxTest(unittest.TestCase):
         self.assertEqual([len(ps) for ps in f], [50, 100, 128, 128])
         self.assertEqual(sorted(p["age"] for p in f[3])[:50], [0] * 50)   # the oldest went
 
+    def test_replaced(self):
+        # Every emitter busy: a play takes the oldest one's place, and the
+        # state counts it (mii_fx_state.replaced, sdk/mii 1.5.0); so do the
+        # children a particle starts in mii_fx_step.
+        e = emitter(emit_life=100, ptcl_life=5)
+        r = self.host(breff([("e", e)]), breft(), "e", 1, 1, env={"MII_FX_PLAYS": "16"})
+        self.assertIn("frame 0 live 16 playing 1 replaced 0", r.stdout)
+        r = self.host(breff([("e", e)]), breft(), "e", 1, 1, env={"MII_FX_PLAYS": "20"})
+        self.assertIn("frame 0 live 16 playing 1 replaced 4", r.stdout)
+        # 20 particles at once, each starting a child: 15 free emitters,
+        # then the 16th child takes the oldest's place, the carrier's own.
+        # The carrier stops there (16 particles); its slot plays the child.
+        child = curve(26, 5, 1, [(0, 0, (0, 1))], 1, names=["kid"])
+        carrier = emitter(emit=20, ptcl_life=40, draw=0x415, ptracks=[child])
+        r = self.host(breff([("carrier", carrier), ("kid", emitter(ptcl_life=5, tex="t1"))]), breft(), "carrier",
+                      1, 1)
+        self.assertIn("frame 0 live 32 playing 0 replaced 1", r.stdout)
+        f = parse(r.stdout)
+        self.assertEqual([sum(p["emitter"] == k for p in f[0]) for k in (0, 1)], [16, 16])
+
     def test_damaged_refused(self):
         tr = curve(11, 3, 3, [(0, 0, (1, 1)), (10, 0, (3, 3))], 11)
         child = curve(26, 5, 1, [(0, 0, (0, 1))], 1, names=["a"])

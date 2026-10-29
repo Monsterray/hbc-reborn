@@ -517,6 +517,53 @@ int main(int argc, char **argv) {
 			printf("memo: hits %u, same %d\n", (unsigned) body.memo_hits,
 				   !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) && !memcmp(pos, p1, sizeof(float) * 3 * body.nbones));
 		}
+		{   /* pose.reuse: the bones as the last draw left them (here set as
+			 * draw_body sets them: each bone's rotation and position), the
+			 * frame unread and the memo untouched; mii_fx_place on them. */
+			static float r1[MII_BODY_BONES][3][3], p1[MII_BODY_BONES][3];
+			float at1[3][4], at2[3][4];
+			uint32_t calls;
+			int f, c, same;
+
+			memset(&pose, 0, sizeof(pose));
+			pose.anim = 1 + mii_body_anim(&body, "bodyWalk");
+			pose.frame = 10.5f;
+			mii_body_pose(&md, &pose, r1, p1);
+			mii_fx_place(&md, &pose, 1, at1);
+			for (k = 0; k < body.nbones; ++k)
+				for (f = 0; f < 3; ++f) {
+					for (c = 0; c < 3; ++c)
+						md.last_w[k][f][c] = r1[k][f][c];
+					md.last_w[k][f][3] = p1[k][f];
+				}
+			md.posed = 1;
+			calls = body.memo_hits + body.memo_misses;
+			pose.frame = 40;
+			pose.reuse = 1;
+			mii_body_pose(&md, &pose, rot, pos);
+			mii_fx_place(&md, &pose, 1, at2);
+			same = !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) &&
+				   !memcmp(pos, p1, sizeof(float) * 3 * body.nbones);
+			printf("reuse: same %d, place same %d, memo calls %u", same, !memcmp(at1, at2, sizeof(at1)),
+				   (unsigned) (body.memo_hits + body.memo_misses - calls));
+			md.posed = 0;   /* never drawn: the fields */
+			mii_body_pose(&md, &pose, rot, pos);
+			printf(", undrawn same %d\n", !memcmp(rot, r1, sizeof(float) * 9 * body.nbones) &&
+										   !memcmp(pos, p1, sizeof(float) * 3 * body.nbones));
+		}
+		{   /* mii_fx_place_in: the Mii's place times its own; NULL as
+			 * mii_fx_place. The place: turned a quarter about Y, moved. */
+			const float place[3][4] = { { 0, 0, 1, 100 }, { 0, 1, 0, 5 }, { -1, 0, 0, -50 } };
+			float own[3][4], in[3][4], none[3][4];
+
+			memset(&pose, 0, sizeof(pose));
+			mii_fx_place(&md, &pose, 1, own);
+			mii_fx_place_in(&md, &pose, 1, place, in);
+			mii_fx_place_in(&md, &pose, 1, NULL, none);
+			printf("place in: own %.2f %.2f %.2f, placed %.2f %.2f %.2f, face %.2f %.2f %.2f, null same %d\n",
+				   own[0][3], own[1][3], own[2][3], in[0][3], in[1][3], in[2][3], in[0][1], in[1][1], in[2][1],
+				   !memcmp(own, none, sizeof(own)));
+		}
 		if (getenv("MII_LOD")) {
 			/* Levels of detail: each level's lists are the object's own matrix
 			 * loads, then one run of triangles whose every corner is, byte for

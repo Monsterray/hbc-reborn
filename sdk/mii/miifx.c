@@ -865,6 +865,7 @@ static int start(mii_fx_state *s, int emitter, const float at[3][4]) {
 		} else if (s->inst[i].serial < s->inst[slot].serial) {
 			slot = i;
 		}
+	s->replaced += i == MII_FX_INSTANCES;
 	in = &s->inst[slot];
 	memset(in, 0, sizeof(*in));
 	in->emitter = (int16_t) emitter;
@@ -1179,7 +1180,7 @@ static void spawn(mii_fx_state *s, mii_fx_inst *in, const float m[3][4], int i, 
 static void emit(mii_fx_state *s, mii_fx_inst *in) {
 	const mii_fx_emitter *e = &s->fx->emitter[in->emitter];
 	float m[3][4], sc[3], ro[3], tr[3], v[6], count = e->emit;
-	uint32_t t = in->tick++;
+	uint32_t t = in->tick++, serial = in->serial;
 	int forever = (e->common & 4) || e->emit_life == 0xFFFF, life = forever ? 0xFFFF : e->emit_life, i, j, n;
 	int even = !!(e->emit_flag & (1u << 17)), at_tick;
 
@@ -1217,8 +1218,12 @@ static void emit(mii_fx_state *s, mii_fx_inst *in) {
 		}
 		if (n > MII_FX_PARTICLES)
 			n = MII_FX_PARTICLES;
-		for (i = 0; i < n; ++i)
+		/* A particle's child may take this emitter's own place (every one
+		 * busy, this the oldest): then it is gone, its slot the child's. */
+		for (i = 0; i < n && in->serial == serial; ++i)
 			spawn(s, in, (const float (*)[4]) m, i, n, even);
+		if (in->serial != serial)
+			return;
 		if (n)
 			in->emitted = 1;
 	}
@@ -1403,6 +1408,12 @@ void mii_fx_draw(const mii_fx_state *s, Mtx view) {
 		}
 		GX_End();
 	}
+	/* Z writes back on, as mii_draw leaves them: a copy clears Z only while
+	 * they are on. An emitter's Z mode without writes, left to the frame's
+	 * copy, kept that frame's Z: the next frame's ground hidden where the
+	 * Miis had stood, who showed in the clear colour. */
+	GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+	GX_SetZCompLoc(GX_TRUE);
 }
 
 #endif

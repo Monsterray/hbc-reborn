@@ -304,6 +304,20 @@ class MiiDrawTest(unittest.TestCase):
                           r"face -?0.0\d -?0.0\d 1.00, ground y 0.0", r.stdout)
             self.assertTrue(m and 90 < float(m.group(1)) < 130, r.stdout)
             self.assertIn("place icon: head 0.0 0.0 0.0, face 0.00 0.00 1.00", r.stdout)
+            # pose.reuse (sdk/mii 1.5.0): mii_body_pose and mii_fx_place
+            # take the bones as the last draw posed them, the frame unread
+            # and the memo untouched; a model never drawn poses from the
+            # fields.
+            self.assertIn("reuse: same 1, place same 1, memo calls 0, undrawn same 0", r.stdout)
+            # mii_fx_place_in: the Mii's place (a quarter turn about Y,
+            # moved) times its own: (x, y, z) to (z + 100, y + 5, -x - 50),
+            # the face's axis turned with it; NULL is mii_fx_place.
+            m = re.search(r"place in: own ([-\d.]+) ([-\d.]+) ([-\d.]+), placed ([-\d.]+) ([-\d.]+) ([-\d.]+), "
+                          r"face ([-\d.]+) ([-\d.]+) ([-\d.]+), null same 1", r.stdout)
+            self.assertTrue(m, r.stdout)
+            x, y, z, px, py, pz, fx_, fy, fz = map(float, m.groups())
+            for got, want in ((px, z + 100), (py, y + 5), (pz, -x - 50), (fx_, 1), (fy, 0), (fz, 0)):
+                self.assertAlmostEqual(got, want, delta=0.02, msg=r.stdout)
             effects = os.environ.get("MII_REAL_EFFECTS")
             if effects:
                 # The effects there (your own effect files): the sneeze's
