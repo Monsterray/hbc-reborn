@@ -12,7 +12,11 @@ jobs:
   wii:
     name: Channel DOL, banner and TMD (devkitPPC)
     runs-on: ubuntu-latest
-    container: devkitpro/devkitppc:latest
+    # libogc 3.1.0, as on the bench PC: 3.2.1's WPAD_Shutdown frees the Remotes'
+    # state too early (REVIEW.md, "libogc 3.2.1: back to 3.1.0 until a fixed
+    # release"), and
+    # fpurelease.h refuses any libogc but 3.1. Move on with both.
+    container: devkitpro/devkitppc:20260503
     env:
       EXTRA_CFLAGS: -Werror
     steps:
