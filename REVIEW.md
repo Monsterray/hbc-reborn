@@ -202,6 +202,34 @@ package deleted from pacman's cache, and `IgnorePkg = libogc` set in
 `wiiuse_init` starts afresh), then run `tests/wii_agent_stop.py` and
 `tests/wii_launch_stress.py` on the bench with HBC installed as the channel.
 
+### 1.12.11: updates from GitHub releases (sdk/wiiupdate)
+
+libwiiupdate, rewritten into `sdk/wiiupdate` and built into the channel,
+in place of the old update code (`http.c`, `ecdsa.c`, `sha1.c` and the
+signed XML at a fixed URL, which had been switched off). The installed
+channel asks GitHub's API for the latest releases; if one is newer and
+has a WAD for this title, HBC asks, downloads it into memory, checks it
+and installs it through ES with RiftWii's installer's steps, then restarts
+through its reload stub. `essig.c` lifts IOS's signature check for the
+install only, like `nandperm.c`, and puts back exactly the bytes it
+changed.
+
+- **Checked:** the DOL builds with `-Werror`. mbedTLS (3.6.7, TLS 1.2, ECDHE
+  with AES-GCM, seven roots as DER) and `-fno-asynchronous-unwind-tables`
+  keep the zlib arena in MEM1: Dolphin's `HBCS` shows about 60 KiB of MEM1
+  free after it, against 172 KiB on 1.12.9. `tests/test_wiiupdate.py`
+  checks the release choice. In Dolphin, a build calling itself 1.12.0
+  reached GitHub over TLS, picked v1.12.1, asked, downloaded the
+  2,055,040-byte `hbc-1.12.1-OHBC.wad`, checked it, and stopped at
+  `ES_AddTicket: -2011`, leaving the channel as it was and saying so:
+  Dolphin's ES checks the fakesigned ticket's signature and its IOS has no
+  code to patch.
+- **Not yet checked:** the install on a real Wii, where the patch should
+  find both sites, and the restart into the new version.
+
+**Trigger:** before a release is published for HBC to offer, run a bench
+job that installs an older build as the channel and lets it update.
+
 ### 1.12.2: the Mii drawn as a sliver, and two libogc 3.1.0 bugs under it
 
 After a change of Mii, or the playground's Slap_03, the avatar's body drew
