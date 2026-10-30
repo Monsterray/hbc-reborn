@@ -23,12 +23,18 @@ replacing it.
 | Wii Message Board: posts, mail to another Wii, play history (HBC's play log too) | [`sdk/mboard`](sdk/mboard) |
 | Miis: the data, the Mii database, a Wii Remote's Miis | [`sdk/mii`](sdk/mii) |
 | Wii Remote speaker driver | [`sdk/wiispk`](sdk/wiispk) |
+| Other controllers: Wii U Pro, GameCube adapter for Wii U, USB keyboard and mouse | [`sdk/wiiinput`](sdk/wiiinput) |
 | Banner, WAD packaging, PyWii | [`channel/banner`](channel/banner), [`channel/title`](channel/title), [`pywii`](pywii) |
 | WiiPAX executable packer, host `wiiload` | [`wiipax`](wiipax), [`channel/wiiload`](channel/wiiload) |
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
 | Message Board: the library, the board's formats | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md) |
 | Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
 | Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
+
+Besides Wii Remotes (with a Nunchuk, Classic Controller or guitar) and
+GameCube controllers in any of the four ports, HBC can be driven with a
+Wii U Pro Controller, the GameCube controller adapter for Wii U, a USB
+keyboard, or a USB mouse as the pointer; see [`sdk/wiiinput`](sdk/wiiinput).
 
 This code differs from the official HBC build, which adds protection
 features, and comes with no warranty. The installer is not included.
@@ -670,5 +676,7 @@ Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
 [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h), [`sdk/mboard`](sdk/mboard) and
 [`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
-[`sdk/wiispk`](sdk/wiispk) is under the zlib licence. The agent library (`sdk/hbc_agent`) is built from HBC's own
+[`sdk/wiispk`](sdk/wiispk) is under the zlib licence. Parts of
+[`sdk/wiiinput`](sdk/wiiinput) (from RiftWii and libwupc) are GPL-3.0-or-later,
+so the channel built with them is distributed under GPL-3.0. The agent library (`sdk/hbc_agent`) is built from HBC's own
 sources and is GPL.

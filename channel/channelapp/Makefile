@@ -31,10 +31,15 @@ DIR_BUILD_CHAN = $(DIR_BUILD)/channel
 MBOARD = ../../sdk/mboard
 # The avatar (source/avatar.c) is sdk/mii and its drawing, built in whole.
 MII = ../../sdk/mii
+# Controllers WPAD and PAD do not read (source/controls.c): sdk/wiiinput.
+WIIINPUT = ../../sdk/wiiinput
+WIIINPUT_SRC = $(wildcard $(WIIINPUT)/*.c)
+WIIINPUT_OBJ = $(WIIINPUT_SRC:$(WIIINPUT)/%.c=$(DIR_BUILD)/wiiinput_%.o)
 
 DIR_INCLUDES = $(DIR_BUILD) \
 		$(MBOARD) \
 		$(MII) \
+		$(WIIINPUT) \
 		$(DEVKITPRO)/libogc/include \
 		$(DEVKITPRO)/portlibs/ppc/include \
 		$(DEVKITPRO)/portlibs/ppc/include/freetype2
@@ -49,7 +54,7 @@ DIR_LIBS = \
 		$(DEVKITPRO)/libogc/lib/wii \
 		$(DEVKITPRO)/portlibs/ppc/lib
 
-LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
+LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiikeyboard wiiuse bte ogc m
 
 MACHDEP = -g -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
 CFLAGS = $(MACHDEP) -Os -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
@@ -58,6 +63,10 @@ CFLAGS_STUB = $(MACHDEP) -O2 -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DI
 ASFLAGS = -D_LANGUAGE_ASSEMBLY -DHW_RVL
 # The Wii has no no-execute stack; say so, since toolchain crt objects lack the note.
 LDFLAGS_COMMON = -Wl,-z,noexecstack
+# sdk/wiiinput: the Wii U Pro Controller takes its connections from wiiuse
+# (wupc.c), and the Wii Remotes' command queues leave libogc's kernel heap
+# (wpadqueue.c).
+LDFLAGS_COMMON += -Wl,--wrap=wiiuse_accept,--wrap=wiiuse_init_cmd_queue
 LDFLAGS_STUB = $(MACHDEP) $(LDFLAGS_COMMON) -Wl,-Ttext=0x80001800 -Wl,--section-start,.sbss=0x80005000 -Wl,-e,_start -nostartfiles -nodefaultlibs
 LDFLAGS_APP = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) \
 	      $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp.map
@@ -93,6 +102,7 @@ FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
 FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
 		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o $(DIR_BUILD)/miifx.o \
+		$(WIIINPUT_OBJ) \
 		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
@@ -240,6 +250,10 @@ $(DIR_BUILD)/miibody.o: $(MII)/miibody.c
 $(DIR_BUILD)/miifx.o: $(MII)/miifx.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
+$(DIR_BUILD)/wiiinput_%.o: $(WIIINPUT)/%.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) -DHW_RVL -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
 -include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 

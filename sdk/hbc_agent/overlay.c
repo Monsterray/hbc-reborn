@@ -1531,6 +1531,17 @@ static unsigned read_input(void) {
 			last_chan = chan;
 		}
 	}
+
+	// The app's other controllers, already in the Wii Remote's layout.
+	if (agent_cfg()->buttons_down) {
+		u32 b = agent_cfg()->buttons_down(agent_cfg()->user);
+
+		out |= (b & WPAD_BUTTON_UP ? OV_UP : 0) | (b & WPAD_BUTTON_DOWN ? OV_DOWN : 0) |
+			   (b & WPAD_BUTTON_LEFT ? OV_LEFT : 0) | (b & WPAD_BUTTON_RIGHT ? OV_RIGHT : 0) |
+			   (b & WPAD_BUTTON_A ? OV_A : 0) | (b & WPAD_BUTTON_B ? OV_B : 0) |
+			   (b & WPAD_BUTTON_HOME ? OV_HOME : 0) | (b & WPAD_BUTTON_1 ? OV_1 : 0) |
+			   (b & WPAD_BUTTON_2 ? OV_2 : 0) | (b ? OV_ANY : 0);
+	}
 	return out;
 }
 
