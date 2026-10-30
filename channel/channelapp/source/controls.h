@@ -34,6 +34,11 @@ void controls_rumble(int rumble);
 s32 controls_sticky(void);
 void controls_set_ir_threshold(int on);
 
+// For the HOME menu's own frame loop (home.c): scans the controllers
+// sdk/wiiinput reads (Wii U Pro, the GameCube adapter for Wii U, USB
+// keyboard and mouse) and returns their presses as WPAD_BUTTON_* bits.
+u32 controls_other_down(void);
+
 // Presses from the PC (devnet.c's HBCB, `hbc.py buttons`), PADS_* masks:
 // controls_scan presses one a frame and lets it go the next. Returns false
 // when the queue is full.

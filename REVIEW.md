@@ -202,6 +202,30 @@ package deleted from pacman's cache, and `IgnorePkg = libogc` set in
 `wiiuse_init` starts afresh), then run `tests/wii_agent_stop.py` and
 `tests/wii_launch_stress.py` on the bench with HBC installed as the channel.
 
+### 1.12.10: other controllers (sdk/wiiinput)
+
+libwiiinput's drivers, rewritten into `sdk/wiiinput` and built into the
+channel: the Wii U Pro Controller (`wupc.c`, after libwupc, on libogc 3.1's
+`wiiuse_accept`), the GameCube controller adapter for Wii U (RiftWii's
+driver), a USB keyboard and a USB mouse, and RiftWii's fix for a fourth Wii
+Remote or a Balance Board, whose empty command queue in libogc 3.1 crashes
+the program as it connects (`wpadqueue.c`). `controls.c` also reads the
+console's GameCube ports 2 to 4, and the HOME menu takes the same presses
+through the agent's new `buttons_down` hook.
+
+- **Checked:** the DOL builds with `-Werror`; the link map shows HBC's
+  `__wrap_wiiuse_accept` and `__wrap_wiiuse_init_cmd_queue` in place and
+  libwiiuse's callers (`wpad.o`, `wiiuse.o`) reaching them;
+  `tests/dolphin_smoke.py` boots it and it answers `HBCV` with 1.12.10.
+- **Not yet checked:** each controller on a real Wii. Dolphin emulates
+  none of them (USB passthrough aside). The adapter driver and the queue fix
+  are what RiftWii's testers run on Wiis and Wii Us; the Pro Controller,
+  keyboard and mouse code is new here.
+
+**Trigger:** run a bench job with a Pro Controller paired, the adapter, a
+keyboard and a mouse plugged in, and a fourth Wii Remote, before a release
+names them.
+
 ### 1.12.2: the Mii drawn as a sliver, and two libogc 3.1.0 bugs under it
 
 After a change of Mii, or the playground's Slap_03, the avatar's body drew

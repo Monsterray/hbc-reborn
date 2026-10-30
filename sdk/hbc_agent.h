@@ -291,6 +291,11 @@ typedef struct {
 	   app gives main() its own (__ppc_main_sp with libogc 3); then its
 	   size here, or HBC_AGENT_NO_STACK_GUARD. */
 	u32 main_stack_size;
+	/* More presses for the overlay, from controllers it does not read
+	   itself: WPAD_BUTTON_* bits pressed since the last call, once per
+	   overlay frame. HBC passes its USB keyboard, Wii U Pro Controllers
+	   and GameCube adapter for Wii U here (sdk/wiiinput). */
+	u32 (*buttons_down)(void *user);
 } hbc_agent_config;
 
 enum {

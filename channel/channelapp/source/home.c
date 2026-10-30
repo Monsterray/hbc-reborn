@@ -127,6 +127,11 @@ static void signal_loader(void *user) {
 	loader_signal_threads();
 }
 
+static u32 other_buttons(void *user) {
+	(void) user;
+	return controls_other_down();
+}
+
 // ---- BootMii --------------------------------------------------------------
 
 // BootMii installed as IOS254 has a TMD whose title starts "BM"; offering
@@ -176,6 +181,8 @@ void home_init(void) {
 	// HBC reads GameCube controllers too (controls.c calls PAD_Init), and
 	// Z+START on one opens this menu, so the overlay must read them as well.
 	cfg.gc_pads = true;
+	// And the controllers only HBC reads (sdk/wiiinput).
+	cfg.buttons_down = other_buttons;
 	// "Exit to The Homebrew Channel" from inside HBC would only restart it.
 	cfg.hide_exit_choices = 1 << HBC_AGENT_EXIT_HBC;
 	cfg.on_exit_choice = exit_choice;
