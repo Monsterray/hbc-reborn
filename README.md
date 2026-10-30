@@ -23,12 +23,18 @@ replacing it.
 | Wii Message Board: posts, mail to another Wii, play history (HBC's play log too) | [`sdk/mboard`](sdk/mboard) |
 | Miis: the data, the Mii database, a Wii Remote's Miis | [`sdk/mii`](sdk/mii) |
 | Wii Remote speaker driver | [`sdk/wiispk`](sdk/wiispk) |
+| Updating the channel from GitHub releases: HTTPS, the release, the WAD install | [`sdk/wiiupdate`](sdk/wiiupdate) |
 | Banner, WAD packaging, PyWii | [`channel/banner`](channel/banner), [`channel/title`](channel/title), [`pywii`](pywii) |
 | WiiPAX executable packer, host `wiiload` | [`wiipax`](wiipax), [`channel/wiiload`](channel/wiiload) |
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
 | Message Board: the library, the board's formats | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md) |
 | Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
 | Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
+
+The installed channel checks this repository's GitHub releases once the
+network is up. When one is newer, HBC asks, then downloads its WAD and
+installs it over itself and starts again; see
+[`sdk/wiiupdate`](sdk/wiiupdate) for how a release must be published.
 
 This code differs from the official HBC build, which adds protection
 features, and comes with no warranty. The installer is not included.
@@ -670,5 +676,7 @@ Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
 [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h), [`sdk/mboard`](sdk/mboard) and
 [`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
-[`sdk/wiispk`](sdk/wiispk) is under the zlib licence. The agent library (`sdk/hbc_agent`) is built from HBC's own
+[`sdk/wiispk`](sdk/wiispk) is under the zlib licence. The Mbed TLS copy in
+[`sdk/wiiupdate/mbedtls`](sdk/wiiupdate/mbedtls) is under Apache-2.0 or
+GPL-2.0-or-later. The agent library (`sdk/hbc_agent`) is built from HBC's own
 sources and is GPL.

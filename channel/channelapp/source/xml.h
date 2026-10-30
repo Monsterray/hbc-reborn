@@ -26,14 +26,6 @@ typedef struct {
 } meta_info;
 
 typedef struct {
-	char *version;
-	u64 date;
-	char *notes;
-	char *uri;
-	char *hash;
-} update_info;
-
-typedef struct {
 	int device;
 	int sort_order;
 	int browse_mode;
@@ -72,8 +64,6 @@ extern theme_t theme;
 meta_info *meta_parse(char *fn);
 void meta_free(meta_info *info);
 
-update_info *update_parse(char *buf);
-void update_free(update_info *info);
 
 bool settings_load(void);
 bool settings_save(void);

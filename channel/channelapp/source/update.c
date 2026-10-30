@@ -1,3 +1,17 @@
+// Updates of the installed channel from this project's GitHub releases,
+// through sdk/wiiupdate (libwiiupdate, rewritten for HBC).
+//
+// Once the network is up, main.c starts a check: a thread asks GitHub for
+// the latest releases and picks the highest-numbered one with a WAD for
+// this channel's title ID (hbc-1.13.0-OHBC.wad, or -LULZ.wad for a build
+// over the original channel). If it is newer than this build, main.c calls
+// update_execute(), which asks, downloads the WAD into memory, checks it
+// and installs it through ES, as RiftWii's channel installer does, with
+// HBC's own dialogs: the question, then a progress bar for each step.
+// Then HBC starts again, as the new version.
+//
+// Only the installed channel checks: a DOL started some other way is not
+// what the WAD would replace.
 
 #include <malloc.h>
 #include <stdio.h>
@@ -11,308 +25,286 @@
 
 #include "view.h"
 #include "dialogs.h"
-#include "http.h"
 #include "i18n.h"
-#include "sha1.h"
-#include "ecdsa.h"
+#include "essig.h"
+#include "title.h"
+#include "wiiupdate.h"
 
 #include "update.h"
 
-#define		UPDATE_HEADER		"SIG0"
-#define		UPDATE_OFFSET_R		4
-#define		UPDATE_OFFSET_S		4+30
-#define		UPDATE_OFFSET_XML	64
+#define UPDATE_RELEASES "https://api.github.com/repos/" UPDATE_OWNER "/" UPDATE_REPO "/releases?per_page=10"
+#define UPDATE_MAX_JSON (512 * 1024)
+#define UPDATE_MAX_WAD (16 * 1024 * 1024)
+#define UPDATE_MSG_SIZE 4096
 
+// ---- One worker thread at a time, its stack on the heap ----
 
-static const u8 update_key[] = UPDATE_PUBLIC_KEY;
+static lwp_t worker = LWP_THREAD_NULL;
+static u8 *worker_stack;
+static volatile bool working;
+static volatile int cancel;
 
-static u8 nibble2hex(u8 byte)
-{
-	byte &= 0xf;
-	if (byte <= 9)
-		return '0' + byte;
-	else
-		return 'a' + byte - 0xa;
-}
-
-static void hash2ascii(u8 *hash, u8 *ascii)
-{
-	u32 i;
-	for (i = 0; i < 20; i++) {
-		ascii[2*i] = nibble2hex(hash[i] >> 4);
-		ascii[(2*i) + 1] = nibble2hex(hash[i]);
+static bool worker_start(void *(*func)(void *)) {
+	worker_stack = memalign(32, UPDATE_THREAD_STACKSIZE);
+	if (!worker_stack)
+		return false;
+	working = true;
+	if (LWP_CreateThread(&worker, func, NULL, worker_stack, UPDATE_THREAD_STACKSIZE,
+						 UPDATE_THREAD_PRIO) < 0) {
+		working = false;
+		free(worker_stack);
+		worker_stack = NULL;
+		return false;
 	}
-	ascii[40] = 0;
+	return true;
 }
 
-typedef struct {
-	u8 *sha_data;
-	u32 sha_len;
-
-	u8 *ecdsa_r;
-	u8 *ecdsa_s;
-
-	bool valid;
-	bool running;
-} update_arg;
-
-static lwpq_t update_queue;
-static lwp_t update_thread;
-static u8 update_stack[UPDATE_THREAD_STACKSIZE] ATTRIBUTE_ALIGN (32);
-static update_arg ta_ua;
-
-static void *update_func(void *arg) {
-	u8 hash[20];
-	update_arg *ua = (update_arg *) arg;
-
-	SHA1(ua->sha_data, ua->sha_len, hash);
-	if (check_ecdsa(update_key, ua->ecdsa_r, ua->ecdsa_s, hash))
-		ua->valid = true;
-
-	ua->running = false;
-	return NULL;
+// Once working has gone false.
+static void worker_join(void) {
+	LWP_JoinThread(worker, NULL);
+	worker = LWP_THREAD_NULL;
+	free(worker_stack);
+	worker_stack = NULL;
 }
+
+// ---- The check ----
 
 typedef enum {
 	UPDATE_IDLE = 0,
-	UPDATE_FETCH_META,
-	UPDATE_VALIDATE,
-	UPDATE_NO_UPDATE,
-	UPDATE_CAN_UPDATE
+	UPDATE_CHECKING,
+	UPDATE_NONE,
+	UPDATE_FOUND
 } update_state;
 
-static const char *update_url = UPDATE_URL;
 static update_state us = UPDATE_IDLE;
-static update_info *info = NULL;
+static wiiupdate_release *found;
+// The worker's answer; update_busy() moves it to us once the thread is done.
+static volatile bool found_newer;
+
+typedef struct {
+	u8 *data;
+	u32 len, max;
+} buffer;
+
+static int to_buffer(void *ctx, const u8 *data, size_t len) {
+	buffer *b = ctx;
+
+	// One byte stays free, for the JSON's terminating 0.
+	if (!b->data || len >= b->max - b->len)
+		return -1;
+	memcpy(b->data + b->len, data, len);
+	b->len += len;
+	return 0;
+}
+
+// The WAD's name ends in the title's four characters: "-OHBC.wad".
+static void wad_suffix(char *out) {
+	u32 t = (u32) MY_TITLEID;
+
+	sprintf(out, "-%c%c%c%c.wad", t >> 24, (t >> 16) & 0xff, (t >> 8) & 0xff, t & 0xff);
+}
+
+static void *check_func(void *arg) {
+	buffer b = { malloc(UPDATE_MAX_JSON), 0, UPDATE_MAX_JSON };
+	char suffix[16];
+	bool newer = false;
+
+	wad_suffix(suffix);
+	if (b.data && wiiupdate_https_get(UPDATE_RELEASES, "application/vnd.github+json",
+									  to_buffer, NULL, &b, &cancel) == 0) {
+		b.data[b.len] = 0;
+		if (wiiupdate_newest_release((const char *) b.data, suffix, found) == 0) {
+			hlog("Update check: newest release %s\n", found->tag);
+			newer = wiiupdate_compare_versions(found->tag, CHANNEL_VERSION_STR) > 0;
+		} else {
+			hlog("Update check: no release with a %s\n", suffix);
+		}
+	} else {
+		hlog("Update check: GitHub did not answer\n");
+	}
+	free(b.data);
+	found_newer = newer;
+	working = false;
+	return NULL;
+}
 
 bool update_signal(void) {
-	if ((us == UPDATE_FETCH_META) || us == UPDATE_CAN_UPDATE)
+	if (us != UPDATE_IDLE || working || title_get_id() != MY_TITLEID)
 		return false;
-
-	gprintf("starting update check\n");
-
-	if (http_request(update_url, 8 * 1024)) {
-		us = UPDATE_FETCH_META;
-		return true;
+	found = malloc(sizeof(*found));
+	if (!found)
+		return false;
+	cancel = 0;
+	found_newer = false;
+	us = UPDATE_CHECKING;
+	if (!worker_start(check_func)) {
+		us = UPDATE_NONE;
+		free(found);
+		found = NULL;
+		return false;
 	}
-
-	return false;
+	return true;
 }
-
-static u8 *update_data = NULL;
-static u32 update_len = 0;
 
 bool update_busy(bool *update_available) {
-	http_res http_result;
-	u32 status;
-	s32 res;
-
-	if ((us != UPDATE_FETCH_META) && (us != UPDATE_VALIDATE))
+	if (us != UPDATE_CHECKING)
 		return false;
-
-	if (us == UPDATE_FETCH_META) {
-		if (!http_get_result(&http_result, &status, &update_data, &update_len))
-			return true;
-
-		*update_available = false;
-		us = UPDATE_NO_UPDATE;
-
-		gprintf("update check done, status=%u len=%u\n", status, update_len);
-
-		if (http_result != HTTPR_OK)
-			return false;
-
-		gprintf("fetched update xml\n");
-
-		if (update_len < 64) {
-			gprintf("update.sxml length is invalid\n");
-			free(update_data);
-			return false;
-		}
-
-		if (memcmp(UPDATE_HEADER, update_data, 4)) {
-			gprintf("SIG0 header not found.\n");
-			free(update_data);
-			return false;
-		}
-
-		memset(&ta_ua, 0, sizeof(ta_ua));
-		ta_ua.sha_data = update_data + UPDATE_OFFSET_XML;
-		ta_ua.sha_len = update_len - UPDATE_OFFSET_XML;
-		ta_ua.ecdsa_r = update_data + UPDATE_OFFSET_R;
-		ta_ua.ecdsa_s = update_data + UPDATE_OFFSET_S;
-		ta_ua.running = true;
-
-		memset(&update_stack, 0, UPDATE_THREAD_STACKSIZE);
-		LWP_InitQueue(&update_queue);
-		res = LWP_CreateThread(&update_thread, update_func, &ta_ua,
-								update_stack, UPDATE_THREAD_STACKSIZE,
-								UPDATE_THREAD_PRIO);
-
-		if (res) {
-			gprintf("error creating thread: %d\n", res);
-			LWP_CloseQueue(update_queue);
-			free(update_data);
-			return false;
-		}
-
-		us = UPDATE_VALIDATE;
+	if (working)
 		return true;
+	worker_join();
+	us = found_newer ? UPDATE_FOUND : UPDATE_NONE;
+	*update_available = us == UPDATE_FOUND;
+	if (!*update_available) {
+		free(found);
+		found = NULL;
 	}
-
-	if (ta_ua.running)
-		return true;
-
-	LWP_CloseQueue(update_queue);
-
-	us = UPDATE_NO_UPDATE;
-
-	if (!ta_ua.valid) {
-		gprintf("update.sxml signature is invalid.\n");
-		free(update_data);
-		return false;
-	}
-
-	gprintf("update.sxml signature is valid.\n");
-
-	info = update_parse((char *) update_data + UPDATE_OFFSET_XML);
-	free(update_data);
-
-	if (!info) {
-		gprintf("Failed to parse update.sxml\n");
-		return false;
-	}
-
-	if (!info->hash) {
-		gprintf("no <hash> node in update.sxml\n");
-		update_free(info);
-		info = NULL;
-		return false;
-	}
-
-	if (strnlen(info->hash, 40) != 40) {
-		gprintf("Invalid <hash> length\n");
-		update_free(info);
-		info = NULL;
-		return false;
-	}
-
-	if (info->date > CHANNEL_VERSION_DATE) {
-		gprintf("update available\n");
-		us = UPDATE_CAN_UPDATE;
-		*update_available = true;
-	} else {
-		gprintf("hbc is up2date\n");
-		update_free(info);
-		info = NULL;
-	}
-
 	return false;
 }
 
-#define UPDATE_MSG_SIZE 4096
+// ---- Download and install ----
 
-bool update_execute (view *sub_view, entry_point *ep) {
-	http_state state;
-	http_res res;
-	u32 status, length, progress;
-	u8 *data;
-	view *v = sub_view;
-	bool downloading = false;
+static buffer wad;
+static volatile u32 step_done, step_total;
+static char install_error[128];
+
+static void on_length(void *ctx, s64 len) {
+	if (len > 0 && len <= UPDATE_MAX_WAD)
+		step_total = (u32) len;
+}
+
+static int to_wad(void *ctx, const u8 *data, size_t len) {
+	if (to_buffer(ctx, data, len) < 0)
+		return -1;
+	step_done = wad.len;
+	return 0;
+}
+
+static volatile bool download_ok;
+
+static void *download_func(void *arg) {
+	download_ok = wiiupdate_https_get(found->wad_url, "application/octet-stream", to_wad,
+									  on_length, &wad, &cancel) == 0;
+	working = false;
+	return NULL;
+}
+
+static void on_install(void *ctx, u32 done, u32 total) {
+	step_done = done;
+	step_total = total;
+}
+
+static volatile bool install_ok;
+
+static void *install_func(void *arg) {
+	install_ok = wiiupdate_wad_install(wad.data, wad.len, on_install, NULL, install_error,
+									   sizeof(install_error)) == 0;
+	working = false;
+	return NULL;
+}
+
+// Runs func on the worker while a progress bar shows its steps; the bar
+// appears once step_total is known. A download's caption says its size.
+static void run_with_progress(view *sub_view, void *(*func)(void *), bool download) {
+	static char caption[64];
+	view *v = NULL;
+
+	step_done = step_total = 0;
+	if (!worker_start(func))
+		return;
+	while (working) {
+		if (!v && step_total) {
+			if (download)
+				snprintf(caption, sizeof(caption), _("Downloading Update (%u kB)"),
+						 step_total / 1024);
+			else
+				snprintf(caption, sizeof(caption), "%s", _("Installing Update"));
+			v = dialog_progress(sub_view, caption, step_total);
+			dialog_fade(v, true);
+		}
+		if (v)
+			dialog_set_progress(v, step_done);
+		view_plot(v ? v : sub_view, DIALOG_MASK_COLOR, NULL, NULL, NULL);
+	}
+	worker_join();
+	if (v)
+		dialog_fade(v, false);
+}
+
+static bool update_failed(view *sub_view, const char *text) {
+	show_message_timed(sub_view, DLGMT_ERROR, DLGB_OK, text, 0, NET_POPUP_TIMEOUT_S);
+	return false;
+}
+
+static bool install(view *sub_view) {
 	static char text[UPDATE_MSG_SIZE];
-	bool b = false;
-	u8 hash[20];
-	u8 ascii_hash[41];
+	wiiupdate_wad w;
+	s32 installed;
+	int sites;
 
-	if (us != UPDATE_CAN_UPDATE)
+	wad.data = malloc(UPDATE_MAX_WAD);
+	wad.len = 0;
+	wad.max = UPDATE_MAX_WAD;
+	if (!wad.data)
+		return update_failed(sub_view, _("Download failed"));
+	download_ok = false;
+	run_with_progress(sub_view, download_func, true);
+	hlog("Update: downloaded %u bytes of %s\n", wad.len, found->wad_url);
+	if (!download_ok)
+		return update_failed(sub_view, _("Download failed"));
+
+	// The WAD must be this channel, newer than what is installed.
+	installed = wiiupdate_title_version(MY_TITLEID);
+	if (wiiupdate_wad_parse(wad.data, wad.len, &w) < 0 || w.title_id != MY_TITLEID ||
+			(installed >= 0 && w.version <= installed)) {
+		hlog("Update: the WAD is not one to install (title %016llx, version %u, installed %d)\n",
+			 w.title_id, w.version, installed);
+		return update_failed(sub_view, _("The update is not for this channel."));
+	}
+
+	sites = es_sigcheck_lift();
+	hlog("Update: installing version %u over %d (%d signature check sites lifted)\n",
+		 w.version, installed, sites);
+	install_ok = false;
+	install_error[0] = 0;
+	run_with_progress(sub_view, install_func, false);
+	es_sigcheck_restore();
+	if (!install_ok) {
+		hlog("Update: install failed: %s\n", install_error);
+		snprintf(text, sizeof(text), _("The update could not be installed (%s). "
+									   "The Homebrew Channel is unchanged."), install_error);
+		return update_failed(sub_view, text);
+	}
+	hlog("Update: installed %s\n", found->tag);
+	snprintf(text, sizeof(text), _("The Homebrew Channel %s is installed. "
+								   "It will now start again."), found->tag);
+	show_message_timed(sub_view, DLGMT_INFO, DLGB_OK, text, 0, NET_POPUP_TIMEOUT_S);
+	return true;
+}
+
+bool update_execute(view *sub_view) {
+	static char text[UPDATE_MSG_SIZE];
+	bool ok = false;
+
+	if (us != UPDATE_FOUND || !found)
 		return false;
+	us = UPDATE_NONE;
 
-	us = UPDATE_IDLE;
-
-	snprintf (text, UPDATE_MSG_SIZE, _("An update to the Homebrew Channel "
+	snprintf(text, sizeof(text), _("An update to the Homebrew Channel "
 				"(version %s, replacing the installed version %s) "
 				"is available for installation, do you want "
 				"to update now?\n\n"
 				"Release notes:\n\n%s"),
-				info->version, CHANNEL_VERSION_STR, info->notes);
-	text[UPDATE_MSG_SIZE-1] = 0;
+				found->tag, CHANNEL_VERSION_STR, found->notes);
 
-	if (show_message_timed (sub_view, DLGMT_CONFIRM, DLGB_YESNO, text, 0,
-							NET_POPUP_TIMEOUT_S) == 1) {
-		update_free(info);
-		info = NULL;
-		return false;
-	}
+	if (show_message_timed(sub_view, DLGMT_CONFIRM, DLGB_YESNO, text, 0,
+						   NET_POPUP_TIMEOUT_S) == 0)
+		ok = install(sub_view);
 
-	if (!http_request(info->uri, 4 * 1024 * 1024)) {
-		gprintf ("error requesting update download\n");
-		update_free(info);
-		info = NULL;
-		return false;
-	}
-
-	while (true) {
-		view_plot (v, DIALOG_MASK_COLOR, NULL, NULL, NULL);
-
-		if (!http_get_state (&state, &length, &progress))
-			break;
-
-		if ((!downloading) && (state == HTTPS_RECEIVING)) {
-			downloading = true;
-
-			snprintf (text, 32, _("Downloading Update (%u kB)"), length / 1024);
-
-			v = dialog_progress (sub_view, text, length);
-
-			dialog_fade (v, true);
-		}
-
-		if (downloading)
-			dialog_set_progress (v, progress);
-
-		if (http_get_result (&res, &status, &data, &length)) {
-			gprintf("update download done, status=%u len=%u\n", status, length);
-
-			if (res == HTTPR_OK) {
-				SHA1(data, length, hash);
-				hash2ascii(hash, ascii_hash);
-				gprintf("Calculated hash : %s\n", ascii_hash);
-				gprintf("Expected hash   : %s\n", info->hash);
-
-				if (memcmp(ascii_hash, info->hash, 40)) {
-					gprintf("installer.elf hash is invalid.\n");
-					free(data);
-					update_free(info);
-					info = NULL;
-					break;
-				}
-
-				gprintf("installer.elf hash is valid.\n");
-				b = true;
-			}
-
-			break;
-		}
-	}
-
-	update_free(info);
-	info = NULL;
-	
-	if (downloading)
-		dialog_fade (v, false);
-
-	if (!b) {
-		show_message_timed (sub_view, DLGMT_ERROR, DLGB_OK, _("Download failed"), 0,
-							NET_POPUP_TIMEOUT_S);
-
-		return false;
-	}
-
-	b = loader_reloc(ep, data, length,
-						"installer.elf\0-updatehbc\0\0", 26, true);
-
-	free (data);
-
-	return b;
+	free(wad.data);
+	wad.data = NULL;
+	free(found);
+	found = NULL;
+	return ok;
 }
+
 #endif
