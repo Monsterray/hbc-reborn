@@ -216,8 +216,24 @@ if (ok) {
 - **The face models are the user's.** `RFL_Res.dat` is Nintendo's: never
   ship it. HBC's HOME > HBC > Save Mii faces (or `hbc.py mii-faces`) copies
   the Wii's own to `sd:/mii/RFL_Res.dat`, where `mii_res_load(&res, NULL)`
-  looks. An app cannot read the Wii Menu's copy itself. `MII_E_NO_FILE`
-  means: ask the user to save it.
+  looks. `MII_E_NO_FILE` means: ask the user to save it.
+- **Or straight from the Wii, with nothing on SD.** `mii_res_load_nand(&res)`
+  reads the Wii Menu's own `RFL_Res.dat` into memory, and
+  `mii_bodies_load_nand(&male, &female)` the Mii Channel's bodies (either
+  may be NULL; one `Character.szs` is decoded for both). IOS refuses these
+  files to apps, so `miinand.c` lifts its NAND permission check for the
+  reads, with the patch Save Mii faces uses, and puts back exactly what it
+  changed. That needs AHBPROT: `<ahb_access/>` in your `meta.xml` (Wiiload
+  gives it too), and no IOS reload before the call. Without it the calls
+  return `MII_E_DENIED` and touch nothing, so try the SD copy next:
+
+  ```c
+  if (mii_res_load_nand(&res) < 0 && mii_res_load(&res, NULL) < 0)
+      ;                                            /* no faces: ask the user */
+  ```
+
+  About 0.1 s for the faces and 0.1 s for the bodies in Dolphin; call them
+  outside the frame loop.
 - **`mii_model_make`** builds everything once: the head's shapes placed as
   RFL places them, the face composited for all seven expressions
   (`MII_EXPR_*`), the parts RFL colours with TEV tricks baked into plain
@@ -430,7 +446,8 @@ if (ok) {
   with `MII_BODY`, a Wii body posed by `MII_ANIM` and `MII_FRAME`;
   `tests/miifx_host` plays an effect and prints its particles).
 - **Files**: `miidraw.c` (faces, the built body, drawing), `miibody.c`
-  (the Wii's bodies) and `miifx.c` (the effects) with `mii.c`.
+  (the Wii's bodies), `miifx.c` (the effects) and `miinand.c` (faces and
+  bodies read from NAND) with `mii.c`.
 
 The head's numbers come from RFL as the CC0 decompilations show it; the
 code is this library's own. [docs/research/mii-rendering.md](../../docs/research/mii-rendering.md)

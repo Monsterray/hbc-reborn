@@ -100,6 +100,9 @@ int mii_res_attach(mii_res *res, const void *data, size_t size);
 /* Reads and checks a file (path NULL: MII_RES_PATH). MII_E_NO_FILE when it
  * is not there: ask the user to save it from HBC's HOME menu. */
 int mii_res_load(mii_res *res, const char *path);
+/* The Wii Menu's own copy, straight from NAND, no SD (miinand.c). Needs AHBPROT
+ * (<ahb_access/> in meta.xml, IOS not reloaded), else MII_E_DENIED. */
+int mii_res_load_nand(mii_res *res);
 void mii_res_free(mii_res *res);
 
 /* ---- The Wii's own bodies (miibody.c) ------------------------------------ */
@@ -237,6 +240,9 @@ typedef struct {
 int mii_body_attach(mii_body *body, void *data, size_t size);
 /* Reads one (path NULL: the male body). MII_E_NO_FILE without it. */
 int mii_body_load(mii_body *body, const char *path);
+/* The Mii Channel's bodies, straight from NAND as mii_res_load_nand reads the
+ * faces; either may be NULL. One Character.szs is decoded for both. */
+int mii_bodies_load_nand(mii_body *male, mii_body *female);
 void mii_body_free(mii_body *body);
 /* The animation named so ("bodyWait"), or -1. */
 int mii_body_anim(const mii_body *body, const char *name);
