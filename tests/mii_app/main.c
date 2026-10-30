@@ -28,6 +28,10 @@
 //                                  and 256 px)
 //                                  and a full-body capture, saved as
 //                                  sd:/mii_test/*.rgba and checked
+//   mii_app.dol draw nand [SLOT]   the same, with the faces and body read
+//                                  straight from NAND (mii_res_load_nand)
+//   mii_app.dol nand               the NAND loaders, timed, against the SD
+//                                  copies if any, and IOS's check after
 //   mii_app.dol walk COUNTS|max [SECONDS]
 //                                  a crowd walking in from the horizon,
 //                                  then off into it, with levels of
@@ -616,7 +620,59 @@ static int save_rgba8(const char *name, const u8 *tex, int w, int h, int *corner
 	return n;
 }
 
-static void draw_test(int slot) {
+/* Whether this app may open /shared1/content.map now (IOS's NAND check). */
+static s32 shared1_open(void) {
+	s32 fd = ISFS_Open("/shared1/content.map", ISFS_OPEN_READ);
+
+	if (fd >= 0)
+		ISFS_Close(fd);
+	return fd < 0 ? fd : 0;
+}
+
+static void nand_test(void) {
+	static mii_res res, sd;
+	static mii_body male, female, sd_body;
+	s32 before, after;
+	u64 t0;
+	int r;
+
+	ISFS_Initialize();
+	before = shared1_open();
+	say("/shared1 before: %d\n", (int) before);
+	t0 = gettime();
+	r = mii_res_load_nand(&res);
+	result("mii_res_load_nand", r);
+	if (r < 0)
+		return;
+	say("RFL_Res.dat from NAND: version %#x, %u bytes, %llu ms\n", res.version, (unsigned) res.size,
+		ticks_to_millisecs(gettime() - t0));
+	if (mii_res_load(&sd, NULL) == MII_OK) {
+		result("the same bytes as sd:/mii/RFL_Res.dat",
+			   sd.size == res.size && !memcmp(sd.data, res.data, res.size) ? MII_OK : MII_E_VERIFY);
+		mii_res_free(&sd);
+	}
+	t0 = gettime();
+	r = mii_bodies_load_nand(&male, &female);
+	result("mii_bodies_load_nand", r);
+	if (r == MII_OK) {
+		say("bodies from NAND: %u and %u bytes, %d and %d animations, %llu ms\n", (unsigned) male.size,
+			(unsigned) female.size, male.nanims, female.nanims, ticks_to_millisecs(gettime() - t0));
+		if (mii_body_load(&sd_body, MII_BODY_MALE_PATH) == MII_OK) {
+			result("the same bytes as sd:/mii/maleBody.brres",
+				   sd_body.size == male.size && !memcmp(sd_body.data, male.data, male.size) ? MII_OK
+																			 : MII_E_VERIFY);
+			mii_body_free(&sd_body);
+		}
+		mii_body_free(&male);
+		mii_body_free(&female);
+	}
+	after = shared1_open();
+	say("/shared1 after: %d\n", (int) after);
+	result("IOS's NAND check as it was before", after == before ? MII_OK : MII_E_VERIFY);
+	mii_res_free(&res);
+}
+
+static void draw_test(int slot, int nand) {
 	static u8 fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
 	static mii_db db;
 	static mii_res res;
@@ -629,8 +685,8 @@ static void draw_test(int slot) {
 
 	DCFlushRange(fifo, sizeof(fifo));   // .bss's zeros, cached: not over the commands later
 	GX_Init(fifo, sizeof(fifo));
-	if ((r = mii_res_load(&res, NULL)) < 0) {
-		result("mii_res_load sd:/mii/RFL_Res.dat (HOME > HBC > Save Mii faces)", r);
+	if ((r = nand ? mii_res_load_nand(&res) : mii_res_load(&res, NULL)) < 0) {
+		result(nand ? "mii_res_load_nand" : "mii_res_load sd:/mii/RFL_Res.dat (HOME > HBC > Save Mii faces)", r);
 		return;
 	}
 	say("RFL_Res.dat: version %#x, %u bytes\n", res.version, (unsigned) res.size);
@@ -685,9 +741,10 @@ static void draw_test(int slot) {
 	/* The Mii Channel's body for the Mii's sex, if Save Mii faces saved it. */
 	{
 		static mii_body wb;
+		int loaded = nand ? mii_bodies_load_nand(m.sex == MII_FEMALE ? NULL : &wb, m.sex == MII_FEMALE ? &wb : NULL)
+						  : mii_body_load(&wb, m.sex == MII_FEMALE ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH);
 
-		if (mii_body_load(&wb, m.sex == MII_FEMALE ? MII_BODY_FEMALE_PATH : MII_BODY_MALE_PATH) == MII_OK &&
-				mii_model_set_body(&model, &wb) == MII_OK) {
+		if (loaded == MII_OK && mii_model_set_body(&model, &wb) == MII_OK) {
 			pose.anim = 1 + mii_body_anim(&wb, "bodyGreeting");
 			pose.frame = 40;
 			say("the Wii's %s body, waving\n", m.sex == MII_FEMALE ? "female" : "male");
@@ -2375,8 +2432,12 @@ int main(int argc, char **argv) {
 	}
 	else if (argc == 2 && !strcmp(argv[1], "remote-rewrite"))
 		remote_rewrite();
+	else if (argc >= 3 && argc <= 4 && !strcmp(argv[1], "draw") && !strcmp(argv[2], "nand"))
+		draw_test(argc == 4 ? atoi(argv[3]) : 0, 1);
 	else if (argc >= 2 && argc <= 3 && !strcmp(argv[1], "draw"))
-		draw_test(argc == 3 ? atoi(argv[2]) : 0);
+		draw_test(argc == 3 ? atoi(argv[2]) : 0, 0);
+	else if (argc == 2 && !strcmp(argv[1], "nand"))
+		nand_test();
 	else if (argc >= 4 && !strcmp(argv[1], "edit"))
 		edit(argv[2], argc - 3, argv + 3);
 	else if (argc >= 3 && !strcmp(argv[1], "gpuprobe"))
