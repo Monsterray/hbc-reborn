@@ -24,7 +24,6 @@
 #include "devstream.h"
 #include "tcp.h"
 
-#define DEVFILE_PATH_MAX 256
 #define DEVFILE_PUT_MAX (512 * 1024 * 1024)
 #define DEVFILE_LIST_MAX (256 * 1024)
 #define DEVFILE_CHUNK (32 * 1024)
@@ -39,8 +38,11 @@ devfile_transfer devfile_last;
 
 // Request state, for aborting before an app launch unmounts the card.
 static volatile bool busy, abort_requested;
-// The file a transfer moves, for devfile_progress().
-static char moving[48];
+// The file a transfer moves, for devfile_progress(). The network thread
+// writes the idle one of two buffers and then swaps, so the menu thread
+// never reads a name half way through changing.
+static char moving[2][DEVFILE_PATH_MAX];
+static volatile int moving_now;
 static volatile s32 active_socket = -1;
 static s32 request_prio;
 
@@ -713,14 +715,16 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 
 	gprintf("devnet: %c %s (%u)\n", op, path, size);
 	if (strchr("pPgG", op)) {
-		const char *base = strrchr(path, '/');
-		const char *name = base ? base + 1 : path;
+		const char *name = devfile_display_name(path);
 		size_t len = strlen(name);
+		int next = !moving_now;
 
-		if (len >= sizeof(moving))   // a long name is cut short
-			len = sizeof(moving) - 1;
-		memcpy(moving, name, len);
-		moving[len] = 0;
+		if (len >= sizeof(moving[0]))   // a long name is cut short
+			len = sizeof(moving[0]) - 1;
+		memcpy(moving[next], name, len);
+		moving[next][len] = 0;
+		__asm__ volatile ("" ::: "memory");   // the name is whole before the swap
+		moving_now = next;
 		devfile_last.st.size = op == 'p' || op == 'P' ? size : 0;
 	}
 
@@ -836,7 +840,7 @@ char devfile_progress(const char **name, u32 *done, u32 *total) {
 
 	if (!busy || !op || !strchr("pPgG", op))
 		return 0;
-	*name = moving;
+	*name = moving[moving_now];
 	*done = devfile_last.st.raw;
 	*total = devfile_last.st.size;
 	return op == 'p' || op == 'P' ? 'p' : 'g';

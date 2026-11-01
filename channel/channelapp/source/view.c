@@ -209,7 +209,7 @@ static int char_start(const char *s, int i) {
 static void name_window(char *out, int size, const char *name, int span, int room, u32 ms) {
 	int len = strlen(name), off = 0;
 	u32 move;
-	char ring[2 * 48 + 4];
+	char ring[2 * DEVFILE_PATH_MAX + 4];
 
 	if (name_style == NAME_TRUNCATE) {
 		snprintf(out, size, "%.*s...", char_start(name, room > 3 ? room - 3 : 0), name);
@@ -236,13 +236,14 @@ static void name_window(char *out, int size, const char *name, int span, int roo
 }
 
 // What hbc.py is moving, at the bottom right of every screen, so a transfer
-// in the background shows: "Receiving boot.dol 42%", "Sending save.dat".
+// in the background shows: "Receiving ridgerac/boot.dol 42%".
 static void transfer_line(void) {
 	static gfx_queue_entry glyphs[64], pct_glyphs[8];
-	static char shown[112], fitted[52];   // the direction and name room is for
+	static char shown[112], fitted[DEVFILE_PATH_MAX + 2];
 	static int count, pct_count, room, span;
 	static u64 since;   // when this name first showed
 	char line[96] = "", part[64], pct[8] = "", key[112];
+	char identity[DEVFILE_PATH_MAX + 2];   // the direction and name room is for
 	bool split = false;   // a long name: the percentage drawn on its own
 	const char *name, *verb;
 	u32 done, total;
@@ -255,9 +256,9 @@ static void transfer_line(void) {
 		if (total)
 			snprintf(pct, sizeof(pct), "  %u%%", (unsigned) ((u64) done * 100 / total));
 		// How much of a new name fits beside the verb and "  100%".
-		snprintf(part, sizeof(part), "%c%s", dir, name);
-		if (strcmp(part, fitted)) {
-			strcpy(fitted, part);
+		snprintf(identity, sizeof(identity), "%c%s", dir, name);
+		if (strcmp(identity, fitted)) {
+			strcpy(fitted, identity);
 			since = gettime();   // each new name starts still
 			for (room = strlen(name); room > 1; --room) {
 				snprintf(line, sizeof(line), "%s %.*s  100%%", verb, room, name);
