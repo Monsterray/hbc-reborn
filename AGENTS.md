@@ -3,6 +3,7 @@
 For build, review, Dolphin, Wii, or release work, read [the HBC project skill](.agents/skills/hbc-build-and-review/SKILL.md). Use [README.md](README.md) for contributor setup and [REVIEW.md](REVIEW.md) for the subsystem review plan and findings.
 
 - Use the installed devkitPro toolchain and standard host-tool locations. Keep local Python packages in `.venv`.
+- Never convert bases, add offsets or work out sizes in your head: run it (`python -c "print(hex(553649152))"`) and quote the output. Before calling a tool's number wrong, put both raw values side by side in one base, converted by a tool; a gap of one round step (0x400, a power of two) is as often a conversion slip as a bug. A finding that changes a design or a file format gets one re-check against the raw logs first.
 - Keep Wii keys private. `keys/` and `.venv/` are ignored. Check staged files before any commit.
 - A direct DOL launch does not provide the installed channel's NAND identity. Check the DOL and retail WAD as separate outputs.
 - When making a commit, bump both version fields in `channel/channelapp/config.h` and `channel/title/Makefile` to the same `major.minor.patch` release in that commit.
