@@ -50,6 +50,9 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 						dialog_message_buttons buttons, const char *text,
 						u8 focus, u32 timeout_s);
 dialog_options_result show_options_dialog(const view *sub_view);
+// For HBCS: ,"options":{...}: whether Options is open, its focused button and
+// progress choice, and the progress setting in use.
+int dialogs_options_json(char *buf, int size);
 
 #endif
 

@@ -27,6 +27,7 @@
 #include "avatar.h"
 #include "miipick.h"
 #include "miiplay.h"
+#include "dialogs.h"
 #include "controls.h"
 #include "tcp.h"
 #include "zmem.h"
@@ -284,6 +285,7 @@ static s32 status_json(char *buf, size_t size) {
 	}
 	n = grow(n, size, miipick_status_json(buf + n, size - n));
 	n = grow(n, size, miiplay_status_json(buf + n, size - n));
+	n = grow(n, size, dialogs_options_json(buf + n, size - n));
 	_CPU_ISR_Disable(level);
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
 				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",

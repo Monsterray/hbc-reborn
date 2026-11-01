@@ -591,6 +591,37 @@ static void dlg_sort_captions(view *v, app_sort sort) {
 									*captions[i]);
 }
 
+// What Options shows, for HBCS: a test on the bench Wii checks the focus
+// before it presses A (`hbc.py buttons`).
+static volatile bool options_open;
+static volatile int options_focus = -1, options_arc;
+
+static const char *dlg_focus_name(int focus) {
+	if (focus >= DLG_DEV_FIRST && focus < DLG_DEV_FIRST + DEVICE_COUNT)
+		return "device";
+	if (focus >= DLG_SORT_FIRST && focus < DLG_SORT_FIRST + DLG_SORTS)
+		return "sort";
+	if (focus == DLG_PROG_FIRST)
+		return "percent";
+	if (focus == DLG_PROG_FIRST + 1)
+		return "circle";
+	if (focus == DLG_OK)
+		return "ok";
+	if (focus == DLG_BACK)
+		return "back";
+	return "none";
+}
+
+int dialogs_options_json(char *buf, int size) {
+	bool open = options_open;
+
+	return snprintf(buf, size, ",\"options\":{\"open\":%s,\"focus\":\"%s\",\"choice\":\"%s\","
+					"\"progress\":\"%s\"}", open ? "true" : "false",
+					dlg_focus_name(open ? options_focus : -1),
+					open ? (options_arc ? "circle" : "percent") : "none",
+					settings.progress_arc ? "circle" : "percent");
+}
+
 static void dlg_progress_captions(view *v, int arc) {
 	widget_button_set_caption(&v->widgets[DLG_PROG_FIRST],
 								arc ? FONT_BUTTON_DESEL : FONT_BUTTON, caption_progress_percent);
@@ -730,7 +761,12 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 
 		if ((frame % 30) == 0)
 			app_entry_poll_status(false);
+
+		options_focus = v->focus;
+		options_arc = ret.progress_arc;
+		options_open = true;
 	}
+	options_open = false;
 
 	if ((bd & PADS_A) && (v->focus == DLG_OK))
 		ret.confirmed = true;
