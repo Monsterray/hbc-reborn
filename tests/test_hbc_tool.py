@@ -551,7 +551,7 @@ class HBCToolTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             hbc.main(["help", "sync"])
-        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] [--checksum] LOCAL PATH"))
+        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] [--checksum] [--no-verify] LOCAL PATH"))
         for name in ("status", "run", "get", "put", "key", "screen", "crash"):
             self.assertIn(name, hbc.COMMAND_HELP)
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exc:
@@ -797,6 +797,34 @@ class HBCToolTest(unittest.TestCase):
         self.assertIn(("sd:/apps/sync2/a.bin", 10), seen)   # the size, for the timeout
         self.assertEqual(self.fake.files["sd:/apps/sync2/c.bin"], b"C" * 30)   # went on
         self.assertTrue(any("1 failed" in l for l in lines))
+
+    def test_put_reads_back_and_uploads_again(self):
+        src = self.tmp / "rb.bin"
+        src.write_bytes(b"r" * 40)
+        real = hbc.checksum
+        answers = []
+
+        def wrong_first(wii, remote, size=0):
+            got = real(wii, remote, size)
+            answers.append(got)
+            return (got[0], got[1] ^ 1) if len(answers) < 3 else got
+
+        lines = []
+        with mock.patch.object(hbc, "checksum", wrong_first):
+            hbc.upload(WII, str(src), "sd:/apps/rb/rb.bin", out=lines.append)
+        self.assertEqual(len(answers), 3)   # wrong, wrong, right: three uploads
+        self.assertEqual(sum("uploading again" in l for l in lines), 2)
+        self.assertIn("(40 bytes, read back)", lines[-1])
+
+        with mock.patch.object(hbc, "checksum", lambda w, r, s=0: (s, 0)):
+            with self.assertRaisesRegex(hbc.HBCError, "read back wrong after 3 uploads"):
+                hbc.upload(WII, str(src), "sd:/apps/rb/rb.bin", out=lambda _: None)
+
+        start = len(self.fake.requests)
+        out = self.cli("put", "--no-verify", str(src), "sd:/apps/rb/")
+        self.assertNotIn("read back", out)
+        self.assertEqual([op for op, _ in self.fake.requests[start:] if op == "C"], [])
+        self.assertEqual(self.fake.files["sd:/apps/rb/rb.bin"], b"r" * 40)
 
     def test_file_crc_streams(self):
         path = self.tmp / "big.bin"
