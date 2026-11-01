@@ -675,6 +675,22 @@ class ManageTest(unittest.TestCase):
         self.assertEqual(n(["python", "-c", "import sys;  print(1)"]), "python -c import sys; print(1)")
         self.assertEqual(n(["hbc.py", "ls", "sd:/wad"]), "hbc.py ls")
 
+    def test_a_stale_freeze_marker_is_not_shown_and_a_new_dispatcher_clears_it(self):
+        from unittest import mock
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = pathlib.Path(tmp.name)
+        (home / "recovering").mkdir()
+        (home / "recovering/j1.json").write_text(json.dumps({"id": "j1", "name": "old", "since": 1.0, "wii": "dev"}))
+        (home / "recovering/j1.giveup").write_text("x")
+        env = dict(os.environ, WII_BENCH_HOME=tmp.name, WII_BENCH_SERVER="", WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9")
+        r = subprocess.run([sys.executable, str(BENCH), "snapshot", "--json"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("recovering_id", json.loads(r.stdout)["kv"])      # no dispatcher: nothing is waiting
+        with mock.patch.object(self.wb, "RECOVERING", home / "recovering"):
+            self.wb.clear_stale_recoveries()
+        self.assertEqual(list((home / "recovering").glob("*")), [])
+
     def test_the_wait_for_a_frozen_wii(self):
         from unittest import mock
         tmp = tempfile.TemporaryDirectory()

@@ -1450,6 +1450,19 @@ would, writing and compiling the code for six tasks.
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
 
+#### A freeze marker that outlived its dispatcher
+
+Tool work, no version of its own.
+
+- **Seen 2026-11-01:** the manage page said this workstation kept Wii dev to save a job's
+  data after a freeze, 8 days 11 hours in. `recovering/20261024-020844-65646f.json` was left
+  by a dispatcher killed in the middle of that wait, which skips its cleanup.
+- **The fix:**
+  - A starting dispatcher clears `recovering/` (`clear_stale_recoveries`): one dispatcher runs
+    per workstation, so it has no freeze to wait out.
+  - The snapshot shows a freeze wait only while a dispatcher is running.
+- **Checked:** `test_a_stale_freeze_marker_is_not_shown_and_a_new_dispatcher_clears_it`.
+
 #### Wii groups, and the manager changes the pool
 
 Tool work, no version of its own.

@@ -1833,6 +1833,17 @@ def recover_and_collect(job, turn):
         giveup.unlink(missing_ok=True)
 
 
+def clear_stale_recoveries():
+    """A dispatcher that starts has no freeze to wait out: one still marked in recovering/ belongs
+    to a dispatcher that was killed in the middle (2026-10-24: the marker stayed 8 days, and the
+    monitor kept saying this workstation held the Wii for it)."""
+    for f in RECOVERING.glob("*") if RECOVERING.is_dir() else []:
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+
 def collect_job(job, wii_ok, wii=None):
     """The job's --collect paths, into its run folder, after the job and before anything else
     gets the Wii, so the next run cannot overwrite them (a fixed output folder, a log at a fixed
@@ -2491,6 +2502,7 @@ def cmd_run(a):
     try:
         for p in jobs(RUNNING):                    # a dispatcher that died mid-job: requeue it
             fs_retry(p.rename, PENDING / p.name)
+        clear_stale_recoveries()
         # One turn per Wii at a time: each waits for a Wii with a job of its own, and runs it and
         # the jobs that follow on that Wii. Without a lease server, the same lease logic runs here.
         shared = types.SimpleNamespace(call=None if lease_server() else LocalLeases(default_pool()),
@@ -3458,7 +3470,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
         row("manage", state="queued", turn=i, host=j.get("host"), id=j.get("id") or "-", name=j.get("name"),
             agent=j.get("agent") or "-", folder=j.get("folder") or "-",
             age=_age(j["age_s"]) if j.get("age_s") is not None else "?", age_s=j.get("age_s") or 0)
-    for f in sorted(RECOVERING.glob("*.json")) if RECOVERING.is_dir() else []:
+    for f in sorted(RECOVERING.glob("*.json")) if pid and RECOVERING.is_dir() else []:   # no dispatcher: no wait
         try:
             rec = json.loads(f.read_text())
             kv.update(recovering_id=rec["id"], recovering_name=rec.get("name"), recovering_for=_age(time.time() - rec["since"]),
