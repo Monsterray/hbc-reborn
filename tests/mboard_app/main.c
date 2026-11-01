@@ -295,9 +295,11 @@ int main(int argc, char **argv) {
 			ticks_to_millisecs(gettime() - t0));
 		check();
 	} else if (argc == 5 && !strcmp(argv[1], "play")) {
+		u16 prot = read16(0x0D8B420A);   // MEM2_PROT: the play log puts it back
 		res = mboard_log_play(argv[2], argv[3], (u32) strtoul(argv[4], NULL, 10));
 		say("mboard_log_play: %d (%s) in %llu ms\n", res, mboard_strerror(res),
 			ticks_to_millisecs(gettime() - t0));
+		say("MEM2_PROT %x -> %x\n", prot, read16(0x0D8B420A));
 	} else if (argc == 2 && !strcmp(argv[1], "id")) {
 		wii_id();
 	} else if (argc == 2 && !strcmp(argv[1], "friends")) {
