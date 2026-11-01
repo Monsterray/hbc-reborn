@@ -262,7 +262,7 @@ bool update_execute (view *sub_view, entry_point *ep) {
 
 			snprintf (text, 32, _("Downloading Update (%u kB)"), length / 1024);
 
-			v = dialog_progress (sub_view, text, length);
+			v = dialog_progress (sub_view, text, NULL, length);
 
 			dialog_fade (v, true);
 		}

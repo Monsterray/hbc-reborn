@@ -44,6 +44,7 @@ class FakeHBC:
         self.uploads = []
         self.upload_names = []  # HBCA: the play log's name for the next upload
         self.upload_flags = []  # HBCA's flags (protocol 6)
+        self.upload_files = []  # HBCA: the receive dialog's file, after a NUL
         # Protocol 6: what HBC makes of each upload, for HBCS "upload"; None
         # acts as an older HBC that does not say.
         self.next_result = None
@@ -159,7 +160,9 @@ class FakeHBC:
             self.reply(conn, 0)
         elif magic == b"HBCA":
             n, flags = struct.unpack(">HH", hdr[4:8])
-            self.upload_names.append(self.recv(conn, n).decode())
+            name, _, file = self.recv(conn, n).decode().partition("\0")
+            self.upload_names.append(name)
+            self.upload_files.append(file)
             self.upload_flags.append(flags)
             self.reply(conn, 0)
         elif magic == b"HAXX":
@@ -490,7 +493,24 @@ class HBCToolTest(unittest.TestCase):
         # The folder of a boot.dol, else the file; --name over both. The
         # app's arguments (a ROM, an option) are never the name.
         self.assertEqual(self.fake.upload_names[-3:], ["Wii64", "netblock", "WiiStation"])
+        # The receive dialog shows the file, with a boot.dol's folder.
+        self.assertEqual(self.fake.upload_files[-3:],
+                         ["Wii64/boot.dol", "netblock.elf", "Wii64/boot.dol"])
         self.assertEqual(self.fake.uploads[-1][1], b"boot.dol\0--diag\0\0")
+
+    def test_upload_file_metadata_respects_the_63_byte_limit(self):
+        # The HBCA length counts UTF-8 bytes, including its separator NUL.
+        # A 29-byte stem plus NUL plus its 33-byte filename fits exactly;
+        # longer names retain the legacy name-only payload.
+        for stem in ("x" * 29, "x" * 30, "é" * 14, "é" * 15):
+            with self.subTest(stem=stem):
+                app = self.tmp / (stem + ".dol")
+                app.write_bytes(bytes(64))
+                self.cli("send", str(app))
+                shown = app.name if len(stem.encode()) + 1 + len(app.name.encode()) <= 63 else ""
+                self.assertEqual(self.fake.upload_names[-1], stem)
+                self.assertEqual(self.fake.upload_files[-1], shown)
+                self.assertEqual(self.fake.upload_flags[-1], 0)
 
     def test_send_reports_what_hbc_made_of_the_upload(self):
         app = self.tmp / "app.dol"
