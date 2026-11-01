@@ -22,8 +22,14 @@ installed channel to come back after netlog_app exits.
 
 usage: tests/dolphin_smoke.py [--devnet] [--agent] [DOL-or-WAD] [seconds]
 Set DOLPHIN to the Dolphin executable if it is not in a standard location.
+
+Each run's profile (a copy of the NAND, about 500 MB) is deleted when the
+script exits, whether the run passes or fails. HBC_KEEP_PROFILE=1 keeps it
+for inspection. A profile older than a day, left by a run that was killed,
+is deleted when the next run starts.
 """
 
+import atexit
 import os
 import pathlib
 import platform
@@ -43,6 +49,35 @@ import hbc  # noqa: E402
 
 config = (root / "channel/channelapp/config.h").read_text()
 expected = re.search(r'^#define CHANNEL_VERSION_STR "([^"]+)"', config, re.M)[1]
+
+KEEP_PROFILE = os.environ.get("HBC_KEEP_PROFILE") == "1"
+PROFILE_PREFIX = "hbc-dolphin-"
+STALE_PROFILE_S = 24 * 3600
+
+
+def remove_profile(path):
+    """Delete a profile folder. Dolphin's files can stay locked for a
+    moment after it exits on Windows, so try a few times."""
+    for _ in range(10):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def sweep_stale_profiles():
+    """Delete profiles older than a day: runs that were killed before
+    they could delete their own."""
+    now = time.time()
+    for path in pathlib.Path(tempfile.gettempdir()).glob(PROFILE_PREFIX + "*"):
+        try:
+            old = now - path.stat().st_mtime > STALE_PROFILE_S
+        except OSError:
+            continue
+        if old and path.is_dir():
+            remove_profile(path)
+
 
 # Every setting is passed on the command line, so no Dolphin.ini is written.
 SETTINGS = [
@@ -129,7 +164,11 @@ class Dolphin:
                                  f"({taken!r}): another Dolphin on this PC runs HBC or an "
                                  "agent app, and only one can hold the port. Wait for it.")
         self.dolphin = find_dolphin()
-        self.profile = pathlib.Path(tempfile.mkdtemp(prefix="hbc-dolphin-"))
+        sweep_stale_profiles()
+        self.profile = pathlib.Path(tempfile.mkdtemp(prefix=PROFILE_PREFIX))
+        self.proc = None
+        # whatever way the script ends: stop Dolphin, delete the profile
+        atexit.register(self.close)
         for rel, text in (files or {}).items():
             (self.profile / rel).parent.mkdir(parents=True, exist_ok=True)
             if isinstance(text, bytes):
@@ -148,14 +187,29 @@ class Dolphin:
             args += ["-C", setting]
         if self.dolphin.endswith(".app"):
             # A direct executable launch aborts in Qt/Cocoa startup on macOS.
-            self.proc = subprocess.Popen(["open", "-n", "-W", "-a", self.dolphin, "--args"] + args)
+            self.proc = subprocess.Popen(["open", "-n", "-W", "-a", self.dolphin, "--args"] + args,
+                                         cwd=self.profile)
         else:
-            self.proc = subprocess.Popen([self.dolphin] + args)
+            # cwd: the GPU driver writes its logs (NVIDIA Corporation/umdlogs)
+            # into the working folder, so keep them in the profile
+            self.proc = subprocess.Popen([self.dolphin] + args, cwd=self.profile)
         self.address = host_address()
         print(f"dolphin: {self.dolphin}\nprofile: {self.profile}\nimage: {image}")
 
     def running(self):
-        return self.proc.poll() is None
+        return self.proc is not None and self.proc.poll() is None
+
+    def close(self):
+        """Stop Dolphin and delete the profile (HBC_KEEP_PROFILE=1 keeps it).
+        Runs again at exit; the second call does nothing."""
+        if self.running():
+            self.stop()
+        if not self.profile.exists():
+            return
+        if KEEP_PROFILE:
+            print(f"kept profile (HBC_KEEP_PROFILE=1): {self.profile}")
+        elif not remove_profile(self.profile):
+            print(f"could not delete profile {self.profile}: delete it by hand")
 
     def stop(self):
         if self.dolphin.endswith(".app"):
@@ -441,10 +495,7 @@ def main():
     for line in run.faults(expected_faults)[:20]:
         print("log:", line)
         result = 1
-    if result == 0:
-        shutil.rmtree(run.profile, ignore_errors=True)
-    else:
-        print(f"kept profile for inspection: {run.profile}")
+    run.close()
     sys.exit(result)
 
 
