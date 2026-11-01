@@ -1450,6 +1450,31 @@ would, writing and compiling the code for six tasks.
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
 
+#### Wii groups, and the manager changes the pool
+
+Tool work, no version of its own.
+
+- **Assignment already worked:** a job with no `--wii`, or `--wii any`, runs on any free
+  unpinned Wii. The gap was that agents add jobs with `--wii dev`, which pins to that one Wii.
+- **Groups:** the pool takes `group:NAME` marks (`dev=... group:dev`). `--wii NAME` is a Wii's
+  name or a group's: a group means any free member. Eligibility is `Leases._ok` on the server
+  and `may_use`/`startable` in the dispatcher, both reading the same marks. A group can hold a
+  pinned Wii (asking for the group is explicit); `any` never reaches one. Group names can't be
+  another Wii's name or `any`.
+- **The manager:** `Leases.set_wii`, `POST /wii`, and `wiibench.py wii NAME --pin|--unpin|--group
+  G|--ungroup G|--lacks P|--has P`. The manage page's WIIS table is selectable: `t` pins or
+  unpins (asks y), `G` types a group name (`-name` removes one; Enter, Esc, backspace work).
+  The monitor now reads Enter as `ENTER` and a lone Esc as `ESC`.
+- **Kept:** the server writes `pool.json` beside its history after each change and applies it over
+  `WII_BENCH_WIIS` at each start. The dispatcher re-reads the pool every 10 s (was 60 s).
+- **Not changeable:** pinning the first Wii (dispatchers from before 1.10.8 send it every job).
+- **Checked:**
+  - parse, eligibility and the error text for groups;
+  - `set_wii` for every change and refusal, and that only real changes are saved and logged;
+  - the CLI against a server, a restart that keeps the changes;
+  - `add` accepting a group's name and refusing an unknown one;
+  - the manage page in a live terminal: select a Wii, the pin question, typing a group name.
+
 #### Bump: a person tells a waiting turn the Wii is back
 
 Tool work, no version of its own.
