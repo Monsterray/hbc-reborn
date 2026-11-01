@@ -161,6 +161,27 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.13.0: release; the Mii picker, and HBC built on libogc 3.1.0 again
+
+Everything since 1.12.1, released with both WADs (`OHBC` and `LULZ`):
+
+- **The Mii picker** (1.12.2): A on the avatar opens a page of every Mii in
+  the Mii Channel; A on one makes it the avatar. **The Mii playground**
+  (HOME > HBC > Mii playground) and the Mii Channel's particle effects in
+  sdk/mii (1.4.0 to 1.5.1).
+- **The sliver** (1.12.2, 1.12.3): libogc's `ps_guMtxConcat` reads through
+  r13 with a 12-bit offset; the small-data base is placed for it and
+  sdk/mii uses `c_guMtxConcat`. `tests/test_memory_layout.py` checks it.
+- **The party** (1.12.4, 1.12.5): 150 Miis hold 60 fps on the bench Wii and
+  300 hold 30, once `mii_fx_draw` leaves Z writes on for the copy.
+- **The shadow** under the feet for every height and build (1.12.6).
+- **libogc 3.1.0** (1.12.9): 1.12.1 was built on 3.2.1, whose
+  `WPAD_Shutdown` crashed HBC on its way out and left no SD card after the
+  reset (below). This release and CI are built on 3.1.0.
+- **Bench tools** (1.12.7, 1.12.8): Dolphin tests stop when another Dolphin
+  holds port 4299; `tests/wadinstall` installs a WAD from SD through ES;
+  `tests/dolphin_exit_menu.py` drives HOME > Exit > System Menu.
+
 ### libogc 3.2.1: back to 3.1.0 until a fixed release
 
 On 2026-10-28 the shared toolchain went to libogc 3.2.1 (with devkitPPC r51).
