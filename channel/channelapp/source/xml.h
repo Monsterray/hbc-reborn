@@ -37,6 +37,8 @@ typedef struct {
 	int device;
 	int sort_order;
 	int browse_mode;
+	// Options: Transfer progress. 0 is the percentage, 1 a circle.
+	int progress_arc;
 	char app_sel[64];
 	// The avatar's Mii, chosen in the Mii picker: its creation ID in hex.
 	char avatar_mii[17];

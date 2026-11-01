@@ -109,6 +109,18 @@ msgstr "Fecha"
 msgid "Custom"
 msgstr "Propio"
 
+#: source/dialogs.c:82
+msgid "Progress:"
+msgstr "Progreso:"
+
+#: source/dialogs.c:82
+msgid "Percent"
+msgstr "Porcentaje"
+
+#: source/dialogs.c:82
+msgid "Circle"
+msgstr "Círculo"
+
 #: source/view.c
 msgid "Receiving"
 msgstr "Recibiendo"

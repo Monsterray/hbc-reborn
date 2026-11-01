@@ -42,6 +42,9 @@ static const char *caption_sort_by;
 static const char *caption_sort_name;
 static const char *caption_sort_date;
 static const char *caption_sort_custom;
+static const char *caption_progress;
+static const char *caption_progress_percent;
+static const char *caption_progress_circle;
 
 static const char *l_version;
 static const char *l_coder;
@@ -78,6 +81,10 @@ void dialogs_theme_reinit (void) {
 	caption_sort_name = _("Name");
 	caption_sort_date = _("Date");
 	caption_sort_custom = _("Custom");
+	// The transfer line's percentage or circle; beside its two tiny buttons.
+	caption_progress = _("Progress:");
+	caption_progress_percent = _("Percent");
+	caption_progress_circle = _("Circle");
 
 	string_about_pre =
 		"Credits\n\n"
@@ -517,11 +524,16 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // the two SDGecko slots on the second, in the theme's tiny buttons. Widget
 // DLG_DEV_FIRST + n is the n-th button here; dlg_devices[n] is its device
 // (appentry.c's order, which settings.xml stores).
-#define DLG_DEV_FIRST 4
+#define DLG_DEV_FIRST 5
 // The sort buttons, DLG_SORT_FIRST + an app_sort, in tiny buttons as well.
 #define DLG_SORT_FIRST (DLG_DEV_FIRST + DEVICE_COUNT)
 #define DLG_SORTS 3
-#define DLG_OK (DLG_SORT_FIRST + DLG_SORTS)
+// The sort and progress buttons are drawn at this fraction of a tiny button.
+#define DLG_SMALL_SCALE 0.75f
+// The transfer progress buttons, DLG_PROG_FIRST + settings.progress_arc.
+#define DLG_PROG_FIRST (DLG_SORT_FIRST + DLG_SORTS)
+#define DLG_PROGS 2
+#define DLG_OK (DLG_PROG_FIRST + DLG_PROGS)
 #define DLG_BACK (DLG_OK + 1)
 #define DLG_WIDGETS (DLG_BACK + 1)
 
@@ -532,6 +544,7 @@ static const int dlg_rows[][3] = {
 	{ DLG_DEV_FIRST, DLG_DEV_FIRST + 1, DLG_DEV_FIRST + 2 },
 	{ DLG_DEV_FIRST + 3, DLG_DEV_FIRST + 4, -1 },
 	{ DLG_SORT_FIRST, DLG_SORT_FIRST + 1, DLG_SORT_FIRST + 2 },
+	{ DLG_PROG_FIRST, DLG_PROG_FIRST + 1, -1 },
 	{ DLG_OK, DLG_BACK, -1 },
 };
 #define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
@@ -578,6 +591,13 @@ static void dlg_sort_captions(view *v, app_sort sort) {
 									*captions[i]);
 }
 
+static void dlg_progress_captions(view *v, int arc) {
+	widget_button_set_caption(&v->widgets[DLG_PROG_FIRST],
+								arc ? FONT_BUTTON_DESEL : FONT_BUTTON, caption_progress_percent);
+	widget_button_set_caption(&v->widgets[DLG_PROG_FIRST + 1],
+								arc ? FONT_BUTTON : FONT_BUTTON_DESEL, caption_progress_circle);
+}
+
 dialog_options_result show_options_dialog(const view *sub_view) {
 	u32 frame = 0;
 	view *v;
@@ -590,6 +610,9 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	u16 tw = theme_gfx[THEME_BUTTON_TINY]->w, th = theme_gfx[THEME_BUTTON_TINY]->h;
 	u16 sw = theme_gfx[THEME_BUTTON_SMALL]->w, sh = theme_gfx[THEME_BUTTON_SMALL]->h;
 	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, sort_y = row2 + th + 28;
+	// The sort and progress buttons are drawn smaller, to fit another row.
+	u16 stw = tw * DLG_SMALL_SCALE, sth = th * DLG_SMALL_SCALE;
+	u16 prog_y = sort_y + sth + 28, bottom_y = dh - sh - 6;
 
 	app_entry_poll_status(true);
 
@@ -605,6 +628,8 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
 	widget_label (&v->widgets[3], 32, sort_y - 4, 1, caption_sort_by,
 					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
+	widget_label (&v->widgets[4], 32, prog_y - 4, 1, caption_progress,
+					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
 
 	for (i = 0; i < 3; ++i)
 		widget_button (&v->widgets[DLG_DEV_FIRST + i], gap + i * (gap + tw), 64, 1,
@@ -613,12 +638,21 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		widget_button (&v->widgets[DLG_DEV_FIRST + 3 + i],
 						(dw - 2 * tw - gap) / 2 + i * (gap + tw), row2, 1, BTN_TINY, NULL);
 
-	for (i = 0; i < DLG_SORTS; ++i)
-		widget_button (&v->widgets[DLG_SORT_FIRST + i], gap + i * (gap + tw), sort_y, 1,
-						BTN_TINY, NULL);
+	// The small buttons stand under the others' columns, centred on them.
+	for (i = 0; i < DLG_SORTS; ++i) {
+		widget_button (&v->widgets[DLG_SORT_FIRST + i],
+						gap + i * (gap + tw) + (tw - stw) / 2, sort_y, 1, BTN_TINY, NULL);
+		widget_button_scale (&v->widgets[DLG_SORT_FIRST + i], DLG_SMALL_SCALE);
+	}
 
-	widget_button (&v->widgets[DLG_OK], 32, dh - sh - 16, 1, BTN_SMALL, caption_ok);
-	widget_button (&v->widgets[DLG_BACK], dw - sw - 32, dh - sh - 16, 1, BTN_SMALL,
+	for (i = 0; i < DLG_PROGS; ++i) {
+		widget_button (&v->widgets[DLG_PROG_FIRST + i],
+						gap + i * (gap + tw) + (tw - stw) / 2, prog_y, 1, BTN_TINY, NULL);
+		widget_button_scale (&v->widgets[DLG_PROG_FIRST + i], DLG_SMALL_SCALE);
+	}
+
+	widget_button (&v->widgets[DLG_OK], 32, bottom_y, 1, BTN_SMALL, caption_ok);
+	widget_button (&v->widgets[DLG_BACK], dw - sw - 32, bottom_y, 1, BTN_SMALL,
 					caption_back);
 
 	device = app_entry_get_status(status);
@@ -627,6 +661,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	ret.confirmed = false;
 	ret.device = device;
 	ret.sort = sort;
+	ret.progress_arc = settings.progress_arc;
 
 	for (i = 0; i < DEVICE_COUNT; ++i) {
 		widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
@@ -636,6 +671,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	}
 
 	dlg_sort_captions(v, ret.sort);
+	dlg_progress_captions(v, ret.progress_arc);
 
 	view_set_focus (v, DLG_BACK);
 
@@ -683,6 +719,10 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					(v->focus < DLG_SORT_FIRST + DLG_SORTS)) {
 				ret.sort = (app_sort) (v->focus - DLG_SORT_FIRST);
 				dlg_sort_captions(v, ret.sort);
+			} else if ((v->focus >= DLG_PROG_FIRST) &&
+					(v->focus < DLG_PROG_FIRST + DLG_PROGS)) {
+				ret.progress_arc = v->focus - DLG_PROG_FIRST;
+				dlg_progress_captions(v, ret.progress_arc);
 			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}

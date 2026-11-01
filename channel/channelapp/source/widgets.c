@@ -290,9 +290,28 @@ void widget_button (widget *w, s16 x, s16 y, s16 z, button_size size,
 	widget_button_set_caption(w, FONT_BUTTON, caption);
 }
 
+// Draw a button smaller, its box and its caption's room too, where a dialog
+// is short of room. Call it before the caption is set.
+void widget_button_scale(widget *w, f32 scale) {
+	gfx_entity *tex = w->layers[0].gfx_entries[0].entity.entity;
+	// A scaled entity shrinks about its middle: move it back to the corner.
+	f32 dx = tex->w * (1.0f - scale) / 2, dy = tex->h * (1.0f - scale) / 2;
+	int i;
+
+	for (i = 0; i < 3; ++i) {
+		gfx_queue_entry *e = &w->layers[i].gfx_entries[0];
+
+		e->entity.scale = scale;
+		e->entity.coords.x = -dx;
+		e->entity.coords.y = tex->h - dy;
+	}
+	w->width = tex->w * scale;
+	w->height = tex->h * scale;
+}
+
 void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 	int c;
-	u16 bw, bh, oy;
+	u16 bw, bh, oy, margin;
 	widget_layer *l;
 
 	l = &w->layers[3];
@@ -303,10 +322,12 @@ void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 	if (!caption)
 		return;
 
-	bw = w->layers[0].gfx_entries[0].entity.entity->w;
-	bh = w->layers[0].gfx_entries[0].entity.entity->h;
+	bw = w->width;
+	bh = w->height;
+	// A scaled button (widget_button_scale) has less to spare.
+	margin = bw < w->layers[0].gfx_entries[0].entity.entity->w ? 12 : 32;
 
-	c = font_get_char_count(font, caption, bw - 32);
+	c = font_get_char_count(font, caption, bw - margin);
 
 	oy = bh/2;
 
@@ -314,8 +335,8 @@ void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
 
-	font_plot_string (&l->gfx_entries[0], c, font, caption, 16, oy, 1,
-						bw - 32, FA_CENTERED, FA_EM_CENTERED);
+	font_plot_string (&l->gfx_entries[0], c, font, caption, margin / 2, oy, 1,
+						bw - margin, FA_CENTERED, FA_EM_CENTERED);
 }
 
 void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,

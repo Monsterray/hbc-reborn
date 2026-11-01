@@ -99,6 +99,7 @@ void widget_image(widget *w, s16 x, s16 y, s16 z,
 
 void widget_button (widget *w, s16 x, s16 y, s16 z,
 					button_size size, const char *caption);
+void widget_button_scale(widget *w, f32 scale);
 void widget_button_set_caption(widget *w, font_id font, const char *caption);
 
 void widget_app_entry (widget *w, s16 x, s16 y, s16 z,

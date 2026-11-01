@@ -611,6 +611,7 @@ void main_real(void) {
 					app_entry_set_sort(options.sort);
 					app_entry_set_device(options.device);
 					app_entry_set_prefered(options.device);
+					settings.progress_arc = options.progress_arc;
 				}
 
 				continue;

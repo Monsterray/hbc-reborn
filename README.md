@@ -108,11 +108,14 @@ quiet), on the page it shows, so a whole folder's upload is one quiet reload.
 While a file moves, HBC shows it at the bottom right of the screen
 ("Receiving ridgerac/boot.dol 42%", "Sending save.dat"). Files under a
 device's `apps/` directory show the app folder and any subfolders; other
-files show their filename. A name too long for the
+files show their filename. Options (1) > Progress: **Circle** replaces the
+percentage with a progress circle in the text colour on a faded track (the
+choice is kept in `settings.xml`). The circle fills clockwise from the top,
+and turns while the transfer's size is unknown. A name too long for the
 line scrolls round, bounces from end to end, or ends in "..." (each HBC
 start picks one at random; `hbc.py transfer-style bounce` forces one for
 testing). A moving name rests a second at its start, and a bouncing one at
-each end; "Receiving" and the percentage stay put.
+each end; "Receiving" and the percentage (or circle) stay put.
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame

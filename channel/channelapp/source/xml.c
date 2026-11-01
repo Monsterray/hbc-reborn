@@ -406,6 +406,7 @@ bool settings_load(void) {
 	settings.device = -1;
 	settings.sort_order = 0;
 	settings.browse_mode = 0;
+	settings.progress_arc = 0;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
 	memset(settings.avatar_mii, 0, sizeof(settings.avatar_mii));
 
@@ -461,6 +462,7 @@ bool settings_load(void) {
 	settings.device = _get_elem_int(node, "device", -1);
 	settings.sort_order = _get_elem_int(node, "sort_order", 0);
 	settings.browse_mode = _get_elem_int(node, "browse_mode", 0);
+	settings.progress_arc = _get_elem_int(node, "progress_arc", 0) == 1;
 	s = _get_elem_cdata(node, "app_sel");
 	if (s) {
 		strncpy(settings.app_sel, s, sizeof(settings.app_sel));
@@ -516,6 +518,9 @@ bool settings_save(void) {
 
 	node = mxmlNewElement(data, "browse_mode");
 	mxmlNewInteger(node, settings.browse_mode);
+
+	node = mxmlNewElement(data, "progress_arc");
+	mxmlNewInteger(node, settings.progress_arc);
 
 	if (strlen(settings.app_sel) > 0) {
 		node = mxmlNewElement(data, "app_sel");

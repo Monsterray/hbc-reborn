@@ -111,6 +111,18 @@ msgstr "Data"
 msgid "Custom"
 msgstr "Personale"
 
+#: source/dialogs.c:82
+msgid "Progress:"
+msgstr "Avanzamento:"
+
+#: source/dialogs.c:82
+msgid "Percent"
+msgstr "Percento"
+
+#: source/dialogs.c:82
+msgid "Circle"
+msgstr "Cerchio"
+
 #: source/view.c
 msgid "Receiving"
 msgstr "Ricezione"
