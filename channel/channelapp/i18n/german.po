@@ -118,6 +118,15 @@ msgstr "Prozent"
 msgid "Circle"
 msgstr "Kreis"
 
+msgid "Grid edges:"
+msgstr "Rasterrand:"
+
+msgid "Wrap rows"
+msgstr "Zeilen umbrechen"
+
+msgid "Turn page"
+msgstr "Seite umblättern"
+
 #: source/view.c
 msgid "Receiving"
 msgstr "Empfange"

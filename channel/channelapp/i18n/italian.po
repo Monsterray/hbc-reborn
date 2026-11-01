@@ -123,6 +123,15 @@ msgstr "Percento"
 msgid "Circle"
 msgstr "Cerchio"
 
+msgid "Grid edges:"
+msgstr "Bordi griglia:"
+
+msgid "Wrap rows"
+msgstr "Riga successiva"
+
+msgid "Turn page"
+msgstr "Gira pagina"
+
 #: source/view.c
 msgid "Receiving"
 msgstr "Ricezione"

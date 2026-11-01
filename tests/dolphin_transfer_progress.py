@@ -3,8 +3,8 @@
 retail WAD in a throwaway NAND and an emulated SD card.
 
   1. Options (1) shows the Progress row; the pad goes up to it, picks
-     Circle (up from Back, in the column Back is in), then down to Back and
-     left to Ok.
+     Circle (up from Back through Grid edges, the buttons nearest Back), then
+     down to Back and left to Ok.
   2. An upload of a hundred megabytes into sd:/apps/ridgerac/ is on screen
      as "Receiving ridgerac/data.bin" beside a progress circle (pictures
      during it), and the line is gone when it ends.
@@ -58,17 +58,17 @@ def main():
         print(f"HBC {hbc.hbc_wait(wii, 90)} on {wii}", flush=True)
         time.sleep(3)
 
-        # 1. Options: up from Back to the Progress row (Circle, in the column
-        # Back is in), A, down to Back, left to Ok, A.
+        # 1. Options: up from Back past Grid edges to the Progress row (Circle,
+        # nearest Back), A, down to Back, left to Ok, A.
         pad.send("stick 0 -1; wait 1")   # the pointer off the screen
         pad.done()
         hbc.send_buttons(wii, "1")
         time.sleep(3)
         shot(wii, out, "options-percent")
-        pad.send("press PadN; wait 2; press Cross; wait 2")
+        pad.send("press PadN; wait 2; press PadN; wait 2; press Cross; wait 2")
         pad.done()
         shot(wii, out, "options-circle")
-        pad.send("press PadS; wait 2; press PadW; wait 2; press Cross; wait 3")
+        pad.send("press PadS; wait 2; press PadS; wait 2; press PadW; wait 2; press Cross; wait 3")
         pad.done()
         shot(wii, out, "menu")
 

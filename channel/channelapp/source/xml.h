@@ -39,6 +39,8 @@ typedef struct {
 	int browse_mode;
 	// Options: Transfer progress. 0 is the percentage, 1 a circle.
 	int progress_arc;
+	// Options: at the grid's edge. 0 wraps to the next row, 1 turns the page.
+	int edge_paging;
 	char app_sel[64];
 	// The avatar's Mii, chosen in the Mii picker: its creation ID in hex.
 	char avatar_mii[17];

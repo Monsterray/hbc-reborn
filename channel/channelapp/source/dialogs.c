@@ -1,5 +1,6 @@
 #include <string.h>
 #include <malloc.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
 
@@ -43,6 +44,9 @@ static const char *caption_sort_name;
 static const char *caption_sort_date;
 static const char *caption_sort_custom;
 static const char *caption_progress;
+static const char *caption_edges;
+static const char *caption_edge_wrap;
+static const char *caption_edge_page;
 static const char *caption_progress_percent;
 static const char *caption_progress_circle;
 
@@ -83,6 +87,9 @@ void dialogs_theme_reinit (void) {
 	caption_sort_custom = _("Custom");
 	// The transfer line's percentage or circle; beside its two tiny buttons.
 	caption_progress = _("Progress:");
+	caption_edges = _("Grid edges:");
+	caption_edge_wrap = _("Wrap rows");
+	caption_edge_page = _("Turn page");
 	caption_progress_percent = _("Percent");
 	caption_progress_circle = _("Circle");
 
@@ -525,33 +532,46 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // the two SDGecko slots on the second, in the theme's tiny buttons. Widget
 // DLG_DEV_FIRST + n is the n-th button here; dlg_devices[n] is its device
 // (appentry.c's order, which settings.xml stores).
-#define DLG_DEV_FIRST 5
-// The sort buttons, DLG_SORT_FIRST + an app_sort, in tiny buttons as well.
+#define DLG_DEV_FIRST 6
+// Below them, one row per setting as in the HOME overlay: its label on the
+// left, a small button for each value on the right, the value in use bright.
+// The sort buttons, DLG_SORT_FIRST + an app_sort.
 #define DLG_SORT_FIRST (DLG_DEV_FIRST + DEVICE_COUNT)
 #define DLG_SORTS 3
-// The sort and progress buttons are drawn at this fraction of a tiny button.
-#define DLG_SMALL_SCALE 0.75f
-// The transfer progress buttons, DLG_PROG_FIRST + settings.progress_arc.
+// Transfer progress, DLG_PROG_FIRST + settings.progress_arc.
 #define DLG_PROG_FIRST (DLG_SORT_FIRST + DLG_SORTS)
 #define DLG_PROGS 2
-#define DLG_OK (DLG_PROG_FIRST + DLG_PROGS)
+// At the grid's edge, DLG_EDGE_FIRST + settings.edge_paging.
+#define DLG_EDGE_FIRST (DLG_PROG_FIRST + DLG_PROGS)
+#define DLG_EDGES 2
+#define DLG_OK (DLG_EDGE_FIRST + DLG_EDGES)
+// The row buttons are tiny buttons drawn at this size, this far apart.
+#define DLG_SMALL_SCALE 0.7f
+#define DLG_SMALL_GAP 6
 #define DLG_BACK (DLG_OK + 1)
 #define DLG_WIDGETS (DLG_BACK + 1)
 
 static const int dlg_devices[DEVICE_COUNT] = { 0, 1, 4, 2, 3 };
 
-// Rows of widgets for up and down: the column carries over, clamped.
+// Rows of widgets for up and down, -1 where a row has fewer.
 static const int dlg_rows[][3] = {
 	{ DLG_DEV_FIRST, DLG_DEV_FIRST + 1, DLG_DEV_FIRST + 2 },
 	{ DLG_DEV_FIRST + 3, DLG_DEV_FIRST + 4, -1 },
 	{ DLG_SORT_FIRST, DLG_SORT_FIRST + 1, DLG_SORT_FIRST + 2 },
 	{ DLG_PROG_FIRST, DLG_PROG_FIRST + 1, -1 },
+	{ DLG_EDGE_FIRST, DLG_EDGE_FIRST + 1, -1 },
 	{ DLG_OK, DLG_BACK, -1 },
 };
 #define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
 
+static int dlg_middle(const view *v, int w) {
+	return v->widgets[w].coords.x + v->widgets[w].width / 2;
+}
+
+// Up or down: the enabled button in the next row nearest the focused one
+// across; a row with none enabled (no device) is skipped.
 static void dlg_move_row(view *v, int dir) {
-	int r, c, n, to = -1;
+	int r, c, x, d, best = 0, to = -1;
 
 	for (r = 0; r < DLG_ROWS; ++r)
 		for (c = 0; c < 3; ++c)
@@ -560,13 +580,17 @@ static void dlg_move_row(view *v, int dir) {
 	view_set_focus (v, DLG_BACK);
 	return;
 found:
-	for (r += dir; r >= 0 && r < DLG_ROWS && to < 0; r += dir) {
-		for (n = c; n >= 0 && dlg_rows[r][n] < 0; --n)
-			;
-		// Skip a row whose button there is greyed out (no device).
-		if (n >= 0 && (v->widgets[dlg_rows[r][n]].flags & WF_ENABLED))
-			to = dlg_rows[r][n];
-	}
+	x = dlg_middle(v, v->focus);
+	for (r += dir; r >= 0 && r < DLG_ROWS && to < 0; r += dir)
+		for (c = 0; c < 3; ++c) {
+			if (dlg_rows[r][c] < 0 || !(v->widgets[dlg_rows[r][c]].flags & WF_ENABLED))
+				continue;
+			d = abs(dlg_middle(v, dlg_rows[r][c]) - x);
+			if (to < 0 || d < best) {
+				to = dlg_rows[r][c];
+				best = d;
+			}
+		}
 	if (to >= 0)
 		view_set_focus (v, to);
 }
@@ -580,22 +604,28 @@ static int dlg_slot(int device) {
 	return -1;
 }
 
+// A choice's buttons, first + n, with the value in use bright.
+static void dlg_choice_captions(view *v, int first, int count, int value,
+								const char **captions[]) {
+	int i;
+
+	for (i = 0; i < count; ++i)
+		widget_button_set_caption(&v->widgets[first + i],
+									i == value ? FONT_BUTTON : FONT_BUTTON_DESEL, *captions[i]);
+}
+
 static void dlg_sort_captions(view *v, app_sort sort) {
 	static const char **captions[DLG_SORTS] = {
 		&caption_sort_name, &caption_sort_date, &caption_sort_custom
 	};
-	int i;
 
-	for (i = 0; i < DLG_SORTS; ++i)
-		widget_button_set_caption(&v->widgets[DLG_SORT_FIRST + i],
-									(int) sort == i ? FONT_BUTTON : FONT_BUTTON_DESEL,
-									*captions[i]);
+	dlg_choice_captions(v, DLG_SORT_FIRST, DLG_SORTS, (int) sort, captions);
 }
 
 // What Options shows, for HBCS: a test on the bench Wii checks the focus
 // before it presses A (`hbc.py buttons`).
 static volatile bool options_open;
-static volatile int options_focus = -1, options_arc;
+static volatile int options_focus = -1, options_arc, options_paging;
 
 static const char *dlg_focus_name(int focus) {
 	if (focus >= DLG_DEV_FIRST && focus < DLG_DEV_FIRST + DEVICE_COUNT)
@@ -606,6 +636,10 @@ static const char *dlg_focus_name(int focus) {
 		return "percent";
 	if (focus == DLG_PROG_FIRST + 1)
 		return "circle";
+	if (focus == DLG_EDGE_FIRST)
+		return "wrap";
+	if (focus == DLG_EDGE_FIRST + 1)
+		return "page";
 	if (focus == DLG_OK)
 		return "ok";
 	if (focus == DLG_BACK)
@@ -617,17 +651,26 @@ int dialogs_options_json(char *buf, int size) {
 	bool open = options_open;
 
 	return snprintf(buf, size, ",\"options\":{\"open\":%s,\"focus\":\"%s\",\"choice\":\"%s\","
-					"\"progress\":\"%s\"}", open ? "true" : "false",
-					dlg_focus_name(open ? options_focus : -1),
+					"\"edge_choice\":\"%s\",\"progress\":\"%s\",\"edges\":\"%s\"}",
+					open ? "true" : "false", dlg_focus_name(open ? options_focus : -1),
 					open ? (options_arc ? "circle" : "percent") : "none",
-					settings.progress_arc ? "circle" : "percent");
+					open ? (options_paging ? "page" : "wrap") : "none",
+					settings.progress_arc ? "circle" : "percent",
+					settings.edge_paging ? "page" : "wrap");
 }
 
 static void dlg_progress_captions(view *v, int arc) {
-	widget_button_set_caption(&v->widgets[DLG_PROG_FIRST],
-								arc ? FONT_BUTTON_DESEL : FONT_BUTTON, caption_progress_percent);
-	widget_button_set_caption(&v->widgets[DLG_PROG_FIRST + 1],
-								arc ? FONT_BUTTON : FONT_BUTTON_DESEL, caption_progress_circle);
+	static const char **captions[DLG_PROGS] = {
+		&caption_progress_percent, &caption_progress_circle
+	};
+
+	dlg_choice_captions(v, DLG_PROG_FIRST, DLG_PROGS, arc, captions);
+}
+
+static void dlg_edge_captions(view *v, int paging) {
+	static const char **captions[DLG_EDGES] = { &caption_edge_wrap, &caption_edge_page };
+
+	dlg_choice_captions(v, DLG_EDGE_FIRST, DLG_EDGES, paging, captions);
 }
 
 dialog_options_result show_options_dialog(const view *sub_view) {
@@ -641,10 +684,16 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	u16 dw = theme_gfx[THEME_DIALOG]->w, dh = theme_gfx[THEME_DIALOG]->h;
 	u16 tw = theme_gfx[THEME_BUTTON_TINY]->w, th = theme_gfx[THEME_BUTTON_TINY]->h;
 	u16 sw = theme_gfx[THEME_BUTTON_SMALL]->w, sh = theme_gfx[THEME_BUTTON_SMALL]->h;
-	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, sort_y = row2 + th + 28;
-	// The sort and progress buttons are drawn smaller, to fit another row.
+	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, bottom_y = dh - sh - 6;
+	// The setting rows: buttons right-aligned to the device rows' edge, each
+	// label in what is left of its row.
 	u16 stw = tw * DLG_SMALL_SCALE, sth = th * DLG_SMALL_SCALE;
-	u16 prog_y = sort_y + sth + 28, bottom_y = dh - sh - 6;
+	u16 step = sth + DLG_SMALL_GAP, sort_y = row2 + th + 14, right = dw - gap;
+	u16 label_w = right - 3 * stw - 2 * DLG_SMALL_GAP - 32 - 8;
+	static const int row_first[3] = { DLG_SORT_FIRST, DLG_PROG_FIRST, DLG_EDGE_FIRST };
+	static const int row_count[3] = { DLG_SORTS, DLG_PROGS, DLG_EDGES };
+	const char *row_label[3] = { caption_sort_by, caption_progress, caption_edges };
+	int r;
 
 	app_entry_poll_status(true);
 
@@ -658,10 +707,6 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 
 	widget_label (&v->widgets[2], 32, 60, 1, caption_device,
 					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
-	widget_label (&v->widgets[3], 32, sort_y - 4, 1, caption_sort_by,
-					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
-	widget_label (&v->widgets[4], 32, prog_y - 4, 1, caption_progress,
-					dw - 64, FA_LEFT, FA_DESCENDER, FONT_LABEL);
 
 	for (i = 0; i < 3; ++i)
 		widget_button (&v->widgets[DLG_DEV_FIRST + i], gap + i * (gap + tw), 64, 1,
@@ -670,17 +715,21 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		widget_button (&v->widgets[DLG_DEV_FIRST + 3 + i],
 						(dw - 2 * tw - gap) / 2 + i * (gap + tw), row2, 1, BTN_TINY, NULL);
 
-	// The small buttons stand under the others' columns, centred on them.
-	for (i = 0; i < DLG_SORTS; ++i) {
-		widget_button (&v->widgets[DLG_SORT_FIRST + i],
-						gap + i * (gap + tw) + (tw - stw) / 2, sort_y, 1, BTN_TINY, NULL);
-		widget_button_scale (&v->widgets[DLG_SORT_FIRST + i], DLG_SMALL_SCALE);
-	}
+	for (r = 0; r < 3; ++r) {
+		u16 y = sort_y + r * step;
 
-	for (i = 0; i < DLG_PROGS; ++i) {
-		widget_button (&v->widgets[DLG_PROG_FIRST + i],
-						gap + i * (gap + tw) + (tw - stw) / 2, prog_y, 1, BTN_TINY, NULL);
-		widget_button_scale (&v->widgets[DLG_PROG_FIRST + i], DLG_SMALL_SCALE);
+		widget_label (&v->widgets[3 + r], 32, y + sth / 2, 1, row_label[r], label_w,
+						FA_LEFT, FA_EM_CENTERED, FONT_LABEL);
+		// Two values take the wider small buttons: the row is as wide as three.
+		bool two = row_count[r] == 2;
+		u16 bw = two ? sw * DLG_SMALL_SCALE : stw;
+
+		for (i = 0; i < (u32) row_count[r]; ++i) {
+			widget_button (&v->widgets[row_first[r] + i],
+							right - (row_count[r] - i) * (bw + DLG_SMALL_GAP) + DLG_SMALL_GAP,
+							y, 1, two ? BTN_SMALL : BTN_TINY, NULL);
+			widget_button_scale (&v->widgets[row_first[r] + i], DLG_SMALL_SCALE);
+		}
 	}
 
 	widget_button (&v->widgets[DLG_OK], 32, bottom_y, 1, BTN_SMALL, caption_ok);
@@ -694,6 +743,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	ret.device = device;
 	ret.sort = sort;
 	ret.progress_arc = settings.progress_arc;
+	ret.edge_paging = settings.edge_paging;
 
 	for (i = 0; i < DEVICE_COUNT; ++i) {
 		widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
@@ -704,6 +754,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 
 	dlg_sort_captions(v, ret.sort);
 	dlg_progress_captions(v, ret.progress_arc);
+	dlg_edge_captions(v, ret.edge_paging);
 
 	view_set_focus (v, DLG_BACK);
 
@@ -755,6 +806,10 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					(v->focus < DLG_PROG_FIRST + DLG_PROGS)) {
 				ret.progress_arc = v->focus - DLG_PROG_FIRST;
 				dlg_progress_captions(v, ret.progress_arc);
+			} else if ((v->focus >= DLG_EDGE_FIRST) &&
+					(v->focus < DLG_EDGE_FIRST + DLG_EDGES)) {
+				ret.edge_paging = v->focus - DLG_EDGE_FIRST;
+				dlg_edge_captions(v, ret.edge_paging);
 			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}
@@ -765,6 +820,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 
 		options_focus = v->focus;
 		options_arc = ret.progress_arc;
+		options_paging = ret.edge_paging;
 		options_open = true;
 	}
 	options_open = false;

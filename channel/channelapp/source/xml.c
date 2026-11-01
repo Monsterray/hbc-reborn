@@ -407,6 +407,7 @@ bool settings_load(void) {
 	settings.sort_order = 0;
 	settings.browse_mode = 0;
 	settings.progress_arc = 0;
+	settings.edge_paging = 0;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
 	memset(settings.avatar_mii, 0, sizeof(settings.avatar_mii));
 
@@ -463,6 +464,7 @@ bool settings_load(void) {
 	settings.sort_order = _get_elem_int(node, "sort_order", 0);
 	settings.browse_mode = _get_elem_int(node, "browse_mode", 0);
 	settings.progress_arc = _get_elem_int(node, "progress_arc", 0) == 1;
+	settings.edge_paging = _get_elem_int(node, "edge_paging", 0) == 1;
 	s = _get_elem_cdata(node, "app_sel");
 	if (s) {
 		strncpy(settings.app_sel, s, sizeof(settings.app_sel));
@@ -521,6 +523,8 @@ bool settings_save(void) {
 
 	node = mxmlNewElement(data, "progress_arc");
 	mxmlNewInteger(node, settings.progress_arc);
+	node = mxmlNewElement(data, "edge_paging");
+	mxmlNewInteger(node, settings.edge_paging);
 
 	if (strlen(settings.app_sel) > 0) {
 		node = mxmlNewElement(data, "app_sel");

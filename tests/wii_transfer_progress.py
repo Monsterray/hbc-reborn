@@ -6,8 +6,8 @@ waits until HBCS says where the focus is:
 
   upload     24 MB into sd:/apps/hbctest-progress/: the line reads
              "Receiving hbctest-progress/data.bin 42%" (PR 4's app folder)
-  1 u a      Options, up to Progress: Circle, A
-  d l a      down to Back, left to Ok, A: Options closes with the circle on
+  1 u u a    Options, up past Grid edges to Progress: Circle, A
+  d d l a    down to Back, left to Ok, A: Options closes with the circle on
   upload     the same again, now beside the progress circle
 
 The capture card pictures the TV through both uploads (tv_percent_*,
@@ -106,14 +106,17 @@ def main():
         hbc.send_buttons(wii, "1")
         o = until(lambda: (lambda o: o["open"] and o)(options(wii)), 10)
         check(bool(o) and o["focus"] == "back", f"1 opens Options on Back ({options(wii)})")
-        if o and o["focus"] == "back" and press("u", "circle") and accept("circle"):
+        if o and o["focus"] == "back" and press("u", "page") and press("u", "circle") and \
+                accept("circle"):
             o = until(lambda: (lambda o: o["choice"] == "circle" and o)(options(wii)), 5)
             check(bool(o), f"A picks Circle ({options(wii)})")
             cam = watch(out, "tv_options", 6)
             cam.wait(30)
-            if press("d", "back") and press("l", "ok") and accept("ok"):
-                o = until(lambda: (lambda o: not o["open"] and o)(options(wii)), 10)
-                check(bool(o) and o["progress"] == "circle", f"Ok closes Options, the circle in use ({options(wii)})")
+            if press("d", "page") and press("d", "back") and press("l", "ok") and accept("ok"):
+                # Options reads closed a moment before main.c takes its choice.
+                o = until(lambda: (lambda o: not o["open"] and o["progress"] == "circle" and o)(
+                    options(wii)), 10)
+                check(bool(o), f"Ok closes Options, the circle in use ({options(wii)})")
         o = options(wii)
         if o["open"]:   # never leave it open: B only
             hbc.send_buttons(wii, "b")

@@ -121,6 +121,15 @@ msgstr "Porcentaje"
 msgid "Circle"
 msgstr "Círculo"
 
+msgid "Grid edges:"
+msgstr "Bordes de la cuadrícula:"
+
+msgid "Wrap rows"
+msgstr "Pasar de fila"
+
+msgid "Turn page"
+msgstr "Pasar página"
+
 #: source/view.c
 msgid "Receiving"
 msgstr "Recibiendo"

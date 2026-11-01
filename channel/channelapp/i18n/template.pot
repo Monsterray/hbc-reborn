@@ -123,6 +123,18 @@ msgstr ""
 msgid "Circle"
 msgstr ""
 
+#: source/dialogs.c
+msgid "Grid edges:"
+msgstr ""
+
+#: source/dialogs.c
+msgid "Wrap rows"
+msgstr ""
+
+#: source/dialogs.c
+msgid "Turn page"
+msgstr ""
+
 #: source/view.c
 msgid "Receiving"
 msgstr ""

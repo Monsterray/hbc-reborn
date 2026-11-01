@@ -24,6 +24,7 @@ typedef struct {
 	int device;
 	app_sort sort;
 	int progress_arc;   // settings.progress_arc
+	int edge_paging;    // settings.edge_paging
 } dialog_options_result;
 
 extern u16 width_dialog, height_dialog;

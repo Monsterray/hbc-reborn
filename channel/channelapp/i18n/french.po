@@ -123,6 +123,15 @@ msgstr "Pourcent"
 msgid "Circle"
 msgstr "Cercle"
 
+msgid "Grid edges:"
+msgstr "Bords de la grille :"
+
+msgid "Wrap rows"
+msgstr "Ligne suivante"
+
+msgid "Turn page"
+msgstr "Page suivante"
+
 #: source/view.c
 msgid "Receiving"
 msgstr "Réception"
