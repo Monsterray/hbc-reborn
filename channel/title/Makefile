@@ -1,4 +1,4 @@
-CHANNEL_VERSION = 1.13.5
+CHANNEL_VERSION = 1.13.6
 
 TOOLS = ../../pywii/pywii-tools
 PYWII = ../../pywii/Common/pywii/wii.py
