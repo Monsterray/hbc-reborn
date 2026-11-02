@@ -9,8 +9,9 @@
 // kind, code and reason of a crash (fatals and hangs) and the kept log (HBCL),
 // 5 the name of the next Wiiload upload, for the play log (HBCA), 6 HBCA's
 // flags and each upload's result (HBCS "upload"), 7 the file op R (rename
-// and move), 8 the file op A and every FAT attribute in a listing.
-#define DEVNET_PROTO 8
+// and move), 8 the file op A and every FAT attribute in a listing, 9 the
+// tree and pattern delete (file op E).
+#define DEVNET_PROTO 9
 // Transfers run above the UI thread (64) and the loader's usual 48.
 #define DEVNET_THREAD_PRIO 80
 

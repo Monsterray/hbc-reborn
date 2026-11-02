@@ -64,7 +64,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 8 when the file op `A` and every FAT attribute in a listing exist, 7 when the file op `R` (rename and move) exists, 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
+`proto` is 9 when the file op `E` (tree and pattern delete) exists, 8 when the file op `A` and every FAT attribute in a listing exist, 7 when the file op `R` (rename and move) exists, 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
 `kind`, `code` and `reason` exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
 `crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
@@ -150,6 +150,32 @@ character, and paths of 256 bytes or more.
 | `M` | create a directory and its parents | none |
 | `A` | change FAT attributes: `size` bits 0-7 the values, bits 8-15 the mask of those to change (`r` 0x01, `h` 0x02, `s` 0x04, `a` 0x20; a mask bit outside those, or a `size` of 0x10000 or more, is `EINVAL`, and value bits outside the mask are ignored); a mask of 0 only reads (protocol 8, HBC 1.10.15) | the attributes after, as letters |
 | `R` | rename or move: `path` is the source, `size` the length of the destination path, which follows it; flags bit 1 replaces a file at the destination (protocol 7, HBC 1.10.14) | the destination as it ended up |
+| `E` | delete a tree or a pattern's matches (protocol 9; flags below) | u32 entries deleted |
+
+Op `E` takes flags in header byte 5: `0x04` deletes directories with
+everything under them (without it a directory must be empty, else
+`ENOTEMPTY`), and `0x02` makes the last path component a pattern, where `*`
+is any run of characters, `?` one byte, and case is ignored, as on FAT. A
+wildcard anywhere else in the path is `EINVAL`, and a pattern that matches
+nothing is `ENOENT`. HBC walks the tree itself, so a recursive delete or a
+`sync --delete` of a removed folder is one request instead of one per entry.
+It counts every entry first, so a request that cannot succeed (`ENOTEMPTY`,
+`EACCES` for a read-only entry, `EPERM`, `ENAMETOOLONG`, or `ELOOP` for a
+tree nested more than 16 levels) deletes nothing; after that it deletes
+files and then each emptied folder, and stops at the first error. Whatever
+the client asks, HBC never deletes a device root or `<device>:/apps` itself,
+however it is spelled (`sd:/APPS/`) or matched (`sd:/*`, `sd:/AP?S`): `EPERM`
+(a `.` component is `EINVAL` in every request). The
+menu shows "Deleting" with the name that was sent (the folder or the
+pattern, not each entry) and a progress circle that turns while HBC counts
+and then fills as entries go; a single `D` shows the name with the turning
+circle. Each delete reopens the folder it came from, because removing
+entries while libfat still iterated a folder left later file creation
+hanging on a real SD card. An older HBC or app agent answers `E` with
+`ENOSYS`, and `hbc.py` then deletes entry by entry (expanding patterns
+itself); it does the same on `ELOOP`, and on `EACCES` with `rm --force`,
+which clears read-only entry by entry. `hbc.py` waits up to ten minutes for
+the reply, as nothing is sent until the delete is done.
 
 After an upload, `hbc.py put` and `sync` ask for the file's checksum (`C`)
 and compare its size and CRC-32 with what they sent; one that differs is
