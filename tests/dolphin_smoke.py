@@ -467,6 +467,11 @@ def main():
     try:
         wait_version(run, seconds)
         print(f"PASS: HBC {expected} answered on {run.address}:4299")
+        # HBCU discovery: asked directly, since a broadcast need not reach
+        # Dolphin's host socket. One HBC answers, by its menu's name.
+        found = hbc.find_wiis(3, [run.address])
+        assert [(w["agent"], w["name"]) for w in found] == [(False, "Homebrew Channel")], found
+        print(f"PASS: HBCU discovery answered from {found[0]['address']}")
         if image.suffix.lower() == ".wad":
             title = run.profile.joinpath("Wii/title", *wad_title(image), "content")
             apps = sorted(p.name for p in title.glob("*.app")) if title.exists() else []

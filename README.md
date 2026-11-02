@@ -98,7 +98,10 @@ the command; for `send` and `run`, everything after the file goes to the app,
 and `--` ends option parsing. Large transfers show progress on a terminal.
 
 The Wii address comes from `--wii`, then `$HBC_WII`, `$WII_BENCH_IP`, or
-`$WIILOAD` (`tcp:ADDR`, the variable the devkitPro `wiiload` uses).
+`$WIILOAD` (`tcp:ADDR`, the variable the devkitPro `wiiload` uses). With
+none of those set, `hbc.py` asks the network (`hbc.py find`, a UDP broadcast)
+and uses the one Wii that answers. `hbc.py find` lists every Wii running HBC
+or an agent app, with its address and name.
 
 Remote paths are `<device>:/<path>` with device `sd`, `usb`, `usb2` (a
 second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslashes are refused. An app you
