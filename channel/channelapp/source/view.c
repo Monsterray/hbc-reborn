@@ -350,6 +350,44 @@ static void transfer_line(void) {
 	}
 }
 
+#define TURN_HOLD_MS 800
+#define TURN_FADE_MS 1200
+
+// HOME > Controller settings > Sideways remote: as a remote turns, the way
+// it is read now shows mid-screen for a moment, then fades.
+static void remote_turn(void) {
+	static gfx_queue_entry entry;
+	static bool was[4], showing;
+	static u64 since;
+	u32 ms;
+	int chan;
+
+	for (chan = 0; chan < 4; ++chan) {
+		bool now = hbc_agent_remote_sideways(chan);
+
+		if (now != was[chan]) {
+			gfx_entity *icon = theme_gfx[now ? THEME_REMOTE_SIDEWAYS : THEME_REMOTE_UPRIGHT];
+
+			was[chan] = now;
+			gfx_qe_entity(&entry, icon, (view_width - icon->w) / 2, (view_height - icon->h) / 2,
+						  TEX_LAYER_CURSOR - 1, COL_DEFAULT);
+			since = gettime();
+			showing = true;
+		}
+	}
+	if (!showing)
+		return;
+	ms = ticks_to_millisecs(diff_ticks(since, gettime()));
+	if (ms >= TURN_HOLD_MS + TURN_FADE_MS) {
+		showing = false;
+		return;
+	}
+	if (ms > TURN_HOLD_MS)
+		entry.entity.color = 0xffffff00 |
+							 (255 - 255 * (ms - TURN_HOLD_MS) / TURN_FADE_MS);
+	gfx_frame_push(&entry, 1);
+}
+
 void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 	u32 bd, bh, bu;
 	bool wm;
@@ -450,6 +488,7 @@ void view_plot (view *v, u32 alpha, u32 *down, u32 *held, u32 *up) {
 		gfx_frame_push(&entry_throbber, 1);
 
 	transfer_line();
+	remote_turn();
 
 	if (wm) {
 		if ((w != -1) && (ct != CUR_DRAG))

@@ -523,6 +523,8 @@ bool hbc_agent_calibration(int chan, hbc_agent_cal *out);
 void hbc_agent_remotes_scanned(void);
 u32 hbc_agent_remote_buttons(int chan, u32 buttons);
 bool hbc_agent_sideways_remotes(void);
+/* Whether remote chan's D-pad is being turned now (HBC shows it). */
+bool hbc_agent_remote_sideways(int chan);
 
 #ifdef __cplusplus
 }

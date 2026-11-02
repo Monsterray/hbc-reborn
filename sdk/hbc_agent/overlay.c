@@ -276,8 +276,12 @@ void hbc_agent_remotes_scanned(void) {
 						WPAD_Data(chan) : NULL);
 }
 
+bool hbc_agent_remote_sideways(int chan) {
+	return chan >= 0 && chan < 4 && hbc_agent_sideways_remotes() && sideways[chan].sideways;
+}
+
 u32 hbc_agent_remote_buttons(int chan, u32 buttons) {
-	if (chan < 0 || chan >= 4 || !hbc_agent_sideways_remotes())
+	if (!hbc_agent_remote_sideways(chan))
 		return buttons;
 	return sideways_buttons(&sideways[chan], buttons);
 }

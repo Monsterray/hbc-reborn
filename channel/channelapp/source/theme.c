@@ -57,6 +57,9 @@
 #include "progress_png.h"
 #include "content_arrow_up_png.h"
 #include "content_arrow_down_png.h"
+// view.c
+#include "remote_upright_png.h"
+#include "remote_sideways_png.h"
 
 #define _ENTRY(n, w, h, fn) \
 	{ \
@@ -131,7 +134,9 @@ static const struct {
 	ENTRY(apps_grid_hover, 144, 64),
 	ENTRY(progress, 400, 112),
 	ENTRY(content_arrow_up, 32, 8),
-	ENTRY(content_arrow_down, 32, 8)
+	ENTRY(content_arrow_down, 32, 8),
+	ENTRY(remote_upright, 112, 112),
+	ENTRY(remote_sideways, 112, 112)
 };
 
 static bool theme_get_index(u32 *index, bool *ws, const char *filename) {
