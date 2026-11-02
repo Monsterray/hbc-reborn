@@ -135,8 +135,8 @@ static const struct {
 	ENTRY(progress, 400, 112),
 	ENTRY(content_arrow_up, 32, 8),
 	ENTRY(content_arrow_down, 32, 8),
-	ENTRY(remote_upright, 112, 112),
-	ENTRY(remote_sideways, 112, 112)
+	ENTRY(remote_upright, 56, 56),
+	ENTRY(remote_sideways, 56, 56)
 };
 
 static bool theme_get_index(u32 *index, bool *ws, const char *filename) {

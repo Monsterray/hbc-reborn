@@ -354,7 +354,7 @@ static void transfer_line(void) {
 #define TURN_FADE_MS 1200
 
 // HOME > Controller settings > Sideways remote: as a remote turns, the way
-// it is read now shows mid-screen for a moment, then fades.
+// it is read now shows at the top right for a moment, then fades.
 static void remote_turn(void) {
 	static gfx_queue_entry entry;
 	static bool was[4], showing;
@@ -369,7 +369,7 @@ static void remote_turn(void) {
 			gfx_entity *icon = theme_gfx[now ? THEME_REMOTE_SIDEWAYS : THEME_REMOTE_UPRIGHT];
 
 			was[chan] = now;
-			gfx_qe_entity(&entry, icon, (view_width - icon->w) / 2, (view_height - icon->h) / 2,
+			gfx_qe_entity(&entry, icon, view_width - 32 - icon->w, 32,
 						  TEX_LAYER_CURSOR - 1, COL_DEFAULT);
 			since = gettime();
 			showing = true;
