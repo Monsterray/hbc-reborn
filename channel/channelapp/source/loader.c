@@ -529,6 +529,11 @@ void loader_tcp_init (void) {
 // the next frame the TCP thread is free (it holds its lock while it works).
 static volatile bool tcp_restart;
 
+// When the network last failed to start (0: not waiting) and how long
+// loader_signal_threads() waits before it tries again; reset once it is up.
+static u64 net_failed_at;
+static u32 net_retry_ms;
+
 void loader_tcp_restart (void) {
 	tcp_restart = true;
 }
@@ -548,8 +553,24 @@ void loader_signal_threads (void) {
 			ta_tcp.cmd = LDTCPCMD_INIT;
 			LWP_CondBroadcast(ta_tcp.cond);
 		} else if (loader_tcp_initialized () && !ta_tcp.handshaked) {
+			net_retry_ms = 0;
 			ta_tcp.cmd = LDTCPCMD_ACCEPT;
 			LWP_CondBroadcast(ta_tcp.cond);
+		} else if (ta_tcp.running && ta_tcp.state == LDTCPS_UNINITIALIZED &&
+				   ta_tcp.cmd == LDTCPCMD_IDLE) {
+			// A failed start (no DHCP answer yet, the access point busy) tries
+			// again by itself, waiting 2 s, then 4, up to 32: an unattended Wii
+			// would stay off the network until Z or the network icon is pressed.
+			if (!net_failed_at) {
+				net_failed_at = gettime ();
+				net_retry_ms = net_retry_ms ? net_retry_ms * 2 : 2000;
+				if (net_retry_ms > 32000)
+					net_retry_ms = 32000;
+			} else if (ticks_to_millisecs (diff_ticks (net_failed_at, gettime ())) >= net_retry_ms) {
+				net_failed_at = 0;
+				ta_tcp.cmd = LDTCPCMD_INIT;
+				LWP_CondBroadcast(ta_tcp.cond);
+			}
 		}
 		LWP_MutexUnlock(ta_tcp.cmutex);
 	}
