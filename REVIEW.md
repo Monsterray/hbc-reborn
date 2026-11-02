@@ -161,6 +161,31 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.13.2: a fourth Wii Remote, or a Balance Board, no longer crashes the channel
+
+libogc 3.1's `wiiuse_init` builds each of its six Bluetooth slots a queue of
+256 commands in the kernel heap, 64 KB shared with its threads. Three fit;
+slots 3 to 5 keep an empty queue, and the first command to a device there
+(its LEDs, as it connects) reads address 0. `source/wpadqueue.c` builds the
+queues from the normal heap instead, through `-Wl,--wrap=wiiuse_init_cmd_queue`
+on the app's link (not the stub's).
+
+The wrap is needed: `wiiuse_init_cmd_queue` is defined in libwiiuse's
+`io_wii.o`, with `wiiuse_io_write` and `wiiuse_accept` that the rest of the
+library uses, so defining our own would collide; `wiiuse_init` calls it from
+inside libwiiuse, and `__wpads` is static, so nothing public reaches the
+queues. Only this one function is wrapped.
+
+- **Checked:** `tests/dolphin_wpad_queue.py --stock` boots
+  `tests/wpad_queue_app` on libogc as it is and reads the six queues: slots 0
+  to 2 built, 3 to 5 not. The same app with `wpadqueue.c` has all six. The
+  channel DOL builds with `-Werror`, and `tests/dolphin_smoke.py` boots it.
+- **Not yet checked:** a fourth Wii Remote or a Balance Board connecting to
+  the channel on a real Wii; Dolphin cannot connect either.
+
+**Trigger:** pair four Wii Remotes (or a Balance Board) with the bench Wii
+and connect them in HBC; before this change the program crashes.
+
 ### 1.13.0: release; the Mii picker, and HBC built on libogc 3.1.0 again
 
 Everything since 1.12.1, released with both WADs (`OHBC` and `LULZ`):
