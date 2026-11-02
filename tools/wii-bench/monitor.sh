@@ -85,6 +85,10 @@ KEYS
     b   bump a turn that waits for HBC: you brought the Wii back, so it probes now and
         starts after 2 s of quiet instead of 20 (no y: it changes nothing if HBC is not there)
     g   give up waiting for a frozen Wii to come back (its data is not saved)
+  The page shows the keys twice. At the top, a legend by group (SELECT, JOB, WII, FREEZE): a key is
+  bold and its colour says what it does (cyan moves, green is safe, yellow changes a setting, red
+  cancels work; red and yellow ask y first). On the last row, a bar lists only the keys that apply
+  to the selection; the others are dim (job keys for a Wii, Wii keys for a job).
   The WIIS table at the top of the manage page is selectable the same way: select a Wii, then
     t   pin it (only jobs added with --wii NAME run there) or unpin it (asks y first)
     G   add it to a group (--wii GROUP then means any free Wii of the group): type the name,
@@ -354,7 +358,7 @@ monitor_prepare_header() {
 }
 
 header_line() {
-    printf -v V "${c_bold}${c_cyan}${MONITOR_HEADER_TITLE}${c_reset}  %s  %s ${c_gray}n/p cycle · q quit · %ss${c_reset}%s" \
+    printf -v V "${c_bold}${c_cyan}${MONITOR_HEADER_TITLE}${c_reset}  %s  %s ${c_bold}n/p${c_reset}${c_gray} cycle · ${c_reset}${c_bold}q${c_reset}${c_gray} quit · %ss${c_reset}%s" \
         "$MONITOR_HEADER_TS" "$MONITOR_TABS_RENDERED" "$REFRESH" "${1:-}"
     lines+=("$V")
 }
@@ -866,10 +870,58 @@ CONFIRM=""; CONFIRM_ARGS=()                        # an action waiting for its y
 INPUT_WII=""; INPUT_BUF=""                         # a group name being typed for this Wii
 MSG=""; MSG_UNTIL=0                                # the last action's answer, shown a while
 
+# The key legend. A key is bold and coloured by what it does: cyan moves, green is safe, yellow
+# changes a setting, red cancels work (every red and yellow key asks y first).
+# lk COLOR KEY TEXT -- appends "KEY TEXT" to LEG, the key lit; a dim COLOR (gray) dims both
+lk() {
+    if [ "$1" = "$c_gray" ]; then LEG+="${c_gray}$2 $3${c_reset}   "
+    else LEG+="${c_bold}$1$2${c_reset} $3   "; fi
+}
+legend_rows() {
+    local label
+    lines+=("  ${c_bold}${c_cyan}SELECT${c_reset}  click a row, or ${c_bold}${c_cyan}j${c_reset}/${c_bold}${c_cyan}k${c_reset} up and down")
+    LEG=""; lk "$c_red" c "cancel/stop it"; lk "$c_red" a "its agent's"; lk "$c_red" w "its workstation's"; lk "$c_red" X "all queued"
+    lines+=("  ${c_bold}${c_red}JOB   ${c_reset}  ${LEG}")
+    LEG=""; lk "$c_yellow" t "pin / unpin"; lk "$c_yellow" G "group (-name takes it out)"
+    lines+=("  ${c_bold}${c_yellow}WII   ${c_reset}  ${LEG}")
+    LEG=""; lk "$c_green" b "bump a wait for HBC"; lk "$c_yellow" g "give up a freeze wait"
+    lines+=("  ${c_bold}${c_green}FREEZE${c_reset}  ${LEG}")
+    lines+=("  ${c_gray}${c_bold}red${c_reset}${c_gray} cancels work · ${c_reset}${c_bold}${c_yellow}yellow${c_reset}${c_gray} changes a setting · ${c_reset}${c_bold}${c_green}green${c_reset}${c_gray} is safe · red and yellow ask y first${c_reset}")
+}
+
+# manage_footer -- the keys that apply to what is selected, lit; the others dim. Sets FOOT.
+manage_footer() {
+    local job=$c_gray wii=$c_gray freeze=$c_gray
+    LEG=""
+    if [ -n "$INPUT_WII" ]; then
+        lk "$c_green" Enter "adds it (-name takes it out)"; lk "$c_yellow" Esc "leaves"
+        FOOT="${c_bold}${c_yellow}GROUP FOR ${INPUT_WII}${c_reset}  ${LEG}"; return
+    elif [ -n "$CONFIRM" ]; then
+        lk "$c_green" y "do it"; lk "$c_yellow" "any other key" "leaves it"
+        FOOT="${c_bold}${c_yellow}ASKING${c_reset}  ${LEG}"; return
+    fi
+    if [ -z "$SELECTED" ]; then
+        lk "$c_cyan" "click a row" "or"; lk "$c_cyan" j/k "to select a job or a Wii"
+        FOOT="${c_bold}${c_cyan}NOTHING SELECTED${c_reset}  ${LEG}"; return
+    fi
+    if sel_wii; then
+        lk "$c_yellow" t "pin / unpin"; lk "$c_yellow" G "group"
+        lk "$c_gray" c "cancel"; lk "$c_gray" a "agent's"; lk "$c_gray" w "workstation's"; lk "$c_gray" b "bump"
+        FOOT="${c_bold}${c_yellow}WII ${SELECTED}${c_reset}  ${LEG}"
+    else
+        lk "$c_red" c "cancel/stop"; lk "$c_red" a "agent's"; lk "$c_red" w "workstation's"; lk "$c_red" X "all queued"
+        lk "$c_green" b "bump"
+        if [ -n "${KV[recovering_id]:-}" ]; then lk "$c_yellow" g "give up"; else lk "$c_gray" g "give up"; fi
+        lk "$c_gray" t "pin"; lk "$c_gray" G "group"
+        FOOT="${c_bold}${c_red}JOB ${SELECTED}${c_reset}  ${LEG}"
+    fi
+}
+
 render_manage() {
     local i fmt nm host color mark n="${NROWS[manage]:-0}" ids=() sel_ok=0
     MANAGE_AT=()
-    heading "$c_cyan" "MANAGE" "click a job or j/k to select; c cancel/stop it, a its agent's, w its workstation's, X all queued, b bump a wait for HBC, g give up a freeze wait" manage
+    heading "$c_cyan" "MANAGE" "" manage
+    legend_rows
     if [ -n "$INPUT_WII" ]; then
         lines+=("  ${c_bold}${c_yellow}Group for ${INPUT_WII} (a name adds it, -name takes it out; Enter does it, Esc leaves): ${INPUT_BUF}_${c_reset}")
     elif [ -n "$CONFIRM" ]; then
@@ -886,7 +938,7 @@ render_manage() {
     lines+=("")
     local nw="${NROWS[wiis]:-0}" mode wcolor wgroups wlacks
     if (( nw > 0 )); then                          # the Wiis: pin, unpin, groups (t, G)
-        heading "$c_cyan" "WIIS" "click one or j/k; t pins or unpins it, G adds it to a group (-name takes it out)" wiiset
+        heading "$c_cyan" "WIIS" "click one or j/k to select it" wiiset
         printf -v fmt "%%1s %%-10s %%-15s %%-17s %%-22s %%-14s %%s"
         table_header wiiset "$fmt" mark:' ' name:WII ip:ADDRESS mode:TAKES groups:GROUPS lacks:LACKS state:STATE
         for (( i = 0; i < nw; i++ )); do
@@ -1110,8 +1162,17 @@ build_frame() {
         errors)  render_errors ;;
         history) render_history ;;
         log)     render_log ;;
-        manage)  render_manage ;;
+        manage)  render_manage; add_footer ;;
     esac
+}
+
+# add_footer -- the manage page's key bar on the screen's last row (right after the page when it is printed once)
+add_footer() {
+    manage_footer
+    if (( ONCE )); then lines+=("" "  $FOOT"); return; fi
+    while (( ${#lines[@]} < ROWS_MAX - 1 )); do lines+=(""); done
+    (( ${#lines[@]} >= ROWS_MAX )) && lines=("${lines[@]:0:ROWS_MAX-1}")
+    lines+=("  $FOOT")
 }
 
 cleanup() {

@@ -467,6 +467,11 @@ whichever Wii is free first, unless it names one.
   python tools/wii-bench/wiibench.py wii dev --lacks disc      # (and --has disc)
   ```
 
+  The manage page prints its keys twice: a legend at the top by group (SELECT, JOB, WII,
+  FREEZE), each key bold and coloured by what it does (cyan moves, green is safe, yellow
+  changes a setting, red cancels work; red and yellow ask `y` first), and a bar on the last row
+  that lights only the keys that apply to the selection and dims the rest.
+
   On the manage page (key `5`), the WIIS table at the top is selectable like a job: click a
   Wii or use `j`/`k`, then `t` pins or unpins it (it asks `y` first), and `G` asks for a group
   name: type it and press Enter to add the Wii to that group, or type `-name` to take it out
