@@ -59,6 +59,15 @@ class MemoryLayoutTest(unittest.TestCase):
         self.assertEqual(addr % 32, 0, f"gp_fifo at {addr:#x} is not 32-byte aligned")
         self.assertTrue(MEM1[0] <= addr and addr + size <= MEM1[1], f"gp_fifo at {addr:#x} is not in MEM1")
 
+    def test_crash_screen_misses_hbc(self):
+        # libogc's own crash screen clears an XFB at 0x81700000; past that it
+        # wipes HBC's stacks and shows nothing, so HBC must draw its own.
+        syms = self.symbols()
+        nm = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
+        end = next(int(l.split()[0], 16) for l in nm.splitlines() if l.endswith(" _end"))
+        if end > 0x81700000:
+            self.assertIn("hbc_exception_screen", syms, "HBC ends past 0x81700000 without its own crash screen")
+
     def test_small_data_base_is_the_section_start(self):
         nm = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
         base = {line.split()[2]: int(line.split()[0], 16) for line in nm.splitlines() if len(line.split()) == 3}

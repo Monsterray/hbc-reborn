@@ -113,6 +113,8 @@ void gfx_init_video (void) {
 
 	for (i = 0; i < 4; ++i)
 		VIDEO_WaitVSync();
+
+	panic_install_exception_screen();
 }
 
 void gfx_init () {
@@ -194,6 +196,10 @@ void gfx_deinit (void) {
 
 	for (i = 0; i < 4; ++i)
 		VIDEO_WaitVSync();
+}
+
+void *gfx_xfb(void) {
+	return xfb;
 }
 
 GXRModeObj *gfx_video_mode(void) {

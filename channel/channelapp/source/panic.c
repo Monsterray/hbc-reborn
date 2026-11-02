@@ -1,5 +1,9 @@
 #include <string.h>
+#include <gccore.h>
 #include <ogc/machine/processor.h>
+#include <tuxedo/ppc/exception.h>
+
+#include "gfx.h"
 
 #include "panic.h"
 
@@ -137,4 +141,78 @@ void _panic(u32 file, u32 line)
 	// needs AHBPROT, is evil. so sue me.
 	write32(HW_RESETS, read32(HW_RESETS)&(~1));
 	while(1);
+}
+
+// ---- The crash screen for an exception in HBC itself -----------------------
+//
+// libogc 3's own screen (default_panic.c) draws on a fixed XFB at 0x81700000,
+// "above ArenaHi" for a normal app. HBC's image ends at 0x81777900 and its
+// ArenaHi is 0x817FEFF0 (newrvl.ld), so that XFB lies over HBC's own .bss and
+// stacks, among them the exception stack the handler is running on: the
+// clearing of the XFB wiped the handler's own frames and the text never
+// appeared. This is the same screen on the framebuffer HBC already shows.
+
+extern void __console_init(void *destbuffer, int xstart, int ystart, int xres, int yres, int stride);
+extern void __reload(void);
+// Sets the VI registers at once; VIDEO_SetNextFramebuffer waits for a
+// retrace interrupt, and there is none in an exception.
+extern void VIDEO_SetFramebuffer(void *fb);
+extern void udelay(int us);
+#define PANIC_RELOAD_S 20
+
+static const char *const exc_names[] = {
+	[PPC_EXCPT_RESET] = "System Reset", [PPC_EXCPT_MCHK] = "Machine Check",
+	[PPC_EXCPT_DSI] = "DSI", [PPC_EXCPT_ISI] = "ISI", [PPC_EXCPT_IRQ] = "Interrupt",
+	[PPC_EXCPT_ALIGN] = "Alignment", [PPC_EXCPT_UNDEF] = "Program",
+	[PPC_EXCPT_FPU] = "Floating Point", [PPC_EXCPT_DECR] = "Decrementer",
+	[PPC_EXCPT_SYSCALL] = "System Call", [PPC_EXCPT_TRACE] = "Trace",
+	[PPC_EXCPT_PM] = "Performance", [PPC_EXCPT_BKPT] = "IABR",
+};
+
+static bool in_mem1(u32 p) {
+	return p >= 0x80000000 && p < 0x81800000 && !(p & 3);
+}
+
+static void hbc_exception_screen(unsigned exid, PPCContext *ctx)
+{
+	GXRModeObj *rm = gfx_video_mode();
+	void *fb = gfx_xfb();
+	u32 w = rm->fbWidth, h = rm->xfbHeight, bh = h > 500 ? 96 : 48;
+	int timer = PANIC_RELOAD_S * 50;
+	u32 i, sp;
+
+	GX_AbortFrame();
+	VIDEO_ClearFrameBuffer(rm, fb, COLOR_MAROON);
+	__console_init(fb, 48, bh, w - 96, h - 2 * bh, 2 * w);
+	VIDEO_SetFramebuffer(fb);
+
+	kprintf("Exception (%s) occurred!\n", exid < sizeof exc_names / sizeof *exc_names && exc_names[exid] ? exc_names[exid] : "?");
+	for (i = 0; i < 8; i++)
+		kprintf("GPR%02d %08X GPR%02d %08X GPR%02d %08X GPR%02d %08X\n",
+				i, ctx->gpr[i], 8 + i, ctx->gpr[8 + i], 16 + i, ctx->gpr[16 + i], 24 + i, ctx->gpr[24 + i]);
+	kprintf("   PC %08X    LR %08X   MSR %08X\n", ctx->pc, ctx->lr, ctx->msr);
+	kprintf("   CR %08X   CTR %08X   XER %08X\n", ctx->cr, ctx->ctr, ctx->xer);
+	if (exid == PPC_EXCPT_DSI)
+		kprintf("  DAR %08X DSISR %08X\n", mfspr(DAR), mfspr(DSISR));
+
+	kprintf("\nSTACK DUMP:\n%08X", ctx->pc);
+	for (sp = ctx->gpr[1], i = 1; i < 10 && in_mem1(sp); i++, sp = *(u32 *)sp)
+		kprintf(" --> %08X", ((u32 *)sp)[1]);
+	kprintf("\n\nPress RESET, or Z on a GameCube Controller, to reload\n\n");
+
+	PAD_Init();
+	for (;;) {
+		udelay(20000);
+		PAD_ScanPads();
+		if (!timer || SYS_ResetButtonDown() || (PAD_ButtonsDown(0) & PAD_TRIGGER_Z))
+			__reload();
+		if (timer > 0 && !(timer % 50))
+			kprintf("\x1b[2K\rReloading in %d seconds", timer / 50);
+		timer--;
+	}
+}
+
+void panic_install_exception_screen(void)
+{
+	PPCExcptCurPanicFn = hbc_exception_screen;
 }

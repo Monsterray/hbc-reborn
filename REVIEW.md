@@ -161,6 +161,33 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.3: the crash screen shows its text again
+
+A crash in HBC itself showed no text, and on the bench Wii (a Balance Board
+syncing with 1.14.0) it then went to standby and ignored the buttons.
+libogc 3.1.0's crash screen (`default_panic.c:50`) clears a fixed XFB at
+0x81700000, "above ArenaHi" for a normal app. HBC's `.bss` runs to
+0x81753900 (ArenaHi 0x817FEFF0, `newrvl.ld`), so the clear wiped HBC's
+stacks, among them the exception stack the handler runs on, and it went off
+the rails before printing. `panic.c` now installs `hbc_exception_screen` as
+`PPCExcptCurPanicFn`: the same dump on the framebuffer HBC already shows,
+then RESET, Z on a GameCube Controller, or 20 seconds reloads. It points the
+VI at that framebuffer with `VIDEO_SetFramebuffer`, which writes the
+registers at once: `VIDEO_SetNextFramebuffer` and `VIDEO_SetBlack` wait for
+a retrace interrupt, and an exception has none (the first bench try showed
+no picture). The countdown rewrites one line, so the dump stays on screen.
+
+- **Checked:** on the bench Wii, a scratch build that writes to address 10
+  eight seconds into the menu shows "Exception (DSI) occurred!", the
+  registers and the stack on the capture card, counts down, and reloads the
+  installed channel (it answers 1.14.0). In Dolphin (MMU on) the same, read
+  from the XFB over the GDB stub. `tests/test_memory_layout.py` fails if HBC
+  ends past 0x81700000 without its own screen.
+- **Not covered:** a crash before `gfx_init` has unblanked the screen stays
+  black (the VI is still black then), though it still reloads. Without a
+  stub (`STUBHAXX`), Dolphin spins in `SYS_ResetSystem`'s reset callbacks;
+  that path is libogc's own.
+
 ### 1.14.1: a fourth Wii Remote, or a Balance Board, no longer crashes the channel
 
 libogc 3.1's `wiiuse_init` builds each of its six Bluetooth slots a queue of
@@ -189,7 +216,8 @@ and connect them in HBC; before this change the program crashes.
 1.14.2: the wrap returns `void`, as libogc's function does, and if neither
 heap has room the slot gets an empty queue, so commands to it are dropped
 (`wiiuse_sendcmd` already checks for none) instead of read from address 0.
-Seen on the bench Wii: 1.14.0 crashes as a Balance Board syncs.
+Seen on the bench Wii: 1.14.0 crashes as a Balance Board syncs; 1.14.3 kept
+answering `hbc.py` through a 90 s Balance Board sync.
 
 ### 1.14.0: release; sideways remotes, transfers you can follow, packed DOLs again
 
