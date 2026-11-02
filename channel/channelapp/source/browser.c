@@ -291,12 +291,7 @@ static unsigned browser_directions(u32 buttons) {
 		(buttons & PADS_LEFT ? BN_LEFT : 0);
 }
 
-bool browser_set_focus(u32 bd, u32 bh) {
-	unsigned key = browser_repeat_step(&nav_repeat, browser_directions(bd),
-			browser_directions(bh), ticks_to_millisecs(gettime()));
-	if (!key)
-		return false;
-
+static void browser_step_focus(unsigned key) {
 	if (settings.edge_paging && (key == BN_LEFT || key == BN_RIGHT)) {
 		int base = AE_OFFSET + (first_set ? 0 : MAX_COLUMNS * ROWS);
 		int local = v_browser->focus - base;
@@ -310,45 +305,57 @@ bool browser_set_focus(u32 bd, u32 bh) {
 				browser_gen_view(BA_NEXT, entries[target]);
 			else
 				view_set_focus(v_browser, base + target - top_offset);
-			return true;
+			return;
 		}
 	}
 
 	if (columns_current == 1) {
 		if (key == BN_UP) {
 			view_set_focus_prev(v_browser);
-			return true;
+			return;
 		}
 
 		if (key == BN_DOWN) {
 			view_set_focus_next(v_browser);
-			return true;
+			return;
 		}
-
-		return true;
 	} else {
 		if (key == BN_LEFT) {
 			view_set_focus_prev(v_browser);
-			return true;
+			return;
 		}
 
 		if (key == BN_RIGHT) {
 			view_set_focus_next(v_browser);
-			return true;
+			return;
 		}
 
 		if (key == BN_UP) {
 			view_move_focus(v_browser, -columns_current);
-			return true;
+			return;
 		}
 
 		if (key == BN_DOWN) {
 			view_move_focus(v_browser, columns_current);
-			return true;
+			return;
 		}
-
-		return true;
 	}
+}
+
+bool browser_set_focus(u32 bd, u32 bh) {
+	unsigned key = browser_repeat_step(&nav_repeat, browser_directions(bd),
+			browser_directions(bh), ticks_to_millisecs(gettime()));
+	const app_entry *app = browser_sel();
+	s8 focus = v_browser->focus;
+
+	if (!key)
+		return false;
+
+	browser_step_focus(key);
+	if (browser_sel() == app)
+		view_edge_bump(v_browser, focus, key == BN_RIGHT ? 1 : key == BN_LEFT ? -1 : 0,
+				key == BN_DOWN ? 1 : key == BN_UP ? -1 : 0);
+	return true;
 }
 
 app_entry *browser_sel(void) {

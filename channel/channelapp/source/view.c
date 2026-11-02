@@ -10,6 +10,7 @@
 #include "devfile.h"
 #include "transfer_arc.h"
 #include "xml.h"
+#include "edge_bump.h"
 #include "i18n.h"
 #include "font.h"
 #include <ogc/lwp_watchdog.h>
@@ -42,6 +43,13 @@ static gfx_entity gradient_subview;
 static gfx_queue_entry entry_subview;
 
 static bool cursor_enabled;
+
+// The one widget shaking after the D-pad pushed against an edge.
+static const view *bump_view;
+static s8 bump_widget, bump_dx, bump_dy;
+static u64 bump_start;
+static gfx_coordinates bump_coords;
+static gfx_queue_entry bump_push;
 static bool rumble_enabled;
 static bool throbber_enabled;
 
@@ -110,6 +118,9 @@ void view_free (view *v) {
 	if (!v)
 		return;
 
+	if (v == bump_view)
+		bump_view = NULL;
+
 	for (i = 0; i < v->widget_count; ++i)
 		widget_free(&v->widgets[i]);
 
@@ -141,7 +152,17 @@ static void view_push_view (const view *v, u32 subview_alpha) {
 		w = &v->widgets[i];
 
 		if (w->flags & WF_VISIBLE) {
-			gfx_frame_push (&w->qe_coords_push, 1);
+			if (v == bump_view && i == bump_widget) {
+				float d = edge_bump_offset(ticks_to_millisecs(diff_ticks(bump_start, gettime())));
+
+				bump_coords = w->coords;
+				bump_coords.x += d * bump_dx;
+				bump_coords.y += d * bump_dy;
+				gfx_qe_origin_push(&bump_push, &bump_coords);
+				gfx_frame_push(&bump_push, 1);
+			} else {
+				gfx_frame_push (&w->qe_coords_push, 1);
+			}
 			for (j = 0; j < w->layer_count; ++j) {
 				l = &w->layers[j];
 
@@ -597,6 +618,17 @@ u8 view_set_focus_next (view *v) {
 		}
 
 	return v->focus;
+}
+
+void view_edge_bump(const view *v, s8 old_focus, s8 dx, s8 dy) {
+	if (v->focus == -1 || v->focus != old_focus)
+		return;
+
+	bump_view = v;
+	bump_widget = v->focus;
+	bump_dx = dx;
+	bump_dy = dy;
+	bump_start = gettime();
 }
 
 u8 view_move_focus(view *v, s8 mod) {
