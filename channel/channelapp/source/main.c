@@ -327,7 +327,7 @@ void main_real(void) {
 	u8 fhw;
 
 	u32 bd, bh, bu;
-	s8 clicked;
+	s8 clicked, old_focus;
 	s16 mm;
 
 #ifdef ENABLE_UPDATES
@@ -721,11 +721,16 @@ void main_real(void) {
 		}
 
 		if (v_current == v_detail) {
-			if (bd & PADS_LEFT)
+			old_focus = v_current->focus;
+			if (bd & PADS_LEFT) {
 				view_set_focus_prev (v_current);
+				view_edge_bump (v_current, old_focus, -1, 0);
+			}
 
-			if (bd & PADS_RIGHT)
+			if (bd & PADS_RIGHT) {
 				view_set_focus_next (v_current);
+				view_edge_bump (v_current, old_focus, 1, 0);
+			}
 
 			mm = 0;
 			if (bd & PADS_UP)

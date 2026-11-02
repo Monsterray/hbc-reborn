@@ -446,7 +446,7 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 	view *v;
 	u8 fhw;
 	u32 bd, bu;
-	s8 res;
+	s8 res, old_focus;
 	s16 mm;
 	u64 start = gettime ();
 	u32 shown = 0, gone;
@@ -489,11 +489,16 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 										FONT_BUTTON, last);
 		}
 
-		if (bd & PADS_LEFT)
+		old_focus = v->focus;
+		if (bd & PADS_LEFT) {
 			view_set_focus_prev (v);
+			view_edge_bump (v, old_focus, -1, 0);
+		}
 
-		if (bd & PADS_RIGHT)
+		if (bd & PADS_RIGHT) {
 			view_set_focus_next (v);
+			view_edge_bump (v, old_focus, 1, 0);
+		}
 
 		mm = 0;
 		if (bd & PADS_UP)
@@ -678,6 +683,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	view *v;
 	dialog_options_result ret;
 	int device, slot;
+	s8 old_focus;
 	app_sort sort;
 	bool status[DEVICE_COUNT];
 	u32 i, bd;
@@ -772,17 +778,26 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		// hbc.py keeps getting answers while Options is open.
 		loader_signal_threads ();
 
-		if (bd & PADS_LEFT)
+		old_focus = v->focus;
+		if (bd & PADS_LEFT) {
 			view_set_focus_prev (v);
+			view_edge_bump (v, old_focus, -1, 0);
+		}
 
-		if (bd & PADS_RIGHT)
+		if (bd & PADS_RIGHT) {
 			view_set_focus_next (v);
+			view_edge_bump (v, old_focus, 1, 0);
+		}
 
-		if (bd & PADS_UP)
+		if (bd & PADS_UP) {
 			dlg_move_row(v, -1);
+			view_edge_bump (v, old_focus, 0, -1);
+		}
 
-		if (bd & PADS_DOWN)
+		if (bd & PADS_DOWN) {
 			dlg_move_row(v, 1);
+			view_edge_bump (v, old_focus, 0, 1);
+		}
 
 		if (bd & (PADS_B | PADS_1))
 			break;
