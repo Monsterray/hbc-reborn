@@ -161,6 +161,34 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.0: release; sideways remotes, transfers you can follow, packed DOLs again
+
+Everything since 1.13.0, released with both WADs (`OHBC` and `LULZ`). The
+outside pull requests from Matt Sephton (gingerbeardman) are in:
+
+- **Sideways remote** (1.13.12 to 1.13.14, PR 6): HOME > WiiMote >
+  Controller settings > Sideways remote turns the D-pad with the remote,
+  in HBC's menus and in the HOME overlay (`sdk/hbc_agent/sideways.h`, one
+  state per remote). A remote that sees the sensor bar counts as upright.
+  An icon at the top right shows which way a turning remote is read, then
+  fades. Off by default, kept in settings.xml.
+- **The app list** (1.13.10, PR 7): D-pad repeat, and Grid edges: Turn page.
+- **Transfers** (1.13.2, 1.13.3, 1.13.8; PRs 4, 5, 8): the label shows the
+  app folder, Options has a progress circle, and the receive dialog names
+  the file.
+- **Packed DOLs start again** (1.13.16, issue 12): libogc 3.1.0 leaves no
+  cache-sync `sc` handler at 0x80000C00, and dolxz-packed DOLs (GodModeWii)
+  run `sc` before they put in their own, so they crashed before video.
+  `loader_exec` writes the classic handler there before the jump.
+- **The network tries again** (1.13.15): a failed start no longer leaves an
+  unattended Wii off the network until Z is pressed; it retries after 2 s,
+  doubling to 32 s.
+- **sdk/mboard** (1.13.9): the play log puts MEM2_PROT back after its NAND
+  patch (the 1.10.22 hang on HBC's next run).
+- **Tools** (1.13.1, 1.13.4 to 1.13.7): `hbc.py put` and `sync` read each
+  upload back, HBCS reports Options, Dolphin runs delete their profiles,
+  the bench manager's Wii groups; a `develop` branch, with CI on `master`.
+
 ### 1.13.0: release; the Mii picker, and HBC built on libogc 3.1.0 again
 
 Everything since 1.12.1, released with both WADs (`OHBC` and `LULZ`):
