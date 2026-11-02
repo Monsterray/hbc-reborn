@@ -186,6 +186,11 @@ queues. Only this one function is wrapped.
 **Trigger:** pair four Wii Remotes (or a Balance Board) with the bench Wii
 and connect them in HBC; before this change the program crashes.
 
+1.14.2: the wrap returns `void`, as libogc's function does, and if neither
+heap has room the slot gets an empty queue, so commands to it are dropped
+(`wiiuse_sendcmd` already checks for none) instead of read from address 0.
+Seen on the bench Wii: 1.14.0 crashes as a Balance Board syncs.
+
 ### 1.14.0: release; sideways remotes, transfers you can follow, packed DOLs again
 
 Everything since 1.13.0, released with both WADs (`OHBC` and `LULZ`). The

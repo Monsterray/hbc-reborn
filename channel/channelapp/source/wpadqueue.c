@@ -18,25 +18,27 @@
 #define SLOTS 6		// WPAD_MAX_DEVICES in libogc 3.1
 #define COMMANDS 256	// libogc's own queue length
 
-int __real_wiiuse_init_cmd_queue (struct wiimote_t *wm);
-int __wrap_wiiuse_init_cmd_queue (struct wiimote_t *wm);
+void __real_wiiuse_init_cmd_queue (struct wiimote_t *wm);
+void __wrap_wiiuse_init_cmd_queue (struct wiimote_t *wm);
 
 // Once per slot, kept across WPAD_Shutdown and WPAD_Init.
 static void *buffers[SLOTS];
 
-int __wrap_wiiuse_init_cmd_queue (struct wiimote_t *wm) {
+void __wrap_wiiuse_init_cmd_queue (struct wiimote_t *wm) {
 	int slot = wm->unid;
 
-	if(slot < 0 || slot >= SLOTS)
-		return __real_wiiuse_init_cmd_queue (wm);
-
-	if(!buffers[slot]) {
+	if(slot >= 0 && slot < SLOTS && !buffers[slot])
 		buffers[slot] = memalign (32, COMMANDS * sizeof(struct cmd_blk_t));
-		if(!buffers[slot])
-			return __real_wiiuse_init_cmd_queue (wm);
-	}
 
 	// wiiuse.h marks the queue const for apps; libogc's own code sets it.
-	__lwp_queue_initialize ((lwp_queue *) &wm->cmdq, buffers[slot], COMMANDS, sizeof(struct cmd_blk_t));
-	return 0;
+	if(slot >= 0 && slot < SLOTS && buffers[slot]) {
+		__lwp_queue_initialize ((lwp_queue *) &wm->cmdq, buffers[slot], COMMANDS, sizeof(struct cmd_blk_t));
+		return;
+	}
+
+	// No memory here either: libogc's own queue, and if that fails too an
+	// empty one, so commands to the device are dropped instead of read from 0.
+	__real_wiiuse_init_cmd_queue (wm);
+	if(!wm->cmdq.first)
+		__lwp_queue_initialize ((lwp_queue *) &wm->cmdq, NULL, 0, sizeof(struct cmd_blk_t));
 }
