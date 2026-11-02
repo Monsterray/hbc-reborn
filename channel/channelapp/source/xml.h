@@ -41,6 +41,7 @@ typedef struct {
 	int progress_arc;
 	// Options: at the grid's edge. 0 wraps to the next row, 1 turns the page.
 	int edge_paging;
+	int new_badges;
 	// HOME > Controller settings > Sideways remote, kept here (home.c).
 	int sideways_remotes;
 	char app_sel[64];

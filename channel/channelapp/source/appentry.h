@@ -5,6 +5,7 @@
 
 #include "gfx.h"
 #include "xml.h"
+#include "apprun.h"
 
 #define DEVICE_COUNT 5   // sd, usb, carda, cardb, usb2
 #define MAX_THEME_ZIP_SIZE (20 * 1024 * 1024)
@@ -18,6 +19,7 @@ typedef enum {
 typedef struct {
 	app_entry_type type;
 	u32 size;
+	app_run_state run_state;
 	char *dirname;
 	gfx_entity *icon;
 	meta_info *meta;

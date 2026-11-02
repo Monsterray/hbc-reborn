@@ -20,6 +20,7 @@
 #include "panic.h"
 
 #include "appentry.h"
+#include "apprun.h"
 
 typedef struct {
 	const char *name;
@@ -223,6 +224,9 @@ static app_entry *app_entry_load_single (const char *dirname) {
 
 	entry->type = type;
 	entry->size = st.st_size;
+	// Options > App badges: only then look at the folder's last-run marker.
+	entry->run_state = type == AET_THEME || !settings.new_badges ?
+			APP_RUN_UNCHANGED : app_run_status(tmp);
 	entry->dirname = pstrdup(dirname);
 	entry->icon = NULL;
 	entry->meta = NULL;

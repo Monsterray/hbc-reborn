@@ -191,6 +191,16 @@ pages, keeping the same row where possible. **Wrap rows** keeps the original
 movement between rows. Clickable page arrows remain available for pointer
 users. The choice is saved with the channel's settings.
 
+### App badges
+
+Options (1) > **App badges: On** marks apps in the list and the grid: a red
+dot on an app you have never run from HBC, a gold dot on one whose
+`boot.dol`, `boot.elf`, `icon.png` or `meta.xml` changed since you last ran
+it. Launching the app clears its dot. HBC notes each run in a small
+`.hbc-ran` file in the app's folder, with the size and dates of those four
+files. With badges off (the default) HBC neither reads nor writes these
+files, so turning them on for the first time shows every app as never run.
+
 ### Your own app order
 
 Options > Sort applications by: **Custom** lists apps by the `<sort_id>`

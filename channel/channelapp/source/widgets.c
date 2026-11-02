@@ -16,7 +16,26 @@ void widgets_theme_reinit (void) {
 	app_entry_default_description = _("<no description>");
 }
 
+static gfx_entity new_badge;
+static u8 new_badge_pixels[16 * 16 * 4] ATTRIBUTE_ALIGN(32);
+
 void widgets_init (void) {
+	int x, y;
+
+	// The app badge: a white antialiased disc, tinted when drawn. GX RGBA8
+	// uses 4x4 tiles, with separate AR and GB planes.
+	for (y = 0; y < 16; ++y)
+		for (x = 0; x < 16; ++x) {
+			float dx = x - 7.5f, dy = y - 7.5f;
+			float radius = sqrtf(dx * dx + dy * dy);
+			int p = ((y / 4) * 4 + x / 4) * 64 + ((y % 4) * 4 + x % 4) * 2;
+			new_badge_pixels[p] = radius <= 6.5f ? 255 :
+					radius < 7.5f ? (u8) ((7.5f - radius) * 255) : 0;
+			new_badge_pixels[p + 1] = 255;
+			new_badge_pixels[p + 32] = 255;
+			new_badge_pixels[p + 33] = 255;
+		}
+	gfx_gen_tex(&new_badge, 16, 16, new_badge_pixels, GFXT_RGBA8);
 	widgets_theme_reinit();
 }
 
@@ -339,6 +358,26 @@ void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 						bw - margin, FA_CENTERED, FA_EM_CENTERED);
 }
 
+// Options > App badges: a red dot on an app never run from HBC, a gold one
+// on an app whose boot file, icon or meta.xml changed since its last run
+// (apprun.c). It always takes the widget's last layer, empty when unbadged.
+static void widget_new_badge(widget *w, const app_entry *entry) {
+	widget_layer *l;
+
+	l = &w->layers[w->layer_count - 1];
+	memset(l, 0, sizeof(*l));
+	if (!settings.new_badges || entry->run_state == APP_RUN_UNCHANGED || entry->type == AET_THEME)
+		return;
+	l->gfx_entry_count = 2;
+	l->gfx_entries = pmalloc(2 * sizeof(gfx_queue_entry));
+	// A faint one-pixel drop shadow shares the badge's antialiased edge.
+	gfx_qe_entity(&l->gfx_entries[0], &new_badge, w->width - 16, 1, 1,
+			0x00000040);
+	// Tuck into the rounded corner, just overlapping the artwork's inset.
+	gfx_qe_entity(&l->gfx_entries[1], &new_badge, w->width - 16, 0, 2,
+			entry->run_state == APP_RUN_UPDATED ? 0xFFCC00FF : 0xFF3B30FF);
+}
+
 void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 						   const app_entry *entry) {
 
@@ -347,11 +386,11 @@ void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 	if (entry->icon)
 		widget_init(w, WT_APP_ENTRY, true, x, y, z,
 					theme_gfx[THEME_GRID_APP_ENTRY]->w,
-					theme_gfx[THEME_GRID_APP_ENTRY]->h, 4);
+					theme_gfx[THEME_GRID_APP_ENTRY]->h, 5);
 	else
 		widget_init(w, WT_APP_ENTRY, true, x, y, z,
 					theme_gfx[THEME_GRID_APP_ENTRY]->w,
-					theme_gfx[THEME_GRID_APP_ENTRY]->h, 3);
+					theme_gfx[THEME_GRID_APP_ENTRY]->h, 4);
 
 	// Enable rumbling for this widget
 	w->flags |= WF_RUMBLE;
@@ -397,6 +436,7 @@ void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 		gfx_qe_entity (&l->gfx_entries[0], entry->icon, GRID_APP_ENTRY_ICON_X,
 						APP_ENTRY_ICON_Y, 1, COL_DEFAULT);
 	}
+	widget_new_badge(w, entry);
 }
 
 // A Mii in the Mii picker (miipick.c): its coin, and the glow ring around
@@ -431,7 +471,7 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 	widget_layer *l;
 
 	widget_init (w, WT_APP_ENTRY, true, x, y, z, theme_gfx[THEME_APP_ENTRY]->w,
-					theme_gfx[THEME_APP_ENTRY]->h, 4);
+					theme_gfx[THEME_APP_ENTRY]->h, 5);
 
 	w->flags |= WF_RUMBLE;
 
@@ -506,6 +546,7 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 	if (entry->icon)
 		gfx_qe_entity (&l->gfx_entries[l1 + l2], entry->icon,
 						APP_ENTRY_ICON_X, APP_ENTRY_ICON_Y, 1, COL_DEFAULT);
+	widget_new_badge(w, entry);
 }
 
 void widget_progress (widget *w, s16 x, s16 y, s16 z, const char *caption,

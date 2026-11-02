@@ -408,6 +408,7 @@ bool settings_load(void) {
 	settings.browse_mode = 0;
 	settings.progress_arc = 0;
 	settings.edge_paging = 0;
+	settings.new_badges = 0;
 	settings.sideways_remotes = 0;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
 	memset(settings.avatar_mii, 0, sizeof(settings.avatar_mii));
@@ -466,6 +467,7 @@ bool settings_load(void) {
 	settings.browse_mode = _get_elem_int(node, "browse_mode", 0);
 	settings.progress_arc = _get_elem_int(node, "progress_arc", 0) == 1;
 	settings.edge_paging = _get_elem_int(node, "edge_paging", 0) == 1;
+	settings.new_badges = _get_elem_int(node, "new_badges", 0) == 1;
 	settings.sideways_remotes = _get_elem_int(node, "sideways_remotes", 0) == 1;
 	s =_get_elem_cdata(node, "app_sel");
 	if (s) {
@@ -527,6 +529,9 @@ bool settings_save(void) {
 	mxmlNewInteger(node, settings.progress_arc);
 	node = mxmlNewElement(data, "edge_paging");
 	mxmlNewInteger(node, settings.edge_paging);
+
+	node = mxmlNewElement(data, "new_badges");
+	mxmlNewInteger(node, settings.new_badges);
 	node = mxmlNewElement(data, "sideways_remotes");
 	mxmlNewInteger(node, settings.sideways_remotes);
 

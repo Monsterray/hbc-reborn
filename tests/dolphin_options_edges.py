@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Options > Grid edges in Dolphin (PR 7): the retail WAD in a throwaway NAND.
 
-  1 u a      Options opens on Back; up is Turn page (the nearest button in
-             the row above); A picks it
-  d l a      down to Back, left to Ok, A: Options closes, Turn page in use
+  1 u u a    Options opens on Back; up past App badges is Turn page (the
+             nearest button in each row above); A picks it
+  d d l a    down to Back, left to Ok, A: Options closes, Turn page in use
   1 ... b    Options again shows Turn page bright; B leaves it
 
 HBCS says where the focus is before every A. Pictures of the page go to
@@ -59,10 +59,12 @@ def main():
         time.sleep(3)
         shot(wii, out, "options")
         check(options()["focus"] == "back", f"Options opens on Back ({options()})")
-        if step("press PadN; wait 2", {"focus": "page"}, "up from Back: Turn page") and \
+        if step("press PadN; wait 2; press PadN; wait 2", {"focus": "page"},
+                "up, up from Back: Turn page") and \
                 step("press Cross; wait 2", {"edge_choice": "page"}, "A picks Turn page"):
             shot(wii, out, "options-page")
-            if step("press PadS; wait 2; press PadW; wait 2", {"focus": "ok"}, "down, left: Ok"):
+            if step("press PadS; wait 2; press PadS; wait 2; press PadW; wait 2", {"focus": "ok"},
+                    "down, down, left: Ok"):
                 step("press Cross; wait 3", {"open": False, "edges": "page"},
                      "Ok closes Options, Turn page in use")
         if options()["open"]:

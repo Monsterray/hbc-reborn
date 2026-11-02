@@ -613,6 +613,9 @@ void main_real(void) {
 				options = show_options_dialog(v_current);
 
 				if (options.confirmed) {
+					// Before the device: its rescan reads the run markers
+					// only with badges on.
+					settings.new_badges = options.new_badges;
 					app_entry_set_sort(options.sort);
 					app_entry_set_device(options.device);
 					app_entry_set_prefered(options.device);
