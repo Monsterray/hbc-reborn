@@ -870,6 +870,13 @@ CONFIRM=""; CONFIRM_ARGS=()                        # an action waiting for its y
 INPUT_WII=""; INPUT_BUF=""                         # a group name being typed for this Wii
 MSG=""; MSG_UNTIL=0                                # the last action's answer, shown a while
 
+# note COLOR TEXT -- the page's answer line(s): word-wrapped to the screen, at most 4 lines
+note() {
+    local l
+    wrap_words "$2" $(( COLS - 4 )) 4
+    for l in "${WRAP[@]}"; do lines+=("  $1${l}${c_reset}"); done
+}
+
 # The key legend. A key is bold and coloured by what it does: cyan moves, green is safe, yellow
 # changes a setting, red cancels work (every red and yellow key asks y first).
 # lk COLOR KEY TEXT -- appends "KEY TEXT" to LEG, the key lit; a dim COLOR (gray) dims both
@@ -923,11 +930,11 @@ render_manage() {
     heading "$c_cyan" "MANAGE" "" manage
     legend_rows
     if [ -n "$INPUT_WII" ]; then
-        lines+=("  ${c_bold}${c_yellow}Group for ${INPUT_WII} (a name adds it, -name takes it out; Enter does it, Esc leaves): ${INPUT_BUF}_${c_reset}")
+        note "${c_bold}${c_yellow}" "Group for ${INPUT_WII} (a name adds it, -name takes it out; Enter does it, Esc leaves): ${INPUT_BUF}_"
     elif [ -n "$CONFIRM" ]; then
-        lines+=("  ${c_bold}${c_yellow}${CONFIRM}  y to do it, any other key to leave it${c_reset}")
+        note "${c_bold}${c_yellow}" "${CONFIRM}  y to do it, any other key to leave it"
     elif epoch; [ -n "$MSG" ] && (( EPOCH < MSG_UNTIL )); then
-        lines+=("  ${c_green}${MSG}${c_reset}")
+        note "$c_green" "$MSG"
     else
         lines+=("")
     fi

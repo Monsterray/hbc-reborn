@@ -3676,7 +3676,8 @@ def cmd_wii(a):
     try:
         r = lease_call("/wii", dict(asked, name=a.name, by=job_agent(), by_host=socket.gethostname()), timeout=10)
     except OSError as e:
-        sys.exit(f"wii: the lease server did not take it: {e}")
+        m = re.search(r'"error": "(.*?)"(?:,|})', str(e).replace(chr(92) + "'", "'"))   # a 400 carries the reason
+        sys.exit(f"wii: {m.group(1)}" if m else f"wii: the lease server did not take it: {e}")
     except Exception as e:                         # a 400 from the server says why
         m = re.search(r'"error": "(.*?)"', str(getattr(e, "msg", e)))
         sys.exit(f"wii: {m.group(1) if m else getattr(e, 'msg', e)}")
