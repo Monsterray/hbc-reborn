@@ -1,6 +1,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <malloc.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -36,7 +37,6 @@
 #include "devnet.h"
 #include "zmem.h"
 #ifdef ENABLE_UPDATES
-#include "http.h"
 #include "update.h"
 #endif
 #include "i18n.h"
@@ -77,6 +77,9 @@ static void mark(const char *name) {
 }
 static volatile bool shutdown;
 static bool restart;
+// An update was installed (update.c): leave through the reload stub, which
+// starts the channel again, now the new version.
+static bool updated;
 #ifdef GDBSTUB
 static volatile bool gdb;
 #endif
@@ -382,10 +385,6 @@ void main_real(void) {
 		 IOS_GetRevision());
 	view_bubbles = true;
 
-#ifdef ENABLE_UPDATES
-	http_init ();
-#endif
-
 	fhw = font_get_y_spacing(FONT_MEMO);
 
 	should_exit = false;
@@ -563,7 +562,7 @@ void main_real(void) {
 				loader_tcp_init ();
 
 #ifdef ENABLE_UPDATES
-			if (loader_tcp_initialized () && (update_check > 0))
+			if (settings.check_updates && loader_tcp_initialized () && (update_check > 0))
 				update_check--;
 
 			if (update_check == 0) {
@@ -579,8 +578,11 @@ void main_real(void) {
 			if (update_available) {
 				update_available = false;
 
-				reloced = update_execute (v_current, &ep);
-				should_exit = reloced;
+				// Installed: start again, as the new version.
+				if (update_execute (v_current)) {
+					updated = true;
+					should_exit = true;
+				}
 
 				continue;
 			}
@@ -611,6 +613,7 @@ void main_real(void) {
 					app_entry_set_sort(options.sort);
 					app_entry_set_device(options.device);
 					app_entry_set_prefered(options.device);
+					settings.check_updates = options.check_updates;
 				}
 
 				continue;
@@ -664,6 +667,9 @@ void main_real(void) {
 				browser_gen_view(BA_NEXT, NULL);
 
 			if (loader_handshaked ()) {
+#ifdef ENABLE_UPDATES
+				update_cancel();
+#endif
 				loader_load (&ld_res, v_browser, NULL);
 
 				switch (ld_res.type) {
@@ -786,6 +792,9 @@ void main_real(void) {
 				view_free (v_detail);
 				v_detail = NULL;
 
+#ifdef ENABLE_UPDATES
+				update_cancel();
+#endif
 				loader_load(&ld_res, v_browser, app_sel);
 
 				switch (ld_res.type) {
@@ -868,6 +877,11 @@ void main_real(void) {
 			settings.app_sel[i] = tolower((int) app_sel->dirname[i]);
 	}
 
+#ifdef ENABLE_UPDATES
+	// No check or download is left running into the launch or the exit.
+	update_cancel();
+#endif
+
 	// Before an IOS reload or a launch: the play record is cleared, and HBC's
 	// session (and the app it launches) goes into the Message Board's play log.
 	playtime_leave(reloced ? launch_name : NULL, reloced ? launch_dir : NULL);
@@ -876,9 +890,6 @@ void main_real(void) {
 	// command is sent, deinit it first. this gives the other threads a chance
 	// to do any pending work if the tcp thread does block.
 	loader_deinit ();
-#ifdef ENABLE_UPDATES
-        http_deinit ();
-#endif
 	app_entry_deinit ();
 
 	gfx_deinit ();
@@ -925,6 +936,11 @@ void main_real(void) {
 	if (shutdown) {
 		gprintf ("shutting down\n");
 		SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+	}
+
+	if (updated && *conf_magic == STUB_MAGIC) {
+		gprintf ("starting the update\n");
+		exit (0);
 	}
 
 	if (restart) {

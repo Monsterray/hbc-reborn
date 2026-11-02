@@ -23,6 +23,8 @@ typedef struct {
 	bool confirmed;
 	int device;
 	app_sort sort;
+	// Whether HBC checks for a newer release (update.c).
+	bool check_updates;
 } dialog_options_result;
 
 extern u16 width_dialog, height_dialog;
