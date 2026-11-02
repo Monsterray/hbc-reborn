@@ -161,6 +161,29 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.6: a USB keyboard
+
+`source/keyboard.c` keeps libogc's USB keyboard driver (libwiikeyboard) open
+from a thread, so a keyboard can be plugged in at any time, and `controls.c`
+reads it as a Wii Remote: arrows are the D-pad, Enter or Space A, Backspace
+B, X or 1 the 1 button, Y or 2 the 2 button, - or Delete Minus, + or Insert
+Plus, Esc or Home HOME, and Print Screen takes a screenshot. The key table is
+`source/keymap.c`, which needs no libogc but the button values, so
+`tests/test_keymap.py` builds it on the host. libogc's mass-storage code
+lists only class 0x08 devices, so the two share the USB without meeting.
+
+- **Checked:** `tests/test_keymap.py` (every key of the table, chords, keys
+  with no button, and the button values against libogc's header); the DOL
+  builds with `-Werror` with `-lwiikeyboard`; `tests/dolphin_smoke.py` boots
+  it and it answers `HBCV` with 1.13.3.
+- **Not yet checked:** a keyboard on a real Wii: that it is found when
+  plugged in before and after HBC starts, that unplugging lets go of its keys,
+  and that it works beside a USB drive. Dolphin has no USB keyboard to give
+  (USB passthrough aside). The HOME menu inside apps does not read it.
+
+**Trigger:** plug a USB keyboard into the bench Wii, before and after HBC
+starts, and walk the menu with the arrows, Enter and Backspace.
+
 ### 1.14.4: GameCube ports 2 to 4
 
 `controls_scan` read only GameCube port 0; it now ORs in all four

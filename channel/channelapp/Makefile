@@ -49,7 +49,7 @@ DIR_LIBS = \
 		$(DEVKITPRO)/libogc/lib/wii \
 		$(DEVKITPRO)/portlibs/ppc/lib
 
-LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
+LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiikeyboard wiiuse bte ogc m
 
 MACHDEP = -g -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
 CFLAGS = $(MACHDEP) -Os -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
