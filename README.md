@@ -348,7 +348,20 @@ while a menu is open switches straight to that menu. The overlay turns on
 IR for every connected remote while it is open and gives each back its
 previous mode when it closes. The D-pad moves the highlight when no remote
 points at the screen, A chooses, B goes back one level, and HOME closes
-everything. Controller settings last until the app exits; nothing is
+everything.
+
+Controller settings > Sideways remote (off by default; `sideways_remotes`
+in the config turns it on to start) is for a Wii Remote held sideways with
+its D-pad at the left: tilt the buttons towards you and the D-pad turns to
+match, Up acting as Left, Right as Up, and so on. A remote pointing at the
+screen, or held upright, reads as usual; lying flat keeps the last way it
+was held. The overlay always follows it; an app's own menus can too, by
+calling `hbc_agent_remotes_scanned()` after `WPAD_ScanPads()` and passing a
+remote's buttons through `hbc_agent_remote_buttons(chan, buttons)`, as HBC's
+app list does, with a data format that includes the accelerometer. Classic and GameCube controllers are never turned. HBC keeps
+this one setting in its settings.xml.
+
+Controller settings last until the app exits; nothing is
 written to the Wii's own settings, except that Connect remote may save the
 new remote in the Wii's pairing list as the Sync button would, and Reconnect
 in player order saves the new order. Reconnect works like the Wii Menu's:

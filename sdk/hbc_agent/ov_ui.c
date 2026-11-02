@@ -38,7 +38,7 @@ enum {
 	ID_FIND = 140, ID_MORE = 150, ID_SETTINGS = 160,
 	ID_RUMBLE = 170, ID_TEST, ID_CAL, ID_DISC, ID_VOL_MINUS, ID_VOL_PLUS, ID_SND_ADPCM, ID_SND_PCM, ID_SND_WAV,
 	ID_CONNECT = 180, ID_DISC_ALL, ID_BAR_BELOW, ID_BAR_ABOVE, ID_IR_MINUS, ID_IR_PLUS,
-	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL, ID_RECONNECT,
+	ID_OFF_MINUS, ID_OFF_PLUS, ID_RUMBLE_ALL, ID_RECONNECT, ID_SIDEWAYS,
 	ID_SLOT_ITEM = 200    // + slot * 16 + item
 };
 
@@ -438,6 +438,8 @@ static int build_wm(ov_ui *ui, const ov_ext *e) {
 		stepper(ui, ID_OFF_MINUS, ID_OFF_PLUS, y, "Auto power-off", e->auto_off, 0);
 		y += BH + GAP;
 		toggle(ui, ID_RUMBLE_ALL, y, "Rumble, all", e->rumble_all, 0);
+		y += BH + GAP;
+		toggle(ui, ID_SIDEWAYS, y, "Sideways remote", e->sideways, 0);
 		return y + BH;
 	}
 }
@@ -852,6 +854,7 @@ static void press(ov_ui *ui, const ov_ext *e, ov_act_fn act, void *user) {
 	case ID_OFF_MINUS: act(OVA_AUTO_OFF, -1, user); break;
 	case ID_OFF_PLUS: act(OVA_AUTO_OFF, 1, user); break;
 	case ID_RUMBLE_ALL: act(OVA_RUMBLE_ALL, !e->rumble_all, user); break;
+	case ID_SIDEWAYS: act(OVA_SIDEWAYS, !e->sideways, user); break;
 	}
 }
 

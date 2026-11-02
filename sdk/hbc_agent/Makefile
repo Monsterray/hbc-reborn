@@ -42,7 +42,7 @@ $(OUT): $(OBJ)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-$(BUILD)/%.o: %.c $(HDR) agent_int.h ogc_flavor.h ov_ui.h ov_draw.h ov_font.h | $(BUILD)
+$(BUILD)/%.o: %.c $(HDR) agent_int.h ogc_flavor.h ov_ui.h ov_draw.h ov_font.h sideways.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: %.S ogc_flavor.h | $(BUILD)

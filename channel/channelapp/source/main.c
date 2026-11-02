@@ -42,6 +42,7 @@
 #include "i18n.h"
 #include "dvd.h"
 #include "manage.h"
+#include "../../../sdk/hbc_agent.h"
 #include "xml.h"
 #include "title.h"
 
@@ -899,6 +900,7 @@ void main_real(void) {
 	font_deinit ();
 	theme_deinit();
 
+	settings.sideways_remotes = hbc_agent_sideways_remotes();
 	settings_save();
 
 	if (launch_bootmii) {
