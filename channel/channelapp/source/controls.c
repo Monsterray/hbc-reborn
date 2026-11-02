@@ -42,37 +42,6 @@ void controls_deinit (void) {
 	WPAD_Shutdown ();
 }
 
-// A Classic Controller's buttons, added to btns as a Wii Remote's.
-static u32 classic_button_transform(u32 btns) {
-	if(btns & WPAD_CLASSIC_BUTTON_LEFT)
-		btns |= WPAD_BUTTON_LEFT;
-	if(btns & WPAD_CLASSIC_BUTTON_RIGHT)
-		btns |= WPAD_BUTTON_RIGHT;
-	if(btns & WPAD_CLASSIC_BUTTON_UP)
-		btns |= WPAD_BUTTON_UP;
-	if(btns & WPAD_CLASSIC_BUTTON_DOWN)
-		btns |= WPAD_BUTTON_DOWN;
-	if(btns & WPAD_CLASSIC_BUTTON_A)
-		btns |= WPAD_BUTTON_A;
-	if(btns & WPAD_CLASSIC_BUTTON_B)
-		btns |= WPAD_BUTTON_B;
-	if(btns & WPAD_CLASSIC_BUTTON_X)
-		btns |= WPAD_BUTTON_1;
-	if(btns & WPAD_CLASSIC_BUTTON_Y)
-		btns |= WPAD_BUTTON_2;
-	if((btns & WPAD_CLASSIC_BUTTON_FULL_L) || (btns & WPAD_CLASSIC_BUTTON_MINUS))
-		btns |= WPAD_BUTTON_MINUS;
-	if((btns & WPAD_CLASSIC_BUTTON_FULL_R) || (btns & WPAD_CLASSIC_BUTTON_PLUS))
-		btns |= WPAD_BUTTON_PLUS;
-	if(btns & WPAD_CLASSIC_BUTTON_HOME)
-		btns |= WPAD_BUTTON_HOME;
-	if(btns & WPAD_CLASSIC_BUTTON_ZR)
-		btns |= PADW_BUTTON_NET_INIT;
-	if(btns & WPAD_CLASSIC_BUTTON_ZL)
-		btns |= PADW_BUTTON_SCREENSHOT;
-	return btns;
-}
-
 static u32 wpad_button_transform(int chan, u32 btns) {
 	WPADData *wd = wpads[chan];
 
@@ -89,7 +58,32 @@ static u32 wpad_button_transform(int chan, u32 btns) {
 				btns |= PADW_BUTTON_SCREENSHOT;
 			break;
 		case WPAD_EXP_CLASSIC:
-			btns = classic_button_transform(btns);
+			if(btns & WPAD_CLASSIC_BUTTON_LEFT)
+				btns |= WPAD_BUTTON_LEFT;
+			if(btns & WPAD_CLASSIC_BUTTON_RIGHT)
+				btns |= WPAD_BUTTON_RIGHT;
+			if(btns & WPAD_CLASSIC_BUTTON_UP)
+				btns |= WPAD_BUTTON_UP;
+			if(btns & WPAD_CLASSIC_BUTTON_DOWN)
+				btns |= WPAD_BUTTON_DOWN;
+			if(btns & WPAD_CLASSIC_BUTTON_A)
+				btns |= WPAD_BUTTON_A;
+			if(btns & WPAD_CLASSIC_BUTTON_B)
+				btns |= WPAD_BUTTON_B;
+			if(btns & WPAD_CLASSIC_BUTTON_X)
+				btns |= WPAD_BUTTON_1;
+			if(btns & WPAD_CLASSIC_BUTTON_Y)
+				btns |= WPAD_BUTTON_2;
+			if((btns & WPAD_CLASSIC_BUTTON_FULL_L) || (btns & WPAD_CLASSIC_BUTTON_MINUS))
+				btns |= WPAD_BUTTON_MINUS;
+			if((btns & WPAD_CLASSIC_BUTTON_FULL_R) || (btns & WPAD_CLASSIC_BUTTON_PLUS))
+				btns |= WPAD_BUTTON_PLUS;
+			if(btns & WPAD_CLASSIC_BUTTON_HOME)
+				btns |= WPAD_BUTTON_HOME;
+			if(btns & WPAD_CLASSIC_BUTTON_ZR)
+				btns |= PADW_BUTTON_NET_INIT;
+			if(btns & WPAD_CLASSIC_BUTTON_ZL)
+				btns |= PADW_BUTTON_SCREENSHOT;
 			break;
 		case WPAD_EXP_GUITARHERO3:
 			if(btns & WPAD_GUITAR_HERO_3_BUTTON_STRUM_UP)
@@ -122,7 +116,7 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 
 	PAD_ScanPads ();
 
-	// Every GameCube port, as the console's own menus do.
+	// Every GameCube port, as the HOME overlay reads them.
 	bd = bh = bu = 0;
 	for(i=0;i<PAD_CHANMAX;i++) {
 		bd |= PAD_ButtonsDown (i);
@@ -258,7 +252,9 @@ s32 deadzone(s32 v) {
 s32 controls_sticky(void) {
 	s32 sy;
 	int i;
-	sy = deadzone(PAD_StickY(0));
+	sy = 0;
+	for(i=0;i<PAD_CHANMAX;i++)
+		sy += deadzone(PAD_StickY(i));
 	if(pointer_owner >= 0) {
 		sy += deadzone(wpad_sticky(pointer_owner));
 	} else {

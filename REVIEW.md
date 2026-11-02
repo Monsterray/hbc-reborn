@@ -164,7 +164,7 @@ From the 1.3.6 review, each verified in the code first:
 ### 1.14.4: GameCube ports 2 to 4
 
 `controls_scan` read only GameCube port 0; it now ORs in all four
-(`PAD_CHANMAX`), as the Wii Menu does. The Classic Controller's button
+(`PAD_CHANMAX`). The Classic Controller's button
 mapping moved out of `wpad_button_transform` into `classic_button_transform`,
 unchanged, so another source of Classic-style buttons can share it.
 
@@ -174,6 +174,16 @@ unchanged, so another source of Classic-style buttons can share it.
   Dolphin's GameCube ports are not driven by the smoke test.
 
 **Trigger:** plug a controller into each port on the bench Wii and press A.
+
+1.14.5: the stick scrolls from every port too (`controls_sticky` read
+`PAD_StickY(0)` only; an empty port reads 0, so the sum is safe), and the
+Classic mapping is back inline in `wpad_button_transform`: nothing else used
+`classic_button_transform`. The Wii Menu takes no GameCube input; the ports
+now match the HOME overlay (`sdk/hbc_agent/overlay.c`), which read all four.
+Z and START on different ports now open HOME together.
+On the bench Wii (1.14.5): a GameCube controller in port 2 moves, opens,
+goes back, opens HOME, and its stick scrolls an app's long description; a
+sideways remote still turns.
 
 ### 1.14.3: the crash screen shows its text again
 
