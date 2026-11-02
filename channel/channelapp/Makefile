@@ -31,10 +31,22 @@ DIR_BUILD_CHAN = $(DIR_BUILD)/channel
 MBOARD = ../../sdk/mboard
 # The avatar (source/avatar.c) is sdk/mii and its drawing, built in whole.
 MII = ../../sdk/mii
+# Updates from GitHub releases (source/update.c): sdk/wiiupdate, and the
+# mbedTLS it carries for HTTPS, as an archive so that only the parts its
+# configuration (sdk/wiiupdate/hbc_mbedtls_config.h) uses are linked.
+WIIUPDATE = ../../sdk/wiiupdate
+WIIUPDATE_SRC = $(wildcard $(WIIUPDATE)/*.c)
+WIIUPDATE_OBJ = $(WIIUPDATE_SRC:$(WIIUPDATE)/%.c=$(DIR_BUILD)/wiiupdate_%.o)
+MBEDTLS = $(WIIUPDATE)/mbedtls
+MBEDTLS_SRC = $(wildcard $(MBEDTLS)/library/*.c)
+MBEDTLS_OBJ = $(MBEDTLS_SRC:$(MBEDTLS)/library/%.c=$(DIR_BUILD)/mbedtls/%.o)
+MBEDTLS_LIB = $(DIR_BUILD)/libmbedtls.a
+MBEDTLS_FLAGS = -I$(WIIUPDATE) -I$(MBEDTLS)/include -DMBEDTLS_CONFIG_FILE=\"hbc_mbedtls_config.h\"
 
 DIR_INCLUDES = $(DIR_BUILD) \
 		$(MBOARD) \
 		$(MII) \
+		$(WIIUPDATE) \
 		$(DEVKITPRO)/libogc/include \
 		$(DEVKITPRO)/portlibs/ppc/include \
 		$(DEVKITPRO)/portlibs/ppc/include/freetype2
@@ -46,13 +58,18 @@ AGENT = ../../sdk/hbc_agent
 
 DIR_LIBS = \
 		$(AGENT) \
+		$(DIR_BUILD) \
 		$(DEVKITPRO)/libogc/lib/wii \
 		$(DEVKITPRO)/portlibs/ppc/lib
 
-LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
+LIBS = hbcagent mbedtls mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
 
 MACHDEP = -g -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
-CFLAGS = $(MACHDEP) -Os -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
+# No unwind tables: nothing in HBC unwinds through .eh_frame (crash reports
+# follow the stack's back chain), yet newrvl.ld keeps every function's
+# entry, and they cost MEM1: 56 KiB of it with sdk/wiiupdate's mbedTLS in.
+NO_UNWIND = -fno-asynchronous-unwind-tables -fno-unwind-tables
+CFLAGS = $(MACHDEP) -Os -Wall $(NO_UNWIND) $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
 # using -Os for the stub makes it dependent on libgcc
 CFLAGS_STUB = $(MACHDEP) -O2 -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
 ASFLAGS = -D_LANGUAGE_ASSEMBLY -DHW_RVL
@@ -93,6 +110,7 @@ FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
 FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
 		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o $(DIR_BUILD)/miifx.o \
+		$(WIIUPDATE_OBJ) \
 		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
@@ -131,7 +149,7 @@ $(TARGET_STUB).elf: $(FILES_STUB_OBJ) Makefile
 	@echo $(@F)
 	@$(CC) $(FILES_STUB_OBJ) $(LDFLAGS_STUB) -o $@
 
-$(TARGET_APP)_nopax.elf: $(FILES_SRC_OBJ) newrvl.ld $(AGENT)/libhbcagent.a
+$(TARGET_APP)_nopax.elf: $(FILES_SRC_OBJ) newrvl.ld $(AGENT)/libhbcagent.a $(MBEDTLS_LIB)
 	@echo $(@F)
 	@$(CC) $(FILES_SRC_OBJ) $(LDFLAGS_APP) -o $@
 
@@ -240,6 +258,19 @@ $(DIR_BUILD)/miibody.o: $(MII)/miibody.c
 $(DIR_BUILD)/miifx.o: $(MII)/miifx.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
+$(DIR_BUILD)/wiiupdate_%.o: $(WIIUPDATE)/%.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) $(MBEDTLS_FLAGS) -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
+$(DIR_BUILD)/mbedtls/%.o: $(MBEDTLS)/library/%.c $(WIIUPDATE)/hbc_mbedtls_config.h
+	@[ -d $(DIR_BUILD)/mbedtls ] || mkdir -p $(DIR_BUILD)/mbedtls
+	@$(CC) $(MACHDEP) -Os $(NO_UNWIND) $(MBEDTLS_FLAGS) -I$(MBEDTLS)/library -c $< -o $@
+
+$(MBEDTLS_LIB): $(MBEDTLS_OBJ)
+	@echo $(@F)
+	@rm -f $@
+	@$(PREFIX)ar rcs $@ $(MBEDTLS_OBJ)
 
 -include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 

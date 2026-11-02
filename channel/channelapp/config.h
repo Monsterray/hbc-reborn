@@ -1,15 +1,15 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define CHANNEL_VERSION_DATE 202611011200llu
-#define CHANNEL_VERSION_STR "1.13.0"
+#define CHANNEL_VERSION_DATE 202611011800llu
+#define CHANNEL_VERSION_STR "1.13.1"
 
 //#define DEBUG_APP
 //#define DEBUG_STUB
 
 #define ENABLE_WIDESCREEN
 #define ENABLE_SCREENSHOTS
-//#define ENABLE_UPDATES
+#define ENABLE_UPDATES
 //#define FORCE_LANG CONF_LANG_JAPANESE
 
 #ifdef DEBUG_APP
@@ -35,12 +35,21 @@ void memstats(int reset);
 // debug build's chatter and compiles to nothing in a release.
 #define hlog(...) printf(__VA_ARGS__)
 
-#define UPDATE_URL "http://example.com/update.sxml"
-#define UPDATE_PUBLIC_KEY \
-	"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" \
-	"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" \
-	"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" \
-	"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+// Updates (source/update.c): the GitHub repository whose releases carry
+// the channel's WAD, hbc-VERSION-TITLE.wad, and beside it the detached
+// signature hbc-VERSION-TITLE.wad.sig (tools/wadsign.py).
+#define UPDATE_OWNER "Monsterray"
+#define UPDATE_REPO "hbc-reborn"
+// The public key those signatures are checked against: an uncompressed
+// NIST P-256 point, 04 || X || Y (`tools/wadsign.py pubkey KEY.pem`). All
+// zeros is no key: the update check goes on, but no update can be
+// installed until the project's key is put here.
+#define UPDATE_PUBLIC_KEY { \
+	0x04, \
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
 
 #define USBGECKO_CHANNEL 1
 
@@ -153,7 +162,9 @@ void memstats(int reset);
 #define APPENTRY_THREAD_STACKSIZE (1024 * 16)
 #define APPENTRY_THREAD_PRIO 62
 
-#define UPDATE_THREAD_STACKSIZE (1024 * 8)
+// TLS's handshake (sdk/wiiupdate) needs a deep stack; it is taken from the
+// heap only while a check, download or install runs.
+#define UPDATE_THREAD_STACKSIZE (1024 * 128)
 #define UPDATE_THREAD_PRIO 58
 
 #define FORCE_INLINE __attribute__((always_inline))

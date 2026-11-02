@@ -39,6 +39,7 @@ static const char *caption_options;
 static const char *caption_device;
 static const char *caption_device_names[DEVICE_COUNT];
 static const char *caption_sort_by;
+static const char *caption_check_updates, *caption_on, *caption_off;
 static const char *caption_sort_name;
 static const char *caption_sort_date;
 static const char *caption_sort_custom;
@@ -75,6 +76,9 @@ void dialogs_theme_reinit (void) {
 	caption_device_names[3] = _("SDGecko B");
 	caption_device_names[4] = _("USB 2");
 	caption_sort_by = _("Sort applications by:");
+	caption_check_updates = _("Check for updates:");
+	caption_on = _("On");
+	caption_off = _("Off");
 	caption_sort_name = _("Name");
 	caption_sort_date = _("Date");
 	caption_sort_custom = _("Custom");
@@ -523,7 +527,10 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 #define DLG_SORTS 3
 #define DLG_OK (DLG_SORT_FIRST + DLG_SORTS)
 #define DLG_BACK (DLG_OK + 1)
-#define DLG_WIDGETS (DLG_BACK + 1)
+// The update check's switch, a tiny button with its label beside it.
+#define DLG_UPD (DLG_BACK + 1)
+#define DLG_UPD_LABEL (DLG_UPD + 1)
+#define DLG_WIDGETS (DLG_UPD_LABEL + 1)
 
 static const int dlg_devices[DEVICE_COUNT] = { 0, 1, 4, 2, 3 };
 
@@ -532,6 +539,7 @@ static const int dlg_rows[][3] = {
 	{ DLG_DEV_FIRST, DLG_DEV_FIRST + 1, DLG_DEV_FIRST + 2 },
 	{ DLG_DEV_FIRST + 3, DLG_DEV_FIRST + 4, -1 },
 	{ DLG_SORT_FIRST, DLG_SORT_FIRST + 1, DLG_SORT_FIRST + 2 },
+	{ DLG_UPD, -1, -1 },
 	{ DLG_OK, DLG_BACK, -1 },
 };
 #define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
@@ -578,6 +586,11 @@ static void dlg_sort_captions(view *v, app_sort sort) {
 									*captions[i]);
 }
 
+static void dlg_updates_caption(view *v, bool on) {
+	widget_button_set_caption(&v->widgets[DLG_UPD], FONT_BUTTON,
+								on ? caption_on : caption_off);
+}
+
 dialog_options_result show_options_dialog(const view *sub_view) {
 	u32 frame = 0;
 	view *v;
@@ -589,7 +602,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	u16 dw = theme_gfx[THEME_DIALOG]->w, dh = theme_gfx[THEME_DIALOG]->h;
 	u16 tw = theme_gfx[THEME_BUTTON_TINY]->w, th = theme_gfx[THEME_BUTTON_TINY]->h;
 	u16 sw = theme_gfx[THEME_BUTTON_SMALL]->w, sh = theme_gfx[THEME_BUTTON_SMALL]->h;
-	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, sort_y = row2 + th + 28;
+	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, sort_y = row2 + th + 20, upd_y = sort_y + th + 4;
 
 	app_entry_poll_status(true);
 
@@ -617,6 +630,10 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		widget_button (&v->widgets[DLG_SORT_FIRST + i], gap + i * (gap + tw), sort_y, 1,
 						BTN_TINY, NULL);
 
+	widget_label (&v->widgets[DLG_UPD_LABEL], 32, upd_y + th / 2 + 10, 1, caption_check_updates,
+					dw - 64 - tw, FA_LEFT, FA_DESCENDER, FONT_LABEL);
+	widget_button (&v->widgets[DLG_UPD], dw - 32 - tw, upd_y, 1, BTN_TINY, NULL);
+
 	widget_button (&v->widgets[DLG_OK], 32, dh - sh - 16, 1, BTN_SMALL, caption_ok);
 	widget_button (&v->widgets[DLG_BACK], dw - sw - 32, dh - sh - 16, 1, BTN_SMALL,
 					caption_back);
@@ -627,6 +644,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	ret.confirmed = false;
 	ret.device = device;
 	ret.sort = sort;
+	ret.check_updates = settings.check_updates;
 
 	for (i = 0; i < DEVICE_COUNT; ++i) {
 		widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
@@ -636,6 +654,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	}
 
 	dlg_sort_captions(v, ret.sort);
+	dlg_updates_caption(v, ret.check_updates);
 
 	view_set_focus (v, DLG_BACK);
 
@@ -683,6 +702,9 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					(v->focus < DLG_SORT_FIRST + DLG_SORTS)) {
 				ret.sort = (app_sort) (v->focus - DLG_SORT_FIRST);
 				dlg_sort_captions(v, ret.sort);
+			} else if (v->focus == DLG_UPD) {
+				ret.check_updates = !ret.check_updates;
+				dlg_updates_caption(v, ret.check_updates);
 			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}
