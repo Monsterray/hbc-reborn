@@ -28,6 +28,7 @@ replacing it.
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
 | Message Board: the library, the board's formats | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md) |
 | Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
+| USB keyboard as a Wii Remote | [`channel/channelapp/source/keyboard.c`](channel/channelapp/source/keyboard.c), [`keymap.c`](channel/channelapp/source/keymap.c) |
 | Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
 
 This code differs from the official HBC build, which adds protection

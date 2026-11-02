@@ -9,6 +9,7 @@
 
 #include "controls.h"
 #include "gfx.h"
+#include "keyboard.h"
 
 static s32 pointer_owner = -1;
 WPADData *wpads[WPAD_MAX_WIIMOTES];
@@ -22,6 +23,8 @@ static u32 queued_up;
 
 void controls_init (void) {
 	int i;
+
+	keyboard_init ();
 
 	i = WPAD_Init ();
 
@@ -38,6 +41,7 @@ void controls_init (void) {
 }
 
 void controls_deinit (void) {
+	keyboard_shutdown ();
 	WPAD_Shutdown ();
 }
 
@@ -156,6 +160,14 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 			}
 		}
 	}
+
+	// The USB keyboard, as a Wii Remote; Print Screen takes a screenshot.
+	keyboard_scan ();
+	bd |= (keyboard_down () & 0xffff) << 16;
+	bh |= (keyboard_held () & 0xffff) << 16;
+	bu |= (keyboard_up () & 0xffff) << 16;
+	if(keyboard_key_down (KEYMAP_PRINT_SCREEN))
+		bd |= PADS_SCREENSHOT;
 
 	// A press from the PC: down this frame, up the next.
 	if (queued_up) {
