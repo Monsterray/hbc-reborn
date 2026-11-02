@@ -9,6 +9,7 @@
 
 #include "controls.h"
 #include "gfx.h"
+#include "../../../sdk/hbc_agent.h"
 
 static s32 pointer_owner = -1;
 WPADData *wpads[WPAD_MAX_WIIMOTES];
@@ -41,7 +42,11 @@ void controls_deinit (void) {
 	WPAD_Shutdown ();
 }
 
-static u32 wpad_button_transform(WPADData *wd, u32 btns) {
+static u32 wpad_button_transform(int chan, u32 btns) {
+	WPADData *wd = wpads[chan];
+
+	// A remote held sideways, if HOME > Controller settings says to look.
+	btns = hbc_agent_remote_buttons(chan, btns);
 	btns &= ~PADW_BUTTON_NET_INIT;
 	btns &= ~PADW_BUTTON_SCREENSHOT;
 
@@ -123,6 +128,7 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 		} else {
 			wpads[i] = NULL;
 		}
+	hbc_agent_remotes_scanned();
 
 	last_owner = pointer_owner;
 
@@ -143,16 +149,16 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 
 	// pointer owner owns buttons
 	if(pointer_owner >= 0) {
-		bd |= wpad_button_transform(wpads[pointer_owner], wpads[pointer_owner]->btns_d);
-		bh |= wpad_button_transform(wpads[pointer_owner], wpads[pointer_owner]->btns_h);
-		bu |= wpad_button_transform(wpads[pointer_owner], wpads[pointer_owner]->btns_u);
+		bd |= wpad_button_transform(pointer_owner, wpads[pointer_owner]->btns_d);
+		bh |= wpad_button_transform(pointer_owner, wpads[pointer_owner]->btns_h);
+		bu |= wpad_button_transform(pointer_owner, wpads[pointer_owner]->btns_u);
 	} else {
 	// otherwise just mix all buttons together
 		for(i=0;i<WPAD_MAX_WIIMOTES;i++) {
 			if(wpads[i]) {
-				bd |= wpad_button_transform(wpads[i], wpads[i]->btns_d);
-				bh |= wpad_button_transform(wpads[i], wpads[i]->btns_h);
-				bu |= wpad_button_transform(wpads[i], wpads[i]->btns_u);
+				bd |= wpad_button_transform(i, wpads[i]->btns_d);
+				bh |= wpad_button_transform(i, wpads[i]->btns_h);
+				bu |= wpad_button_transform(i, wpads[i]->btns_u);
 			}
 		}
 	}

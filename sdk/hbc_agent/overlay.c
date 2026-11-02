@@ -27,6 +27,7 @@
 
 #include "../hbc_agent.h"
 #include "agent_int.h"
+#include "sideways.h"
 #include "ogc_flavor.h"
 #include "ov_ui.h"
 #include "../wiispk/wiispk.h"
@@ -254,9 +255,36 @@ static struct {
 	int ir_sens;            // 0: the Wii's own setting
 	int sensor_above;       // -1: the Wii's own setting
 	int auto_off;           // index into auto_off_s
+	int sideways;           // -1: cfg.sideways_remotes
 	bool finding[4];
 	wiimote *applied[4];    // handles the settings were last applied to
-} ses = { .sensor_above = -1, .auto_off = 1 };
+} ses = { .sensor_above = -1, .auto_off = 1, .sideways = -1 };
+
+// Sideways remote: one state per remote, shared by the overlay and the app's
+// menus, so both agree which way a remote is held.
+static sideways_remote sideways[4];
+
+bool hbc_agent_sideways_remotes(void) {
+	return ses.sideways < 0 ? agent_cfg()->sideways_remotes : ses.sideways;
+}
+
+void hbc_agent_remotes_scanned(void) {
+	int chan;
+
+	for (chan = 0; chan < 4; ++chan)
+		sideways_update(&sideways[chan], WPAD_Probe(chan, NULL) == WPAD_ERR_NONE ?
+						WPAD_Data(chan) : NULL);
+}
+
+bool hbc_agent_remote_sideways(int chan) {
+	return chan >= 0 && chan < 4 && hbc_agent_sideways_remotes() && sideways[chan].sideways;
+}
+
+u32 hbc_agent_remote_buttons(int chan, u32 buttons) {
+	if (!hbc_agent_remote_sideways(chan))
+		return buttons;
+	return sideways_buttons(&sideways[chan], buttons);
+}
 
 static const u32 auto_off_s[] = { 0xffffffff, 5 * 60, 10 * 60, 15 * 60, 30 * 60 };
 static const char *auto_off_names[] = { "Never", "5 min", "10 min", "15 min", "30 min" };
@@ -1197,6 +1225,7 @@ static void poll(ov_run *r) {
 	e->ir_sens = ses.ir_sens ? ses.ir_sens : CONF_GetIRSensitivity();
 	snprintf(e->auto_off, sizeof(e->auto_off), "%s", auto_off_names[ses.auto_off]);
 	e->rumble_all = !ses.rumble_all_off;
+	e->sideways = hbc_agent_sideways_remotes();
 	snprintf(e->slot[0], sizeof(e->slot[0]), "%s", agent_slot_label(0));
 	snprintf(e->slot[1], sizeof(e->slot[1]), "%s", agent_slot_label(1));
 	for (chan = 0; chan < 2; ++chan) {
@@ -1455,6 +1484,9 @@ static void act(int action, int arg, void *user) {
 					pulse(chan);
 		}
 		break;
+	case OVA_SIDEWAYS:
+		ses.sideways = arg;
+		break;
 	}
 }
 
@@ -1501,8 +1533,9 @@ static unsigned read_input(void) {
 	}
 
 	WPAD_ScanPads();
+	hbc_agent_remotes_scanned();
 	for (chan = 0; chan < 4; ++chan) {
-		u32 b = WPAD_ButtonsDown(chan);
+		u32 b = hbc_agent_remote_buttons(chan, WPAD_ButtonsDown(chan));
 
 		if (b & (WPAD_BUTTON_UP | WPAD_CLASSIC_BUTTON_UP))
 			out |= OV_UP;

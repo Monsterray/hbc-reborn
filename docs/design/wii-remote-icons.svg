@@ -1,0 +1,62 @@
+<svg viewBox="0 0 360 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Wii Remote icon drafts, kept for later (2026-11-01). Drawn from photos of
+       the real remote; each is simple enough for the HOME overlay's own fills
+       and discs (sdk/hbc_agent/ov_draw.c), so no image files are needed.
+       Idea 1, chosen for PR 6's sideways read: the face from above. Pointing:
+       upright, D-pad at the top. Sideways (as held NES-style): D-pad on the
+       left, 1 and 2 then the player lights on the right. Idea 4, the front
+       end with the IR window, is kept for something else (pointer / sensor
+       bar state). Colours: white and blue for the default, yellow for the
+       state being shown. -->
+  <rect width="360" height="200" rx="12" fill="#0b1c2a"/>
+
+  <!-- 1a. Pointing: upright, top down -->
+  <g id="remote-upright" transform="translate(20,20)">
+    <rect width="34" height="96" rx="9" fill="#e9eef2"/>
+    <path d="M14 12h6v6h6v6h-6v6h-6v-6h-6v-6h6z" fill="#333"/>
+    <circle cx="17" cy="42" r="5" fill="#333"/>
+    <circle cx="17" cy="70" r="3.5" fill="#333"/>
+    <circle cx="17" cy="80" r="3.5" fill="#333"/>
+    <g fill="#6cc4ff">
+      <rect x="7" y="89" width="3" height="3"/><rect x="13" y="89" width="3" height="3"/>
+      <rect x="19" y="89" width="3" height="3"/><rect x="25" y="89" width="3" height="3"/>
+    </g>
+  </g>
+
+  <!-- 1b. Sideways: D-pad left, A, 1 and 2, lights right -->
+  <g id="remote-sideways" transform="translate(70,51)">
+    <rect width="96" height="34" rx="9" fill="#ffd76a"/>
+    <g fill="#5a4300">
+      <path d="M12 14h6v-6h6v6h6v6h-6v6h-6v-6h-6z"/>
+      <circle cx="42" cy="17" r="5"/>
+      <circle cx="70" cy="17" r="3.5"/>
+      <circle cx="80" cy="17" r="3.5"/>
+      <rect x="89" y="7" width="3" height="3"/><rect x="89" y="13" width="3" height="3"/>
+      <rect x="89" y="19" width="3" height="3"/><rect x="89" y="25" width="3" height="3"/>
+    </g>
+  </g>
+
+  <!-- 4a. Front end, pointing: the IR window lit -->
+  <g id="ir-pointing" transform="translate(200,40)">
+    <rect width="44" height="40" rx="10" fill="#e9eef2"/>
+    <rect x="7" y="8" width="30" height="24" rx="6" fill="#1a1a1a"/>
+    <circle cx="22" cy="20" r="4" fill="#6cc4ff"/>
+    <circle cx="22" cy="20" r="8" fill="none" stroke="#6cc4ff" stroke-width="1.5" opacity="0.6"/>
+  </g>
+
+  <!-- 4b. Front end, on its side: the IR window dark -->
+  <g id="ir-sideways" transform="translate(270,38)">
+    <rect width="44" height="40" rx="10" fill="#ffd76a" transform="rotate(90 22 22)"/>
+    <rect x="7" y="8" width="30" height="24" rx="6" fill="#1a1a1a" transform="rotate(90 22 22)"/>
+    <path d="M14 22h16" stroke="#ffd76a" stroke-width="2" stroke-dasharray="3 3"/>
+  </g>
+
+  <!-- 24 px sizes -->
+  <g transform="translate(200,140)">
+    <rect width="9" height="24" rx="3" fill="#e9eef2"/>
+    <rect x="16" y="7" width="24" height="9" rx="3" fill="#ffd76a"/>
+    <rect x="56" y="5" width="14" height="13" rx="4" fill="#e9eef2"/>
+    <rect x="59" y="8" width="8" height="7" rx="2" fill="#1a1a1a"/>
+    <circle cx="63" cy="11.5" r="1.5" fill="#6cc4ff"/>
+  </g>
+</svg>

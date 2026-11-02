@@ -290,9 +290,28 @@ void widget_button (widget *w, s16 x, s16 y, s16 z, button_size size,
 	widget_button_set_caption(w, FONT_BUTTON, caption);
 }
 
+// Draw a button smaller, its box and its caption's room too, where a dialog
+// is short of room. Call it before the caption is set.
+void widget_button_scale(widget *w, f32 scale) {
+	gfx_entity *tex = w->layers[0].gfx_entries[0].entity.entity;
+	// A scaled entity shrinks about its middle: move it back to the corner.
+	f32 dx = tex->w * (1.0f - scale) / 2, dy = tex->h * (1.0f - scale) / 2;
+	int i;
+
+	for (i = 0; i < 3; ++i) {
+		gfx_queue_entry *e = &w->layers[i].gfx_entries[0];
+
+		e->entity.scale = scale;
+		e->entity.coords.x = -dx;
+		e->entity.coords.y = tex->h - dy;
+	}
+	w->width = tex->w * scale;
+	w->height = tex->h * scale;
+}
+
 void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 	int c;
-	u16 bw, bh, oy;
+	u16 bw, bh, oy, margin;
 	widget_layer *l;
 
 	l = &w->layers[3];
@@ -303,10 +322,12 @@ void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 	if (!caption)
 		return;
 
-	bw = w->layers[0].gfx_entries[0].entity.entity->w;
-	bh = w->layers[0].gfx_entries[0].entity.entity->h;
+	bw = w->width;
+	bh = w->height;
+	// A scaled button (widget_button_scale) has less to spare.
+	margin = bw < w->layers[0].gfx_entries[0].entity.entity->w ? 12 : 32;
 
-	c = font_get_char_count(font, caption, bw - 32);
+	c = font_get_char_count(font, caption, bw - margin);
 
 	oy = bh/2;
 
@@ -314,8 +335,8 @@ void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
 
-	font_plot_string (&l->gfx_entries[0], c, font, caption, 16, oy, 1,
-						bw - 32, FA_CENTERED, FA_EM_CENTERED);
+	font_plot_string (&l->gfx_entries[0], c, font, caption, margin / 2, oy, 1,
+						bw - margin, FA_CENTERED, FA_EM_CENTERED);
 }
 
 void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
@@ -488,7 +509,7 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 }
 
 void widget_progress (widget *w, s16 x, s16 y, s16 z, const char *caption,
-					  u32 max) {
+					  const char *note, u32 max) {
 	widget_layer *l;
 
 	widget_init (w, WT_PROGRESS, false, x, y, z, 0, 0, 3);
@@ -511,15 +532,22 @@ void widget_progress (widget *w, s16 x, s16 y, s16 z, const char *caption,
 
 	int chars = font_get_char_count(FONT_LABEL, caption,
 									theme_gfx[THEME_PROGRESS]->w - 64);
+	// The note sits lower left, clear of the percentage on the right.
+	u16 note_w = theme_gfx[THEME_PROGRESS]->w - 64 - 64;
+	int note_chars = note ? font_get_char_count(FONT_LABEL, note, note_w) : 0;
 
 	l = &w->layers[2];
 	l->flags = 0;
 	l->flags_invert = 0;
-	l->gfx_entry_count = 4 + chars;
+	l->gfx_entry_count = 4 + chars + note_chars;
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
 	font_plot_string (&l->gfx_entries[4], chars, FONT_LABEL, caption, 38, 19, 2,
 						theme_gfx[THEME_PROGRESS]->w - 64, FA_LEFT, FA_EM_CENTERED);
+	if (note_chars)
+		font_plot_string (&l->gfx_entries[4 + chars], note_chars, FONT_LABEL, note,
+							38, theme_gfx[THEME_PROGRESS]->h - 20, 2, note_w,
+							FA_LEFT, FA_EM_CENTERED);
 
 	w->progress.max = max;
 	w->progress.gradient = (gfx_entity *) pmalloc (sizeof (gfx_entity));

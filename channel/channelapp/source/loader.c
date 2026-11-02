@@ -529,6 +529,11 @@ void loader_tcp_init (void) {
 // the next frame the TCP thread is free (it holds its lock while it works).
 static volatile bool tcp_restart;
 
+// When the network last failed to start (0: not waiting) and how long
+// loader_signal_threads() waits before it tries again; reset once it is up.
+static u64 net_failed_at;
+static u32 net_retry_ms;
+
 void loader_tcp_restart (void) {
 	tcp_restart = true;
 }
@@ -548,8 +553,24 @@ void loader_signal_threads (void) {
 			ta_tcp.cmd = LDTCPCMD_INIT;
 			LWP_CondBroadcast(ta_tcp.cond);
 		} else if (loader_tcp_initialized () && !ta_tcp.handshaked) {
+			net_retry_ms = 0;
 			ta_tcp.cmd = LDTCPCMD_ACCEPT;
 			LWP_CondBroadcast(ta_tcp.cond);
+		} else if (ta_tcp.running && ta_tcp.state == LDTCPS_UNINITIALIZED &&
+				   ta_tcp.cmd == LDTCPCMD_IDLE) {
+			// A failed start (no DHCP answer yet, the access point busy) tries
+			// again by itself, waiting 2 s, then 4, up to 32: an unattended Wii
+			// would stay off the network until Z or the network icon is pressed.
+			if (!net_failed_at) {
+				net_failed_at = gettime ();
+				net_retry_ms = net_retry_ms ? net_retry_ms * 2 : 2000;
+				if (net_retry_ms > 32000)
+					net_retry_ms = 32000;
+			} else if (ticks_to_millisecs (diff_ticks (net_failed_at, gettime ())) >= net_retry_ms) {
+				net_failed_at = 0;
+				ta_tcp.cmd = LDTCPCMD_INIT;
+				LWP_CondBroadcast(ta_tcp.cond);
+			}
 		}
 		LWP_MutexUnlock(ta_tcp.cmutex);
 	}
@@ -865,6 +886,8 @@ static void ld_error(const loader_result *result, view *sub_view,
 void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 	char caption[PATH_MAX + 32];
 	char filename[PATH_MAX];
+	char shown[64];
+	const char *note = NULL;
 
 	ld_load_arg ta;
 	s32 res;
@@ -939,7 +962,14 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		ta.args_len = ta_tcp.args_len;
 		ta.fd = ta_tcp.s;
 
-		sprintf (caption, _("Receiving from %s"), ta_tcp.client);
+		// What the sender called it (HBCA), with where it came from below;
+		// a plain Wiiload sender names nothing until the data is in.
+		if (devnet_upload_caption (shown, sizeof (shown))) {
+			snprintf (caption, sizeof (caption), "%s %s", _("Receiving"), shown);
+			note = ta_tcp.client;
+		} else {
+			sprintf (caption, _("Receiving from %s"), ta_tcp.client);
+		}
 	} else {
 		return;
 	}
@@ -999,7 +1029,7 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 		return;
 	}
 
-	v = dialog_progress (sub_view, caption, ta.data_len + ta.args_len);
+	v = dialog_progress (sub_view, caption, note, ta.data_len + ta.args_len);
 
 	dialog_fade (v, true);
 

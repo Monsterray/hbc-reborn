@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.13.0**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.14.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -80,8 +80,8 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `stat REMOTE` | One file or directory: size, when it last changed, its attributes. |
 | `attrib [--recursive] [+r\|-r] [+h\|-h] [+s\|-s] [+a\|-a] REMOTE...` | Show or change FAT attributes, as Windows' `attrib` does. A read-only file cannot be written over or deleted, nor a read-only folder deleted, until `-r`. HBC 1.10.15 and its agent. |
 | `get [-r] REMOTE [LOCAL]` | Download a file, or with `-r` a directory tree. |
-| `put [-r] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. |
-| `sync [--delete] [--checksum] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
+| `put [-r] [--no-verify] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. Each file is then read back on the Wii and its size and CRC-32 checked, uploading it again (twice at most) on a mismatch; `--no-verify` skips that. |
+| `sync [--delete] [--checksum] [--no-verify] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). Uploads are read back and checked as `put` does (`--no-verify` skips it). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
 | `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted (files up to 512 MiB; a read-only source is refused first; the copies get new times). An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
@@ -106,11 +106,22 @@ second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslas
 remove disappears. The menu reloads once the writes stop (a second of
 quiet), on the page it shows, so a whole folder's upload is one quiet reload.
 While a file moves, HBC shows it at the bottom right of the screen
-("Receiving boot.dol 42%", "Sending save.dat"). A name too long for the
+("Receiving ridgerac/boot.dol 42%", "Sending save.dat"). Files under a
+device's `apps/` directory show the app folder and any subfolders; other
+files show their filename. Options (1) > Progress: **Circle** replaces the
+percentage with a progress circle in the text colour on a faded track (the
+choice is kept in `settings.xml`). The circle fills clockwise from the top,
+and turns while the transfer's size is unknown. A name too long for the
 line scrolls round, bounces from end to end, or ends in "..." (each HBC
 start picks one at random; `hbc.py transfer-style bounce` forces one for
 testing). A moving name rests a second at its start, and a bouncing one at
-each end; "Receiving" and the percentage stay put.
+each end; "Receiving" and the percentage (or circle) stay put.
+
+When receiving a Wiiload upload from `hbc.py`, the popup heading shows the
+file name, including its app folder for `boot.dol` or `boot.elf`. The sender's
+IP address appears below the progress bar at the lower left, separate from
+the percentage on the right. A sender that supplies no name keeps the
+"Receiving from <address>" heading.
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame
@@ -171,6 +182,14 @@ To install an app permanently, `sync` or `put -r` its folder (with
 `hbc_netlog_init()` gives up within about 5 s when the PC is unreachable, and
 `run` and `log` clear HBC's log target when they exit, so a stale target
 never stalls later apps.
+
+### App picker navigation
+
+Hold a D-pad direction to repeat movement in the app picker. In Options
+(1), **Grid edges: Turn page** makes Left and Right at an edge switch
+pages, keeping the same row where possible. **Wrap rows** keeps the original
+movement between rows. Clickable page arrows remain available for pointer
+users. The choice is saved with the channel's settings.
 
 ### Your own app order
 
@@ -329,7 +348,20 @@ while a menu is open switches straight to that menu. The overlay turns on
 IR for every connected remote while it is open and gives each back its
 previous mode when it closes. The D-pad moves the highlight when no remote
 points at the screen, A chooses, B goes back one level, and HOME closes
-everything. Controller settings last until the app exits; nothing is
+everything.
+
+Controller settings > Sideways remote (off by default; `sideways_remotes`
+in the config turns it on to start) is for a Wii Remote held sideways with
+its D-pad at the left: tilt the buttons towards you and the D-pad turns to
+match, Up acting as Left, Right as Up, and so on. A remote pointing at the
+screen, or held upright, reads as usual; lying flat keeps the last way it
+was held. The overlay always follows it; an app's own menus can too, by
+calling `hbc_agent_remotes_scanned()` after `WPAD_ScanPads()` and passing a
+remote's buttons through `hbc_agent_remote_buttons(chan, buttons)`, as HBC's
+app list does, with a data format that includes the accelerometer. Classic and GameCube controllers are never turned. HBC keeps
+this one setting in its settings.xml.
+
+Controller settings last until the app exits; nothing is
 written to the Wii's own settings, except that Connect remote may save the
 new remote in the Wii's pairing list as the Sync button would, and Reconnect
 in player order saves the new order. Reconnect works like the Wii Menu's:

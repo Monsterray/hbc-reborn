@@ -161,6 +161,34 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.0: release; sideways remotes, transfers you can follow, packed DOLs again
+
+Everything since 1.13.0, released with both WADs (`OHBC` and `LULZ`). The
+outside pull requests from Matt Sephton (gingerbeardman) are in:
+
+- **Sideways remote** (1.13.12 to 1.13.14, PR 6): HOME > WiiMote >
+  Controller settings > Sideways remote turns the D-pad with the remote,
+  in HBC's menus and in the HOME overlay (`sdk/hbc_agent/sideways.h`, one
+  state per remote). A remote that sees the sensor bar counts as upright.
+  An icon at the top right shows which way a turning remote is read, then
+  fades. Off by default, kept in settings.xml.
+- **The app list** (1.13.10, PR 7): D-pad repeat, and Grid edges: Turn page.
+- **Transfers** (1.13.2, 1.13.3, 1.13.8; PRs 4, 5, 8): the label shows the
+  app folder, Options has a progress circle, and the receive dialog names
+  the file.
+- **Packed DOLs start again** (1.13.16, issue 12): libogc 3.1.0 leaves no
+  cache-sync `sc` handler at 0x80000C00, and dolxz-packed DOLs (GodModeWii)
+  run `sc` before they put in their own, so they crashed before video.
+  `loader_exec` writes the classic handler there before the jump.
+- **The network tries again** (1.13.15): a failed start no longer leaves an
+  unattended Wii off the network until Z is pressed; it retries after 2 s,
+  doubling to 32 s.
+- **sdk/mboard** (1.13.9): the play log puts MEM2_PROT back after its NAND
+  patch (the 1.10.22 hang on HBC's next run).
+- **Tools** (1.13.1, 1.13.4 to 1.13.7): `hbc.py put` and `sync` read each
+  upload back, HBCS reports Options, Dolphin runs delete their profiles,
+  the bench manager's Wii groups; a `develop` branch, with CI on `master`.
+
 ### 1.13.0: release; the Mii picker, and HBC built on libogc 3.1.0 again
 
 Everything since 1.12.1, released with both WADs (`OHBC` and `LULZ`):
@@ -1449,6 +1477,44 @@ would, writing and compiling the code for six tasks.
   search call: the button is greyed out there.
 - Checked on the PC (overlay walk, preview render) only: both need a person
   with a GameCube controller or remotes on a real Wii.
+
+#### A freeze marker that outlived its dispatcher
+
+Tool work, no version of its own.
+
+- **Seen 2026-11-01:** the manage page said this workstation kept Wii dev to save a job's
+  data after a freeze, 8 days 11 hours in. `recovering/20261024-020844-65646f.json` was left
+  by a dispatcher killed in the middle of that wait, which skips its cleanup.
+- **The fix:**
+  - A starting dispatcher clears `recovering/` (`clear_stale_recoveries`): one dispatcher runs
+    per workstation, so it has no freeze to wait out.
+  - The snapshot shows a freeze wait only while a dispatcher is running.
+- **Checked:** `test_a_stale_freeze_marker_is_not_shown_and_a_new_dispatcher_clears_it`.
+
+#### Wii groups, and the manager changes the pool
+
+Tool work, no version of its own.
+
+- **Assignment already worked:** a job with no `--wii`, or `--wii any`, runs on any free
+  unpinned Wii. The gap was that agents add jobs with `--wii dev`, which pins to that one Wii.
+- **Groups:** the pool takes `group:NAME` marks (`dev=... group:dev`). `--wii NAME` is a Wii's
+  name or a group's: a group means any free member. Eligibility is `Leases._ok` on the server
+  and `may_use`/`startable` in the dispatcher, both reading the same marks. A group can hold a
+  pinned Wii (asking for the group is explicit); `any` never reaches one. Group names can't be
+  another Wii's name or `any`.
+- **The manager:** `Leases.set_wii`, `POST /wii`, and `wiibench.py wii NAME --pin|--unpin|--group
+  G|--ungroup G|--lacks P|--has P`. The manage page's WIIS table is selectable: `t` pins or
+  unpins (asks y), `G` types a group name (`-name` removes one; Enter, Esc, backspace work).
+  The monitor now reads Enter as `ENTER` and a lone Esc as `ESC`.
+- **Kept:** the server writes `pool.json` beside its history after each change and applies it over
+  `WII_BENCH_WIIS` at each start. The dispatcher re-reads the pool every 10 s (was 60 s).
+- **Not changeable:** pinning the first Wii (dispatchers from before 1.10.8 send it every job).
+- **Checked:**
+  - parse, eligibility and the error text for groups;
+  - `set_wii` for every change and refusal, and that only real changes are saved and logged;
+  - the CLI against a server, a restart that keeps the changes;
+  - `add` accepting a group's name and refusing an unknown one;
+  - the manage page in a live terminal: select a Wii, the pin question, typing a group name.
 
 #### Bump: a person tells a waiting turn the Wii is back
 

@@ -42,6 +42,7 @@
 #include "i18n.h"
 #include "dvd.h"
 #include "manage.h"
+#include "../../../sdk/hbc_agent.h"
 #include "xml.h"
 #include "title.h"
 
@@ -493,8 +494,10 @@ void main_real(void) {
 		view_plot (v_current, DIALOG_MASK_COLOR, &bd, &bh, &bu);
 		// hbc.py keeps getting answers while an app's details or About
 		// show (the app list signals below, once it knows nothing loads).
-		if (v_current != v_browser)
+		if (v_current != v_browser) {
 			loader_signal_threads ();
+			browser_reset_repeat();
+		}
 
 		frame++;
 		if (v_last != v_current) {
@@ -505,6 +508,7 @@ void main_real(void) {
 		// HOME opens the agent's overlay (home.c), which runs its own frame
 		// loop until the user closes it, then says what they picked.
 		if (v_current == v_browser && home_requested (bd, bh)) {
+			browser_reset_repeat();
 			switch (home_show ()) {
 			case HOME_ABOUT:
 				v_about = dialog_about (v_browser);
@@ -605,24 +609,27 @@ void main_real(void) {
 
 			if (bd & PADS_1) {
 				dialog_options_result options;
+				browser_reset_repeat();
 				options = show_options_dialog(v_current);
 
 				if (options.confirmed) {
 					app_entry_set_sort(options.sort);
 					app_entry_set_device(options.device);
 					app_entry_set_prefered(options.device);
+					settings.progress_arc = options.progress_arc;
+					settings.edge_paging = options.edge_paging;
 				}
 
 				continue;
 			}
 
 			if (bd & PADS_2) {
+				browser_reset_repeat();
 				browser_switch_mode();
 				continue;
 			}
 
-			if (bd & PADS_DPAD) {
-				browser_set_focus(bd);
+			if (browser_set_focus(bd, bh)) {
 				continue;
 			}
 
@@ -893,6 +900,7 @@ void main_real(void) {
 	font_deinit ();
 	theme_deinit();
 
+	settings.sideways_remotes = hbc_agent_sideways_remotes();
 	settings_save();
 
 	if (launch_bootmii) {

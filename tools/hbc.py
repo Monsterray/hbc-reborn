@@ -34,6 +34,8 @@ POLL_TIMEOUT = 2
 # The Wii reads and CRCs a whole file before it answers a checksum request
 # (op C): allow for this rate on top of TIMEOUT, below a slow SD card's.
 CHECKSUM_BYTES_PER_S = 1 << 20
+# put and sync upload a file that reads back wrong again, up to this many times in all.
+PUT_ATTEMPTS = 3
 
 # newlib errno values the client acts on
 ENOENT, EACCES, EEXIST, EXDEV, EISDIR, ENOSYS = 2, 13, 17, 18, 21, 88
@@ -782,11 +784,30 @@ def read_file(path):
         return f.read()
 
 
-def upload(wii, local, remote, out=print):
+def upload(wii, local, remote, out=print, verify=True):
     data = read_file(local)
-    put_file(wii, remote, data, progress=Progress(remote))
-    out(f"{local} -> {remote} ({len(data)} bytes)")
+    put_checked(wii, remote, data, out, verify)
+    out(f"{local} -> {remote} ({len(data)} bytes{', read back' if verify else ''})")
     return len(data)
+
+
+def put_checked(wii, remote, data, out=print, verify=True):
+    """Upload data, then (verify) have the Wii read the file back (op C):
+    a size or CRC-32 that differs uploads it again, PUT_ATTEMPTS times in
+    all. Protocol 2 already checks each frame as it arrives; this checks
+    what the card gives back (through the Wii's cache: no remount)."""
+    want = (len(data), zlib.crc32(data))
+    for attempt in range(1, PUT_ATTEMPTS + 1):
+        put_file(wii, remote, data, progress=Progress(remote))
+        if not verify:
+            return
+        got = checksum(wii, remote, len(data))
+        if got == want:
+            return
+        if attempt < PUT_ATTEMPTS:
+            out(f"{remote}: read back {got[0]} bytes, CRC-32 {got[1]:08x}; uploading again")
+    raise HBCError(f"{remote}: read back wrong after {PUT_ATTEMPTS} uploads: {got[0]} bytes, "
+                   f"CRC-32 {got[1]:08x}, not {want[0]} bytes, {want[1]:08x}")
 
 
 def download(wii, remote, local, out=print):
@@ -798,7 +819,7 @@ def download(wii, remote, local, out=print):
     return len(data)
 
 
-def put_tree(wii, local, remote, out=print):
+def put_tree(wii, local, remote, out=print, verify=True):
     """Upload a directory tree. Files bring their parents, so only empty
     directories need a mkdir."""
     remote = remote_norm(remote)
@@ -807,7 +828,7 @@ def put_tree(wii, local, remote, out=print):
     for rel in dirs if inner else [""]:
         if not any(p.startswith(rel + "/") for p in inner):
             file_request(wii, "M", remote_join(remote, rel))
-    total = sum(upload(wii, path, remote_join(remote, rel), out) for rel, path in files.items())
+    total = sum(upload(wii, path, remote_join(remote, rel), out, verify) for rel, path in files.items())
     out(f"put: {len(files)} files ({total} bytes)")
 
 
@@ -993,12 +1014,12 @@ def move_across(wii, src, dst, replace):
 FAT_TIME_STEP = 2
 
 
-def sync(wii, local, remote, delete=False, out=print, checksum_all=False):
+def sync(wii, local, remote, delete=False, out=print, checksum_all=False, verify=True):
     """Make remote mirror local: upload new or changed files, create missing
     directories and, with delete, remove the rest. A file of the same size
     that the Wii wrote after the local one last changed is taken as the
     same without reading it; otherwise (or with checksum_all) the CRC-32s
-    decide."""
+    decide. verify reads each upload back, as put does."""
     if not os.path.isdir(local):
         raise HBCError(f"{local} is not a directory")
     if delete:
@@ -1048,12 +1069,12 @@ def sync(wii, local, remote, delete=False, out=print, checksum_all=False):
                 skipped += 1
                 continue
             data = read_file(path)
-            put_file(wii, target, data, progress=Progress(target))
+            put_checked(wii, target, data, out, verify)
         except (OSError, HBCError) as exc:
             out(f"{target}: failed: {exc}")
             failed.append(target)
             continue
-        out(f"{path} -> {target} ({len(data)} bytes)")
+        out(f"{path} -> {target} ({len(data)} bytes{', read back' if verify else ''})")
         uploaded += 1
         nbytes += len(data)
     out(f"sync: {uploaded} uploaded ({nbytes} bytes), {skipped} unchanged, {deleted} deleted"
@@ -1077,6 +1098,17 @@ def upload_name(path):
     return base
 
 
+def upload_file(path):
+    """What HBC's receive dialog shows for an upload: an apps/<name>/boot.dol
+    (or .elf) with its folder, as "<name>/boot.dol", else the file's name."""
+    base = os.path.basename(path)
+    stem, ext = os.path.splitext(base)
+    parent = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    if stem.lower() == "boot" and ext.lower() in (".dol", ".elf") and parent:
+        return f"{parent}/{base}"
+    return base
+
+
 UPLOAD_YES = 1  # HBCA flag: install a ZIP without asking
 
 
@@ -1097,6 +1129,11 @@ def send(wii, path, args, name=None, yes=False):
     argv += b"\0"
     header = b"HAXX" + bytes((0, 5)) + struct.pack(">HII", len(argv), len(packed), unpacked_len)
     label = (name or upload_name(path)).encode("utf-8")[:63]
+    # The file follows a NUL, for the receive dialog, when both fit in 63
+    # bytes; an HBC before it reads the name alone.
+    shown = upload_file(path).encode("utf-8")
+    if label and len(label) + 1 + len(shown) <= 63:
+        label += b"\0" + shown
     flags = UPLOAD_YES if yes else 0
     if label or flags:
         try:
@@ -1410,14 +1447,17 @@ it. Every 64 KiB is checked with a CRC-32 and compressed when that helps.
     hbc.py get sd:/apps/myapp/save.dat
     hbc.py get -r sd:/apps/myapp backup/myapp""",
     "put": """\
-hbc.py put [-r] LOCAL PATH
+hbc.py put [-r] [--no-verify] LOCAL PATH
 
 Uploads a file, or with -r a whole folder. Missing folders on the Wii are
 made. A PATH ending in "/" means "into this folder": put app.dol
 sd:/apps/myapp/ writes sd:/apps/myapp/app.dol. A broken transfer leaves no
-half-written file. An app put under sd:/apps shows in HBC's list at once.""",
+half-written file. Each file is then read back on the Wii and its size and
+CRC-32 checked; one that differs is uploaded again, twice at most.
+--no-verify skips the read, which takes a while on a large file. An app
+put under sd:/apps shows in HBC's list at once.""",
     "sync": """\
-hbc.py sync [--delete] [--checksum] LOCAL PATH
+hbc.py sync [--delete] [--checksum] [--no-verify] LOCAL PATH
 
 Makes the folder PATH on the Wii match LOCAL: uploads files that differ and
 makes missing folders. A file of the same size that the Wii wrote after the
@@ -1426,7 +1466,8 @@ image is not read again); otherwise the CRC-32s decide. --checksum compares
 every same-size file by CRC-32, for when the Wii's copy may have been
 changed on the Wii since. With --delete it also removes what LOCAL does not
 have. It refuses to delete from a device root or from <device>:/apps
-itself. A file that fails is reported and the rest still sync.
+itself. Uploads are read back and checked as put does (--no-verify skips
+it). A file that fails is reported and the rest still sync.
 
     hbc.py sync dist/myapp sd:/apps/myapp""",
     "rm": """\
@@ -1579,6 +1620,7 @@ COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--recursive": ("recursive", ("get", "put", "rm", "attrib")),
                  "--delete": ("delete", ("sync",)),
                  "--checksum": ("checksum", ("sync",)),
+                 "--no-verify": ("no_verify", ("put", "sync")),
                  "--clear": ("clear", ("crash", "order")),
                  "--replace": ("replace", ("mv", "rename")),
                  "--force": ("force", ("rm",)),
@@ -1832,16 +1874,16 @@ def main(argv=None):
                     raise HBCError(f"{args[0]} is a directory; use get -r") from None
                 raise
         elif cmd == "put":
-            need(2, "[-r] LOCAL REMOTE")
+            need(2, "[-r] [--no-verify] LOCAL REMOTE")
             local, remote = args[0], args[1]
             if remote.endswith("/"):
                 remote += os.path.basename(os.path.normpath(local))
             if os.path.isdir(local):
                 if not recursive:
                     raise HBCError(f"{local} is a directory; use put -r")
-                put_tree(wii, local, remote)
+                put_tree(wii, local, remote, verify=not flags.get("no_verify"))
             else:
-                upload(wii, local, remote)
+                upload(wii, local, remote, verify=not flags.get("no_verify"))
         elif cmd == "rm":
             need(1, "[-r] [--force] REMOTE")
             force = bool(flags.get("force"))
@@ -1886,9 +1928,9 @@ def main(argv=None):
                     shown = "" if sort_id is None else sort_id
                     print(f"{shown:>5} {folder}" + (f"  ({name})" if name else ""))
         elif cmd == "sync":
-            need(2, "[--delete] LOCALDIR REMOTEDIR")
+            need(2, "[--delete] [--checksum] [--no-verify] LOCALDIR REMOTEDIR")
             sync(wii, args[0], args[1], delete=flags.get("delete", False),
-                 checksum_all=flags.get("checksum", False))
+                 checksum_all=flags.get("checksum", False), verify=not flags.get("no_verify"))
         else:
             print_help(cmd)
             raise SystemExit(2)

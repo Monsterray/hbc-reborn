@@ -50,6 +50,10 @@ typedef enum {
 	THEME_CONTENT_ARROW_UP,
 	THEME_CONTENT_ARROW_DOWN,
 
+	// view.c: which way a Wii Remote is read, shown as it turns
+	THEME_REMOTE_UPRIGHT,
+	THEME_REMOTE_SIDEWAYS,
+
 	THEME_LAST
 } theme_entry;
 

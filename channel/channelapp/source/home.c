@@ -115,6 +115,7 @@ static bool save(void *user) {
 		hbc_agent_toast("Wiiload HBC: save needs the installed channel");
 		return false;
 	}
+	settings.sideways_remotes = hbc_agent_sideways_remotes();
 	if (!settings_changed()) {
 		hbc_agent_toast("Settings are already saved");
 		return true;
@@ -176,6 +177,9 @@ void home_init(void) {
 	// HBC reads GameCube controllers too (controls.c calls PAD_Init), and
 	// Z+START on one opens this menu, so the overlay must read them as well.
 	cfg.gc_pads = true;
+	// Controller settings > Sideways remote turns the app list's D-pad too
+	// (controls.c); HBC keeps it in settings.xml (main.c, save()).
+	cfg.sideways_remotes = settings.sideways_remotes;
 	// "Exit to The Homebrew Channel" from inside HBC would only restart it.
 	cfg.hide_exit_choices = 1 << HBC_AGENT_EXIT_HBC;
 	cfg.on_exit_choice = exit_choice;

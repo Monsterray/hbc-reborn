@@ -397,7 +397,7 @@ whichever Wii is free first, unless it names one.
   or newlines, in `$WII_BENCH_WIIS`. This bench's, in `compose.yaml`:
 
   ```bash
-  WII_BENCH_WIIS="dev=192.168.8.213 lacks:disc, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"
+  WII_BENCH_WIIS="dev=192.168.8.213 lacks:disc group:dev, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"
   ```
 
   | Name | Address | Takes | Lacks | Known faults |
@@ -442,8 +442,49 @@ whichever Wii is free first, unless it names one.
     named `wiis` in the state folder, one Wii per line.
   - With no pool set, there is one Wii, named `bench`, at each workstation's
     `$WII_BENCH_IP`, just as before 1.10.8.
-- **Choosing a Wii:** `add --wii lrwii` runs a job on that Wii only. `add` refuses a name
-  that isn't in the pool. Without `--wii`, the job runs on any free Wii.
+- **Choosing a Wii:**
+  - **Without `--wii`, or with `--wii any`:** the job runs on any free Wii that isn't pinned.
+    The queue assigns it: the first free one, to the earliest-received job. `status` and the
+    monitor show which Wii each job got.
+  - **`--wii NAME` for a Wii** (`--wii lrwii`) runs the job on that Wii only.
+  - **`--wii GROUP` for a group** (`--wii dev`) runs it on any free Wii of that group. A group is
+    a `group:NAME` mark in the pool, again for each; a Wii can be in several. The bench's dev
+    Wiis are the group `dev`, so an agent that says `--wii dev` uses a second dev Wii as soon
+    as one is added to the group, and jobs for a group don't hold up other jobs.
+  - A group may hold a pinned Wii: the group name asks for it explicitly. `any` never does.
+  - A Wii's own name and a group's name can't be the same, except for the Wii itself (a Wii
+    `dev` in group `dev`: `--wii dev` then means every Wii of the group).
+  - `add` refuses a name that is neither a Wii nor a group.
+- **Changing the pool without a restart:** the manager, from the monitor's manage page or the
+  command line, on the lease server:
+
+  ```bash
+  python tools/wii-bench/wiibench.py wii                       # list: pinned, groups, lacks
+  python tools/wii-bench/wiibench.py wii dev2 --group dev      # dev2 joins group dev
+  python tools/wii-bench/wiibench.py wii dev2 --ungroup dev
+  python tools/wii-bench/wiibench.py wii lrwii --pin           # only --wii lrwii jobs run there
+  python tools/wii-bench/wiibench.py wii lrwii --unpin         # any job may run there
+  python tools/wii-bench/wiibench.py wii dev --lacks disc      # (and --has disc)
+  ```
+
+  The manage page prints its keys twice: a legend at the top by group (SELECT, JOB, WII,
+  FREEZE), each key bold and coloured by what it does (cyan moves, green is safe, yellow
+  changes a setting, red cancels work; red and yellow ask `y` first), and a bar on the last row
+  that lights only the keys that apply to the selection and dims the rest.
+
+  On the manage page (key `5`), the WIIS table at the top is selectable like a job: click a
+  Wii or use `j`/`k`, then `t` pins or unpins it (it asks `y` first), and `G` asks for a group
+  name: type it and press Enter to add the Wii to that group, or type `-name` to take it out
+  (Esc leaves).
+  - Queued jobs follow at once: eligibility is read live. A Wii that is running a job keeps
+    its lease. Dispatchers learn the pool again within 10 s.
+  - The server keeps the changes in `pool.json` next to its history (`./history` in
+    `compose.yaml`) and applies them over `WII_BENCH_WIIS` at each start, so a restart or a
+    rebuild keeps them. To go back to the environment's pool, delete that file and restart.
+  - The first Wii in the list can't be pinned: dispatchers from before 1.10.8 send it every job.
+  - A group name is letters, digits, `-` and `_` (not first), up to 24. Each change is in the
+    history (`wii`, who made it).
+  - Changing the pool needs the lease server. Without one, edit `WII_BENCH_WIIS`.
 - **Order:** a free Wii goes to the earliest-received job that may use it. A job pinned to a
   busy Wii doesn't hold up later jobs that can run on another one.
 - **Parallel jobs:** a dispatcher runs one turn per Wii at once. Each turn waits for a Wii

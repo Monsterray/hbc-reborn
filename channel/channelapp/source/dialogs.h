@@ -23,6 +23,8 @@ typedef struct {
 	bool confirmed;
 	int device;
 	app_sort sort;
+	int progress_arc;   // settings.progress_arc
+	int edge_paging;    // settings.edge_paging
 } dialog_options_result;
 
 extern u16 width_dialog, height_dialog;
@@ -34,7 +36,8 @@ void dialogs_deinit (void);
 void dialog_fade (view *v, bool fade_in);
 
 view * dialog_app (const app_entry *entry, const view *sub_view);
-view * dialog_progress (const view *sub_view, const char *caption, u32 max);
+view * dialog_progress (const view *sub_view, const char *caption,
+						const char *note, u32 max);
 void dialog_set_progress (const view *v, u32 progress);
 view * dialog_about (const view *sub_view);
 
@@ -49,6 +52,9 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 						dialog_message_buttons buttons, const char *text,
 						u8 focus, u32 timeout_s);
 dialog_options_result show_options_dialog(const view *sub_view);
+// For HBCS: ,"options":{...}: whether Options is open, its focused button and
+// progress choice, and the progress setting in use.
+int dialogs_options_json(char *buf, int size);
 
 #endif
 

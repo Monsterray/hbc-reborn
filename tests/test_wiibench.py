@@ -675,6 +675,22 @@ class ManageTest(unittest.TestCase):
         self.assertEqual(n(["python", "-c", "import sys;  print(1)"]), "python -c import sys; print(1)")
         self.assertEqual(n(["hbc.py", "ls", "sd:/wad"]), "hbc.py ls")
 
+    def test_a_stale_freeze_marker_is_not_shown_and_a_new_dispatcher_clears_it(self):
+        from unittest import mock
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = pathlib.Path(tmp.name)
+        (home / "recovering").mkdir()
+        (home / "recovering/j1.json").write_text(json.dumps({"id": "j1", "name": "old", "since": 1.0, "wii": "dev"}))
+        (home / "recovering/j1.giveup").write_text("x")
+        env = dict(os.environ, WII_BENCH_HOME=tmp.name, WII_BENCH_SERVER="", WII_BENCH_IP="127.0.0.1", WII_BENCH_PORT="9")
+        r = subprocess.run([sys.executable, str(BENCH), "snapshot", "--json"], env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("recovering_id", json.loads(r.stdout)["kv"])      # no dispatcher: nothing is waiting
+        with mock.patch.object(self.wb, "RECOVERING", home / "recovering"):
+            self.wb.clear_stale_recoveries()
+        self.assertEqual(list((home / "recovering").glob("*")), [])
+
     def test_the_wait_for_a_frozen_wii(self):
         from unittest import mock
         tmp = tempfile.TemporaryDirectory()
@@ -1355,7 +1371,7 @@ class MultiWiiTest(unittest.TestCase):
         r = l.acquire({"ticket": "p", "host": "h1", "qid": "q1", "name": "pinned", "head": "p", "want": "two"})
         self.assertEqual((r["granted"], r["slot"]), (True, "two"))
         r = l.acquire({"ticket": "z", "host": "h", "name": "nope", "want": "three"})
-        self.assertIn("no Wii named three", r["error_want"])
+        self.assertIn("no Wii or group named three", r["error_want"])
 
     def test_a_pinned_only_wii_takes_only_its_own_jobs(self):
         pool = self.wb.parse_pool("dev=192.168.8.213, prod=192.168.8.200 pinned  # real data")
@@ -1446,6 +1462,119 @@ class MultiWiiTest(unittest.TestCase):
         job = json.loads((self.home / "queue/pending" / f"{r.stdout.strip()}.json").read_text())
         self.assertEqual(job["needs"], ["network"])
 
+    def test_a_group_takes_the_job_to_any_free_wii_in_it(self):
+        pool = self.wb.parse_pool("dev=10.0.0.1 group:dev group:bench, dev2=10.0.0.2 group:dev, lr=10.0.0.3 pinned group:lab")
+        self.assertEqual([(w["name"], w["groups"]) for w in pool],
+                         [("dev", ["bench", "dev"]), ("dev2", ["dev"]), ("lr", ["lab"])])
+        l = self.wb.Leases(ttl=60, clock=lambda: 0.0, pool=pool)
+        l.grace_until = 0
+        r = l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "dev"})        # the group: the first free member
+        self.assertEqual((r["granted"], r["slot"], r["groups"]), (True, "dev", ["bench", "dev"]))
+        r = l.acquire({"ticket": "b", "host": "h", "name": "jb", "want": "dev"})        # dev is taken: dev2 is in the group
+        self.assertEqual((r["granted"], r["slot"]), (True, "dev2"))
+        r = l.acquire({"ticket": "c", "host": "h", "name": "jc", "want": "dev"})
+        self.assertFalse(r["granted"])                                                    # none free: it waits
+        r = l.acquire({"ticket": "d", "host": "h", "name": "jd", "want": "any"})
+        self.assertFalse(r["granted"])                                                    # lr is pinned-only: not for any
+        r = l.acquire({"ticket": "e", "host": "h", "name": "je", "want": "lab"})          # a group may hold a pinned Wii
+        self.assertEqual((r["granted"], r["slot"]), (True, "lr"))
+        r = l.acquire({"ticket": "f", "host": "h", "name": "jf", "want": "nope"})
+        self.assertIn("no Wii or group named nope", r["error_want"])
+        self.assertIn("groups bench, dev, lab", r["error_want"])
+        from unittest import mock
+        with mock.patch.object(self.wb, "GROUPS", {"dev": {"dev"}, "dev2": {"dev"}}), mock.patch.object(self.wb, "PINNED", set()):
+            self.assertTrue(self.wb.may_use({"want_wii": "dev"}, "dev2"))
+            self.assertTrue(self.wb.may_use({"want_wii": "dev2"}, "dev2"))
+            self.assertFalse(self.wb.may_use({"want_wii": "dev2"}, "dev"))              # a Wii's own name still pins it
+            self.assertTrue(self.wb.startable({"want_wii": "dev"}, [], ["dev", "dev2"]))
+
+    def test_the_manager_pins_unpins_and_regroups(self):
+        saved = []
+        events = []
+        pool = self.wb.parse_pool("dev=10.0.0.1, dev2=10.0.0.2, lr=10.0.0.3 pinned")
+        l = self.wb.Leases(ttl=60, clock=lambda: 0.0, pool=pool, log=events.append)
+        l.grace_until = 0
+        l.save = lambda pl: saved.append([dict(w) for w in pl])
+        r = l.set_wii({"name": "dev2", "pinned": True, "by": "monty"})
+        self.assertEqual((r["ok"], r["changed"], r["wii"]["pinned"]), (True, ["pinned"], True))
+        self.assertEqual(l.acquire({"ticket": "x", "host": "h", "name": "j", "want": "any"})["slot"], "dev")
+        l.release({"ticket": "x", "wii": "hbc"})
+        l.acquire({"ticket": "y", "host": "h", "name": "j1", "want": "any"})              # dev
+        r = l.acquire({"ticket": "z", "host": "h", "name": "j2", "want": "any"})
+        self.assertFalse(r["granted"])                                                    # dev2 is pinned now
+        r = l.set_wii({"name": "dev2", "pinned": False})                                  # unpinned: the waiter fits it
+        self.assertEqual(r["changed"], ["unpinned"])
+        r = l.acquire({"ticket": "z", "host": "h", "name": "j2", "want": "any"})
+        self.assertEqual((r["granted"], r["slot"]), (True, "dev2"))
+        r = l.set_wii({"name": "lr", "add_group": "lab", "remove_lacks": "disc"})
+        self.assertEqual(r["changed"], ["+group:lab"])
+        self.assertEqual(l.status()["wiis"][2]["groups"], ["lab"])
+        r = l.set_wii({"name": "lr", "add_group": "lab"})
+        self.assertEqual((r["ok"], r["changed"]), (True, []))                              # nothing to change
+        r = l.set_wii({"name": "dev", "remove_group": "lab", "add_lacks": "disc"})
+        self.assertEqual(r["changed"], ["+lacks:disc"])
+        self.assertEqual(l.lacks["dev"], {"disc"})
+        r = l.set_wii({"name": "lr", "remove_group": "lab"})
+        self.assertEqual(r["changed"], ["-group:lab"])
+        for bad, why in (({"name": "dev", "pinned": True}, "is the first Wii"),
+                         ({"name": "nope", "pinned": True}, "no Wii named nope"),
+                         ({"name": "lr", "add_group": "dev2"}, "a group can't share it"),
+                         ({"name": "lr", "add_group": "any"}, "not a group name"),
+                         ({"name": "lr", "add_group": "-x"}, "letters, digits"),
+                         ({"name": "lr", "add_group": "a b"}, "letters, digits")):
+            r = l.set_wii(bad)
+            self.assertFalse(r["ok"], bad)
+            self.assertIn(why, r["error"])
+        self.assertEqual(len(saved), 5)                                                    # only real changes are saved
+        self.assertEqual([e["change"] for e in events if e["type"] == "wii"],
+                         [["pinned"], ["unpinned"], ["+group:lab"], ["+lacks:disc"], ["-group:lab"]])
+        self.assertEqual(events[0]["by"], "monty")
+
+    def test_the_server_keeps_the_pools_changes_across_a_restart(self):
+        import threading
+        hist = self.home / "srv"
+        spec = self.wb.parse_pool("dev=10.0.0.1 group:dev, dev2=10.0.0.2 group:dev, lr=10.0.0.3 pinned")
+        srv = self.wb.make_server(0, ttl=30, host="127.0.0.1", history=str(hist), pool=spec)
+        srv.leases.grace_until = 0
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        url = f"http://127.0.0.1:{srv.server_address[1]}"
+        env = dict(self.env, WII_BENCH_SERVER=url, WII_BENCH_WIIS="")
+        wii = lambda *a: subprocess.run([sys.executable, str(BENCH), "wii", *a], env=env, capture_output=True,
+                                        text=True, timeout=30)
+        r = wii()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"lr\s+10\.0\.0\.3\s+pinned jobs only\s+groups: -")
+        self.assertRegex(r.stdout, r"dev2\s+10\.0\.0\.2\s+any job\s+groups: dev")
+        r = wii("lr", "--unpin", "--group", "lab")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("lr: unpinned, +group:lab -> any job; groups: lab", r.stdout)
+        r = wii("dev", "--pin")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("is the first Wii", r.stderr)
+        r = wii("dev2", "--ungroup", "dev", "--lacks", "disc")
+        self.assertIn("dev2: +lacks:disc, -group:dev -> any job; groups: -; lacks: disc", r.stdout)
+        self.assertEqual(wii("lr", "--pin", "--unpin").returncode, 1)
+        self.assertEqual(wii("--pin").returncode, 1)                                       # no Wii named
+        saved = json.loads((hist / "pool.json").read_text())
+        self.assertEqual(saved["lr"], {"pinned": False, "groups": ["lab"], "lacks": []})
+        # A restart (the same environment pool, the same history folder) keeps the changes.
+        srv2 = self.wb.make_server(0, ttl=30, host="127.0.0.1", history=str(hist),
+                                   pool=self.wb.parse_pool("dev=10.0.0.1 group:dev, dev2=10.0.0.2 group:dev, lr=10.0.0.3 pinned"))
+        self.addCleanup(srv2.server_close)
+        st = {w["name"]: w for w in srv2.leases.status()["wiis"]}
+        self.assertEqual((st["lr"]["pinned"], st["lr"]["groups"]), (False, ["lab"]))
+        self.assertEqual((st["dev2"]["groups"], st["dev2"]["lacks"]), ([], ["disc"]))
+        self.assertEqual(st["dev"]["groups"], ["dev"])                                      # never changed: the environment's
+        # add accepts a group's name, and refuses one that is neither a Wii nor a group.
+        job = lambda *a: subprocess.run([sys.executable, str(BENCH), "add", *a, "--", sys.executable, "-c", "0"],
+                                        env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(job("--wii", "lab").returncode, 0)
+        r = job("--wii", "nope")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no Wii or group named nope", r.stderr)
+
     def test_a_dispatcher_before_the_pool_only_gets_the_first_wii(self):
         l = self.leases()
         l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "any"})        # has one
@@ -1507,7 +1636,7 @@ class MultiWiiTest(unittest.TestCase):
         env = dict(self.env, WII_BENCH_SERVER=url, WII_BENCH_WIIS="")   # the pool comes from the server
         bad = subprocess.run([sys.executable, str(BENCH), "add", "--wii", "three", "--", sys.executable, "-c", "0"],
                              env=env, capture_output=True, text=True, timeout=30)
-        self.assertIn("no Wii named three", bad.stderr)
+        self.assertIn("no Wii or group named three", bad.stderr)
         p1, p2, free = self.add("p1", 1.5, "two", env), self.add("p2", 1.5, "two", env), self.add("free", 1.5, None, env)
         self.dispatch(env)
         t1, w1, *_ = self.done(p1)
@@ -2052,6 +2181,46 @@ class MonitorTtyTest(unittest.TestCase):
         self.key("b")                              # no question: a bump changes nothing if HBC is not there
         self.wait(self.has("bumped j-q1"), "the bump")
         self.assertTrue((pathlib.Path(self.tmp.name) / "bump/j-q1").exists())
+        self.key("q")
+        self.assertEqual(self.proc.wait(timeout=10), 0)
+
+    def test_the_manage_page_pins_and_groups_a_wii(self):
+        self.start()
+        self.wait(self.has("[1 queue]"), "the queue page")
+        self.key("5")
+        self.wait(self.has("WIIS  (click one"), "the Wii table")
+        self.wait(self.has("NOTHING SELECTED"), "the footer with nothing selected")
+        self.assertTrue(self.has("FREEZE")(self.screen()))                                  # the legend rows
+        self.key("t")
+        self.wait(self.has("select a Wii first"), "a hint without a selection")
+        r, c = self.find("192.168.8.213") if self.has("192.168.8.213")(self.screen()) else self.find("127.0.0.1")
+        self.click(r, c + 1)
+        self.wait(lambda sc: any(t.startswith(">") and "any job" in t for t in sc.values()), "the Wii selected")
+        self.wait(self.has("WII bench"), "the footer follows a selected Wii")
+        self.key("c")
+        self.wait(self.has("is a Wii: t pins or unpins it"), "the job keys are not for a Wii")
+        self.key("t")
+        self.wait(self.has("Pin bench?"), "the pin question")
+        self.key("n")
+        self.wait(self.has("left as it was"), "a no")
+        self.key("t")
+        self.key("y")                              # no lease server here: the answer says so
+        self.wait(self.has("changing the pool needs the lease server"), "the answer")
+        self.key("G")
+        self.wait(self.has("Group for bench"), "the group prompt")
+        for ch in "lab":
+            self.key(ch)
+        self.key("x")
+        self.key("\x7f")                           # backspace takes the x out
+        self.wait(self.has("Enter does it, Esc leaves): lab_"), "the typed name")
+        self.key("q")                              # typing: q is a letter, not quit
+        self.wait(self.has("): labq_"), "q typed")
+        self.key("\x1b")
+        self.wait(self.has("left as it was"), "Esc leaves")
+        self.assertFalse(self.has("Group for bench")(self.screen()))
+        self.key("G")
+        self.key("\r")
+        self.wait(self.has("no group given"), "an empty name")
         self.key("q")
         self.assertEqual(self.proc.wait(timeout=10), 0)
 

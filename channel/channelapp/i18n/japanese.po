@@ -111,6 +111,27 @@ msgstr "日付"
 msgid "Custom"
 msgstr "カスタム"
 
+#: source/dialogs.c:82
+msgid "Progress:"
+msgstr "進行状況:"
+
+#: source/dialogs.c:82
+msgid "Percent"
+msgstr "パーセント"
+
+#: source/dialogs.c:82
+msgid "Circle"
+msgstr "円"
+
+msgid "Grid edges:"
+msgstr "グリッドの端:"
+
+msgid "Wrap rows"
+msgstr "行を折り返す"
+
+msgid "Turn page"
+msgstr "ページ送り"
+
 #: source/view.c
 msgid "Receiving"
 msgstr "受信中"

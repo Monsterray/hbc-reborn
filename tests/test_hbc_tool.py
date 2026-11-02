@@ -44,6 +44,7 @@ class FakeHBC:
         self.uploads = []
         self.upload_names = []  # HBCA: the play log's name for the next upload
         self.upload_flags = []  # HBCA's flags (protocol 6)
+        self.upload_files = []  # HBCA: the receive dialog's file, after a NUL
         # Protocol 6: what HBC makes of each upload, for HBCS "upload"; None
         # acts as an older HBC that does not say.
         self.next_result = None
@@ -159,7 +160,9 @@ class FakeHBC:
             self.reply(conn, 0)
         elif magic == b"HBCA":
             n, flags = struct.unpack(">HH", hdr[4:8])
-            self.upload_names.append(self.recv(conn, n).decode())
+            name, _, file = self.recv(conn, n).decode().partition("\0")
+            self.upload_names.append(name)
+            self.upload_files.append(file)
             self.upload_flags.append(flags)
             self.reply(conn, 0)
         elif magic == b"HAXX":
@@ -490,7 +493,24 @@ class HBCToolTest(unittest.TestCase):
         # The folder of a boot.dol, else the file; --name over both. The
         # app's arguments (a ROM, an option) are never the name.
         self.assertEqual(self.fake.upload_names[-3:], ["Wii64", "netblock", "WiiStation"])
+        # The receive dialog shows the file, with a boot.dol's folder.
+        self.assertEqual(self.fake.upload_files[-3:],
+                         ["Wii64/boot.dol", "netblock.elf", "Wii64/boot.dol"])
         self.assertEqual(self.fake.uploads[-1][1], b"boot.dol\0--diag\0\0")
+
+    def test_upload_file_metadata_respects_the_63_byte_limit(self):
+        # The HBCA length counts UTF-8 bytes, including its separator NUL.
+        # A 29-byte stem plus NUL plus its 33-byte filename fits exactly;
+        # longer names retain the legacy name-only payload.
+        for stem in ("x" * 29, "x" * 30, "é" * 14, "é" * 15):
+            with self.subTest(stem=stem):
+                app = self.tmp / (stem + ".dol")
+                app.write_bytes(bytes(64))
+                self.cli("send", str(app))
+                shown = app.name if len(stem.encode()) + 1 + len(app.name.encode()) <= 63 else ""
+                self.assertEqual(self.fake.upload_names[-1], stem)
+                self.assertEqual(self.fake.upload_files[-1], shown)
+                self.assertEqual(self.fake.upload_flags[-1], 0)
 
     def test_send_reports_what_hbc_made_of_the_upload(self):
         app = self.tmp / "app.dol"
@@ -551,7 +571,7 @@ class HBCToolTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             hbc.main(["help", "sync"])
-        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] [--checksum] LOCAL PATH"))
+        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] [--checksum] [--no-verify] LOCAL PATH"))
         for name in ("status", "run", "get", "put", "key", "screen", "crash"):
             self.assertIn(name, hbc.COMMAND_HELP)
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exc:
@@ -797,6 +817,34 @@ class HBCToolTest(unittest.TestCase):
         self.assertIn(("sd:/apps/sync2/a.bin", 10), seen)   # the size, for the timeout
         self.assertEqual(self.fake.files["sd:/apps/sync2/c.bin"], b"C" * 30)   # went on
         self.assertTrue(any("1 failed" in l for l in lines))
+
+    def test_put_reads_back_and_uploads_again(self):
+        src = self.tmp / "rb.bin"
+        src.write_bytes(b"r" * 40)
+        real = hbc.checksum
+        answers = []
+
+        def wrong_first(wii, remote, size=0):
+            got = real(wii, remote, size)
+            answers.append(got)
+            return (got[0], got[1] ^ 1) if len(answers) < 3 else got
+
+        lines = []
+        with mock.patch.object(hbc, "checksum", wrong_first):
+            hbc.upload(WII, str(src), "sd:/apps/rb/rb.bin", out=lines.append)
+        self.assertEqual(len(answers), 3)   # wrong, wrong, right: three uploads
+        self.assertEqual(sum("uploading again" in l for l in lines), 2)
+        self.assertIn("(40 bytes, read back)", lines[-1])
+
+        with mock.patch.object(hbc, "checksum", lambda w, r, s=0: (s, 0)):
+            with self.assertRaisesRegex(hbc.HBCError, "read back wrong after 3 uploads"):
+                hbc.upload(WII, str(src), "sd:/apps/rb/rb.bin", out=lambda _: None)
+
+        start = len(self.fake.requests)
+        out = self.cli("put", "--no-verify", str(src), "sd:/apps/rb/")
+        self.assertNotIn("read back", out)
+        self.assertEqual([op for op, _ in self.fake.requests[start:] if op == "C"], [])
+        self.assertEqual(self.fake.files["sd:/apps/rb/rb.bin"], b"r" * 40)
 
     def test_file_crc_streams(self):
         path = self.tmp / "big.bin"

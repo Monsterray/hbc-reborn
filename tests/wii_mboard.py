@@ -9,6 +9,8 @@
            "Final Fantasy VII" to today's play history; the same files after.
            Checks the new message byte for byte and that every message and
            cdb.vff file already there is unchanged.
+  play     only the play log (nothing posted): it succeeds, and MEM2_PROT is
+           what it was before (the NAND patch must put it back).
   full     the full message (mboard_post_msg): the Wii's first Mii from its
            Mii database as the icon, a JPEG and board data (a chjump.bin that
            opens HBC) from the SD card, and a Reply button. Checks the new
@@ -49,6 +51,7 @@ queue: wiibench.py add --name mboard-STEP --cwd REPO --timeout 2400 -- C:/Python
 import base64
 import os
 import pathlib
+import re
 import shutil
 import struct
 import subprocess
@@ -153,6 +156,23 @@ def check(ok, cond, what):
     return ok and bool(cond)
 
 
+def mem2_prot_kept(result):
+    """mboard_app's "MEM2_PROT a -> b" line: the play log puts it back."""
+    found = re.search(r"MEM2_PROT (\w+) -> (\w+)", result.read_text(errors="replace"))
+    return bool(found) and found.group(1) == found.group(2)
+
+
+def play(out):
+    """The play log alone, nothing posted: it succeeds and puts MEM2_PROT back."""
+    launch(APP, "play", GAME, GAME_ID, str(GAME_SECONDS))
+    tool("get", "sd:/mboard_test/result.txt", str(out / "play_result.txt"))
+    text = (out / "play_result.txt").read_text(errors="replace")
+    print("-- play_result.txt --\n" + text, flush=True)
+    ok = check(True, "mboard_log_play: " in text and "mboard_log_play: -" not in text,
+               "mboard_log_play succeeded")
+    return check(ok, mem2_prot_kept(out / "play_result.txt"), "MEM2_PROT put back after the play log")
+
+
 def post(out):
     before, after = out / "before", out / "after"
     ok = snapshot(before, [MBOX, MENU])
@@ -170,6 +190,7 @@ def post(out):
     ok = check(ok, "mboard_log_play: " in (out / "play_result.txt").read_text(errors="replace") and
                "mboard_log_play: -" not in (out / "play_result.txt").read_text(errors="replace"),
                "mboard_log_play succeeded")
+    ok = check(ok, mem2_prot_kept(out / "play_result.txt"), "MEM2_PROT put back after the play log")
 
     h0, v0, ctl0 = box(before / "mbox")
     h1, v1, ctl1 = box(after / "mbox")
@@ -499,6 +520,8 @@ def main():
         ok = backup(out)
     elif step == "post":
         ok = post(out)
+    elif step == "play":
+        ok = play(out)
     elif step == "full":
         ok = full(out)
     elif step == "id":
