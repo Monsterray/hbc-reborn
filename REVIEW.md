@@ -161,6 +161,20 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.4: GameCube ports 2 to 4
+
+`controls_scan` read only GameCube port 0; it now ORs in all four
+(`PAD_CHANMAX`), as the Wii Menu does. The Classic Controller's button
+mapping moved out of `wpad_button_transform` into `classic_button_transform`,
+unchanged, so another source of Classic-style buttons can share it.
+
+- **Checked:** the DOL builds with `-Werror`; `tests/dolphin_smoke.py` boots
+  it and it answers `HBCV` with 1.13.1.
+- **Not yet checked:** a controller in port 2, 3 or 4 on a real Wii.
+  Dolphin's GameCube ports are not driven by the smoke test.
+
+**Trigger:** plug a controller into each port on the bench Wii and press A.
+
 ### 1.14.3: the crash screen shows its text again
 
 A crash in HBC itself showed no text, and on the bench Wii (a Balance Board
