@@ -161,6 +161,50 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.19 and 1.14.20: PR 22, network starts and cleanups that IOS never finishes
+
+Matt's PR bounds a network start at 30 s (`netinit_wait`, restart and exit
+seen every 50 ms), cleans up through one helper (`tcp_net_deinit`) that the
+menu watches (`netrecovery.c`), and, if a cleanup has not returned after
+5 s, shows a countdown, reloads IOS and starts the installed channel through
+its stub. 1.14.19 is the merge. Both PRs edited the `net_deinit` call sites
+in `loader.c`; `tcp_net_deinit()` now calls PR 21's `discover_stop()` itself,
+inside the watchdog (`net_close` waits on IOS too), so restart, ENETRESET,
+listener and accept failure, a failed start and thread exit all stop
+discovery.
+
+**With 1.13.15's retry (`net_failed_at`, `net_retry_ms`):** PR 22 bounds one
+start at 30 s and cleans up after it; the retry schedules the next start
+(2 s, 4 s ... 32 s) once the worker is back in `UNINITIALIZED` with its
+command idle. A cleanup that returns never reloads the channel, however long
+the network stays down; only a cleanup stuck in IOS does. A restart resets
+the backoff as before.
+
+1.14.20, from the review:
+- A restart cancels a start between IOS steps, and `net_deinit()` then waits
+  for the step in flight, which can take most of the start's 30 s. The 5 s
+  cleanup watchdog would reload HBC for a slow IOS. After a cancelled start
+  (`start_cancelled`) the cleanup gets 30 s
+  (`netrecovery_cleanup_begin_after_start`); every other cleanup keeps 5 s.
+  libogc's `_init_busy` is private, so the worker's own flag is used.
+- The "Reinit" block (`state == INITIALIZED` with `cmd INIT`) is gone. Every
+  setter of `LDTCPCMD_INIT` has `UNINITIALIZED` as the state (the thread's
+  start, restart, ENETRESET in listen and accept, `loader_tcp_init`, and the
+  retry), so it could not run once the merge made those paths set it.
+- `SO_REUSEADDR` in `tcp_listen` stays. `tcp.c` is shared, so it also
+  reaches the agent's listener (`sdk/hbc_agent`): a listener reopened at
+  once after an app exits or the network restarts can now bind with old
+  connections in TIME_WAIT. No harm seen; it is not tried on a Wii.
+- `tests/test_netrecovery.py` covers the 30 s case.
+
+**Open risk:** the recovery (IOS reload, then the channel through its stub)
+has only been run with a simulated hang (`HBC_TEST_STUCK_NET_CLEANUP`, in
+`tests/dolphin_network_recovery.py`), not with a real stuck IOS request. If
+IOS is truly wedged, `__IOS_LaunchNewIOS` may hang too, which is worse than
+before: HBC would sit on a frozen screen instead of an unresponsive network.
+A power cycle is then the only way out. `tests/test_netinit.py` needs a
+POSIX compiler (it does not build with clang or MSYS gcc on this PC).
+
 ### 1.14.17 and 1.14.18: PR 21, find Wiis with a UDP query (HBCU)
 
 Matt's `HBCU` query (port 4299, `docs/devnet.md`): HBC, and an app with the

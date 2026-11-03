@@ -74,6 +74,23 @@ int main(void) {
     netrecovery_cleanup_complete();
     now += 10 * HBC_NET_CLEANUP_TIMEOUT_MS;
     assert(!netrecovery_take_reload());
+    // After a cancelled start the cleanup may wait out a slow IOS step: the
+    // 5 s timeout must not fire, the start's 30 s one does.
+    netrecovery_reset();
+    netrecovery_request();
+    netrecovery_cleanup_begin_after_start();
+    now += HBC_NET_CLEANUP_TIMEOUT_MS;
+    assert(!netrecovery_take_reload());
+    now += HBC_NET_CLEANUP_AFTER_START_TIMEOUT_MS - HBC_NET_CLEANUP_TIMEOUT_MS - 1;
+    assert(!netrecovery_take_reload());
+    now++;
+    assert(netrecovery_take_reload());
+    // and the next ordinary cleanup is back to 5 s
+    netrecovery_reset();
+    netrecovery_request();
+    netrecovery_cleanup_begin();
+    now += HBC_NET_CLEANUP_TIMEOUT_MS;
+    assert(netrecovery_take_reload());
     return 0;
 }
 ''')

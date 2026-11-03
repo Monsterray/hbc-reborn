@@ -190,12 +190,24 @@ static void discover_stop(void) {
 // Restart and stop requests, read by the worker even while a busy start
 // holds its mutex: the menu never waits on that mutex for them.
 static volatile bool tcp_restart, tcp_stop;
+// A start was cancelled by a restart or stop: its IOS step may still be running.
+static bool start_cancelled;
 
 // libogc's net_deinit() waits for an IOS callback. The menu watches it from
 // outside (netrecovery.c), so a cleanup that never returns can be escaped.
 static void tcp_net_deinit (const char *reason) {
 	(void) reason;
-	netrecovery_cleanup_begin();
+	// A restart (or exit) cancels a start between its IOS steps, and
+	// net_deinit() then waits for the step in flight. That step may take most
+	// of the start's own 30 s, so the 5 s cleanup watchdog would reload HBC
+	// for a slow IOS that is not hung. After a cancelled start the watchdog
+	// gets the start's budget; any other cleanup keeps 5 s.
+	if (start_cancelled) {
+		start_cancelled = false;
+		netrecovery_cleanup_begin_after_start();
+	} else {
+		netrecovery_cleanup_begin();
+	}
 	// Every path that closes the network stops discovery first: its socket
 	// belongs to the stack that net_deinit() takes down. Inside the watchdog,
 	// because net_close() waits on IOS too.
@@ -264,13 +276,6 @@ static void * ld_tcp_func (void *arg) {
 		if (ta->cmd == LDTCPCMD_INIT) {
 			ta->cmd = LDTCPCMD_IDLE;
 
-			if (ta->state == LDTCPS_INITIALIZED) {
-				net_close (s);
-				s = -1;
-				netrecovery_request();
-				tcp_net_deinit("Reinit");
-			}
-
 			init_start = gettime();
 			retries = 32;
 			ta->state = LDTCPS_INITIALIZING;
@@ -288,6 +293,8 @@ static void * ld_tcp_func (void *arg) {
 				// longer holds the worker, or an app launch, forever.
 				res = netinit_wait(init_start, &tcp_stop, &tcp_restart);
 
+				if (res == -ECANCELED)
+					start_cancelled = true;
 				if (res == -ECANCELED ||
 						ticks_to_millisecs(gettime() - init_start) >= HBC_NET_INIT_TIMEOUT_MS)
 					break;
@@ -516,6 +523,7 @@ void loader_init (void) {
 
 	netrecovery_reset();
 	tcp_restart = tcp_stop = false;
+	start_cancelled = false;
 	memset (&ta_tcp, 0, sizeof (ld_tcp_arg));
 
 	memset (&ld_tcp_stack, 0, LD_THREAD_STACKSIZE);

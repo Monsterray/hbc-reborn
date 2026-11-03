@@ -1,4 +1,4 @@
-#include <sys/errno.h>
+#include <errno.h>
 #include <unistd.h>
 #include <network.h>
 #include <ogc/lwp_watchdog.h>

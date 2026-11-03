@@ -1,4 +1,5 @@
 """Run the actual network wait against a busy/failed IOS and timed requests."""
+import os
 import pathlib
 import shutil
 import subprocess
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-CC = shutil.which("cc")
+CC = os.environ.get("CC") or shutil.which("clang") or shutil.which("gcc") or shutil.which("cc")
 
 
 @unittest.skipUnless(CC, "no host C compiler")
@@ -17,6 +18,9 @@ class NetinitTest(unittest.TestCase):
             (tmp / "ogc").mkdir()
             (tmp / "gctypes.h").write_text(
                 "#pragma once\n#include <stdint.h>\ntypedef uint64_t u64; typedef int32_t s32;\n")
+            # The harness fakes usleep: a stub header, so no POSIX one is needed.
+            (tmp / "unistd.h").write_text(
+                "#pragma once\ntypedef unsigned useconds_t;\nint usleep(useconds_t us);\n")
             (tmp / "network.h").write_text("#include <gctypes.h>\ns32 net_get_status(void);\n")
             (tmp / "ogc/lwp_watchdog.h").write_text(
                 "#include <gctypes.h>\nextern u64 now;\n"
