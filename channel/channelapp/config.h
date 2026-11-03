@@ -2,7 +2,7 @@
 #define _CONFIG_H_
 
 #define CHANNEL_VERSION_DATE 202611021700llu
-#define CHANNEL_VERSION_STR "1.14.6"
+#define CHANNEL_VERSION_STR "1.14.8"
 
 //#define DEBUG_APP
 //#define DEBUG_STUB

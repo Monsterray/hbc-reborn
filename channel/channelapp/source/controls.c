@@ -171,7 +171,8 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 		}
 	}
 
-	// The USB keyboard, as a Wii Remote; Print Screen takes a screenshot.
+	// The USB keyboard, as a Wii Remote. Print Screen is the screenshot button,
+	// which takes one (with Z held) only in an ENABLE_SCREENSHOTS build.
 	keyboard_scan ();
 	bd |= (keyboard_down () & 0xffff) << 16;
 	bh |= (keyboard_held () & 0xffff) << 16;

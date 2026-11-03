@@ -184,6 +184,28 @@ lists only class 0x08 devices, so the two share the USB without meeting.
 **Trigger:** plug a USB keyboard into the bench Wii, before and after HBC
 starts, and walk the menu with the arrows, Enter and Backspace.
 
+1.14.8: on the bench Wii the keyboard did nothing. HBC starts libogc's USB
+only when it looks for a drive, so `keyboard_init` now calls `USB_Initialize`
+(a second call does nothing); and the bench's Chicony keyboard (04f2:0841)
+lists two boot keyboard interfaces, the silent one first, which is the one
+libwiikeyboard opens (a diagnostic counted 116 reports on interface 0, none
+on 1). libwiikeyboard also waits in IOS for each report, so an exit or an app
+launch waited for a key press. `keyboard.c` no longer uses it: it opens every
+boot keyboard interface (up to four), reads each with
+`USB_ReadIntrMsgAsync` from the IPC callback, looks for new ones once a
+second, and cancels the reads at shutdown with `USB_ClearHalt`
+(`USBV5_CancelEndpoint`). Its stack and mutex are gone with its thread.
+Print Screen still only sends the screenshot button, which takes a picture
+only in an `ENABLE_SCREENSHOTS` build (with Z held), so the claim above does
+not hold for a release build.
+
+- **Checked:** on the bench Wii (1.14.8): the arrows, Enter, Backspace and
+  Esc walk the menu; with the keyboard idle, an app launched from the PC
+  answered 9.5 s after the send (no wait for a key); keys pressed while it
+  ran did not stop it, and it went back to HBC.
+- **Later:** more keys (Monty: it works, but needs a lot more bindings to
+  feel right), and the HOME menu inside apps still does not read it.
+
 ### 1.14.4: GameCube ports 2 to 4
 
 `controls_scan` read only GameCube port 0; it now ORs in all four

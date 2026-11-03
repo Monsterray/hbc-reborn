@@ -5,10 +5,10 @@
 
 #include "keymap.h"
 
-// A USB keyboard as a Wii Remote's buttons (keymap.h), through libogc's USB
-// keyboard driver (libwiikeyboard). It can be plugged in at any time.
+// A USB keyboard as a Wii Remote's buttons (keymap.h), read through libogc's
+// USB calls. It can be plugged in at any time.
 
-// Starts the driver; a keyboard that is not there yet is picked up when it is
+// Starts reading; a keyboard that is not there yet is picked up when it is
 // plugged in. Without libogc's USB, the keyboard just reads as no keys.
 void keyboard_init (void);
 void keyboard_shutdown (void);
