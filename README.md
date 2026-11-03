@@ -226,7 +226,7 @@ A theme can colour the pills with `badge_new` and `badge_updated` in its
 `theme.xml`, each with a `<fill>` and a `<text>` colour (red, green, blue and
 alpha, 0 to 255, like `font_color`). The defaults are a blue fill `#4fa3e0`
 with text `#062a44` for New, and an amber fill `#e8b04a` with text `#3a2604`
-for Updated. The text is 11 px; a font entry targeting `badge` changes it.
+for Updated. The text is 12 px; a font entry targeting `badge` changes it.
 
 ### Your own app order
 

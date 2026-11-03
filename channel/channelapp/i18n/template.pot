@@ -161,6 +161,10 @@ msgid "Receiving"
 msgstr ""
 
 #: source/view.c
+msgid "Deleting"
+msgstr ""
+
+#: source/view.c
 msgid "Sending"
 msgstr ""
 

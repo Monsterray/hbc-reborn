@@ -1010,6 +1010,18 @@ class HBCToolTest(unittest.TestCase):
         self.assertIn("sd:/apps/x/boot.dol", self.fake.files)
         self.assertIn("sd:/zzz.bin", self.fake.files)
 
+    def test_glob_rm_takes_no_folders_at_a_device_top(self):
+        hbc.put_file(WII, "sd:/bootmii/armboot.bin", b"x")
+        hbc.put_file(WII, "sd:/logs/a.log", b"x")
+        start = len(self.fake.requests)
+        for argv in (("rm", "-r", "sd:/b*"), ("rm", "-r", "usb:/*")):
+            with self.assertRaises(SystemExit):
+                self.cli(*argv)
+        self.assertEqual(len(self.fake.requests), start)   # refused before asking
+        self.assertIn("sd:/bootmii/armboot.bin", self.fake.files)
+        self.cli("rm", "-r", "sd:/logs/*")                   # one level down is fine
+        self.assertNotIn("sd:/logs/a.log", self.fake.files)
+
     def test_sync_delete_removes_gone_folders_in_one_request(self):
         self.fake.tree_delete = True
         src = self.tmp / "src"

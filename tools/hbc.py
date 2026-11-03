@@ -924,6 +924,11 @@ def remove_glob(wii, remote, recursive=False, out=print, force=False):
     if is_glob(head) or not head:
         raise HBCError(f"{remote}: wildcards work only in the last name")
     folder = head + "/" if head.endswith(":") else head
+    # sd:/b* -r would take bootmii/ with it, usb:/* a whole drive: at a
+    # device's top, folders are deleted by name only.
+    if recursive and head.endswith(":"):
+        raise HBCError(f"{remote}: rm -r takes no wildcard at the top of {head}; "
+                       "name the folders")
     count = remote_delete(wii, remote, recursive, glob=True, force=force)
     if count is None:
         # An older HBC: expand the pattern here and delete match by match.
@@ -1582,7 +1587,8 @@ and add -r to take matching folders too. An HBC with protocol 9 walks the
 tree or pattern itself in one request and shows "Deleting" with a progress
 circle on its screen; an older HBC or app agent is sent one request per
 entry. Device roots (sd:/) and <device>:/apps itself are refused, by hbc.py
-and by HBC. A read-only entry is refused too, and then nothing is deleted,
+and by HBC, and so is -r with a wildcard at a device's top (sd:/b* would
+take bootmii/): name those folders. A read-only entry is refused too, and then nothing is deleted,
 unless --force, which clears read-only first (as del /f does).
 
     hbc.py rm -r sd:/apps/oldapp

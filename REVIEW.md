@@ -161,6 +161,28 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.15 and 1.14.16: PR 20, deletes of trees and patterns in one request
+
+Matt's op `E` (protocol 9, `docs/devnet.md`) deletes a tree or a pattern's
+matches on the Wii, with "Deleting" and progress on screen; `hbc.py rm` and
+`sync --delete` use it and fall back to one request per entry on an older
+HBC. Paths are checked by `valid_path` as before, and HBC itself refuses a
+device root or `<device>:/apps`.
+
+1.14.16, from the review:
+- `hbc.py rm -r` takes no wildcard at a device's top: `sd:/b*` took
+  `bootmii/`, `usb:/*` a drive with no `apps/`. One level down works.
+- The network thread's stack is 12 KB (was 8): on the bench Wii a 16-level
+  tree (the most op `E` allows) used 6344 bytes of 8192; a 40-file pattern
+  and the tree each went in one request.
+- "Deleting" is in `template.pot`.
+
+**Left as they are:** each delete rescans its folder from the start, so a
+folder of thousands of files is slow; nothing notices the PC leaving
+mid-delete (an app launch still stops it); without `-r` the Wii deletes a
+matching empty folder where the older-HBC fallback refuses; `?` is one byte
+on the Wii and one character in the fallback.
+
 ### 1.14.14: PR 17, app badges keep their record in one file per device
 
 Matt Sephton's PR 17 (1.14.13) kept an `.hbc-ran` file in every app folder.
