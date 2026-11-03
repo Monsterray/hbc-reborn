@@ -8,7 +8,6 @@
 #include "../config.h"
 #include "discover.h"
 
-#define DISCOVER_PORT 4299
 #define DISCOVER_NAME_MAX 80
 
 /* Bind INADDR_ANY. A socket bound to the console's own address does not
@@ -84,7 +83,7 @@ s32 discover_poll(s32 fd, u32 netmask, const char *name, bool agent) {
 			return 0;
 		if (n < 0)
 			return n;
-		if (n < 4 || memcmp(query, "HBCU", 4) ||
+		if (!discover_is_query(query, n, ntohs(from.sin_port)) ||
 				(from.sin_addr.s_addr & 0xffff0000) != netmask)
 			continue;
 

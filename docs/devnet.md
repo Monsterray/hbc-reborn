@@ -386,7 +386,9 @@ the same rule as TCP. An agent app stops answering while it is not
 listening on TCP either (`hbc_agent_listen(false)`, or HOME's "hbc.py
 connection" switched off).
 
-The query is 16 bytes: `HBCU` and 12 zero bytes. The reply is unicast:
+The query is 16 bytes: `HBCU` and 12 zero bytes. A console ignores any other
+datagram, and anything sent from port 4299, which is another console's
+reply. The reply is unicast:
 
 | Offset | Size | Field |
 | --- | --- | --- |

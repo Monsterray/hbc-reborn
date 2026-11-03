@@ -161,6 +161,23 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.25: HBCU answers only queries
+
+From the 1.14 audit. `discover_poll` answered any datagram that began with
+`HBCU`, replies included, so two consoles on one network (or one whose
+reply came back to it) could keep answering each other. It now answers only
+a 16-byte query with byte 4 zero (a reply's version is 1), and nothing sent
+from port 4299, where every console replies from (`discover_is_query` in
+`discover.h`, shared with the agent).
+
+- **Checked:** `tests/test_discover.py`. On the bench Wii (1.14.25): a query
+  is answered and `hbc.py find` lists it; the same query from port 4299, a
+  12-byte query and a reply-shaped one get no answer.
+- **Held:** the audit's network fixes 14, 15, 16 and 18 touch PR 22's code,
+  which Monty wants to rethink first (the recovery and its dialog). They are
+  written and pass in Dolphin, but are kept out of the tree as a patch in
+  the session notes (`pr22-audit-fixes-14-15-16-18.patch`).
+
 ### 1.14.24: no rm -r pattern in an apps folder; hbc.py log never guesses
 
 From the 1.14 audit. 1.14.16 refused `rm -r` with a wildcard at a device's
