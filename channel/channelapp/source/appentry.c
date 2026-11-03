@@ -192,6 +192,9 @@ void app_entry_set_sort(app_sort sort) {
 		settings.sort_order = current_sort;
 }
 
+// A device scan has apps_seen.txt open (apprun.c); app_entry_add outside one reads it for the one app.
+static bool badge_scan;
+
 static app_entry *app_entry_load_single (const char *dirname) {
 	app_entry *entry;
 	app_entry_type type;
@@ -224,9 +227,18 @@ static app_entry *app_entry_load_single (const char *dirname) {
 
 	entry->type = type;
 	entry->size = st.st_size;
-	// Options > App badges: only then look at the folder's last-run marker.
-	entry->run_state = type == AET_THEME || !settings.new_badges ?
-			APP_RUN_UNCHANGED : app_run_status(tmp);
+	entry->run_state = APP_RUN_UNCHANGED;
+	// Options > App badges: only then read the device's apps_seen.txt.
+	if (type != AET_THEME && settings.new_badges && device_active >= 0) {
+		if (badge_scan) {
+			entry->run_state = app_run_status(dirname);
+		} else {
+			char root[16];
+
+			snprintf(root, sizeof(root), "%s:", devices[device_active].name);
+			entry->run_state = app_run_status_one(root, dirname);
+		}
+	}
 	entry->dirname = pstrdup(dirname);
 	entry->icon = NULL;
 	entry->meta = NULL;
@@ -275,6 +287,13 @@ static void app_entry_load_all (void) {
 	if (!d)
 		return;
 
+	if (settings.new_badges && device_active >= 0) {
+		char root[16];
+
+		snprintf(root, sizeof(root), "%s:", devices[device_active].name);
+		app_run_begin(root);
+		badge_scan = true;
+	}
 	while ((de = readdir(d))) {
 		// ignore dotfiles / dotdirs
 		if (de->d_name[0] == '\0' || de->d_name[0] == '.')
@@ -295,6 +314,13 @@ static void app_entry_load_all (void) {
 
 		if (entry_count_all >= MAX_ENTRIES)
 			break;
+	}
+
+	// Forget the badge records of apps that are gone, but only after a scan
+	// that saw every folder and a card that is still there.
+	if (badge_scan) {
+		app_run_end(!de && devices[device_active].device->isInserted());
+		badge_scan = false;
 	}
 
 	closedir(d);

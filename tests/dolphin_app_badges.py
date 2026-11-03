@@ -3,11 +3,13 @@
 
   1 u a d l a   Options opens on Back; up is App badges: On; A picks it;
                 down to Back, left to Ok, A
-  apps          three test apps: one with an old-style run marker, one never
-                run, one changed after its marker was made
-  list, grid    a red badge (never run) and a gold one (changed) in each
-  launch        the changed app from the list; it runs and HBC comes back:
-                its gold badge is gone, the red one stays
+  apps          three test apps, all New. Two are launched from the list (HBC
+                comes back each time) and sd:/hbc/apps_seen.txt then has a
+                line for each; the third stays New
+  update        one launched app's meta.xml changes: Updated
+  list, grid    a blue New pill and an amber Updated pill in each
+  launch        the changed app again: its Updated pill is gone, New stays,
+                and apps_seen.txt has its new stamp
 
 HBCS says where the focus is before every A. Pictures go to OUTDIR (default:
 a temporary folder). Needs the retail WAD (make -C channel) and
@@ -37,9 +39,12 @@ def meta_xml(name, description):
             '<arguments><arg>meta</arg></arguments></app>').encode()
 
 
+TAB = chr(9)
+
+
 def color_counts(data):
-    """Red and gold pixels in a YUYV screen."""
-    red = gold = 0
+    """Blue (New) and amber (Updated) pill pixels in a YUYV screen."""
+    blue = amber = 0
     for i in range(0, len(data), 4):
         y0, cb, y1, cr = data[i:i + 4]
         d, e = cb - 128, cr - 128
@@ -48,9 +53,9 @@ def color_counts(data):
             r = (c + 409 * e + 128) >> 8
             g = (c - 100 * d - 208 * e + 128) >> 8
             b = (c + 516 * d + 128) >> 8
-            red += r > 180 and g < 100 and b < 110
-            gold += r > 180 and g > 130 and b < 100
-    return red, gold
+            blue += r < 120 and 130 < g < 200 and b > 190
+            amber += r > 200 and 150 < g < 200 and b < 110
+    return blue, amber
 
 
 def main():
@@ -112,29 +117,47 @@ def main():
             path = f"sd:/apps/{folder}"
             hbc.put_file(wii, f"{path}/boot.dol", dol)
             hbc.put_file(wii, f"{path}/meta.xml", meta_xml(folder, "Before update"))
-            if folder != "2 Never run":
-                # The marker HBC Reborn wrote before it kept file stamps.
-                hbc.put_file(wii, f"{path}/.hbc-ran", b"HBC ran\n")
         time.sleep(3)
-        marker = "sd:/apps/3 Updated app/.hbc-ran"
-        before = hbc.get_file(wii, marker)
-        check(before.startswith(b"HBC ran 2\n"), "an old marker takes today's file stamps")
+        seen = "sd:/hbc/apps_seen.txt"
+        pad.send("stick 0 -1; wait 2")
+        pad.done()
+        blue, amber = picture("badges-all-new")
+        check(blue >= 8 and amber == 0, f"all three New ({blue} blue, {amber} amber)")
+
+        for row, folder in ((1, APPS[0]), (3, APPS[2])):
+            check(launch(wii, pad, out, folder, row, False), f"{folder} ran and HBC came back")
+        pad.send("stick 0 -1; wait 2")
+        pad.done()
+        lines = [l for l in hbc.get_file(wii, seen).decode().splitlines() if not l.startswith("#")]
+        check(sorted(l.split(TAB)[0] for l in lines) == [APPS[0], APPS[2]],
+              f"apps_seen.txt has the two launched apps ({lines})")
+        blue, amber = picture("badges-after-two-launches")
+        check(blue >= 8 and amber == 0, f"New stays on the third only ({blue} blue, {amber} amber)")
+        try:
+            hbc.get_file(wii, "sd:/apps/1 Already run/.hbc-ran")
+            check(False, "no marker file in the app folder")
+        except Exception:
+            check(True, "no marker file in the app folder")
+
+        before = hbc.get_file(wii, seen)
         hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml", meta_xml("3 Updated app", "After update"))
         time.sleep(3)
-
         for layout in ("list", "grid"):
-            red, gold = picture(f"badges-{layout}")
-            check(red >= 8 and gold >= 8, f"{layout}: a red and a gold badge ({red} red, {gold} gold)")
+            blue, amber = picture(f"badges-{layout}")
+            check(blue >= 8 and amber >= 8,
+                  f"{layout}: a New and an Updated pill ({blue} blue, {amber} amber)")
             pad.send("press Triangle; wait 2")   # 2: the other layout
             pad.done()
 
-        ran = launch(wii, pad, out, "3 Updated app", 3, False)
-        check(ran, "the changed app ran and HBC came back")
-        check(hbc.get_file(wii, marker) != before, "its marker took the new file stamps")
+        # Its kept log is the same as the first run's, which launch() takes
+        # for no run at all: the file and HBC's answer say it ran.
+        launch(wii, pad, out, "3 Updated app", 3, False)
+        check(bool(hbc.hbc_wait(wii, 60)), "HBC came back")
+        check(hbc.get_file(wii, seen) != before, "apps_seen.txt took the new file stamps")
         pad.send("stick 0 -1; wait 2")
         pad.done()
-        red, gold = picture("badges-after-launch")
-        check(red >= 8 and gold == 0, f"after the launch: red stays, gold gone ({red} red, {gold} gold)")
+        blue, amber = picture("badges-after-launch")
+        check(blue >= 8 and amber == 0, f"after the launch: New stays, Updated gone ({blue} blue, {amber} amber)")
     finally:
         pad.close()
         faults = dolphin.faults()

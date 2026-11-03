@@ -194,13 +194,36 @@ users. The choice is saved with the channel's settings.
 
 ### App badges
 
-Options (1) > **App badges: On** marks apps in the list and the grid: a red
-dot on an app you have never run from HBC, a gold dot on one whose
-`boot.dol`, `boot.elf`, `icon.png` or `meta.xml` changed since you last ran
-it. Launching the app clears its dot. HBC notes each run in a small
-`.hbc-ran` file in the app's folder, with the size and dates of those four
-files. With badges off (the default) HBC neither reads nor writes these
-files, so turning them on for the first time shows every app as never run.
+Options (1) > **App badges: On** marks apps in the list and the grid with a
+pill in the tile's top-right corner: a blue **New** on an app you have never
+run from HBC, and an amber **Updated** (with a bar along the tile's top edge)
+on one whose `boot.dol`, `boot.elf`, `meta.xml` or `icon.png` changed, in
+size or date, since you last ran it.
+
+Only a launch from HBC's own app list or app page records a run and clears
+the badge. An app sent with Wiiload, USBGecko or the developer network, or
+started some other way, does not.
+
+HBC keeps the record on the device the apps are on, one text file each:
+`sd:/hbc/apps_seen.txt` for apps on the SD card, `usb:/hbc/apps_seen.txt` for
+a USB drive (and likewise for the other devices). It has a line for each app:
+the app's folder name, a tab, then the size and modified time of the four
+files:
+
+    Wii64	boot.dol=1318128@1762104532 boot.elf=- meta.xml=412@1762104532 icon.png=9211@1762104532
+
+The file is read once when the list is scanned, and written only when
+something changed: a launch, or apps that were removed. It is never written
+to the Wii's NAND. Delete it to mark every app on that device as new again.
+If the device is read-only or fails, the badges simply do not persist. With
+badges off (the default) HBC neither reads nor writes the file, so turning
+them on for the first time shows every app as new.
+
+A theme can colour the pills with `badge_new` and `badge_updated` in its
+`theme.xml`, each with a `<fill>` and a `<text>` colour (red, green, blue and
+alpha, 0 to 255, like `font_color`). The defaults are a blue fill `#4fa3e0`
+with text `#062a44` for New, and an amber fill `#e8b04a` with text `#3a2604`
+for Updated. The text is 11 px; a font entry targeting `badge` changes it.
 
 ### Your own app order
 

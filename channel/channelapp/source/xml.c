@@ -126,6 +126,14 @@ static bool _get_gradient(mxml_node_t *node, const char *element,
 }
 
 // sync with font.h
+static void _get_badge(mxml_node_t *node, const char *element, theme_badge_t *badge) {
+	node = node ? mxmlFindElement(node, node, element, NULL, NULL, MXML_DESCEND_FIRST) : NULL;
+	if (!node)
+		return;
+	_get_color(node, "fill", &badge->fill);
+	_get_color(node, "text", &badge->text);
+}
+
 static const char *targets[FONT_MAX] = {
 	"label",
 	"dlgtitle",
@@ -134,7 +142,8 @@ static const char *targets[FONT_MAX] = {
 	"appdesc",
 	"button",
 	"button_desel",
-	"hint"
+	"hint",
+	"badge"
 };
 
 static void _get_font(mxml_node_t *node) {
@@ -529,7 +538,6 @@ bool settings_save(void) {
 	mxmlNewInteger(node, settings.progress_arc);
 	node = mxmlNewElement(data, "edge_paging");
 	mxmlNewInteger(node, settings.edge_paging);
-
 	node = mxmlNewElement(data, "new_badges");
 	mxmlNewInteger(node, settings.new_badges);
 	node = mxmlNewElement(data, "sideways_remotes");
@@ -645,6 +653,8 @@ bool load_theme_xml(char *buf) {
 
 	_get_color(node, "font_color", &theme.default_font.color);
 	_get_gradient(node, "progress_gradient", &theme.progress);
+	_get_badge(node, "badge_new", &theme.badge_new);
+	_get_badge(node, "badge_updated", &theme.badge_updated);
 
 	fnode = mxmlFindElement(node, root, "font", NULL, NULL, MXML_DESCEND_FIRST);
 	while (fnode != NULL) {

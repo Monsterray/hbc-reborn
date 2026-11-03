@@ -161,6 +161,35 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.14: PR 17, app badges keep their record in one file per device
+
+Matt Sephton's PR 17 (1.14.13) kept an `.hbc-ran` file in every app folder.
+Monty chose per-device files on the card instead, to keep NAND writes down
+(there are none) and the app folders clean: `<device>:/hbc/apps_seen.txt`,
+one line per app (folder name, then the size and modified time of
+`boot.dol`, `boot.elf`, `meta.xml` and `icon.png`). A scan reads it once
+and, if apps have gone, writes it once; a launch writes it. The write is a
+temp file and a rename, keeping the PR's handling of libfat refusing to
+replace an existing file. A read-only or failing card just forgets: badges
+do not persist. The never-shipped "version 1" marker migration is gone.
+The look changed to a solid "New" or "Updated" pill in the tile's top-right
+corner (Updated also gets a 3 px bar along the top edge), coloured by the
+theme keys `badge_new` and `badge_updated` (`<fill>` and `<text>`). Only the
+app list's own launch records a run; Wiiload, USBGecko and HBCA uploads do
+not.
+
+- **Options layout:** with the PR's fourth setting row, 0.7 scale and the old
+  spacing do not fit the 360 px dialog: the last row would end at 332 px,
+  past the Ok buttons at 306. The PR's 0.6 scale and tighter spacing (last
+  row ends at 302) are kept; the captions' font is not scaled.
+- **Checked:** `tests/test_apprun.py` on the host; the DOL builds with
+  `-Werror`; Dolphin smoke and badge runs (see the commit).
+- **Not yet checked:** a real Wii: that a USB drive's file is kept apart
+  from the SD card's, and a locked SD card.
+
+**Trigger:** switch App badges on with a few apps on the bench Wii's SD
+card and a USB drive; launch one and come back.
+
 ### 1.14.6: a USB keyboard
 
 `source/keyboard.c` keeps libogc's USB keyboard driver (libwiikeyboard) open

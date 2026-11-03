@@ -180,7 +180,7 @@ static void theme_load_fonts(unzFile uf) {
 
 		if (theme.fonts[i].size)
 			theme_fonts[i].size = theme.fonts[i].size;
-		else if (theme.default_font.size)
+		else if (theme.default_font.size && i != FONT_BADGE)
 			theme_fonts[i].size = theme.default_font.size;
 
 		const char *file = NULL;
@@ -363,6 +363,12 @@ void theme_init(u8 *data, u32 data_len) {
 	theme.progress.ur = 0xc8e1edff;
 	theme.progress.lr = 0x183848ff;
 	theme.progress.ll = 0x183848ff;
+
+	// App badges: a blue "New" pill and an amber "Updated" one (widgets.c).
+	theme.badge_new.fill = 0x4fa3e0ff;
+	theme.badge_new.text = 0x062a44ff;
+	theme.badge_updated.fill = 0xe8b04aff;
+	theme.badge_updated.text = 0x3a2604ff;
 
 	titlepath = title_get_path();
 	if (titlepath[0])
