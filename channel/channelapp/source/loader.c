@@ -8,6 +8,7 @@
 #include <ogcsys.h>
 #include <network.h>
 #include <ogc/lwp_watchdog.h>
+#include <ogc/machine/processor.h>
 #include <ogc/cond.h>
 #include <zlib.h>
 
@@ -22,6 +23,8 @@
 #include "panic.h"
 
 #include "loader.h"
+#include "netinit.h"
+#include "netrecovery.h"
 #include "devfile.h"
 #include "devnet.h"
 #include "discover.h"
@@ -177,15 +180,37 @@ static volatile u32 net_starts;
 // UDP discovery (HBCU) on the Wiiload port; reopened with each network start.
 static s32 discover_fd = -1;
 
-u32 loader_net_starts (void) {
-	return net_starts;
-}
-
 static void discover_stop(void) {
 	if (discover_fd >= 0) {
 		net_close(discover_fd);
 		discover_fd = -1;
 	}
+}
+
+// Restart and stop requests, read by the worker even while a busy start
+// holds its mutex: the menu never waits on that mutex for them.
+static volatile bool tcp_restart, tcp_stop;
+
+// libogc's net_deinit() waits for an IOS callback. The menu watches it from
+// outside (netrecovery.c), so a cleanup that never returns can be escaped.
+static void tcp_net_deinit (const char *reason) {
+	(void) reason;
+	netrecovery_cleanup_begin();
+	// Every path that closes the network stops discovery first: its socket
+	// belongs to the stack that net_deinit() takes down. Inside the watchdog,
+	// because net_close() waits on IOS too.
+	discover_stop();
+#ifdef HBC_TEST_STUCK_NET_CLEANUP
+	// Test builds only: a restart's cleanup never returns, holding the mutex.
+	if (!strcmp(reason, "Restart"))
+		for (;;) usleep(50 * 1000);
+#endif
+	net_deinit();
+	netrecovery_cleanup_complete();
+}
+
+u32 loader_net_starts (void) {
+	return net_starts;
 }
 
 static void * ld_tcp_func (void *arg) {
@@ -197,6 +222,7 @@ static void * ld_tcp_func (void *arg) {
 	u8 buf[16];
 	u16 wiiload_version;
 	u8 retries;
+	u64 init_start;
 
 	mask = 0;
 
@@ -208,28 +234,44 @@ static void * ld_tcp_func (void *arg) {
 	ta->handshaked = false;
 
 	while (true) {
-		while (ta->cmd == LDTCPCMD_IDLE)
+		while (ta->cmd == LDTCPCMD_IDLE && !tcp_stop && !tcp_restart)
 			LWP_CondWait(ta->cond, ta->cmutex);
 
 		ta->handshaked = false;
 
-		if (ta->cmd == LDTCPCMD_EXIT) {
+		if (tcp_stop || ta->cmd == LDTCPCMD_EXIT) {
 			break;
+		}
+
+		if (tcp_restart) {
+			// HOME > HBC > Restart network, also during a busy start: IOS
+			// drops the connection and joins the network again, as at boot.
+			u32 level;
+			_CPU_ISR_Disable(level);
+			tcp_restart = false;
+			_CPU_ISR_Restore(level);
+			gprintf ("reinit net\n");
+			hlog("Network: restarting\n");
+			if (s >= 0) {
+				net_close (s);
+				s = -1;
+			}
+			tcp_net_deinit("Restart");
+			ta->state = LDTCPS_UNINITIALIZED;
+			ta->cmd = LDTCPCMD_INIT;
 		}
 
 		if (ta->cmd == LDTCPCMD_INIT) {
 			ta->cmd = LDTCPCMD_IDLE;
 
 			if (ta->state == LDTCPS_INITIALIZED) {
-				// A restart: IOS drops the connection and joins the network
-				// again (DHCP, Wi-Fi), as at start-up.
-				gprintf ("reinit net\n");
-				hlog("Network: restarting\n");
 				net_close (s);
-				discover_stop();
-				net_deinit ();
+				s = -1;
+				netrecovery_request();
+				tcp_net_deinit("Reinit");
 			}
 
+			init_start = gettime();
 			retries = 32;
 			ta->state = LDTCPS_INITIALIZING;
 
@@ -241,17 +283,14 @@ static void * ld_tcp_func (void *arg) {
 					break;
 				}
 
-				res = net_get_status();
-				while (res == -EBUSY) {
-					if (ta->cmd == LDTCPCMD_EXIT) {
-						gprintf("exit while net_init_async still busy\n");
-						res = -1;
-						break;
-					}
+				// One 30 s budget for all the attempts; restart and stop are
+				// seen every 50 ms, so a start that IOS never finishes no
+				// longer holds the worker, or an app launch, forever.
+				res = netinit_wait(init_start, &tcp_stop, &tcp_restart);
 
-					usleep(50 * 1000);
-					res = net_get_status();
-				}
+				if (res == -ECANCELED ||
+						ticks_to_millisecs(gettime() - init_start) >= HBC_NET_INIT_TIMEOUT_MS)
+					break;
 
 				if ((res == -EAGAIN) || (res == -ETIMEDOUT)) {
 					gprintf ("net_init failed: %d, trying again...\n", res);
@@ -263,9 +302,23 @@ static void * ld_tcp_func (void *arg) {
 				break;
 			}
 
+#ifdef HBC_TEST_INIT_FAILURE
+			// Test builds only: the first start that succeeds is failed instead.
+			static bool injected_init_failure;
+			if (!injected_init_failure && res >= 0) {
+				injected_init_failure = true;
+				res = -ETIMEDOUT;
+			}
+#endif
 			if (res < 0) {
 				gprintf ("net_init failed: %d\n", res);
 				hlog("Network: no connection (%d), trying again\n", (int) res);
+				// Clean up the half-started stack before the menu's retry; a
+				// cancelled start is cleaned up by the restart or exit above.
+				if (res != -ECANCELED) {
+					netrecovery_request();
+					tcp_net_deinit("Failed INIT");
+				}
 				ta->state = LDTCPS_UNINITIALIZED;
 				continue;
 			}
@@ -284,14 +337,18 @@ static void * ld_tcp_func (void *arg) {
 
 			if ((s == -ENETRESET) && retries) {
 				gprintf("ENETRESET, reiniting\n");
-				discover_stop();
-				net_deinit();
+				netrecovery_request();
+				tcp_net_deinit("Network reset");
+				s = -1;
+				ta->state = LDTCPS_UNINITIALIZED;
 				ta->cmd = LDTCPCMD_INIT;
 				continue;
 			}
 
 			if (s < 0) {
 				gprintf ("tcp_listen failed: %d\n",s);
+				netrecovery_request();
+				tcp_net_deinit("Listener failure");
 				ta->state = LDTCPS_UNINITIALIZED;
 				continue;
 			}
@@ -303,6 +360,8 @@ static void * ld_tcp_func (void *arg) {
 			}
 
 			ta->state = LDTCPS_INITIALIZED;
+			if (!tcp_restart)
+				netrecovery_ready();
 
 			continue;
 		}
@@ -324,8 +383,10 @@ static void * ld_tcp_func (void *arg) {
 
 			if (sn == -ENETRESET) {
 				gprintf("ENETRESET, reiniting\n");
-				discover_stop();
-				net_deinit();
+				netrecovery_request();
+				tcp_net_deinit("Network reset");
+				s = -1;
+				ta->state = LDTCPS_UNINITIALIZED;
 				ta->cmd = LDTCPCMD_INIT;
 				continue;
 			}
@@ -334,7 +395,9 @@ static void * ld_tcp_func (void *arg) {
 				gprintf ("net_accept failed: %d\n", sn);
 
 				net_close (s);
-				discover_stop();
+				s = -1;
+				netrecovery_request();
+				tcp_net_deinit("Accept failure");
 				ta->state = LDTCPS_UNINITIALIZED;
 
 				continue;
@@ -400,9 +463,8 @@ static void * ld_tcp_func (void *arg) {
 			gprintf ("net_close failed: %d\n", res);
 	}
 
-	discover_stop();
 	gprintf ("tcp thread deiniting\n");
-	net_deinit();
+	tcp_net_deinit("Shutdown");
 	gprintf ("tcp thread exiting\n");
 	ta->state = LDTCPS_UNINITIALIZED;
 
@@ -452,6 +514,8 @@ void loader_init (void) {
 
 	gprintf ("starting tcp thread\n");
 
+	netrecovery_reset();
+	tcp_restart = tcp_stop = false;
 	memset (&ta_tcp, 0, sizeof (ld_tcp_arg));
 
 	memset (&ld_tcp_stack, 0, LD_THREAD_STACKSIZE);
@@ -472,8 +536,11 @@ void loader_init (void) {
 	}
 }
 
-void loader_deinit (void) {
+bool loader_deinit (void) {
 	u8 i;
+
+	// Published before trying the mutex: a busy start holds it while polling.
+	tcp_stop = true;
 
 	// A developer file transfer must stop before the card is unmounted.
 	devfile_abort ();
@@ -537,6 +604,12 @@ void loader_deinit (void) {
 		}
 	}
 
+	return !ta_tcp.running;
+}
+
+void loader_tcp_park (void) {
+	if (ta_tcp.running)
+		LWP_SuspendThread(ld_tcp_thread);
 }
 
 void loader_tcp_init (void) {
@@ -550,16 +623,15 @@ void loader_tcp_init (void) {
 	LWP_MutexUnlock(ta_tcp.cmutex);
 }
 
-// HOME > HBC > Restart network; carried out by loader_signal_threads() on
-// the next frame the TCP thread is free (it holds its lock while it works).
-static volatile bool tcp_restart;
-
 // When the network last failed to start (0: not waiting) and how long
 // loader_signal_threads() waits before it tries again; reset once it is up.
 static u64 net_failed_at;
 static u32 net_retry_ms;
 
+// HOME > HBC > Restart network. The worker sees the flag even in a busy
+// start; an idle one is woken by loader_signal_threads().
 void loader_tcp_restart (void) {
+	netrecovery_request();
 	tcp_restart = true;
 }
 
@@ -573,9 +645,9 @@ void loader_signal_threads (void) {
 	}
 
 	if (LWP_MutexTryLock(ta_tcp.cmutex) == 0) {
-		if (tcp_restart && ta_tcp.running && ta_tcp.state != LDTCPS_INITIALIZING) {
-			tcp_restart = false;
-			ta_tcp.cmd = LDTCPCMD_INIT;
+		if (tcp_restart && ta_tcp.running) {
+			net_failed_at = 0;
+			net_retry_ms = 0;
 			LWP_CondBroadcast(ta_tcp.cond);
 		} else if (loader_tcp_initialized () && !ta_tcp.handshaked) {
 			net_retry_ms = 0;
