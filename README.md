@@ -109,7 +109,7 @@ quiet), on the page it shows, so a whole folder's upload is one quiet reload.
 While a file moves, HBC shows it at the bottom right of the screen
 ("Receiving ridgerac/boot.dol 42%", "Sending save.dat"). Files under a
 device's `apps/` directory show the app folder and any subfolders; other
-files show their filename. Options (1) > Progress: **Circle** replaces the
+files show their parent folder and name (a file at a device's root, its name). Options (1) > Progress: **Circle** replaces the
 percentage with a progress circle in the text colour on a faded track (the
 choice is kept in `settings.xml`). The circle fills clockwise from the top,
 and turns while the transfer's size is unknown. A name too long for the

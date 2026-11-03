@@ -21,8 +21,8 @@ typedef struct {
 extern devfile_transfer devfile_last;
 
 // The file transfer in progress, for a menu to show: 'p' for one into the
-// Wii, 'g' for one out of it, with the app-relative path (or file name
-// outside apps/) and its bytes moved of
+// Wii, 'g' for one out of it, with the app-relative path (or parent
+// folder and name outside apps/) and its bytes moved of
 // total (0 until known); 0 when there is none.
 char devfile_progress(const char **name, u32 *done, u32 *total);
 
