@@ -42,12 +42,19 @@ static inline void sideways_vote(sideways_remote *s, int v) {
 // Once per scan, before turning its down, held and up buttons. A press and
 // its release keep the orientation they started in.
 static inline void sideways_update(sideways_remote *s, const WPADData *d) {
-	// No report this scan (a remote that is quiet, between reports or
-	// briefly not answering): keep the orientation. Resetting to upright here
-	// flipped a sideways remote back for good, since a quiet remote sends no
-	// reading to turn it sideways again (real Wii, 2026-11-03: most scans of
-	// a remote held still carried no accelerometer data).
-	if (!d || d->err != WPAD_ERR_NONE) {
+	// No remote (WPAD_Probe failed: it is off or gone): forget it, or the
+	// next remote paired in this slot would start out turned.
+	if (!d) {
+		s->sideways = s->dpad_held = false;
+		s->streak = 0;
+		return;
+	}
+	// No report this scan (a remote that is quiet or between reports): keep
+	// the orientation. Resetting to upright here flipped a sideways remote
+	// back for good, since a quiet remote sends no reading to turn it
+	// sideways again (real Wii, 2026-11-03: most scans of a remote held still
+	// carried no accelerometer data).
+	if (d->err != WPAD_ERR_NONE) {
 		s->dpad_held = false;
 		s->streak = 0;
 		return;

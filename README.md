@@ -356,7 +356,9 @@ in the config turns it on to start) is for a Wii Remote held sideways with
 its D-pad at the left: tilt the buttons towards you and the D-pad turns to
 match, Up acting as Left, Right as Up, and so on. A remote pointing at the
 screen, or held upright, reads as usual; lying flat keeps the last way it
-was held. The overlay always follows it; an app's own menus can too, by
+was held. It turns after about a sixth of a second held the new way, and
+back after about half a second, so a brief twist or a glimpse of the sensor
+bar does not flip it. The overlay always follows it; an app's own menus can too, by
 calling `hbc_agent_remotes_scanned()` after `WPAD_ScanPads()` and passing a
 remote's buttons through `hbc_agent_remote_buttons(chan, buttons)`, as HBC's
 app list does, with a data format that includes the accelerometer. Classic and GameCube controllers are never turned. HBC keeps

@@ -139,7 +139,7 @@ int main(void) {
     UPD(&a, &d);
     assert(a.sideways && !a.dpad_held); // no report: kept
     UPD(&a, 0);
-    assert(a.sideways); // not answering: kept
+    assert(!a.sideways && !a.streak); // gone: forgotten
     return 0;
 }
 """
