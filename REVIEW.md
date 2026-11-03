@@ -233,6 +233,18 @@ so a flood is bounded; the broadcast has not been tried on a real Wii yet
 broadcast on 4299 is unproven. The first test on the bench is
 `hbc.py find`.
 
+### 1.14.21: HBCU discovery answers on a real Wii
+
+PR 21's discovery passed in Dolphin but no Wii ever answered `hbc.py find`.
+A diagnostic build counted the queries arriving (16 bytes, from the PC) and
+`net_sendto` failing with -22: the reply passed `sizeof(from)` (16) as the
+address length, and libogc hands that to IOS as `sa_len`, which on a real
+Wii takes the 8-byte address `recvfrom` filled in (`fromlen` came back 8).
+Dolphin accepts 16. The reply now passes `fromlen`.
+
+- **Checked:** on the bench Wii, `hbc.py find` lists it, `hbc.py version`
+  with no address finds it, and `put` with no address refuses.
+
 ### 1.14.15 and 1.14.16: PR 20, deletes of trees and patterns in one request
 
 Matt's op `E` (protocol 9, `docs/devnet.md`) deletes a tree or a pattern's

@@ -99,8 +99,10 @@ s32 discover_poll(s32 fd, u32 netmask, const char *name, bool agent) {
 		reply[9] = (ip >> 16) & 0xff;
 		reply[10] = (ip >> 8) & 0xff;
 		reply[11] = ip & 0xff;
+		// Back to the address as IOS gave it: its sockaddr is 8 bytes, and
+		// sizeof(from) (16, which Dolphin takes) is EINVAL on a real Wii.
 		net_sendto(fd, reply, 12 + namelen, 0,
-				   (struct sockaddr *) &from, sizeof(from));
+				   (struct sockaddr *) &from, fromlen);
 	}
 	return 0;
 }
