@@ -62,11 +62,100 @@ def wii_error(code):
     return f"{name} ({os.strerror(host)})" if host else name
 
 
+FIND_TIMEOUT = 2.0
+FIND_QUERY = b"HBCU" + bytes(12)
+
+
+def broadcast_targets():
+    """Where a find query goes: 255.255.255.255, and the /24 and /16
+    broadcast addresses of each IPv4 address this PC has (a Wii answers
+    only its own /16, so a wider net is no use)."""
+    addrs = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    try:   # the address of the default route: no packet is sent
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", PORT))
+            addrs.add(s.getsockname()[0])
+    except OSError:
+        pass
+    targets = ["255.255.255.255"]
+    for addr in sorted(addrs):
+        if addr.startswith("127.") or addr == "0.0.0.0":
+            continue
+        a, b, c, _ = addr.split(".")
+        for bcast in (f"{a}.{b}.{c}.255", f"{a}.{b}.255.255"):
+            if bcast not in targets:
+                targets.append(bcast)
+    return targets
+
+
+def parse_find_reply(data):
+    """An HBCU reply: (ip, agent, name), or None for anything else."""
+    if len(data) < 12 or data[:4] != b"HBCU" or data[4] < 1:
+        return None
+    flags, n = data[5], data[6]
+    if len(data) < 12 + n:
+        return None
+    ip = ".".join(str(b) for b in data[8:12])
+    return ip, bool(flags & 1), data[12:12 + n].decode("ascii", "replace")
+
+
+def find_wiis(timeout=FIND_TIMEOUT, targets=None):
+    """Ask with an HBCU query and collect the answers until timeout passes:
+    a list of {"address", "agent", "name"}, one per Wii, in answer order.
+    A console the query reaches on two of the PC's networks answers on each;
+    its own address in the reply makes those one Wii."""
+    found = {}
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.bind(("", 0))
+        for target in targets or broadcast_targets():
+            try:
+                s.sendto(FIND_QUERY, (target, PORT))
+            except OSError:
+                pass   # an interface that cannot broadcast; the others still can
+        deadline = time.monotonic() + timeout
+        while (left := deadline - time.monotonic()) > 0:
+            ready, _, _ = select.select([s], [], [], left)
+            if not ready:
+                break
+            try:
+                data, (src, _) = s.recvfrom(256)
+            except OSError:
+                continue
+            reply = parse_find_reply(data)
+            if not reply:
+                continue
+            ip, agent, name = reply
+            # Connect to where an answer came from, the console's own address if one did.
+            if ip not in found:
+                found[ip] = {"address": src, "agent": agent, "name": name}
+            elif src == ip:
+                found[ip]["address"] = src
+    return list(found.values())
+
+
+def find_line(wii):
+    return f"{wii['address']:<15}  {'app' if wii['agent'] else 'HBC':<3}  {wii['name']}"
+
+
 def wii_address(arg):
     for value in (arg, os.environ.get("HBC_WII"), os.environ.get("WII_BENCH_IP"),
                   os.environ.get("WIILOAD", "").removeprefix("tcp:")):
         if value:
             return value
+    found = find_wiis()
+    if len(found) == 1:
+        print(f"hbc.py: using the Wii at {found[0]['address']} (hbc.py find)", file=sys.stderr)
+        return found[0]["address"]
+    if found:
+        raise SystemExit("hbc.py: which Wii? More than one answered:\n" +
+                         "\n".join("    " + find_line(w) for w in found) +
+                         "\nSet HBC_WII to one address, or pass --wii ADDRESS.")
     raise SystemExit("hbc.py: which Wii? Set HBC_WII to its address, or pass --wii ADDRESS.\n"
                      "HBC shows the address on its HOME menu, under HBC > Network.")
 
@@ -1401,8 +1490,9 @@ def run_outcome(wii, seconds=30):
 OVERVIEW = """\
 hbc.py - work on a Wii from your PC through the Homebrew Channel (HBC).
 
-Tell it where your Wii is, once per terminal (the address is on HBC's
-HOME menu, under HBC > Network):
+With one Wii on your network, hbc.py finds it by itself (hbc.py find).
+Otherwise tell it which, once per terminal (the address is on HBC's HOME
+menu, under HBC > Network, and hbc.py find lists every Wii that answers):
 
     export HBC_WII=192.168.1.50          (Windows: set HBC_WII=192.168.1.50)
 
@@ -1417,6 +1507,7 @@ Common tasks
 
 Commands
   The Wii
+    find [ADDRESS...]   list the Wiis on the network: address, HBC or app, name
     status              what is running: version, IOS, memory, SD card, network
     hw                  the Wii's hardware and settings, as DEV > Info shows them
     transfer-style [S]  how HBC shows a long name it is moving (for testing)
@@ -1465,6 +1556,23 @@ IOS and its revision, whether AHBPROT is open, free memory, the mounted
 device and the devices seen, the Wii's IP, the log target, the last file
 transfer's timing, and any crash an agent app reported. With --json the
 output is one compact line, for scripts.""",
+    "find": """\
+hbc.py find [--timeout SECONDS] [ADDRESS...]
+
+Lists the Wiis on your network that run HBC, or an app built with the in-app
+agent: one line each with the address, "HBC" or "app", and the name (HBC's,
+or the app's). It asks with one UDP broadcast on port 4299 (HBCU, see
+docs/devnet.md) and listens for 2 s, or --timeout seconds. A Wii answers
+only a PC on its own network (the same /16 as for everything else). Give
+addresses to ask those Wiis directly, for a network a broadcast does not
+reach. --json prints a list. Exits with status 1 when no Wii answers.
+
+When neither --wii nor HBC_WII names a Wii, the other commands use the one
+Wii that answers, and say so. HBC from before HBCU does not answer: name
+it with --wii or HBC_WII.
+
+    hbc.py find
+    hbc.py find 192.168.1.50""",
     "version": """\
 hbc.py version
 
@@ -1816,6 +1924,19 @@ def main(argv=None):
     if cmd not in COMMAND_HELP:
         print_help(cmd)
         raise SystemExit(2)
+    if cmd == "find":
+        # --timeout before or after the command; run's 300 s default is not find's.
+        found = find_wiis(opts.timeout if "--timeout" in argv else FIND_TIMEOUT, args or None)
+        if opts.json:
+            print(json.dumps(found))
+        else:
+            for w in found:
+                print(find_line(w))
+        if not found:
+            if not opts.json:
+                print("hbc.py: no Wii answered", file=sys.stderr)
+            raise SystemExit(1)
+        return
     wii = wii_address(opts.wii)
 
     def need(n, usage):

@@ -24,6 +24,7 @@
 #include "loader.h"
 #include "devfile.h"
 #include "devnet.h"
+#include "discover.h"
 #include "zmem.h"
 
 #define USBGECKO_RETRIES 1000
@@ -173,9 +174,18 @@ typedef struct {
 
 // Times the network came up (HBCS "net_starts": a restart adds one).
 static volatile u32 net_starts;
+// UDP discovery (HBCU) on the Wiiload port; reopened with each network start.
+static s32 discover_fd = -1;
 
 u32 loader_net_starts (void) {
 	return net_starts;
+}
+
+static void discover_stop(void) {
+	if (discover_fd >= 0) {
+		net_close(discover_fd);
+		discover_fd = -1;
+	}
 }
 
 static void * ld_tcp_func (void *arg) {
@@ -216,6 +226,7 @@ static void * ld_tcp_func (void *arg) {
 				gprintf ("reinit net\n");
 				hlog("Network: restarting\n");
 				net_close (s);
+				discover_stop();
 				net_deinit ();
 			}
 
@@ -273,6 +284,7 @@ static void * ld_tcp_func (void *arg) {
 
 			if ((s == -ENETRESET) && retries) {
 				gprintf("ENETRESET, reiniting\n");
+				discover_stop();
 				net_deinit();
 				ta->cmd = LDTCPCMD_INIT;
 				continue;
@@ -284,6 +296,12 @@ static void * ld_tcp_func (void *arg) {
 				continue;
 			}
 
+			discover_fd = discover_open();
+			if (discover_fd < 0) {
+				gprintf("discover_open failed: %d\n", discover_fd);
+				discover_fd = -1;
+			}
+
 			ta->state = LDTCPS_INITIALIZED;
 
 			continue;
@@ -291,6 +309,9 @@ static void * ld_tcp_func (void *arg) {
 
 		if (ta->cmd == LDTCPCMD_ACCEPT) {
 			ta->cmd = LDTCPCMD_IDLE;
+			if (discover_fd >= 0 &&
+					discover_poll(discover_fd, mask, "Homebrew Channel", false) < 0)
+				discover_stop();
 			memset (&sa, 0, sizeof (struct sockaddr_in));
 			sa.sin_family = AF_INET;
 			sa.sin_len = sizeof (struct sockaddr_in);
@@ -303,6 +324,7 @@ static void * ld_tcp_func (void *arg) {
 
 			if (sn == -ENETRESET) {
 				gprintf("ENETRESET, reiniting\n");
+				discover_stop();
 				net_deinit();
 				ta->cmd = LDTCPCMD_INIT;
 				continue;
@@ -312,6 +334,7 @@ static void * ld_tcp_func (void *arg) {
 				gprintf ("net_accept failed: %d\n", sn);
 
 				net_close (s);
+				discover_stop();
 				ta->state = LDTCPS_UNINITIALIZED;
 
 				continue;
@@ -377,6 +400,7 @@ static void * ld_tcp_func (void *arg) {
 			gprintf ("net_close failed: %d\n", res);
 	}
 
+	discover_stop();
 	gprintf ("tcp thread deiniting\n");
 	net_deinit();
 	gprintf ("tcp thread exiting\n");

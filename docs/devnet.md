@@ -5,6 +5,9 @@ uploads, it answers a few developer requests that make testing on a real
 Wii faster. `tools/hbc.py` implements the client side; this page is the wire
 format for other tools.
 
+It also answers one UDP query on port 4299, so a PC can find it without
+knowing its address: see [Discovery](#discovery-hbcu).
+
 ## Access
 
 HBC answers only hosts on its own `/16` network, as it always has for
@@ -372,6 +375,31 @@ channel again (Dolphin's `IOS.cpp` `SetupMemory` models the same clear). HBC
 therefore writes a copy of the block to MEM2 at `0x91800000`, reads it first
 thing in `main()`, and restores the target from it. An app that happens to
 use that memory costs only the copy, which its check word then rejects.
+
+## Discovery (HBCU)
+
+HBC does not answer a scan of the subnet. The menu and the in-app agent also
+listen on UDP port 4299, on every interface address, and answer one query.
+`hbc.py find` sends it to the broadcast addresses of the PC's networks and to
+any addresses it is given. A console answers only a sender on its own `/16`,
+the same rule as TCP. An agent app stops answering while it is not
+listening on TCP either (`hbc_agent_listen(false)`, or HOME's "hbc.py
+connection" switched off).
+
+The query is 16 bytes: `HBCU` and 12 zero bytes. The reply is unicast:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | `HBCU` |
+| 4 | 1 | Version: 1 |
+| 5 | 1 | Flags: bit 0 set when an agent app is answering. Other bits are zero |
+| 6 | 1 | Name length, 0–80 |
+| 7 | 1 | Zero |
+| 8 | 4 | The console's IPv4 address, first octet first |
+| 12 | *n* | Name, the characters `HBCS` would show: `Homebrew Channel` in the menu, otherwise the app name |
+
+The client connects to the address the reply came from. HBC from before this
+query does not answer it; reach it by address.
 
 ## In-app agent
 

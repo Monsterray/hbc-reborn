@@ -42,6 +42,7 @@
 #include "devfile.h"
 #include "devstream.h"
 #include "tcp.h"
+#include "discover.h"
 #include "agent_int.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
@@ -91,6 +92,9 @@ static volatile int state;
 static volatile u32 gen, abandoned = ~0u;
 static volatile u32 agent_ended = ~0u, monitor_ended = ~0u;   // the last generation that ended
 static volatile s32 listen_sock = -1;
+// UDP discovery (HBCU) on the same port. Kept here, like listen_sock, so a
+// stop that gives up on the thread can still free the port for the app.
+static volatile s32 discover_sock = -1;
 static volatile bool in_request;
 #if AGENT_TUXEDO
 static PPCExcptPanicFn prev_panic;
@@ -702,7 +706,7 @@ static s32 net_start(u32 my) {
 static void *agent_thread(void *arg) {
 	struct sockaddr_in sa;
 	u32 len_sa, mask = 0, my = (u32) arg;
-	s32 ls = -1, s;
+	s32 ls = -1, udp = -1, s;
 	u8 hdr[16];
 
 	while (my == gen) {
@@ -712,6 +716,10 @@ static void *agent_thread(void *arg) {
 			if (ls >= 0) {
 				net_close(ls);
 				ls = listen_sock = -1;
+			}
+			if (udp >= 0) {
+				net_close(udp);
+				udp = discover_sock = -1;
 			}
 			usleep(AGENT_ACCEPT_POLL_MS * 1000);
 			continue;
@@ -731,6 +739,9 @@ static void *agent_thread(void *arg) {
 				nap(my, AGENT_RETRY_MS);
 				continue;
 			}
+			s = discover_open();
+			if (s >= 0)
+				udp = discover_sock = s;
 		}
 
 		// Wait for a connection without spinning. IOS may not report a
@@ -739,6 +750,10 @@ static void *agent_thread(void *arg) {
 			struct pollsd sd = { ls, 0x0003, 0 };  // POLLIN
 
 			net_poll(&sd, 1, AGENT_ACCEPT_POLL_MS);
+		}
+		if (udp >= 0 && discover_poll(udp, mask, record_name(), true) < 0) {
+			net_close(udp);
+			udp = discover_sock = -1;
 		}
 		if (!may_listen(my))
 			continue;
@@ -759,6 +774,12 @@ static void *agent_thread(void *arg) {
 			ls = listen_sock = -1;
 			if (s == -ENETRESET && my == gen)
 				net_deinit();
+			if (udp >= 0) {
+				// net_deinit has already dropped it.
+				if (s != -ENETRESET)
+					net_close(udp);
+				udp = discover_sock = -1;
+			}
 			continue;
 		}
 
@@ -776,6 +797,10 @@ static void *agent_thread(void *arg) {
 	if (ls >= 0 && my != abandoned) {
 		net_close(ls);
 		listen_sock = -1;
+	}
+	if (udp >= 0 && my != abandoned) {
+		net_close(udp);
+		discover_sock = -1;
 	}
 	agent_ended = my;
 	return NULL;
@@ -1322,6 +1347,9 @@ s32 hbc_agent_stop(void) {
 		if (listen_sock >= 0)
 			net_close(listen_sock);   // so the app can bind the port
 		listen_sock = -1;
+		if (discover_sock >= 0)
+			net_close(discover_sock);
+		discover_sock = -1;
 		res = -ETIMEDOUT;
 	}
 	if (!end_thread(&wd_thread, &wd_stack, AGENT_MEM_WATCHDOG, &monitor_ended, old, start))
