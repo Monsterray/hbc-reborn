@@ -252,9 +252,12 @@ reloads the same IOS, keeping AHBPROT, before the launch.
   USB (`tests/keyboard_host`): rollover, a retried open, a mouse opened once,
   a forgotten ID, a pending read after shutdown. Five of its ten checks fail
   on 1.14.22's `keyboard.c`. The DOL builds with `-Werror`.
-- **Not yet checked:** the keyboard in HOME on the bench Wii (attended,
-  `C:/Temp/hbcpr/kbd23_wii.py`). The `no_ios_reload` reload needs a read
-  IOS never answers, which the bench cannot make happen on demand.
+- **Checked on the bench Wii** (attended, `C:/Temp/hbcpr/kbd23_wii.py`,
+  job 20261102-213308-4d0049): with only a USB keyboard, Esc opened HOME,
+  the arrows moved its focus, Esc closed it; Esc, HBC, Enter, About, Enter
+  opened About. Afterwards 1.14.23 still answered and no app was running.
+- **Not yet checked:** the `no_ios_reload` reload needs a read IOS never
+  answers, which the bench cannot make happen on demand.
 
 ### 1.14.22: the crash screen from the first instruction, and once only
 
@@ -272,8 +275,10 @@ the way `_panic` does. `HBC_TEST_CRASH=1|2|3` builds fault before the video,
   the crash-1 build reloads the installed channel (1.14.0 answered); the
   crash-2 build shows the DSI dump (DAR 0000000A) and the countdown on the
   capture card, then reloads.
-- **Not covered:** the crash-3 build (a fault in the screen) resets the Wii
-  into BootMii's menu, so it runs only with Monty there.
+- **Checked, attended:** the crash-3 build (a fault in the screen) reset
+  the Wii by itself about 20 s after the send: the capture card shows
+  BootMii's menu, then the installed 1.14.0, which answered (job
+  20261102-213605-858fed).
 - **Left:** audit items 3 (stack walk floor) and 4 (the unused 144 KiB
   `__stack_addr` reservation in `newrvl.ld`) are not done.
 
