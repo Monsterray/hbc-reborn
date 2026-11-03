@@ -161,6 +161,34 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.23: the USB keyboard in HOME, rollover, and devices it skipped
+
+From the 1.14 audit. Esc or Home on a USB keyboard opened HOME, but the
+overlay reads only remotes and GameCube controllers, so the keyboard could
+not move in it or close it; and the keys pressed there waited in
+`keyboard.c` until HBC's loop came back, where an Enter launched the
+selected app. HBC's `on_frame` callback now scans the keyboard each overlay
+frame and passes its keys to the agent's key queue through a new
+`hbc_agent_push_keys` (the queue `hbc.py key` fills), so the keys are used
+up there; one scan after the overlay closes keeps a key still held from
+reading as a new press. Also in `keyboard.c`: a rollover report (too many
+keys, every slot 1) kept nothing, so every held key went up and came down
+again as a new press when it ended; it now keeps the last keys. A device ID
+was marked seen before it was opened, so a keyboard whose open failed once
+was never tried again, and IDs of unplugged devices filled the list; now
+only devices proven not to be keyboards are remembered, and only while they
+are plugged in. A read IOS never gave back after `keyboard_shutdown` would
+write into, and call back into, the app on the `no_ios_reload` path: HBC then
+reloads the same IOS, keeping AHBPROT, before the launch.
+
+- **Checked:** `tests/test_keyboard.py` builds `keyboard.c` against a fake
+  USB (`tests/keyboard_host`): rollover, a retried open, a mouse opened once,
+  a forgotten ID, a pending read after shutdown. Five of its ten checks fail
+  on 1.14.22's `keyboard.c`. The DOL builds with `-Werror`.
+- **Not yet checked:** the keyboard in HOME on the bench Wii (attended,
+  `C:/Temp/hbcpr/kbd23_wii.py`). The `no_ios_reload` reload needs a read
+  IOS never answers, which the bench cannot make happen on demand.
+
 ### 1.14.22: the crash screen from the first instruction, and once only
 
 The 1.14 audit found two gaps in 1.14.3's `hbc_exception_screen`. It was

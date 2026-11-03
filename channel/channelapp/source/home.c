@@ -24,6 +24,7 @@
 #include "../../../sdk/hbc_agent.h"
 #include "controls.h"
 #include "gfx.h"
+#include "keyboard.h"
 #include "loader.h"
 #include "miires.h"
 #include "avatar.h"
@@ -123,9 +124,32 @@ static bool save(void *user) {
 	return settings_save();
 }
 
-static void signal_loader(void *user) {
+// Each overlay frame: keep the network thread going, and read the USB
+// keyboard, which the overlay does not know, into its key queue. Without
+// this a keyboard opened HOME but could not move in it, and the keys
+// pressed there waited in keyboard.c until HBC's loop came back: an Enter
+// then launched the selected app (1.14 audit).
+static void on_frame(void *user) {
+	static const struct { u32 button; char key; } keys[] = {
+		{ WPAD_BUTTON_UP, 'u' }, { WPAD_BUTTON_DOWN, 'd' },
+		{ WPAD_BUTTON_LEFT, 'l' }, { WPAD_BUTTON_RIGHT, 'r' },
+		{ WPAD_BUTTON_A, 'a' }, { WPAD_BUTTON_B, 'b' },
+		{ WPAD_BUTTON_HOME, 'h' }, { WPAD_BUTTON_1, '1' }, { WPAD_BUTTON_2, '2' },
+	};
+	char pressed[sizeof(keys) / sizeof(keys[0]) + 1];
+	u32 down, i, n = 0;
+
 	(void) user;
 	loader_signal_threads();
+
+	keyboard_scan();
+	down = keyboard_down();
+	for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+		if (down & keys[i].button)
+			pressed[n++] = keys[i].key;
+	pressed[n] = 0;
+	if (n)
+		hbc_agent_push_keys(pressed);
 }
 
 // ---- BootMii --------------------------------------------------------------
@@ -187,8 +211,9 @@ void home_init(void) {
 	// The overlay runs its own frame loop, so HBC's main loop stops while
 	// it is open; its network thread, though, accepts a connection only
 	// when told to each frame. Keep telling it, so hbc.py and file
-	// transfers still work with the HOME menu up.
-	cfg.on_frame = signal_loader;
+	// transfers still work with the HOME menu up, and pass the USB
+	// keyboard on.
+	cfg.on_frame = on_frame;
 #ifdef HBC_HANG_DIAG
 	// A diagnostic build: HBC's main loop stuck 6 s is reported as a hang,
 	// with its backtrace, and the agent takes the way out (view.c calls
@@ -250,5 +275,8 @@ home_action home_show(void) {
 	// HOME), calling pick() or exit_choice() on the way out.
 	picked = HOME_NONE;
 	hbc_agent_home_fb(vmode, fb0, fb1);
+	// A key that closed the overlay is still down: let HBC's loop see it
+	// as held, not as a new press.
+	keyboard_scan();
 	return picked;
 }

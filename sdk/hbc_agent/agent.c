@@ -370,6 +370,10 @@ static void push_keys(const u8 *k, u32 n) {
 	_CPU_ISR_Restore(level);
 }
 
+void hbc_agent_push_keys(const char *k) {
+	push_keys((const u8 *) k, strlen(k));
+}
+
 // ---- The picture on the TV (HBCP) ----------------------------------------
 
 static u16 screen_w, screen_h;

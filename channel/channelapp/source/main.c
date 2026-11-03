@@ -16,6 +16,7 @@
 
 #include "../config.h"
 #include "controls.h"
+#include "keyboard.h"
 #include "appentry.h"
 #include "playtime.h"
 #include "gfx.h"
@@ -980,6 +981,14 @@ void main_real(void) {
 				gprintf ("reenabling DVD access...\n");
 				mask32(0x0D800180, 1<<21, 0);
 			}
+		} else if (keyboard_pending ()) {
+			// The same IOS, still with AHBPROT: only a reload ends the
+			// keyboard read, which would land in the app.
+			gprintf ("keyboard read pending: reloading IOS%d\n", IOS_GetVersion());
+			patch_ahbprot_reset();
+			__IOS_LaunchNewIOS(IOS_GetVersion());
+			if (ahb_access)
+				mask32(0x0D800180, 1<<21, 0);
 		}
 
 		gprintf ("branching to %p\n", ep);

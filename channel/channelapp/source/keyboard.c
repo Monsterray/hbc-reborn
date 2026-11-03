@@ -30,7 +30,9 @@ static struct kbd {
 	u8 keys[REPORT];	// the last report, all zero once it ends
 } kbds[KBD_MAX];
 
-// Device IDs looked at already, keyboards or not, so they are opened once.
+// Devices proven not to be keyboards (their descriptors have no boot
+// keyboard interface), so they are opened once. One that could not be
+// opened or read is tried again the next time.
 static s32 seen[16];
 static u32 seen_count;
 
@@ -55,6 +57,12 @@ static s32 kbd_read_cb (s32 res, void *arg) {
 		return 0;
 	}
 
+	// Too many keys at once: every key slot says ErrorRollOver (1). The
+	// keys are unknown, not up: keep the last ones, or each would go up and
+	// then come down again as a new press when the rollover ends.
+	if(k->report[2] == 1)
+		goto rearm;
+
 	for(i = 2; i < REPORT; i++) {
 		if(k->report[i] < 4)	// none, or a rollover error
 			continue;
@@ -65,6 +73,7 @@ static s32 kbd_read_cb (s32 res, void *arg) {
 	}
 	memcpy (k->keys, k->report, REPORT);
 
+rearm:
 	if(USB_ReadIntrMsgAsync (k->fd, k->ep, REPORT, k->report, kbd_read_cb, k) < 0) {
 		memset (k->keys, 0, REPORT);
 		k->state = KBD_ENDED;
@@ -81,13 +90,12 @@ static bool kbd_seen (s32 device_id) {
 	for(i = 0; i < seen_count; i++)
 		if(seen[i] == device_id)
 			return true;
-	if(seen_count < sizeof(seen) / sizeof(*seen))
-		seen[seen_count++] = device_id;
 	return false;
 }
 
-// Opens one device's boot keyboard interface, if it has one, into a free slot.
-static void kbd_open (const usb_device_entry *e) {
+// Opens one device's boot keyboard interface, if it has one, into a free
+// slot. False only when the device is proven not to be a keyboard.
+static bool kbd_open (const usb_device_entry *e) {
 	usb_devdesc d;
 	usb_interfacedesc *u;
 	struct kbd *k = NULL;
@@ -98,10 +106,10 @@ static void kbd_open (const usb_device_entry *e) {
 		if(kbds[i].state == KBD_FREE)
 			k = &kbds[i];
 	if(!k || USB_OpenDevice (e->device_id, e->vid, e->pid, &fd) < 0)
-		return;
+		return true;
 	if(USB_GetDescriptors (fd, &d) < 0) {
 		USB_CloseDevice (&fd);
-		return;
+		return true;
 	}
 
 	for(c = 0; c < d.bNumConfigurations; c++)
@@ -126,12 +134,13 @@ static void kbd_open (const usb_device_entry *e) {
 				if(USB_ReadIntrMsgAsync (fd, k->ep, REPORT, k->report, kbd_read_cb, k) < 0)
 					k->state = KBD_ENDED;
 				USB_FreeDescriptors (&d);
-				return;
+				return true;
 			}
 		}
 
 	USB_FreeDescriptors (&d);
 	USB_CloseDevice (&fd);
+	return false;
 }
 
 // New keyboards, and slots of ended ones back to free.
@@ -140,18 +149,28 @@ static void kbd_look (void) {
 	u8 count = 0;
 	u32 i;
 
+	u32 j, kept;
+
 	for(i = 0; i < KBD_MAX; i++)
 		if(kbds[i].state == KBD_ENDED) {
 			USB_CloseDevice (&kbds[i].fd);
 			kbds[i].state = KBD_FREE;
-			seen_count = 0;	// it may come back
 		}
 
 	if(USB_GetDeviceList (list, 16, USB_CLASS_HID, &count) < 0)
 		return;
+	// Forget devices that are gone: their IDs can come back on another one.
+	for(i = kept = 0; i < seen_count; i++) {
+		for(j = 0; j < count && list[j].device_id != seen[i]; j++)
+			;
+		if(j < count)
+			seen[kept++] = seen[i];
+	}
+	seen_count = kept;
 	for(i = 0; i < count; i++)
-		if(list[i].vid && list[i].pid && !kbd_seen (list[i].device_id))
-			kbd_open (&list[i]);
+		if(list[i].vid && list[i].pid && !kbd_seen (list[i].device_id) &&
+				!kbd_open (&list[i]) && seen_count < sizeof(seen) / sizeof(*seen))
+			seen[seen_count++] = list[i].device_id;
 }
 
 void keyboard_init (void) {
@@ -215,6 +234,15 @@ void keyboard_scan (void) {
 	key_up = key_held & ~held;
 	key_held = held;
 	key_down = down;
+}
+
+bool keyboard_pending (void) {
+	u32 i;
+
+	for(i = 0; i < KBD_MAX; i++)
+		if(kbds[i].state == KBD_READING)
+			return true;
+	return false;
 }
 
 u32 keyboard_held (void) { return key_held; }

@@ -12,6 +12,10 @@
 // plugged in. Without libogc's USB, the keyboard just reads as no keys.
 void keyboard_init (void);
 void keyboard_shutdown (void);
+// After keyboard_shutdown: a read IOS never gave back, which would write
+// into (and call back into) whatever is loaded there next. Only an IOS
+// reload ends it.
+bool keyboard_pending (void);
 
 // Once a frame, before reading anything below: "down" and "up" are what
 // changed since the previous call, and a key pressed and let go in between
