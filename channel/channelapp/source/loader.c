@@ -15,6 +15,7 @@
 #include "blob.h"
 #include "tcp.h"
 #include "appentry.h"
+#include "apprun.h"
 #include "manage.h"
 #include "dialogs.h"
 #include "i18n.h"
@@ -1157,6 +1158,10 @@ bool loader_load_executable(entry_point *ep, loader_result *result,
 		ld_error (result, sub_view, "not_wii_app", text_err_invalid_bin);
 	else if (result->remote)
 		devnet_upload_result("launched", NULL, NULL);
+	// args starts with the boot file's path. Note the run so its app badge
+	// clears (Options > App badges).
+	else if (settings.new_badges && !app_run_record(result->args))
+		gprintf("could not save app launch marker\n");
 
 	blob_free(result->data);
 

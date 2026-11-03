@@ -49,6 +49,9 @@ static const char *caption_edge_wrap;
 static const char *caption_edge_page;
 static const char *caption_progress_percent;
 static const char *caption_progress_circle;
+static const char *caption_badges;
+static const char *caption_badge_off;
+static const char *caption_badge_on;
 
 static const char *l_version;
 static const char *l_coder;
@@ -92,6 +95,9 @@ void dialogs_theme_reinit (void) {
 	caption_edge_page = _("Turn page");
 	caption_progress_percent = _("Percent");
 	caption_progress_circle = _("Circle");
+	caption_badges = _("App badges:");
+	caption_badge_off = _("Off");
+	caption_badge_on = _("On");
 
 	string_about_pre =
 		"Credits\n\n"
@@ -532,7 +538,7 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // the two SDGecko slots on the second, in the theme's tiny buttons. Widget
 // DLG_DEV_FIRST + n is the n-th button here; dlg_devices[n] is its device
 // (appentry.c's order, which settings.xml stores).
-#define DLG_DEV_FIRST 6
+#define DLG_DEV_FIRST 7
 // Below them, one row per setting as in the HOME overlay: its label on the
 // left, a small button for each value on the right, the value in use bright.
 // The sort buttons, DLG_SORT_FIRST + an app_sort.
@@ -544,9 +550,14 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // At the grid's edge, DLG_EDGE_FIRST + settings.edge_paging.
 #define DLG_EDGE_FIRST (DLG_PROG_FIRST + DLG_PROGS)
 #define DLG_EDGES 2
-#define DLG_OK (DLG_EDGE_FIRST + DLG_EDGES)
-// The row buttons are tiny buttons drawn at this size, this far apart.
-#define DLG_SMALL_SCALE 0.7f
+// App badges, DLG_BADGE_FIRST + settings.new_badges.
+#define DLG_BADGE_FIRST (DLG_EDGE_FIRST + DLG_EDGES)
+#define DLG_BADGES 2
+#define DLG_SETTING_ROWS 4
+#define DLG_OK (DLG_BADGE_FIRST + DLG_BADGES)
+// The row buttons are tiny buttons drawn at this size, this far apart: four
+// rows fit between the device buttons and Ok.
+#define DLG_SMALL_SCALE 0.6f
 #define DLG_SMALL_GAP 6
 #define DLG_BACK (DLG_OK + 1)
 #define DLG_WIDGETS (DLG_BACK + 1)
@@ -560,6 +571,7 @@ static const int dlg_rows[][3] = {
 	{ DLG_SORT_FIRST, DLG_SORT_FIRST + 1, DLG_SORT_FIRST + 2 },
 	{ DLG_PROG_FIRST, DLG_PROG_FIRST + 1, -1 },
 	{ DLG_EDGE_FIRST, DLG_EDGE_FIRST + 1, -1 },
+	{ DLG_BADGE_FIRST, DLG_BADGE_FIRST + 1, -1 },
 	{ DLG_OK, DLG_BACK, -1 },
 };
 #define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
@@ -625,7 +637,7 @@ static void dlg_sort_captions(view *v, app_sort sort) {
 // What Options shows, for HBCS: a test on the bench Wii checks the focus
 // before it presses A (`hbc.py buttons`).
 static volatile bool options_open;
-static volatile int options_focus = -1, options_arc, options_paging;
+static volatile int options_focus = -1, options_arc, options_paging, options_badges;
 
 static const char *dlg_focus_name(int focus) {
 	if (focus >= DLG_DEV_FIRST && focus < DLG_DEV_FIRST + DEVICE_COUNT)
@@ -640,6 +652,10 @@ static const char *dlg_focus_name(int focus) {
 		return "wrap";
 	if (focus == DLG_EDGE_FIRST + 1)
 		return "page";
+	if (focus == DLG_BADGE_FIRST)
+		return "badges_off";
+	if (focus == DLG_BADGE_FIRST + 1)
+		return "badges_on";
 	if (focus == DLG_OK)
 		return "ok";
 	if (focus == DLG_BACK)
@@ -651,12 +667,15 @@ int dialogs_options_json(char *buf, int size) {
 	bool open = options_open;
 
 	return snprintf(buf, size, ",\"options\":{\"open\":%s,\"focus\":\"%s\",\"choice\":\"%s\","
-					"\"edge_choice\":\"%s\",\"progress\":\"%s\",\"edges\":\"%s\"}",
+					"\"edge_choice\":\"%s\",\"badge_choice\":\"%s\",\"progress\":\"%s\","
+					"\"edges\":\"%s\",\"badges\":\"%s\"}",
 					open ? "true" : "false", dlg_focus_name(open ? options_focus : -1),
 					open ? (options_arc ? "circle" : "percent") : "none",
 					open ? (options_paging ? "page" : "wrap") : "none",
+					open ? (options_badges ? "on" : "off") : "none",
 					settings.progress_arc ? "circle" : "percent",
-					settings.edge_paging ? "page" : "wrap");
+					settings.edge_paging ? "page" : "wrap",
+					settings.new_badges ? "on" : "off");
 }
 
 static void dlg_progress_captions(view *v, int arc) {
@@ -673,6 +692,12 @@ static void dlg_edge_captions(view *v, int paging) {
 	dlg_choice_captions(v, DLG_EDGE_FIRST, DLG_EDGES, paging, captions);
 }
 
+static void dlg_badge_captions(view *v, int badges) {
+	static const char **captions[DLG_BADGES] = { &caption_badge_off, &caption_badge_on };
+
+	dlg_choice_captions(v, DLG_BADGE_FIRST, DLG_BADGES, badges, captions);
+}
+
 dialog_options_result show_options_dialog(const view *sub_view) {
 	u32 frame = 0;
 	view *v;
@@ -684,15 +709,19 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	u16 dw = theme_gfx[THEME_DIALOG]->w, dh = theme_gfx[THEME_DIALOG]->h;
 	u16 tw = theme_gfx[THEME_BUTTON_TINY]->w, th = theme_gfx[THEME_BUTTON_TINY]->h;
 	u16 sw = theme_gfx[THEME_BUTTON_SMALL]->w, sh = theme_gfx[THEME_BUTTON_SMALL]->h;
-	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 8, bottom_y = dh - sh - 6;
+	u16 gap = (dw - 3 * tw) / 4, row2 = 64 + th + 4, bottom_y = dh - sh - 6;
 	// The setting rows: buttons right-aligned to the device rows' edge, each
 	// label in what is left of its row.
 	u16 stw = tw * DLG_SMALL_SCALE, sth = th * DLG_SMALL_SCALE;
-	u16 step = sth + DLG_SMALL_GAP, sort_y = row2 + th + 14, right = dw - gap;
+	u16 step = sth + DLG_SMALL_GAP, sort_y = row2 + th + 8, right = dw - gap;
 	u16 label_w = right - 3 * stw - 2 * DLG_SMALL_GAP - 32 - 8;
-	static const int row_first[3] = { DLG_SORT_FIRST, DLG_PROG_FIRST, DLG_EDGE_FIRST };
-	static const int row_count[3] = { DLG_SORTS, DLG_PROGS, DLG_EDGES };
-	const char *row_label[3] = { caption_sort_by, caption_progress, caption_edges };
+	static const int row_first[DLG_SETTING_ROWS] = {
+		DLG_SORT_FIRST, DLG_PROG_FIRST, DLG_EDGE_FIRST, DLG_BADGE_FIRST
+	};
+	static const int row_count[DLG_SETTING_ROWS] = { DLG_SORTS, DLG_PROGS, DLG_EDGES, DLG_BADGES };
+	const char *row_label[DLG_SETTING_ROWS] = {
+		caption_sort_by, caption_progress, caption_edges, caption_badges
+	};
 	int r;
 
 	app_entry_poll_status(true);
@@ -715,7 +744,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		widget_button (&v->widgets[DLG_DEV_FIRST + 3 + i],
 						(dw - 2 * tw - gap) / 2 + i * (gap + tw), row2, 1, BTN_TINY, NULL);
 
-	for (r = 0; r < 3; ++r) {
+	for (r = 0; r < DLG_SETTING_ROWS; ++r) {
 		u16 y = sort_y + r * step;
 
 		widget_label (&v->widgets[3 + r], 32, y + sth / 2, 1, row_label[r], label_w,
@@ -744,6 +773,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	ret.sort = sort;
 	ret.progress_arc = settings.progress_arc;
 	ret.edge_paging = settings.edge_paging;
+	ret.new_badges = settings.new_badges;
 
 	for (i = 0; i < DEVICE_COUNT; ++i) {
 		widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
@@ -755,6 +785,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	dlg_sort_captions(v, ret.sort);
 	dlg_progress_captions(v, ret.progress_arc);
 	dlg_edge_captions(v, ret.edge_paging);
+	dlg_badge_captions(v, ret.new_badges);
 
 	view_set_focus (v, DLG_BACK);
 
@@ -810,6 +841,10 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					(v->focus < DLG_EDGE_FIRST + DLG_EDGES)) {
 				ret.edge_paging = v->focus - DLG_EDGE_FIRST;
 				dlg_edge_captions(v, ret.edge_paging);
+			} else if ((v->focus >= DLG_BADGE_FIRST) &&
+					(v->focus < DLG_BADGE_FIRST + DLG_BADGES)) {
+				ret.new_badges = v->focus - DLG_BADGE_FIRST;
+				dlg_badge_captions(v, ret.new_badges);
 			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}
@@ -821,6 +856,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 		options_focus = v->focus;
 		options_arc = ret.progress_arc;
 		options_paging = ret.edge_paging;
+		options_badges = ret.new_badges;
 		options_open = true;
 	}
 	options_open = false;
