@@ -861,6 +861,10 @@ static void file_remove(s32 s, const char *path, u8 flags, devfile_change_fn cha
 				parent[plen++] = '/';
 				parent[plen] = 0;
 			}
+			if (devfile_glob_refused(parent, recursive)) {
+				devfile_reply(s, -EPERM, NULL, 0);
+				return;
+			}
 		}
 	}
 

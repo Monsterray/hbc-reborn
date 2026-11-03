@@ -57,6 +57,13 @@ int main(void) {
     for (unsigned i = 0; i < sizeof(free_) / sizeof(free_[0]); ++i)
         if (devfile_protected(free_[i]))
             printf("should not be protected: %s\n", free_[i]), assert(0);
+
+    // file_remove's parent for sd:/apps/* and sd:/* (the root gets its '/').
+    const char *no_rm_r[] = { "sd:/apps", "sd:/", "SD://Apps/.", "usb:/./" };
+    for (unsigned i = 0; i < sizeof(no_rm_r) / sizeof(no_rm_r[0]); ++i)
+        if (!devfile_glob_refused(no_rm_r[i], true) || devfile_glob_refused(no_rm_r[i], false))
+            printf("rm -r pattern should be refused only with -r: %s\n", no_rm_r[i]), assert(0);
+    assert(!devfile_glob_refused("sd:/logs", true) && !devfile_glob_refused("sd:/apps/x", true));
     return 0;
 }
 '''

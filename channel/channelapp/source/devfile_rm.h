@@ -85,4 +85,10 @@ static inline bool devfile_protected(const char *path) {
 	return !strcmp(first, "apps");
 }
 
+// A recursive pattern delete in a device root or the apps folder: sd:/b*
+// would take bootmii/, sd:/apps/* every app. Folders there go by name only.
+static inline bool devfile_glob_refused(const char *parent, bool recursive) {
+	return recursive && devfile_protected(parent);
+}
+
 #endif

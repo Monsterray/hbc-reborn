@@ -124,6 +124,8 @@ class FakeHBC:
         head, _, last = path.rpartition("/")
         if glob and any(c in last for c in "*?"):
             head = head + "/" if head.endswith(":") else head
+            if recursive and self.protected(head):
+                return self.reply(conn, -EPERM)
             rx = hbc.glob_regex(last)
             targets = [p for _, p in self.children(head) if rx.fullmatch(p.rsplit("/", 1)[1])]
             if any(self.protected(t) for t in targets):
@@ -1022,6 +1024,30 @@ class HBCToolTest(unittest.TestCase):
         self.cli("rm", "-r", "sd:/logs/*")                   # one level down is fine
         self.assertNotIn("sd:/logs/a.log", self.fake.files)
 
+    def test_glob_rm_r_never_empties_apps(self):
+        # 1.14 audit: rm -r sd:/apps/* deleted every app.
+        hbc.put_file(WII, "sd:/apps/x/boot.dol", b"x")
+        hbc.put_file(WII, "sd:/apps/y/boot.dol", b"x")
+        start = len(self.fake.requests)
+        for argv in (("rm", "-r", "sd:/apps/*"), ("rm", "-r", "SD:/Apps/?"),
+                     ("rm", "-r", "sd://apps/*"), ("rm", "-r", "sd:/./apps/./*"), ("rm", "-r", "sd://*")):
+            with self.subTest(argv=argv), self.assertRaisesRegex(SystemExit, "no wildcard"):
+                self.cli(*argv)
+        self.assertEqual(len(self.fake.requests), start)   # refused before asking
+        self.assertIn("sd:/apps/x/boot.dol", self.fake.files)
+        self.cli("rm", "-r", "sd:/apps/x/*")                 # inside one app is fine
+        self.assertNotIn("sd:/apps/x/boot.dol", self.fake.files)
+        self.assertIn("sd:/apps/y/boot.dol", self.fake.files)
+
+    def test_wii_refuses_rm_r_pattern_in_apps(self):
+        # The Wii side, for a client that skips hbc.py's check.
+        self.fake.tree_delete = True
+        hbc.put_file(WII, "sd:/apps/x/boot.dol", b"x")
+        with self.assertRaises(hbc.HBCError) as cm:
+            hbc.remote_delete(WII, "sd:/apps/*", True, glob=True)
+        self.assertEqual(cm.exception.code, EPERM)
+        self.assertIn("sd:/apps/x/boot.dol", self.fake.files)
+
     def test_sync_delete_removes_gone_folders_in_one_request(self):
         self.fake.tree_delete = True
         src = self.tmp / "src"
@@ -1309,6 +1335,20 @@ class FindGuardTest(unittest.TestCase):
                 exc, err = self.run_main(argv, self.ONE)
                 self.assertIsInstance(exc, SystemExit)
                 self.assertIn("pass --wii 10.0.0.3", str(exc))
+
+    def test_log_does_not_guess(self):
+        # hbc.py log points the Wii's log at this PC: a write.
+        self.assertNotIn("log", hbc.READ_ONLY)
+        exc, err = self.run_main(["log"], self.ONE)
+        self.assertIsInstance(exc, SystemExit)
+        self.assertIn("pass --wii 10.0.0.3", str(exc))
+
+    def test_empty_wii_is_refused(self):
+        for argv in (["--wii=", "status"], ["status", "--wii="], ["--wii", " ", "ls", "sd:/"]):
+            with self.subTest(argv=argv):
+                exc, err = self.run_main(argv, self.ONE)
+                self.assertIsInstance(exc, SystemExit)
+                self.assertIn("--wii is empty", str(exc))
 
     def test_read_only_commands_use_the_one_wii(self):
         for cmd in hbc.READ_ONLY:

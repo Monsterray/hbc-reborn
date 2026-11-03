@@ -146,10 +146,14 @@ def find_line(wii):
 # Commands that only read from the Wii: with no address set, these may use
 # the one Wii that answers a find. A command that writes, deletes, sends or
 # launches never guesses: it could land on a Dolphin or on someone else's Wii.
-READ_ONLY = ("status", "version", "hw", "ls", "stat", "get", "log", "find", "wait")
+# log is not one: it points the Wii's log at this PC.
+READ_ONLY = ("status", "version", "hw", "ls", "stat", "get", "find", "wait")
 
 
 def wii_address(arg, auto_find=False):
+    # --wii= (an unset shell variable, say) is a mistake, not "find one".
+    if arg is not None and not arg.strip():
+        raise SystemExit("hbc.py: --wii is empty; give the Wii's address")
     for value in (arg, os.environ.get("HBC_WII"), os.environ.get("WII_BENCH_IP"),
                   os.environ.get("WIILOAD", "").removeprefix("tcp:")):
         if value:
@@ -1023,10 +1027,11 @@ def remove_glob(wii, remote, recursive=False, out=print, force=False):
     if is_glob(head) or not head:
         raise HBCError(f"{remote}: wildcards work only in the last name")
     folder = head + "/" if head.endswith(":") else head
-    # sd:/b* -r would take bootmii/ with it, usb:/* a whole drive: at a
-    # device's top, folders are deleted by name only.
-    if recursive and head.endswith(":"):
-        raise HBCError(f"{remote}: rm -r takes no wildcard at the top of {head}; "
+    # sd:/b* -r would take bootmii/ with it, usb:/* a whole drive, and
+    # sd:/apps/* -r every app: at a device's top and in its apps folder
+    # (however spelled: sd://, SD:/./Apps), folders are deleted by name only.
+    if recursive and protected(head):
+        raise HBCError(f"{remote}: rm -r takes no wildcard in {folder}; "
                        "name the folders")
     count = remote_delete(wii, remote, recursive, glob=True, force=force)
     if count is None:
@@ -1578,8 +1583,8 @@ addresses to ask those Wiis directly, for a network a broadcast does not
 reach. --json prints a list. Exits with status 1 when no Wii answers.
 
 When neither --wii nor HBC_WII names a Wii, the read-only commands (status,
-version, hw, ls, stat, get, log, wait) use the one Wii that answers, and say
-so. Commands that write or launch (send, put, rm, sync, mv, run ...) never
+version, hw, ls, stat, get, wait) use the one Wii that answers, and say
+so. Commands that write or launch (send, put, rm, sync, mv, run, log ...) never
 guess: they fail and show the address that answered, to pass with --wii.
 HBC from before HBCU does not answer: name it with --wii or HBC_WII.
 

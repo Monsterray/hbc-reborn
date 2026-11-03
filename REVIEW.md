@@ -161,6 +161,30 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.24: no rm -r pattern in an apps folder; hbc.py log never guesses
+
+From the 1.14 audit. 1.14.16 refused `rm -r` with a wildcard at a device's
+top, but only in `hbc.py` and only when the folder ended in `:`, so
+`rm -r sd:/apps/*` deleted every app, and `sd://*` passed the check. Now
+`hbc.py` refuses a recursive pattern whose folder is a device root or its
+apps folder however spelled (`protected()`, the same parse as the rest of
+the deletes: `SD:/./Apps`, `sd://apps`), and so does the Wii:
+`file_remove` replies EPERM before it reads anything
+(`devfile_glob_refused` in `devfile_rm.h`), for clients other than hbc.py.
+A pattern one level down (`sd:/apps/myapp/*`) still works. Also: `log`
+left `hbc.READ_ONLY`, because it points the Wii's log at this PC, so with
+no address it no longer uses whichever Wii answers; and `--wii=` with
+nothing after it is an error rather than "find one". The audit saw the
+no-address error without the Wii that answered; the bench log of
+1.14.21's run (`20261102-192049-ca7496`) shows it there, so that is left.
+
+- **Checked:** `tests/test_hbc_tool.py` (rm -r in apps, five spellings,
+  refused before any request; the fake Wii's EPERM; `log` and an empty
+  `--wii`), `tests/test_devfile_rm.py` (`devfile_glob_refused`). On the
+  bench Wii (1.14.24): `rm -r sd:/apps/zzrmtest*` sent straight to the Wii
+  came back EPERM with both scratch folders still there, and
+  `sd:/apps/zzrmtest1/*` deleted its two files.
+
 ### 1.14.23: the USB keyboard in HOME, rollover, and devices it skipped
 
 From the 1.14 audit. Esc or Home on a USB keyboard opened HOME, but the
