@@ -68,6 +68,16 @@ class MemoryLayoutTest(unittest.TestCase):
         if end > 0x81700000:
             self.assertIn("hbc_exception_screen", syms, "HBC ends past 0x81700000 without its own crash screen")
 
+    def test_crash_screen_hook_is_set_first(self):
+        # A fault before the video is up (devnet, zmem, audio) went to
+        # libogc's screen and its XFB over HBC's stacks (1.14 audit), so
+        # main installs HBC's screen before calling anything but __eabi.
+        dis = subprocess.run([OBJDUMP, "-d", "--disassemble=main", str(ELF)], capture_output=True, text=True, check=True).stdout
+        calls = [line.split("<")[-1].rstrip(">") for line in dis.splitlines() if "\tbl " in line]
+        calls = [c for c in calls if c != "__eabi"]
+        self.assertTrue(calls, "no calls in main?")
+        self.assertEqual(calls[0], "panic_install_exception_screen")
+
     def test_small_data_base_is_the_section_start(self):
         nm = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
         base = {line.split()[2]: int(line.split()[0], 16) for line in nm.splitlines() if len(line.split()) == 3}

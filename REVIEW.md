@@ -161,6 +161,27 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.22: the crash screen from the first instruction, and once only
+
+The 1.14 audit found two gaps in 1.14.3's `hbc_exception_screen`. It was
+installed at the end of `gfx_init_video`, so a fault before that (devnet,
+`zmem_init`, audio) still went to libogc's screen and its XFB over HBC's
+stacks. And a fault inside the screen came back into it, on the same
+stack, with no end. `main` now installs it before calling anything else; with
+no framebuffer yet it reloads at once, and a second entry resets the Wii
+the way `_panic` does. `HBC_TEST_CRASH=1|2|3` builds fault before the video,
+8 s into the menu, or also inside the screen.
+
+- **Checked:** `tests/test_memory_layout.py` fails unless
+  `panic_install_exception_screen` is `main`'s first call. On the bench Wii,
+  the crash-1 build reloads the installed channel (1.14.0 answered); the
+  crash-2 build shows the DSI dump (DAR 0000000A) and the countdown on the
+  capture card, then reloads.
+- **Not covered:** the crash-3 build (a fault in the screen) resets the Wii
+  into BootMii's menu, so it runs only with Monty there.
+- **Left:** audit items 3 (stack walk floor) and 4 (the unused 144 KiB
+  `__stack_addr` reservation in `newrvl.ld`) are not done.
+
 ### 1.14.19 and 1.14.20: PR 22, network starts and cleanups that IOS never finishes
 
 Matt's PR bounds a network start at 30 s (`netinit_wait`, restart and exit

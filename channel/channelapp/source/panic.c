@@ -175,12 +175,27 @@ static bool in_mem1(u32 p) {
 
 static void hbc_exception_screen(unsigned exid, PPCContext *ctx)
 {
+	static int entered;
 	GXRModeObj *rm = gfx_video_mode();
 	void *fb = gfx_xfb();
-	u32 w = rm->fbWidth, h = rm->xfbHeight, bh = h > 500 ? 96 : 48;
+	u32 w, h, bh;
 	int timer = PANIC_RELOAD_S * 50;
 	u32 i, sp;
 
+	// a fault while drawing this screen: reset like _panic
+	if (entered++)
+		for (write32(HW_RESETS, read32(HW_RESETS) & ~1);;);
+	// before the video is up there is nothing to draw on
+	if (!rm || !fb)
+		__reload();
+#if defined(HBC_TEST_CRASH) && HBC_TEST_CRASH == 3
+	// Test builds only: the screen itself faults.
+	{ vu32 *volatile bad = (vu32 *) 10; *bad = 0; }
+#endif
+
+	w = rm->fbWidth;
+	h = rm->xfbHeight;
+	bh = h > 500 ? 96 : 48;
 	GX_AbortFrame();
 	VIDEO_ClearFrameBuffer(rm, fb, COLOR_MAROON);
 	__console_init(fb, 48, bh, w - 96, h - 2 * bh, 2 * w);

@@ -113,8 +113,6 @@ void gfx_init_video (void) {
 
 	for (i = 0; i < 4; ++i)
 		VIDEO_WaitVSync();
-
-	panic_install_exception_screen();
 }
 
 void gfx_init () {

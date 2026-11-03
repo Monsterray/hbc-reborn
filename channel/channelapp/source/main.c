@@ -42,6 +42,7 @@
 #endif
 #include "i18n.h"
 #include "dvd.h"
+#include "panic.h"
 #include "manage.h"
 #include "../../../sdk/hbc_agent.h"
 #include "xml.h"
@@ -425,6 +426,11 @@ void main_real(void) {
 	can_reload = ES_GetTitleContentsCount(MY_TITLEID, &contents) >= 0 && contents;
 
 	while (!should_exit) {
+#if defined(HBC_TEST_CRASH) && HBC_TEST_CRASH >= 2
+		// Test builds only: a DSI 8 s into the menu (3: and one in the screen).
+		if (diff_sec(hbc_start, gettime()) >= 8)
+			{ vu32 *volatile bad = (vu32 *) 10; *bad = 0; }
+#endif
 		// A network cleanup has hung inside IOS (netrecovery.c): the worker
 		// cannot be stopped, so count down and reload the installed channel
 		// with a fresh IOS. A failed start alone never comes here; the TCP
@@ -995,6 +1001,11 @@ void main_real(void) {
 }
 
 int main(int argc, char *argv[]) {
+	panic_install_exception_screen();
+#if defined(HBC_TEST_CRASH) && HBC_TEST_CRASH == 1
+	// Test builds only: a DSI before the video is up.
+	{ vu32 *volatile bad = (vu32 *) 10; *bad = 0; }
+#endif
 	hbc_start = gettime();
 	devnet_early_init();
 	zmem_init();
