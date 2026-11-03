@@ -143,21 +143,31 @@ def find_line(wii):
     return f"{wii['address']:<15}  {'app' if wii['agent'] else 'HBC':<3}  {wii['name']}"
 
 
-def wii_address(arg):
+# Commands that only read from the Wii: with no address set, these may use
+# the one Wii that answers a find. A command that writes, deletes, sends or
+# launches never guesses: it could land on a Dolphin or on someone else's Wii.
+READ_ONLY = ("status", "version", "hw", "ls", "stat", "get", "log", "find", "wait")
+
+
+def wii_address(arg, auto_find=False):
     for value in (arg, os.environ.get("HBC_WII"), os.environ.get("WII_BENCH_IP"),
                   os.environ.get("WIILOAD", "").removeprefix("tcp:")):
         if value:
             return value
     found = find_wiis()
-    if len(found) == 1:
+    if auto_find and len(found) == 1:
         print(f"hbc.py: using the Wii at {found[0]['address']} (hbc.py find)", file=sys.stderr)
         return found[0]["address"]
-    if found:
-        raise SystemExit("hbc.py: which Wii? More than one answered:\n" +
-                         "\n".join("    " + find_line(w) for w in found) +
-                         "\nSet HBC_WII to one address, or pass --wii ADDRESS.")
-    raise SystemExit("hbc.py: which Wii? Set HBC_WII to its address, or pass --wii ADDRESS.\n"
-                     "HBC shows the address on its HOME menu, under HBC > Network.")
+    lines = ["hbc.py: which Wii? Set HBC_WII to its address, or pass --wii ADDRESS."]
+    if len(found) == 1:
+        lines.append(f"A Wii answered at {found[0]['address']}: pass --wii {found[0]['address']}"
+                     " if that is the one you mean.")
+    elif found:
+        lines.append("More than one Wii answered; pass --wii ADDRESS with one of them:")
+        lines += ["    " + find_line(w) for w in found]
+    lines.append("HBC shows the address on its HOME menu, under HBC > Network.")
+    msg = "\n".join(lines)
+    raise SystemExit(msg)
 
 
 def connect(wii, timeout=TIMEOUT):
@@ -1567,9 +1577,11 @@ only a PC on its own network (the same /16 as for everything else). Give
 addresses to ask those Wiis directly, for a network a broadcast does not
 reach. --json prints a list. Exits with status 1 when no Wii answers.
 
-When neither --wii nor HBC_WII names a Wii, the other commands use the one
-Wii that answers, and say so. HBC from before HBCU does not answer: name
-it with --wii or HBC_WII.
+When neither --wii nor HBC_WII names a Wii, the read-only commands (status,
+version, hw, ls, stat, get, log, wait) use the one Wii that answers, and say
+so. Commands that write or launch (send, put, rm, sync, mv, run ...) never
+guess: they fail and show the address that answered, to pass with --wii.
+HBC from before HBCU does not answer: name it with --wii or HBC_WII.
 
     hbc.py find
     hbc.py find 192.168.1.50""",
@@ -1867,6 +1879,11 @@ def split_flags(cmd, args):
         if arg == "--":
             rest += args[i + 1:]
             break
+        flag, eq, inline = arg.partition("=")
+        if eq and flag in known and known[flag][1] and flag.startswith("--"):
+            flags[known[flag][0]] = inline   # --timeout=0.5
+            i += 1
+            continue
         if arg in known:
             dest, takes_value = known[arg]
             if takes_value:
@@ -1906,8 +1923,8 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true",
                         help="JSON output for version, status and ls")
     parser.add_argument("--log-port", type=int, default=LOG_PORT)
-    parser.add_argument("--timeout", type=float, default=300,
-                        help="seconds `run` waits for the app to finish")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="seconds `run` waits for the app to finish (default 300)")
     parser.add_argument("command")
     parser.add_argument("args", nargs=argparse.REMAINDER)
     opts = parser.parse_args(argv)
@@ -1920,13 +1937,16 @@ def main(argv=None):
     except ValueError as exc:
         raise SystemExit(f"hbc.py: {exc}")
     vars(opts).update(flags)
+    timeout_given = opts.timeout is not None   # either position, --timeout N or --timeout=N
+    if opts.timeout is None:
+        opts.timeout = 300
     recursive = flags.get("recursive", False)
     if cmd not in COMMAND_HELP:
         print_help(cmd)
         raise SystemExit(2)
     if cmd == "find":
-        # --timeout before or after the command; run's 300 s default is not find's.
-        found = find_wiis(opts.timeout if "--timeout" in argv else FIND_TIMEOUT, args or None)
+        # run's 300 s default is not find's.
+        found = find_wiis(opts.timeout if timeout_given else FIND_TIMEOUT, args or None)
         if opts.json:
             print(json.dumps(found))
         else:
@@ -1937,7 +1957,7 @@ def main(argv=None):
                 print("hbc.py: no Wii answered", file=sys.stderr)
             raise SystemExit(1)
         return
-    wii = wii_address(opts.wii)
+    wii = wii_address(opts.wii, auto_find=cmd in READ_ONLY)
 
     def need(n, usage):
         if len(args) < n:

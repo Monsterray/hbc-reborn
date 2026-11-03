@@ -1285,5 +1285,53 @@ class HBCToolTest(unittest.TestCase):
         self.assertEqual(self.fake.attrs["sd:/af/full"], 1)
 
 
+class FindGuardTest(unittest.TestCase):
+    """With no address set, only read-only commands may use the one Wii a
+    find reports; anything that writes must be told which Wii."""
+    ONE = [{"address": "10.0.0.3", "agent": False, "name": "Homebrew Channel"}]
+    NO_ADDRESS = {k: "" for k in ("HBC_WII", "WII_BENCH_IP", "WIILOAD")}
+
+    def run_main(self, argv, found):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.NO_ADDRESS),                 mock.patch.object(hbc, "find_wiis", return_value=found),                 mock.patch.object(hbc, "request", side_effect=AssertionError("connected")),                 contextlib.redirect_stderr(err):
+            try:
+                hbc.main(argv)
+            except SystemExit as exc:
+                return exc, err.getvalue()
+            except AssertionError:
+                return "connected", err.getvalue()
+        return None, err.getvalue()
+
+    def test_writing_commands_do_not_guess(self):
+        for argv in (["rm", "sd:/x"], ["put", "a.txt", "sd:/a.txt"], ["mkdir", "sd:/d"],
+                     ["mv", "sd:/a", "sd:/b"], ["sync", ".", "sd:/d"], ["send", "app.dol"]):
+            with self.subTest(argv=argv):
+                exc, err = self.run_main(argv, self.ONE)
+                self.assertIsInstance(exc, SystemExit)
+                self.assertIn("pass --wii 10.0.0.3", str(exc))
+
+    def test_read_only_commands_use_the_one_wii(self):
+        for cmd in hbc.READ_ONLY:
+            self.assertNotIn(cmd, ("rm", "put", "send", "sync", "mv"))
+        with mock.patch.dict(os.environ, self.NO_ADDRESS),                 mock.patch.object(hbc, "find_wiis", return_value=self.ONE),                 contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(hbc.wii_address(None, auto_find=True), "10.0.0.3")
+
+    def test_status_goes_to_the_found_wii(self):
+        with mock.patch.dict(os.environ, self.NO_ADDRESS),                 mock.patch.object(hbc, "find_wiis", return_value=self.ONE),                 mock.patch.object(hbc, "request", side_effect=AssertionError("connected")) as req,                 contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(AssertionError):
+                hbc.main(["status"])
+        self.assertEqual(req.call_args[0][0], "10.0.0.3")
+
+    def test_find_timeout_equals_form(self):
+        for argv in (["find", "--timeout=0.5"], ["--timeout=0.5", "find"],
+                     ["find", "--timeout", "0.5"], ["--timeout", "0.5", "find"]):
+            with self.subTest(argv=argv),                     mock.patch.object(hbc, "find_wiis", return_value=FindGuardTest.ONE) as f,                     contextlib.redirect_stdout(io.StringIO()):
+                hbc.main(argv)
+                f.assert_called_once_with(0.5, None)
+        with mock.patch.object(hbc, "find_wiis", return_value=self.ONE) as f,                 contextlib.redirect_stdout(io.StringIO()):
+            hbc.main(["find"])
+            f.assert_called_once_with(hbc.FIND_TIMEOUT, None)
+
+
 if __name__ == "__main__":
     unittest.main()

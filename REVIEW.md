@@ -161,6 +161,34 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.17 and 1.14.18: PR 21, find Wiis with a UDP query (HBCU)
+
+Matt's `HBCU` query (port 4299, `docs/devnet.md`): HBC, and an app with the
+agent, answer a broadcast with the console's address and a name, and
+`hbc.py find` lists what answers. 1.14.17 is the merge, unchanged.
+
+1.14.18, from the review:
+- With no address set, every command ran a find and used the one Wii that
+  answered, so `send`, `rm`, `put`, `sync` or `mv` could land on a Dolphin
+  or on someone else's Wii. Now only `status`, `version`, `hw`, `ls`, `stat`,
+  `get`, `log`, `find` and `wait` auto-find (`hbc.READ_ONLY`). The others
+  fail as before, and the message shows the address that answered to pass
+  with `--wii`. `wii_address(arg, auto_find=False)`: the test scripts that
+  call it directly keep failing as before.
+- `find --timeout=0.5` was ignored (find looked for the word `--timeout` in
+  argv). The default is a sentinel now and either form, before or after the
+  command, counts; `split_flags` takes `--flag=value`.
+- Tests: `FindGuardTest` in `tests/test_hbc_tool.py`.
+
+**What it reveals on the LAN:** the Wii's IP and name, to a PC in the same
+/16. HBCS over TCP already gives the same to anyone who connects, so a
+reply tells no more than a connect does.
+**Left as they are:** a reply is sent for at most 8 queries per poll frame,
+so a flood is bounded; the broadcast has not been tried on a real Wii yet
+(Dolphin and the unit tests only), so whether a console's own IOS delivers a
+broadcast on 4299 is unproven. The first test on the bench is
+`hbc.py find`.
+
 ### 1.14.15 and 1.14.16: PR 20, deletes of trees and patterns in one request
 
 Matt's op `E` (protocol 9, `docs/devnet.md`) deletes a tree or a pattern's

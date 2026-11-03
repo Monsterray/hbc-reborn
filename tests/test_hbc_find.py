@@ -183,7 +183,7 @@ class AddressTest(unittest.TestCase):
                     {"address": "10.0.0.3", "agent": False, "name": "Homebrew Channel"}]):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                self.assertEqual(hbc.wii_address(None), "10.0.0.3")
+                self.assertEqual(hbc.wii_address(None, auto_find=True), "10.0.0.3")
         self.assertIn("using the Wii at 10.0.0.3", err.getvalue())
 
     def test_several_found(self):
@@ -192,7 +192,7 @@ class AddressTest(unittest.TestCase):
         with mock.patch.dict(os.environ, NO_ADDRESS), \
                 mock.patch.object(hbc, "find_wiis", return_value=found), \
                 self.assertRaises(SystemExit) as cm:
-            hbc.wii_address(None)
+            hbc.wii_address(None, auto_find=True)
         self.assertIn("10.0.0.3", str(cm.exception))
         self.assertIn("10.0.0.4", str(cm.exception))
 
