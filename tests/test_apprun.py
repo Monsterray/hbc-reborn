@@ -235,6 +235,35 @@ class AppRunTest(unittest.TestCase):
         self.seen.write_bytes(b"z" * 3000 + b"\n" + good.encode() + b"\n")
         self.assertEqual(self.state("Foo"), UNCHANGED)
 
+    def test_a_file_that_cannot_be_read_is_never_rewritten(self):
+        # 1.14 audit: an error other than "no file" read as an empty table,
+        # and the next launch wrote the file back with one app in it.
+        self.assertTrue(self.record("Foo"))
+        self.assertTrue(self.record("Bar"))
+        before = self.seen.read_bytes()
+        self.seen.rename(self.seen.with_name("keep"))
+        self.seen.with_name("apps_seen.txt.bak").mkdir()   # opening it fails, not ENOENT
+        self.assertFalse(self.record("Foo"))
+        self.scan(["Foo"])                                  # a whole scan prunes nothing
+        self.assertFalse(self.seen.exists())
+        self.seen.with_name("apps_seen.txt.bak").rmdir()
+        self.seen.with_name("keep").rename(self.seen)
+        self.assertEqual(self.seen.read_bytes(), before)
+
+    def test_names_ignore_case(self):
+        # FAT: MyApp and myapp are one folder.
+        self.assertTrue(self.record("Foo"))
+        self.assertEqual(self.state("foo"), UNCHANGED)
+        self.assertEqual(self.scan(["FOO", "Bar"]), {"FOO": UNCHANGED, "Bar": NEW})
+        self.assertEqual(len(self.lines()), 1)              # FOO kept Foo's line
+
+    def test_an_unreadable_folder_is_not_updated(self):
+        # No boot file to stamp: app_run_record could never clear the badge.
+        self.assertTrue(self.record("Foo"))
+        self.boot("Foo").unlink()
+        (self.boot("Foo").parent / "meta.xml").write_bytes(b"<app/>")
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+
     def test_interrupted_commit_keeps_history(self):
         self.assertTrue(self.record("Foo"))
         backup = self.seen.with_name("apps_seen.txt.bak")

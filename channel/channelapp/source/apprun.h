@@ -25,6 +25,8 @@ void app_run_begin(const char *root);
 app_run_state app_run_status(const char *name);
 void app_run_end(bool complete);
 
+// The three calls of a scan, and each call below, take one lock: call them
+// from one thread per scan; the others wait for the scan to end.
 // One app outside a scan (a newly installed folder).
 app_run_state app_run_status_one(const char *root, const char *name);
 

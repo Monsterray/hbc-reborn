@@ -6,12 +6,43 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifdef GEKKO
+#include <ogc/mutex.h>
+#include <ogc/machine/processor.h>
+#endif
+
 #include "apprun.h"
 
 #ifdef _WIN32
 #define MKDIR(path) mkdir(path)
+#define strcasecmp _stricmp
 #else
+#include <strings.h>
 #define MKDIR(path) mkdir(path, 0777)
+#endif
+
+// One table at a time: the scan thread holds it from app_run_begin to
+// app_run_end, and app_run_status_one and app_run_record (the menu, the
+// loader) wait for that rather than load over it.
+#ifdef GEKKO
+static mutex_t run_lock = LWP_MUTEX_NULL;
+
+static void lock(void) {
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	if (run_lock == LWP_MUTEX_NULL)
+		LWP_MutexInit(&run_lock, false);
+	_CPU_ISR_Restore(level);
+	LWP_MutexLock(run_lock);
+}
+
+static void unlock(void) {
+	LWP_MutexUnlock(run_lock);
+}
+#else
+static void lock(void) {}
+static void unlock(void) {}
 #endif
 
 static const char dir_name[] = "hbc";
@@ -40,7 +71,10 @@ typedef struct {
 static record *records;
 static size_t record_count, record_cap;
 static char table_root[PATH_MAX];
-static bool table_dirty, table_open;
+// table_readable: the file was read to its end, or there was none. After
+// any other failure (EIO, a card pulled while reading) the table is only
+// part of the file: never write it back, nor prune from it.
+static bool table_dirty, table_open, table_readable;
 
 static void table_free(void) {
 	size_t i;
@@ -52,13 +86,15 @@ static void table_free(void) {
 	record_count = record_cap = 0;
 	table_dirty = false;
 	table_open = false;
+	table_readable = false;
 }
 
 static record *table_find(const char *name) {
 	size_t i;
 
+	// FAT ignores case: "MyApp" and "myapp" are one folder.
 	for (i = 0; i < record_count; ++i)
-		if (!strcmp(records[i].name, name))
+		if (!strcasecmp(records[i].name, name))
 			return &records[i];
 	return NULL;
 }
@@ -186,8 +222,10 @@ static void table_load(const char *root) {
 		if (file_path(backup, sizeof(backup), root, ".bak"))
 			f = fopen(backup, "rb");
 	}
-	if (!f)
+	if (!f) {
+		table_readable = errno == ENOENT;
 		return;
+	}
 	while (record_count < MAX_RECORDS && fgets(line, sizeof(line), f)) {
 		size_t len = strlen(line);
 		char *name;
@@ -208,6 +246,7 @@ static void table_load(const char *root) {
 			continue;
 		table_add(name, &stamp);
 	}
+	table_readable = !ferror(f) && (feof(f) || record_count == MAX_RECORDS);
 	fclose(f);
 }
 
@@ -219,6 +258,8 @@ static bool table_write(void) {
 	size_t r;
 	unsigned i;
 
+	if (!table_readable)
+		return false;
 	if (!file_path(path, sizeof(path), table_root, "") ||
 			!file_path(part, sizeof(part), table_root, ".part") ||
 			!file_path(backup, sizeof(backup), table_root, ".bak") ||
@@ -277,12 +318,17 @@ static app_run_state judge(const char *name) {
 	if (!r)
 		return APP_RUN_NEW;
 	r->seen = true;
-	if (!snapshot(table_root, name, &current) || !same_stamp(&r->stamp, &current))
+	// A folder that cannot be read now (a stat error, no boot file) is not
+	// "updated": app_run_record could never clear that badge.
+	if (!snapshot(table_root, name, &current))
+		return APP_RUN_UNCHANGED;
+	if (!same_stamp(&r->stamp, &current))
 		return APP_RUN_UPDATED;
 	return APP_RUN_UNCHANGED;
 }
 
 void app_run_begin(const char *root) {
+	lock();
 	table_load(root);
 }
 
@@ -293,7 +339,7 @@ app_run_state app_run_status(const char *name) {
 void app_run_end(bool complete) {
 	size_t i, kept = 0;
 
-	if (table_open && complete) {
+	if (table_open && complete && table_readable) {
 		for (i = 0; i < record_count; ++i) {
 			if (records[i].seen)
 				records[kept++] = records[i];
@@ -308,14 +354,17 @@ void app_run_end(bool complete) {
 			table_write();
 	}
 	table_free();
+	unlock();
 }
 
 app_run_state app_run_status_one(const char *root, const char *name) {
 	app_run_state state;
 
+	lock();
 	table_load(root);
 	state = judge(name);
 	table_free();
+	unlock();
 	return state;
 }
 
@@ -358,6 +407,7 @@ bool app_run_record(const char *boot_path) {
 	if (!split_boot_path(boot_path, root, sizeof(root), name, sizeof(name)) ||
 			!snapshot(root, name, &current))
 		return false;
+	lock();
 	table_load(root);
 	r = table_find(name);
 	if (!r) {
@@ -370,5 +420,6 @@ bool app_run_record(const char *boot_path) {
 	if (ok && table_dirty)
 		ok = table_write();
 	table_free();
+	unlock();
 	return ok;
 }

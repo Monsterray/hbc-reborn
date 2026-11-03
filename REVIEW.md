@@ -161,6 +161,32 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.26: app badge records are read whole or not written
+
+From the 1.14 audit, three gaps in PR 17's `apprun.c`:
+- **No lock.** The scan thread holds the table from `app_run_begin` to
+  `app_run_end`, while the menu's `app_entry_add` (an app sent from the PC)
+  and the loader's `app_run_record` loaded and freed the same static table,
+  and `badge_scan` was a global the menu read as "a scan is open". A lock in
+  `apprun.c` now spans a scan and each one-off call, and `in_scan` is passed
+  to `app_entry_load_single` instead of read from a global.
+- **A failed read was an empty table.** An open error other than ENOENT,
+  or a read error, left a partial table that `app_run_record` then wrote
+  back with one app in it, and a whole scan pruned from. Now nothing is
+  written or pruned after such a read, and a `readdir` error (errno, not
+  just a NULL) makes the scan incomplete.
+- **Names and failed snapshots.** Folder names compare without case, as FAT
+  does. A folder that cannot be stamped (no boot file, a stat error) now
+  shows no badge rather than Updated, which no launch could ever clear.
+
+- **Checked:** `tests/test_apprun.py` (16 tests; new: an unreadable file is
+  never rewritten or pruned, names ignore case, an unstampable folder is not
+  Updated). `tests/dolphin_app_badges.py` passes with the 1.14.26 retail WAD.
+- **Not covered:** the race itself (a transfer that lands during a device
+  scan) on the bench Wii. `entries_all` has the same race between the scan
+  thread and `app_entry_add`, older than the badges; it is left for its own
+  change.
+
 ### 1.14.25: HBCU answers only queries
 
 From the 1.14 audit. `discover_poll` answered any datagram that began with

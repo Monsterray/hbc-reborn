@@ -192,10 +192,10 @@ void app_entry_set_sort(app_sort sort) {
 		settings.sort_order = current_sort;
 }
 
-// A device scan has apps_seen.txt open (apprun.c); app_entry_add outside one reads it for the one app.
-static bool badge_scan;
-
-static app_entry *app_entry_load_single (const char *dirname) {
+// in_scan: called from the scan thread's device scan, which has
+// apps_seen.txt open (apprun.c); otherwise (app_entry_add, from the menu)
+// it reads the file for the one app, after any scan in progress.
+static app_entry *app_entry_load_single (const char *dirname, bool in_scan) {
 	app_entry *entry;
 	app_entry_type type;
 	char tmp[PATH_MAX + 32];
@@ -230,7 +230,7 @@ static app_entry *app_entry_load_single (const char *dirname) {
 	entry->run_state = APP_RUN_UNCHANGED;
 	// Options > App badges: only then read the device's apps_seen.txt.
 	if (type != AET_THEME && settings.new_badges && device_active >= 0) {
-		if (badge_scan) {
+		if (in_scan) {
 			entry->run_state = app_run_status(dirname);
 		} else {
 			char root[16];
@@ -280,6 +280,7 @@ static void app_entry_load_all (void) {
 	app_entry *entry;
 	DIR *d;
 	struct dirent *de;
+	bool badge_scan = false;
 
 	app_entries_free ();
 
@@ -294,7 +295,11 @@ static void app_entry_load_all (void) {
 		app_run_begin(root);
 		badge_scan = true;
 	}
-	while ((de = readdir(d))) {
+	// errno tells a readdir error from the end of the folder.
+	for (;;) {
+		errno = 0;
+		if (!(de = readdir(d)))
+			break;
 		// ignore dotfiles / dotdirs
 		if (de->d_name[0] == '\0' || de->d_name[0] == '.')
 			continue;
@@ -303,7 +308,7 @@ static void app_entry_load_all (void) {
 		if (de->d_type != DT_DIR)
 			continue;
 
-		entry = app_entry_load_single(de->d_name);
+		entry = app_entry_load_single(de->d_name, badge_scan);
 
 		if (!entry)
 			continue;
@@ -317,10 +322,9 @@ static void app_entry_load_all (void) {
 	}
 
 	// Forget the badge records of apps that are gone, but only after a scan
-	// that saw every folder and a card that is still there.
+	// that saw every folder (no readdir error) and a card that is still there.
 	if (badge_scan) {
-		app_run_end(!de && devices[device_active].device->isInserted());
-		badge_scan = false;
+		app_run_end(!de && !errno && devices[device_active].device->isInserted());
 	}
 
 	closedir(d);
@@ -383,7 +387,7 @@ app_entry *app_entry_add(const char *dirname) {
 	if (entry_count_all >= MAX_ENTRIES)
 		goto exit;
 
-	entry = app_entry_load_single(dirname);
+	entry = app_entry_load_single(dirname, false);
 
 	if (!entry)
 		goto exit;
