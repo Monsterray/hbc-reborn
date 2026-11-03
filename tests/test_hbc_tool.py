@@ -20,6 +20,7 @@ sys.path.insert(0, str(root / "tools"))
 import hbc  # noqa: E402
 
 ENOENT, ENOTDIR, EISDIR, EINVAL, ENOTEMPTY = 2, 20, 21, 22, 90
+EPERM, EACCES, ELOOP = 1, 13, 92
 WII = "127.0.0.1"
 
 
@@ -51,6 +52,8 @@ class FakeHBC:
         self.upload = None
         self.requests = []  # (op, path) of every HBCF request
         self.truncate = False
+        self.tree_delete = False  # protocol 9: op E; else ENOSYS as an older HBC
+        self.rm_depth = 16        # a deeper tree is refused with ELOOP
         self.agent = False  # an agent app answers instead of HBC
         self.agent_uptime_ms = 1000
         self.crash = None
@@ -103,6 +106,50 @@ class FakeHBC:
     def children(self, path):
         return ([("d", p) for p in sorted(self.dirs) if p != path and parent(p) == path] +
                 [("f", p) for p in sorted(self.files) if parent(p) == path])
+
+    @staticmethod
+    def protected(path):
+        dev, _, rest = path.lower().partition(":")
+        parts = [p for p in rest.split("/") if p not in ("", ".")]
+        return parts in ([], ["apps"])
+
+    def subtree(self, path):
+        return ([d for d in self.dirs if d.startswith(path + "/")],
+                [f for f in self.files if f.startswith(path + "/")])
+
+    def tree_remove(self, conn, path, flags):
+        """Op E as devfile.c's file_remove() does it: flags 2 glob, 4
+        recursive. Nothing is deleted unless the whole request can be."""
+        glob, recursive = flags & 2, flags & 4
+        head, _, last = path.rpartition("/")
+        if glob and any(c in last for c in "*?"):
+            head = head + "/" if head.endswith(":") else head
+            rx = hbc.glob_regex(last)
+            targets = [p for _, p in self.children(head) if rx.fullmatch(p.rsplit("/", 1)[1])]
+            if any(self.protected(t) for t in targets):
+                return self.reply(conn, -EPERM)
+            if not targets:
+                return self.reply(conn, -ENOENT)
+        else:
+            targets = [path]
+        entries = []
+        for t in targets:
+            if self.protected(t):
+                return self.reply(conn, -EPERM)
+            if t not in self.files and t not in self.dirs:
+                return self.reply(conn, -ENOENT)
+            dirs, files = self.subtree(t) if t in self.dirs else ([], [])
+            if t in self.dirs and not recursive and (dirs or files):
+                return self.reply(conn, -ENOTEMPTY)
+            if any(d.count("/") - t.count("/") >= self.rm_depth for d in dirs):
+                return self.reply(conn, -ELOOP)
+            entries += files + sorted(dirs, key=lambda d: -d.count("/")) + [t]
+        if any(self.attrs.get(e, 0) & 1 for e in entries):
+            return self.reply(conn, -EACCES)   # read-only: kept, as op D keeps it
+        for e in entries:
+            self.files.pop(e, None)
+            self.dirs.discard(e)
+        self.reply(conn, 0, struct.pack(">I", len(entries)))
 
     def send_log(self, text):
         addr, port = self.log.rsplit(":", 1)
@@ -277,6 +324,8 @@ class FakeHBC:
             elif op == "M":
                 self.make_dirs(path)
                 self.reply(conn, 0)
+            elif op == "E" and self.tree_delete:
+                self.tree_remove(conn, path, hdr[5])
             elif op == "R" and not self.no_rename:
                 self.rename(conn, path, self.recv(conn, size).decode(), hdr[5])
             elif op == "R":
@@ -332,6 +381,9 @@ class HBCToolTest(unittest.TestCase):
 
     def setUp(self):
         self.fake.truncate = False
+        self.fake.tree_delete = False
+        self.fake.rm_depth = 16
+        hbc._no_tree_delete.clear()
         self.fake.agent = False
         self.fake.agent_uptime_ms = 1000
         self.fake.crash = None
@@ -872,6 +924,113 @@ class HBCToolTest(unittest.TestCase):
                           "sd:/apps/sync/data/b.bin"})
         self.assertNotIn("sd:/apps/sync/old", self.fake.dirs)
 
+    def deletes(self, start):
+        return [(op, p) for op, p in self.fake.requests[start:] if op in "DE"]
+
+    def test_recursive_rm_is_one_request_when_the_wii_can_walk_it(self):
+        self.fake.tree_delete = True
+        self.make_tree(self.tmp, {"a.txt": b"a", "sub/b.txt": b"b", "sub/deeper/c.txt": b"c"})
+        hbc.put_tree(WII, str(self.tmp), "sd:/apps/gone", out=lambda _: None)
+        start = len(self.fake.requests)
+        out = self.cli("rm", "-r", "sd:/apps/gone/")
+        self.assertEqual(self.deletes(start), [("E", "sd:/apps/gone")])
+        self.assertIn("rm: 6 entries deleted", out)
+        self.assertFalse(self.remote("sd:/apps/gone"))
+        self.assertNotIn("sd:/apps/gone/sub/deeper", self.fake.dirs)
+        self.assertNotIn("sd:/apps/gone", self.fake.dirs)
+
+    def test_tree_too_deep_for_the_wii_falls_back_to_one_request_per_entry(self):
+        self.fake.tree_delete = True
+        self.fake.rm_depth = 1
+        hbc.put_file(WII, "sd:/apps/deep/a/b/c.bin", b"c")
+        start = len(self.fake.requests)
+        self.cli("rm", "-r", "sd:/apps/deep")
+        ops = self.deletes(start)
+        self.assertEqual(ops[0], ("E", "sd:/apps/deep"))
+        self.assertEqual(ops[-1], ("D", "sd:/apps/deep"))
+        self.assertNotIn("sd:/apps/deep", self.fake.dirs)
+
+    def test_tree_delete_keeps_read_only_unless_force(self):
+        self.fake.tree_delete = True
+        self.fake.version = "1.10.15"
+        self.put({"sd:/tro/a.bin": b"a", "sd:/tro/sub/b.bin": b"b"})
+        self.fake.attrs["sd:/tro/sub/b.bin"] = 1
+        with self.assertRaisesRegex(SystemExit, "EACCES.*read-only.*nothing was deleted"):
+            self.cli("rm", "-r", "sd:/tro")
+        self.assertIn("sd:/tro/a.bin", self.fake.files, "the Wii counts first")
+        start = len(self.fake.requests)
+        self.cli("rm", "-r", "--force", "sd:/tro")
+        self.assertEqual(self.deletes(start)[0], ("E", "sd:/tro"))
+        self.assertIn(("A", "sd:/tro/sub/b.bin"), self.fake.requests[start:])
+        self.assertNotIn("sd:/tro", self.fake.dirs)
+
+    def test_glob_rm_sends_the_pattern_to_the_wii(self):
+        self.fake.tree_delete = True
+        for name in ("a.log", "B.LOG", "keep.txt"):
+            hbc.put_file(WII, f"sd:/logs/{name}", b"x")
+        hbc.put_file(WII, "sd:/logs/old/inner.log", b"x")
+        start = len(self.fake.requests)
+        with self.assertRaisesRegex(SystemExit, "ENOTEMPTY"):
+            self.cli("rm", "sd:/logs/*")   # a folder needs -r; nothing is deleted
+        self.assertEqual(len(self.remote("sd:/logs/")), 4)
+        out = self.cli("rm", "sd:/logs/*.log")
+        self.assertIn("rm: 2 entries deleted", out)
+        self.assertEqual(set(self.remote("sd:/logs/")),
+                         {"sd:/logs/keep.txt", "sd:/logs/old/inner.log"})
+        out = self.cli("rm", "-r", "sd:/logs/o?d")
+        self.assertIn("rm: 2 entries deleted", out)
+        with self.assertRaisesRegex(SystemExit, "ENOENT"):
+            self.cli("rm", "sd:/logs/*.nope")
+        self.assertEqual([op for op, _ in self.deletes(start)], ["E"] * 4)
+
+    def test_glob_rm_expands_here_for_an_older_hbc(self):
+        for name in ("a.log", "B.LOG", "keep.txt"):
+            hbc.put_file(WII, f"sd:/logs/{name}", b"x")
+        hbc.put_file(WII, "sd:/logs/sub/z.log", b"x")
+        with self.assertRaisesRegex(SystemExit, "use rm -r"):
+            self.cli("rm", "sd:/logs/*")
+        self.assertEqual(len(self.remote("sd:/logs/")), 4)
+        out = self.cli("rm", "sd:/logs/*.log")
+        self.assertIn("rm: 2 entries deleted", out)
+        self.assertEqual(set(self.remote("sd:/logs/")), {"sd:/logs/keep.txt", "sd:/logs/sub/z.log"})
+        self.cli("rm", "-r", "sd:/logs/s*")
+        self.assertNotIn("sd:/logs/sub", self.fake.dirs)
+        with self.assertRaisesRegex(SystemExit, "wildcards work only"):
+            self.cli("rm", "sd:/lo*/x.log")
+
+    def test_glob_rm_never_takes_the_apps_folder(self):
+        hbc.put_file(WII, "sd:/apps/x/boot.dol", b"x")
+        hbc.put_file(WII, "sd:/zzz.bin", b"x")
+        for new in (False, True):
+            self.fake.tree_delete = new
+            hbc._no_tree_delete.clear()
+            for argv in (("rm", "-r", "sd:/*"), ("rm", "-r", "sd:/a*"), ("rm", "-r", "sd:/./AP?S")):
+                with self.assertRaises(SystemExit):
+                    self.cli(*argv)
+        self.assertIn("sd:/apps/x/boot.dol", self.fake.files)
+        self.assertIn("sd:/zzz.bin", self.fake.files)
+
+    def test_sync_delete_removes_gone_folders_in_one_request(self):
+        self.fake.tree_delete = True
+        src = self.tmp / "src"
+        self.make_tree(src, {"boot.dol": b"d"})
+        for rel in ("old/a.bin", "old/sub/b.bin", "stale.txt"):
+            hbc.put_file(WII, f"sd:/apps/sy/{rel}", b"x")
+        start = len(self.fake.requests)
+        out = self.cli("sync", str(src), "sd:/apps/sy", "--delete")
+        self.assertEqual(self.deletes(start), [("E", "sd:/apps/sy/old"), ("D", "sd:/apps/sy/stale.txt")])
+        self.assertIn("5 deleted", out)
+        self.assertEqual(set(self.remote("sd:/apps/sy/")), {"sd:/apps/sy/boot.dol"})
+        self.assertNotIn("sd:/apps/sy/old/sub", self.fake.dirs)
+
+    def test_tree_delete_still_refuses_roots_here(self):
+        self.fake.tree_delete = True
+        start = len(self.fake.requests)
+        for path in ("sd:/", "SD:/apps/", "usb:/./apps"):
+            with self.assertRaisesRegex(SystemExit, "refusing"):
+                self.cli("rm", "-r", path)
+        self.assertEqual(self.fake.requests[start:], [])
+
     def test_truncated_listing_stops_recursive_ops(self):
         hbc.put_file(WII, "sd:/apps/trunc/a.bin", b"a")
         self.fake.truncate = True
@@ -881,7 +1040,8 @@ class HBCToolTest(unittest.TestCase):
                      ("sync", "--delete", str(self.tmp), "sd:/apps/trunc")):
             with self.assertRaisesRegex(SystemExit, "truncated"):
                 self.cli(*argv)
-        self.assertEqual({op for op, _ in self.fake.requests[start:]}, {"L", "S"})   # reads only
+        # Reads only (the E is the tree delete an older HBC answers with ENOSYS).
+        self.assertEqual({op for op, _ in self.fake.requests[start:]}, {"L", "S", "E"})
         self.assertIn("sd:/apps/trunc/a.bin", self.fake.files)
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):

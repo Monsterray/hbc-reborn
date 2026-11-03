@@ -38,7 +38,7 @@ CHECKSUM_BYTES_PER_S = 1 << 20
 PUT_ATTEMPTS = 3
 
 # newlib errno values the client acts on
-ENOENT, EACCES, EEXIST, EXDEV, EISDIR, ENOSYS = 2, 13, 17, 18, 21, 88
+ENOENT, EACCES, EEXIST, EXDEV, EISDIR, ENOSYS, ELOOP = 2, 13, 17, 18, 21, 88, 92
 
 
 class HBCError(Exception):
@@ -52,7 +52,7 @@ WII_ERRNO = {1: "EPERM", 2: "ENOENT", 5: "EIO", 6: "ENXIO", 9: "EBADF", 11: "EAG
              12: "ENOMEM", 13: "EACCES", 16: "EBUSY", 17: "EEXIST", 18: "EXDEV", 20: "ENOTDIR",
              21: "EISDIR", 22: "EINVAL", 23: "ENFILE", 24: "EMFILE", 27: "EFBIG",
              28: "ENOSPC", 30: "EROFS", 71: "EPROTO", 77: "EBADMSG", 88: "ENOSYS",
-             90: "ENOTEMPTY", 91: "ENAMETOOLONG", 104: "ECONNRESET", 116: "ETIMEDOUT",
+             90: "ENOTEMPTY", 91: "ENAMETOOLONG", 92: "ELOOP", 104: "ECONNRESET", 116: "ETIMEDOUT",
              134: "ENOTSUP"}
 
 
@@ -845,11 +845,56 @@ def get_tree(wii, remote, local, out=print):
     out(f"get: {len(files)} files ({total} bytes)")
 
 
+# Op E (protocol 9): the Wii deletes a tree, or every match of a pattern,
+# itself, and shows "Deleting" with a progress circle. Flags in header byte 5.
+FLAG_GLOB, FLAG_RECURSIVE = 0x02, 0x04
+RM_TIMEOUT = 600   # a big tree takes a while; the Wii answers when it is done
+_no_tree_delete = set()
+
+
+def remote_delete(wii, remote, recursive, glob=False, force=False):
+    """Op E: delete remote, a whole tree with recursive, or with glob the
+    entries of its folder that match its last component. Returns the number
+    of entries deleted, or None when the caller should delete one entry at a
+    time: this HBC or agent is older than protocol 9 (ENOSYS), the tree is
+    nested deeper than it walks (ELOOP), or force and something read-only
+    is in the way (EACCES; nothing was deleted, as the Wii counts first)."""
+    if wii in _no_tree_delete:
+        return None
+    flags = (FLAG_GLOB if glob else 0) | (FLAG_RECURSIVE if recursive else 0)
+    try:
+        with connect(wii, RM_TIMEOUT) as conn:
+            conn.sendall(file_header("E", remote, 0, flags))
+            reply = recv_reply(conn, f"{remote}: Wii returned")
+    except HBCError as exc:
+        if exc.code == ENOSYS:
+            _no_tree_delete.add(wii)
+            return None
+        if exc.code == ELOOP or (exc.code == EACCES and force):
+            return None
+        if exc.code == EACCES:
+            raise HBCError(f"{exc}: something in it is read-only, so nothing was deleted "
+                           f"(hbc.py attrib --recursive -r {remote}, or rm --force)",
+                           exc.code) from None
+        raise
+    return struct.unpack(">I", reply)[0] if len(reply) == 4 else 0
+
+
 def remove_tree(wii, remote, out=print, force=False):
-    """Delete a remote tree: files first, then directories bottom-up. force
-    clears read-only on each entry first."""
+    """Delete a remote tree: in one request when the Wii can walk it itself,
+    else files first, then directories bottom-up. force clears read-only on
+    each entry first."""
     refuse_protected(remote, "recursively delete")
     remote = remote_norm(remote)
+    count = remote_delete(wii, remote, True, force=force)
+    if count is None:
+        count = remove_tree_entries(wii, remote, force)
+    out(f"rm: {count} entries deleted")
+    return count
+
+
+def remove_tree_entries(wii, remote, force=False):
+    """remove_tree one request per entry, for an HBC without op E."""
     if not remote_is_dir(wii, remote):
         remove_one(wii, remote, force)
         return 1
@@ -858,7 +903,50 @@ def remove_tree(wii, remote, out=print, force=False):
         remove_one(wii, remote_join(remote, rel), force)
     for rel in bottom_up(dirs) + [""]:
         remove_one(wii, remote_join(remote, rel), force)
-    count = len(files) + len(dirs) + 1
+    return len(files) + len(dirs) + 1
+
+
+def is_glob(remote):
+    """True when the path has a * or ? wildcard (a FAT name cannot)."""
+    return any(c in remote for c in "*?")
+
+
+def glob_regex(pattern):
+    """* is any run, ? one character; FAT ignores case, so does this."""
+    return re.compile("".join(".*" if c == "*" else "." if c == "?" else re.escape(c)
+                              for c in pattern), re.I | re.S)
+
+
+def remove_glob(wii, remote, recursive=False, out=print, force=False):
+    """rm with a wildcard in the last component: sd:/logs/*.log. Matches
+    are files, and with recursive folders too."""
+    head, _, pattern = remote.rpartition("/")
+    if is_glob(head) or not head:
+        raise HBCError(f"{remote}: wildcards work only in the last name")
+    folder = head + "/" if head.endswith(":") else head
+    count = remote_delete(wii, remote, recursive, glob=True, force=force)
+    if count is None:
+        # An older HBC: expand the pattern here and delete match by match.
+        rx = glob_regex(pattern)
+        entries, truncated = list_entries(wii, folder)
+        if truncated:
+            raise HBCError(f"the Wii truncated the listing of {folder}; "
+                           "refusing to act on a partial listing")
+        matches = [e for e in entries if rx.fullmatch(e["name"])]
+        if not matches:
+            raise HBCError(f"{remote}: Wii returned ENOENT", ENOENT)
+        for e in matches:
+            refuse_protected(remote_join(folder, e["name"]), "delete")
+            if e["type"] == "d" and not recursive:
+                raise HBCError(f"{remote_join(folder, e['name'])} is a directory; use rm -r")
+        count = 0
+        for e in matches:
+            target = remote_join(folder, e["name"])
+            if e["type"] == "d":
+                count += remove_tree_entries(wii, target, force)
+            else:
+                remove_one(wii, target, force)
+                count += 1
     out(f"rm: {count} entries deleted")
     return count
 
@@ -1042,11 +1130,25 @@ def sync(wii, local, remote, delete=False, out=print, checksum_all=False, verify
     failed = []
     offset = None if checksum_all else wii_clock_offset(wii)
     if delete:
+        # A folder that is gone from local goes whole, in one request, with
+        # what it holds; the rest one entry at a time.
+        gone = {d for d in rdirs if d not in ldirset}
+        tops = sorted(d for d in gone if not any(
+            "/".join(d.split("/")[:i]) in gone for i in range(1, d.count("/") + 1)))
+        for rel in tops:
+            count = remote_delete(wii, remote_join(remote, rel), True)
+            if count is None:
+                break
+            deleted += count
+            gone -= {d for d in gone if d == rel or d.startswith(rel + "/")}
+            for f in [f for f in rfiles if f.startswith(rel + "/")]:
+                del rfiles[f]
+            rdirset -= {d for d in rdirset if d == rel or d.startswith(rel + "/")}
         for rel in sorted(f for f in rfiles if f not in lfiles):
             file_request(wii, "D", remote_join(remote, rel))
             del rfiles[rel]
             deleted += 1
-        for rel in bottom_up(d for d in rdirs if d not in ldirset):
+        for rel in bottom_up(d for d in rdirs if d in gone):
             file_request(wii, "D", remote_join(remote, rel))
             rdirset.discard(rel)
             deleted += 1
@@ -1328,7 +1430,7 @@ Commands
     put LOCAL PATH      upload (-r for a folder; missing folders are made)
     sync LOCAL PATH     upload only what changed (--delete removes extras)
     rm PATH             delete a file or empty folder (-r a whole folder,
-                        --force read-only ones too)
+                        --force read-only ones too; * ? match)
     mkdir PATH          make a folder
     mv FROM TO          rename or move a file or folder (also between devices)
     order DIR [APP...]  HBC's Custom app order: show it, or set it (meta.xml)
@@ -1473,10 +1575,18 @@ it). A file that fails is reported and the rest still sync.
     "rm": """\
 hbc.py rm [-r] [--force] PATH
 
-Deletes a file or an empty folder, or with -r a whole folder. Device roots
-(sd:/) and <device>:/apps itself are refused. A read-only entry is
-refused too, unless --force, which clears read-only first (as del /f
-does).""",
+Deletes a file or an empty folder, or with -r a whole folder. A * or ? in
+the last name deletes everything in that folder that matches (case does not
+matter), such as 'sd:/logs/*.log'; quote it so your shell leaves it alone,
+and add -r to take matching folders too. An HBC with protocol 9 walks the
+tree or pattern itself in one request and shows "Deleting" with a progress
+circle on its screen; an older HBC or app agent is sent one request per
+entry. Device roots (sd:/) and <device>:/apps itself are refused, by hbc.py
+and by HBC. A read-only entry is refused too, and then nothing is deleted,
+unless --force, which clears read-only first (as del /f does).
+
+    hbc.py rm -r sd:/apps/oldapp
+    hbc.py rm 'sd:/logs/*.log'""",
     "mkdir": """\
 hbc.py mkdir PATH
 
@@ -1889,7 +1999,9 @@ def main(argv=None):
             force = bool(flags.get("force"))
             if force:
                 needs_version(wii, ATTR_SINCE, "clear read-only (rm --force)")
-            if recursive:
+            if is_glob(args[0]):
+                remove_glob(wii, remote_norm(args[0]), recursive, force=force)
+            elif recursive:
                 remove_tree(wii, args[0], force=force)
             else:
                 remove_one(wii, args[0], force)

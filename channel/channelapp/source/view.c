@@ -268,7 +268,7 @@ static void transfer_line(void) {
 	if (name_style < 0)
 		name_style = (u32) gettime() % 3;   // this start's pick
 	if (dir) {
-		verb = dir == 'p' ? _("Receiving") : _("Sending");
+		verb = dir == 'p' ? _("Receiving") : dir == 'd' ? _("Deleting") : _("Sending");
 		if (total && !circle)
 			snprintf(pct, sizeof(pct), "  %u%%", (unsigned) ((u64) done * 100 / total));
 		// How much of a new name fits beside the verb and "  100%".

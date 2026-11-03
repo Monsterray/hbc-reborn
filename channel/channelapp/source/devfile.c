@@ -668,6 +668,217 @@ static void file_move(s32 s, const char *src, u32 size, u8 flags, devfile_change
 	devfile_reply(s, err, err ? NULL : dst, err ? 0 : strlen(dst));
 }
 
+// Show path's display name as the file in progress.
+static void set_moving(const char *path) {
+	const char *name = devfile_display_name(path);
+	size_t len = strlen(name);
+	int next = !moving_now;
+
+	if (len >= sizeof(moving[0]))   // a long name is cut short
+		len = sizeof(moving[0]) - 1;
+	memcpy(moving[next], name, len);
+	moving[next][len] = 0;
+	__asm__ volatile ("" ::: "memory");   // the name is whole before the swap
+	moving_now = next;
+}
+
+// Op E: delete a file, or a tree, or every entry of a folder that matches a
+// pattern. The Wii walks the tree itself, so one request replaces a round
+// trip per entry; a first pass counts the entries so the menu can show a
+// progress circle, a second deletes them. The walk is recursive but one
+// path buffer serves every level and RM_DEPTH bounds it, so it cannot
+// overrun the thread's stack; a deeper tree is refused with ELOOP before
+// anything is deleted, and hbc.py then falls back to one request per entry.
+#define RM_DEPTH 16
+
+enum { RM_GUARD, RM_COUNT, RM_DELETE };
+
+static char rm_path[DEVFILE_PATH_MAX];
+static u32 rm_done, rm_total;
+
+// Count or delete the entry named by rm_path (left as it was found).
+static s32 rm_walk(int mode, bool recursive, u32 depth) {
+	struct dirent *de;
+	struct stat st;
+	size_t len, nlen;
+	bool found;
+	s32 err = 0;
+	DIR *d;
+
+	if (abort_requested)
+		return -EINTR;
+	if (stat(rm_path, &st))
+		return -errno;
+
+	if (S_ISDIR(st.st_mode) && recursive) {
+		if (depth >= RM_DEPTH)
+			return -ELOOP;
+		len = strlen(rm_path);
+		// Deleting takes the first entry and reopens the folder each time:
+		// on a real SD card, removing entries while libfat still iterates
+		// the folder left later file creation hanging.
+		for (found = true; !err && found; ) {
+			d = opendir(rm_path);
+			if (!d)
+				return -errno;
+			found = false;
+			while (!err && (de = readdir(d))) {
+				if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+					continue;
+				nlen = strlen(de->d_name);
+				if (len + 1 + nlen >= sizeof(rm_path)) {
+					err = -ENAMETOOLONG;
+					break;
+				}
+				rm_path[len] = '/';
+				memcpy(rm_path + len + 1, de->d_name, nlen + 1);
+				if (mode == RM_DELETE) {
+					found = true;
+					break;
+				}
+				err = rm_walk(mode, recursive, depth + 1);
+				rm_path[len] = 0;
+			}
+			closedir(d);
+			if (found) {
+				err = rm_walk(mode, recursive, depth + 1);
+				rm_path[len] = 0;
+			}
+		}
+		if (err)
+			return err;
+	} else if (S_ISDIR(st.st_mode) && mode == RM_COUNT && !dir_empty(rm_path)) {
+		return -ENOTEMPTY;   // refused before anything is deleted
+	}
+
+	if (mode == RM_COUNT) {
+		// A read-only entry is kept, as op D keeps it; found while
+		// counting, so nothing is deleted.
+		if (path_attr(rm_path, &st) & FA_RO)
+			return -EACCES;
+		++rm_total;
+		return 0;
+	}
+	// The screen keeps the requested name; only the circle advances.
+	if (S_ISDIR(st.st_mode) ? rmdir(rm_path) : unlink(rm_path))
+		return -errno;
+	devfile_last.st.raw = ++rm_done;
+	return 0;
+}
+
+// Run one pass over the target: the path itself, or each entry of its
+// folder that matches pattern. A protected path ends the pass with EPERM.
+// RM_GUARD only checks the matches, so "sd:/*" is refused before the count
+// walks the rest of the card.
+static s32 rm_pass(int mode, const char *parent, const char *pattern, const char *target,
+				   bool recursive, devfile_change_fn changed, u32 *matches) {
+	struct dirent *de;
+	size_t len = parent ? strlen(parent) : 0, nlen;
+	s32 err = 0;
+	bool sep, found;
+	DIR *d;
+
+	if (!pattern) {
+		strcpy(rm_path, target);
+		if (devfile_protected(rm_path))
+			return -EPERM;
+		err = rm_walk(mode, recursive, 0);
+		if (!err && mode == RM_DELETE && changed)
+			changed(target);
+		return err;
+	}
+
+	// As in rm_walk, deleting reopens the folder for each match.
+	for (found = true; !err && found; ) {
+		d = opendir(parent);
+		if (!d)
+			return -errno;
+		found = false;
+		while (!err && (de = readdir(d))) {
+			if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..") ||
+					!devfile_glob_match(pattern, de->d_name))
+				continue;
+			nlen = strlen(de->d_name);
+			sep = len && parent[len - 1] != '/';
+			if (len + sep + nlen >= sizeof(rm_path)) {
+				err = -ENAMETOOLONG;
+				break;
+			}
+			memcpy(rm_path, parent, len);
+			if (sep)
+				rm_path[len] = '/';
+			memcpy(rm_path + len + sep, de->d_name, nlen + 1);
+			if (devfile_protected(rm_path))
+				err = -EPERM;
+			else if (mode == RM_DELETE) {
+				found = true;
+				break;
+			} else if (mode == RM_COUNT)
+				err = rm_walk(mode, recursive, 0);
+			if (!err && mode == RM_COUNT)
+				++*matches;
+		}
+		closedir(d);
+		if (found) {
+			err = rm_walk(mode, recursive, 0);
+			if (!err && changed)
+				changed(rm_path);
+		}
+	}
+	return err;
+}
+
+// Reply payload on success: u32 entries deleted.
+static void file_remove(s32 s, const char *path, u8 flags, devfile_change_fn changed) {
+	char parent[DEVFILE_PATH_MAX];
+	const char *pattern = NULL;
+	bool recursive = flags & DEVNET_FLAG_RECURSIVE;
+	u32 matches = 0;
+	u8 out[4];
+	s32 err;
+
+	parent[0] = 0;
+
+	if (flags & DEVNET_FLAG_GLOB) {
+		const char *slash = strrchr(path, '/');
+		size_t plen;
+
+		if (!slash) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return;
+		}
+		plen = slash - path;
+		// Wildcards only in the last component.
+		memcpy(parent, path, plen);
+		parent[plen] = 0;
+		if (devfile_has_wildcard(parent)) {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return;
+		}
+		if (devfile_has_wildcard(slash + 1)) {
+			pattern = slash + 1;
+			if (plen && parent[plen - 1] == ':') {   // "sd:/*.log": the root
+				parent[plen++] = '/';
+				parent[plen] = 0;
+			}
+		}
+	}
+
+	rm_done = rm_total = 0;
+	err = pattern ? rm_pass(RM_GUARD, parent, pattern, path, recursive, NULL, NULL) : 0;
+	if (!err)
+		err = rm_pass(RM_COUNT, parent, pattern, path, recursive, NULL, &matches);
+	if (!err && pattern && !matches)
+		err = -ENOENT;
+	if (!err) {
+		devfile_last.st.size = rm_total;   // the circle fills from here
+		err = rm_pass(RM_DELETE, parent, pattern, path, recursive, changed, NULL);
+	}
+	gprintf("devnet: E %s: %d, %u deleted\n", path, err, (unsigned) rm_done);
+	put_u32(out, rm_done);
+	devfile_reply(s, err, err ? NULL : out, err ? 0 : sizeof(out));
+}
+
 // Read and drop n bytes the client sent after the request (op R's
 // destination), so a reply made before reading them is not lost to a reset
 // when the socket closes on unread data.
@@ -714,17 +925,8 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 	}
 
 	gprintf("devnet: %c %s (%u)\n", op, path, size);
-	if (strchr("pPgG", op)) {
-		const char *name = devfile_display_name(path);
-		size_t len = strlen(name);
-		int next = !moving_now;
-
-		if (len >= sizeof(moving[0]))   // a long name is cut short
-			len = sizeof(moving[0]) - 1;
-		memcpy(moving[next], name, len);
-		moving[next][len] = 0;
-		__asm__ volatile ("" ::: "memory");   // the name is whole before the swap
-		moving_now = next;
+	if (strchr("pPgGDE", op)) {
+		set_moving(path);
 		devfile_last.st.size = op == 'p' || op == 'P' ? size : 0;
 	}
 
@@ -798,6 +1000,9 @@ static void file_request(s32 s, const u8 *hdr, devfile_change_fn changed) {
 	case 'A':
 		file_attr(s, path, size);
 		break;
+	case 'E':
+		file_remove(s, path, hdr[5], changed);
+		break;
 	default:
 		devfile_reply(s, -ENOSYS, NULL, 0);
 		break;
@@ -838,12 +1043,12 @@ void devfile_handle(s32 s, const u8 *hdr, s32 prio, s32 restore_prio,
 char devfile_progress(const char **name, u32 *done, u32 *total) {
 	char op = devfile_last.op;
 
-	if (!busy || !op || !strchr("pPgG", op))
+	if (!busy || !op || !strchr("pPgGDE", op))
 		return 0;
 	*name = moving[moving_now];
 	*done = devfile_last.st.raw;
 	*total = devfile_last.st.size;
-	return op == 'p' || op == 'P' ? 'p' : 'g';
+	return op == 'p' || op == 'P' ? 'p' : op == 'D' || op == 'E' ? 'd' : 'g';
 }
 
 bool devfile_aborted(void) {

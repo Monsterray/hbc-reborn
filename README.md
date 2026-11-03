@@ -83,7 +83,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `get [-r] REMOTE [LOCAL]` | Download a file, or with `-r` a directory tree. |
 | `put [-r] [--no-verify] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. Each file is then read back on the Wii and its size and CRC-32 checked, uploading it again (twice at most) on a mismatch; `--no-verify` skips that. |
 | `sync [--delete] [--checksum] [--no-verify] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). Uploads are read back and checked as `put` does (`--no-verify` skips it). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
-| `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
+| `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. A `*` or `?` in the last name deletes every match (`rm 'sd:/logs/*.log'`; folders only with `-r`). The Wii walks the tree or pattern itself in one request. Device roots and `<device>:/apps` itself are refused, by the Wii too, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted (files up to 512 MiB; a read-only source is refused first; the copies get new times). An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
 | `mii-faces` | The same as HOME > HBC > Save Mii faces (`HBCM`): HBC copies the Wii Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's bodies (`maleBody.brres`, `femaleBody.brres`) and effects (`effect_nigaoe.breff`, `.breft`) to `sd:/mii`, for apps that draw Miis. The files are Nintendo's: keep them on your own SD card, never ship them. HBC 1.10.20 (bodies 1.10.26, effects 1.12.2). |
@@ -116,7 +116,10 @@ and turns while the transfer's size is unknown. A name too long for the
 line scrolls round, bounces from end to end, or ends in "..." (each HBC
 start picks one at random; `hbc.py transfer-style bounce` forces one for
 testing). A moving name rests a second at its start, and a bouncing one at
-each end; "Receiving" and the percentage (or circle) stay put.
+each end; "Receiving" and the percentage (or circle) stay put. A delete
+shows "Deleting" with the name sent (a folder or pattern, not each entry
+inside it); the circle turns while HBC counts the entries, then fills as
+they go.
 
 When receiving a Wiiload upload from `hbc.py`, the popup heading shows the
 file name, including its app folder for `boot.dol` or `boot.elf`. The sender's
