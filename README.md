@@ -506,6 +506,18 @@ Docs:
 - [`docs/messageboard.md`](docs/messageboard.md): the play history.
 - [`docs/mii.md`](docs/mii.md): Mii data.
 
+### The disc-slot light in your app
+
+[`sdk/slotled`](sdk/slotled) is two files under the zlib licence. It drives
+the blue slot light three ways:
+- **Directly:** 256 levels, blink, pulse, heartbeat, Morse and flashes for
+  activity, from a timer, with no thread.
+- **Through IOS:** its off/dim/bright level and its own flash patterns.
+- **The saved setting:** the Wii Menu's Slot illumination.
+
+[Its README](sdk/slotled/README.md) says what each way changes on the Wii,
+and [RESEARCH.md](sdk/slotled/RESEARCH.md) lists what is still to find out.
+
 ### Miis in your app
 
 [`sdk/mii`](sdk/mii) is two files, in the public domain. They give an app
@@ -754,5 +766,7 @@ Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
 [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h), [`sdk/mboard`](sdk/mboard) and
 [`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
-[`sdk/wiispk`](sdk/wiispk) is under the zlib licence. The agent library (`sdk/hbc_agent`) is built from HBC's own
-sources and is GPL.
+[`sdk/wiispk`](sdk/wiispk) and [`sdk/slotled`](sdk/slotled) are under the zlib
+licence. The agent library (`sdk/hbc_agent`) is built from HBC's own sources
+and is GPL. [`sdk/README.md`](sdk/README.md) lists every SDK with its licence
+and what it changes on the Wii.
