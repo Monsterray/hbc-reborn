@@ -161,6 +161,57 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.28: sdk/slotled, the disc-slot light; the WiiConnect24 SDK's plan
+
+`sdk/slotled` drives the blue slot light every way the Wii allows:
+- **Directly:** the PowerPC's GPIO bank, pin 5. 256 levels by modulation
+  from two alarms, with no thread, and nothing running when the level is
+  steady. Effects: blink, pulse, heartbeat, Morse code, steps of your own,
+  and a flash over what runs.
+- **Through IOS:** `/dev/stm/immediate`: the off/dim/bright level (0x6002),
+  the 30 built-in flash patterns (0x6001), and the raw ioctl for its flags.
+- **The saved setting:** the Wii Menu's Slot illumination, the last byte of
+  SYSCONF's `IPL.IDL`, written in place.
+  - **Its size:** libogc and Dolphin make `IPL.IDL` 2 bytes, while WiiBrew
+    says 3. The patcher takes either, and `slotled_app check` prints the
+    bench Wii's.
+
+The WiiConnect24 SDK's plan is [docs/wc24-plan.md](docs/wc24-plan.md):
+`sdk/wc24` goes under `sdk/mboard`, with WiiLink as the first service and
+Wiimmfi as a separate WFC part.
+
+- **Checked:** `tests/test_slotled.py` (15 tests: duty, builders, the step
+  engine, the SYSCONF patcher). `tests/dolphin_slotled.py` passes: the
+  timer, `slotled_wait` exact at 600 ms, the pin left as it was found.
+- **Not yet:**
+  - `tests/wii_slotled.py check` on the dev Wii: it is queued, but the
+    bench's lease server was unreachable.
+  - `demo` and `ios` need someone watching the light.
+  - `save` writes SYSCONF: only on request.
+
+Future SDK ideas, each waiting for someone to want it:
+- **MotionPlus orientation.**
+  - Has: libogc gives the raw gyro rates.
+  - Missing: fusing them with the accelerometer into a steady direction
+    that needs no sensor bar.
+  - Pure maths, so it can be tested on a PC.
+- **Wii Remote pairing and system settings.**
+  - Has: libogc already has `CONF_Get/SetPadDevices` and
+    `WPAD_SetHostSyncButtonCallback`.
+  - Missing: a safe layer to list, add and remove pairings, with a backup
+    of SYSCONF.
+- **Titles, banners, free space.**
+  - Has: `ES_GetStoredTMD` and `ISFS_GetUsage` exist.
+  - Missing: banner and icon reading, which today lives inside USB Loader
+    GX and WiiFlow, not in a library.
+- **Wii Speak and USB microphones.**
+  - Has: no libogc driver. WiiBrew documents the Wii Speak's start-up:
+    vendor commands and a firmware upload.
+  - A standard USB microphone is simpler.
+- **Save data export and import.**
+  - Needs the SD key, which must come from the user's own files, never
+    from the repository.
+
 ### 1.14.26: app badge records are read whole or not written
 
 From the 1.14 audit, three gaps in PR 17's `apprun.c`:
