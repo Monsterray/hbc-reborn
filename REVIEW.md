@@ -161,6 +161,14 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.3: an accept() network reset closes the listener
+
+Second audit, item 2: `net_accept` returning -ENETRESET cleaned up the
+network and set `s = -1` without closing the listening socket. It now goes
+through `tcp_net_deinit("Network reset", &s)`, which closes it inside the
+watched cleanup, as the other accept failure already did. (The ENETRESET
+from `tcp_listen` has no socket to close.) Checked: build with `-Werror`.
+
 ### 1.15.2: a Restart network keeps its watchdog
 
 Second audit, item 1: the TCP worker cleared the recovery request when its

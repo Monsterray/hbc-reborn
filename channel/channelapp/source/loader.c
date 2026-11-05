@@ -400,8 +400,7 @@ static void * ld_tcp_func (void *arg) {
 			if (sn == -ENETRESET) {
 				gprintf("ENETRESET, reiniting\n");
 				netrecovery_request();
-				tcp_net_deinit("Network reset", NULL);
-				s = -1;
+				tcp_net_deinit("Network reset", &s);
 				ta->state = LDTCPS_UNINITIALIZED;
 				ta->cmd = LDTCPCMD_INIT;
 				continue;
