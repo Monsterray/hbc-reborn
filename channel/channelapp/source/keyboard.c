@@ -7,6 +7,7 @@
 // 04f2:0841 lists its second, silent one first) then never types, and the
 // wait holds up HBC's exit until a key is pressed.
 
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -26,9 +27,16 @@ static struct kbd {
 	s32 device_id, fd;
 	u8 ep;
 	volatile u8 state;
-	u8 report[REPORT] ATTRIBUTE_ALIGN (32);	// IOS writes here
 	u8 keys[REPORT];	// the last report, all zero once it ends
+	// IOS writes here by DMA, and libogc invalidates the cache line(s) of
+	// the buffer. It has a whole 32-byte line to itself (nothing else in
+	// the line: an invalidate would drop the CPU's writes to it).
+	u8 report[32] ATTRIBUTE_ALIGN (32);
 } kbds[KBD_MAX];
+
+_Static_assert(offsetof (struct kbd, report) % 32 == 0 && sizeof (struct kbd) % 32 == 0 &&
+		sizeof ((struct kbd *) 0)->report == 32 && REPORT <= 32,
+		"kbd.report must own its cache line");
 
 // Devices proven not to be keyboards (their descriptors have no boot
 // keyboard interface), so they are opened once. One that could not be

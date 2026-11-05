@@ -161,6 +161,19 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.12: the keyboard's IOS report buffer has a cache line of its own
+
+Fourth audit, item 15 (hardening): in `struct kbd`, `report[8]` and `keys[8]`
+shared one 32-byte cache line. `report` is written by IOS, and libogc
+invalidates its line when a read ends, so an invalidate could drop a CPU
+write to `keys`. `keys` now sits before the buffer, and `report` is a full
+32-byte aligned line (the struct stays a multiple of 32), checked with a
+`_Static_assert`. keyboard.c has no `DCInvalidate` or `DCFlush` of its own:
+`USB_ReadIntrMsgAsync` handles the buffer with the 8-byte length, which
+covers just that line. No host test (libogc USB). Checked: build with
+`-Werror`.
+
+
 ### 1.15.11: queued agent keys are dropped when HOME closes
 
 Fourth audit, item 14: the overlay takes one key per 12 frames, so keys sent
