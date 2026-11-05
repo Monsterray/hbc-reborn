@@ -432,21 +432,22 @@ void main_real(void) {
 		if (diff_sec(hbc_start, gettime()) >= 8)
 			{ vu32 *volatile bad = (vu32 *) 10; *bad = 0; }
 #endif
-		// A network cleanup has hung inside IOS (netrecovery.c): the worker
-		// cannot be stopped, so count down and reload the installed channel
-		// with a fresh IOS. A failed start alone never comes here; the TCP
-		// thread's own retry handles that.
-		if (netrecovery_take_reload()) {
-			if (can_reload) {
-				show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
-					"The network stopped responding.\nHBC will restart automatically.",
-					0, NET_POPUP_TIMEOUT_S);
+		// A network cleanup has hung inside IOS (netrecovery.c): libogc
+		// cannot start the network again until HBC starts again, but the
+		// menu and app launches carry on without it (an app gets a fresh
+		// IOS). Only a developer's Wii, set with `hbc.py net-hang reload`,
+		// reloads the installed channel instead. A failed start alone never
+		// comes here; the TCP thread's own retry handles that.
+		if (netrecovery_take_hang()) {
+			hlog("Network: a cleanup never returned, off until HBC starts again\n");
+			if (settings.net_hang_reload && can_reload) {
+				hlog("Network: reloading HBC (net-hang reload)\n");
 				network_reload = true;
 				should_exit = true;
 				break;
 			}
-			show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
-				"The network stopped responding.\nStart HBC again from the Wii Menu.",
+			show_message_timed(v_current, DLGMT_INFO, DLGB_OK,
+				"The network stopped responding.\nIt comes back the next time HBC starts.",
 				0, NET_POPUP_TIMEOUT_S);
 		}
 #ifdef GDBSTUB
@@ -919,9 +920,9 @@ void main_real(void) {
 	// because the tcp thread is the only one that can block after the exit
 	// command is sent, deinit it first. this gives the other threads a chance
 	// to do any pending work if the tcp thread does block.
-	// A worker stuck in a cleanup cannot stop: park it, and never start the
-	// network again over libogc's unfinished state (the IOS reload below).
-	if (!loader_deinit () && network_reload)
+	// A worker stuck in a cleanup cannot stop: park it, so it never runs
+	// again over the app, the stub or libogc's unfinished state.
+	if (!loader_deinit ())
 		loader_tcp_park ();
 #ifdef ENABLE_UPDATES
         http_deinit ();

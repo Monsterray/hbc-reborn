@@ -44,6 +44,9 @@ typedef struct {
 	int new_badges;
 	// HOME > Controller settings > Sideways remote, kept here (home.c).
 	int sideways_remotes;
+	// A hung network cleanup reloads the channel (netrecovery.h) instead of
+	// leaving the network off: developers only, `hbc.py net-hang`, no menu.
+	int net_hang_reload;
 	char app_sel[64];
 	// The avatar's Mii, chosen in the Mii picker: its creation ID in hex.
 	char avatar_mii[17];

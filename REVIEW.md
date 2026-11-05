@@ -161,6 +161,44 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.14.31: a network hang leaves HBC running; reloading is a developer setting
+
+PR 22 reloaded the whole channel when a network cleanup hung inside IOS,
+after a 10 s countdown on an error dialog. Monty found that too brutal for
+everyone's Wii: a network that hangs on every start would reload HBC again
+and again. Restarting only the network is not possible with libogc 3.1: its
+`net_init_async` keeps a private busy flag that only an IOS reply clears,
+and an IOS reload does not clear it, so only a fresh HBC can start the
+network again. Now a hung cleanup leaves the menu and app launches running
+(an app gets a fresh IOS anyway), and a timed information message says the
+network comes back the next time HBC starts. `hbc.py net-hang reload`
+(HBCR, `settings.xml` `net_hang_reload`, no menu row) brings back the
+immediate reload, without the countdown, for a developer's Wii that must
+stay reachable. An exit or launch now parks the TCP worker whenever it could
+not be stopped, not only before a recovery reload.
+
+Also from the 1.14 audit of PR 22: Restart network and an accept failure
+close the listener inside the cleanup watchdog (`net_close` waits on IOS
+too); a start that runs out its 30 s on netinit_wait's own timeout gets the
+30 s cleanup wait, like a cancelled one; the retry timer is reset once the
+network is up; `test_netrecovery.py` honours `CC`.
+
+- **Checked:** in Dolphin with `HBC_TEST_STUCK_NET_CLEANUP`,
+  `tests/dolphin_network_recovery.py` (default) keeps HBC running 40 s after
+  the wedged Restart with no IOS reload and no relaunch; with `--reload` the
+  channel is relaunched once through a fresh IOS 8 s after the press, and
+  does not loop. `NetHangTest` checks the HBCR bytes; host suite passes.
+- **On the bench Wii (1.14.27 plus this change):** Restart network
+  (`C:/Temp/hbcpr/restart_wii.py`, job 20261104-214236-fbfc34) counted one
+  more network start within 0.5 s of the press, and HBC never missed a
+  status poll every 0.2 s. So Restart closes and reopens HBC's network
+  handle and listener, while IOS keeps its Wi-Fi link and address: it does
+  not join the network again, which is why the icon lights at once (and why
+  the 1.14.21 check saw "back after 0.0 s").
+- **Idea, not done:** a true in-place restart would need HBC's own copy of
+  libogc's network start (to own the busy flag) and an IOS reload with SD,
+  USB and the remotes closed around it.
+
 ### 1.14.28: sdk/slotled, the disc-slot light; the WiiConnect24 SDK's plan
 
 `sdk/slotled` drives the blue slot light every way the Wii allows:

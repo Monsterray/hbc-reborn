@@ -190,12 +190,16 @@ static void discover_stop(void) {
 // Restart and stop requests, read by the worker even while a busy start
 // holds its mutex: the menu never waits on that mutex for them.
 static volatile bool tcp_restart, tcp_stop;
-// A start was cancelled by a restart or stop: its IOS step may still be running.
+// A start was cancelled by a restart or stop, or ran out of its 30 s while
+// IOS was still busy: its IOS step may still be running.
 static bool start_cancelled;
 
 // libogc's net_deinit() waits for an IOS callback. The menu watches it from
 // outside (netrecovery.c), so a cleanup that never returns can be escaped.
-static void tcp_net_deinit (const char *reason) {
+// The listener, if *listener holds one, is closed inside the watch too:
+// net_close() waits on IOS as well, and a Restart used to close it first,
+// where a hang had no watchdog at all.
+static void tcp_net_deinit (const char *reason, int *listener) {
 	(void) reason;
 	// A restart (or exit) cancels a start between its IOS steps, and
 	// net_deinit() then waits for the step in flight. That step may take most
@@ -212,6 +216,10 @@ static void tcp_net_deinit (const char *reason) {
 	// belongs to the stack that net_deinit() takes down. Inside the watchdog,
 	// because net_close() waits on IOS too.
 	discover_stop();
+	if (listener && *listener >= 0) {
+		net_close(*listener);
+		*listener = -1;
+	}
 #ifdef HBC_TEST_STUCK_NET_CLEANUP
 	// Test builds only: a restart's cleanup never returns, holding the mutex.
 	if (!strcmp(reason, "Restart"))
@@ -264,11 +272,7 @@ static void * ld_tcp_func (void *arg) {
 			_CPU_ISR_Restore(level);
 			gprintf ("reinit net\n");
 			hlog("Network: restarting\n");
-			if (s >= 0) {
-				net_close (s);
-				s = -1;
-			}
-			tcp_net_deinit("Restart");
+			tcp_net_deinit("Restart", &s);
 			ta->state = LDTCPS_UNINITIALIZED;
 			ta->cmd = LDTCPCMD_INIT;
 		}
@@ -293,11 +297,17 @@ static void * ld_tcp_func (void *arg) {
 				// longer holds the worker, or an app launch, forever.
 				res = netinit_wait(init_start, &tcp_stop, &tcp_restart);
 
-				if (res == -ECANCELED)
+				if (res == -ECANCELED) {
 					start_cancelled = true;
-				if (res == -ECANCELED ||
-						ticks_to_millisecs(gettime() - init_start) >= HBC_NET_INIT_TIMEOUT_MS)
 					break;
+				}
+				if (ticks_to_millisecs(gettime() - init_start) >= HBC_NET_INIT_TIMEOUT_MS) {
+					// netinit_wait's own -ETIMEDOUT: IOS never answered, so
+					// the cleanup waits out that step like a cancelled one.
+					if (res == -ETIMEDOUT)
+						start_cancelled = true;
+					break;
+				}
 
 				if ((res == -EAGAIN) || (res == -ETIMEDOUT)) {
 					gprintf ("net_init failed: %d, trying again...\n", res);
@@ -324,7 +334,7 @@ static void * ld_tcp_func (void *arg) {
 				// cancelled start is cleaned up by the restart or exit above.
 				if (res != -ECANCELED) {
 					netrecovery_request();
-					tcp_net_deinit("Failed INIT");
+					tcp_net_deinit("Failed INIT", NULL);
 				}
 				ta->state = LDTCPS_UNINITIALIZED;
 				continue;
@@ -345,7 +355,7 @@ static void * ld_tcp_func (void *arg) {
 			if ((s == -ENETRESET) && retries) {
 				gprintf("ENETRESET, reiniting\n");
 				netrecovery_request();
-				tcp_net_deinit("Network reset");
+				tcp_net_deinit("Network reset", NULL);
 				s = -1;
 				ta->state = LDTCPS_UNINITIALIZED;
 				ta->cmd = LDTCPCMD_INIT;
@@ -355,7 +365,7 @@ static void * ld_tcp_func (void *arg) {
 			if (s < 0) {
 				gprintf ("tcp_listen failed: %d\n",s);
 				netrecovery_request();
-				tcp_net_deinit("Listener failure");
+				tcp_net_deinit("Listener failure", NULL);
 				ta->state = LDTCPS_UNINITIALIZED;
 				continue;
 			}
@@ -391,7 +401,7 @@ static void * ld_tcp_func (void *arg) {
 			if (sn == -ENETRESET) {
 				gprintf("ENETRESET, reiniting\n");
 				netrecovery_request();
-				tcp_net_deinit("Network reset");
+				tcp_net_deinit("Network reset", NULL);
 				s = -1;
 				ta->state = LDTCPS_UNINITIALIZED;
 				ta->cmd = LDTCPCMD_INIT;
@@ -401,10 +411,8 @@ static void * ld_tcp_func (void *arg) {
 			if (sn < 0) {
 				gprintf ("net_accept failed: %d\n", sn);
 
-				net_close (s);
-				s = -1;
 				netrecovery_request();
-				tcp_net_deinit("Accept failure");
+				tcp_net_deinit("Accept failure", &s);
 				ta->state = LDTCPS_UNINITIALIZED;
 
 				continue;
@@ -458,20 +466,8 @@ static void * ld_tcp_func (void *arg) {
 		}
 	}
 
-	if (ta->state == LDTCPS_INITIALIZED) {
-		gprintf ("net_shutdown\n");
-		res = net_shutdown (s, 2);
-		if (res)
-			gprintf ("net_shutdown failed: %d\n", res);
-
-		gprintf ("net_close\n");
-		res = net_close (s);
-		if (res)
-			gprintf ("net_close failed: %d\n", res);
-	}
-
 	gprintf ("tcp thread deiniting\n");
-	tcp_net_deinit("Shutdown");
+	tcp_net_deinit("Shutdown", ta->state == LDTCPS_INITIALIZED ? &s : NULL);
 	gprintf ("tcp thread exiting\n");
 	ta->state = LDTCPS_UNINITIALIZED;
 
@@ -658,6 +654,7 @@ void loader_signal_threads (void) {
 			net_retry_ms = 0;
 			LWP_CondBroadcast(ta_tcp.cond);
 		} else if (loader_tcp_initialized () && !ta_tcp.handshaked) {
+			net_failed_at = 0;
 			net_retry_ms = 0;
 			ta_tcp.cmd = LDTCPCMD_ACCEPT;
 			LWP_CondBroadcast(ta_tcp.cond);

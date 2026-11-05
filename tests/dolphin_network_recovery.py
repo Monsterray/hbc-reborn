@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""A network cleanup that never returns: countdown, fresh IOS, channel again.
+"""A network cleanup that never returns: HBC carries on, or reloads if set to.
 
 Requires a WAD built with HBC_TEST_STUCK_NET_CLEANUP, where Restart network
 wedges the TCP thread inside its cleanup while it holds its mutex. Never put
 that build on a Wii. HOME > HBC > Restart network must take HBC off the
-network. Then, after the 5 s watchdog and the 10 s countdown with no button
-pressed, Dolphin's log must show one IOS reload and one more launch of the
-installed channel, which answers again and stays up: one relaunch, no loop.
-Usage: python3 tests/dolphin_network_recovery.py TEST-WAD
+network. By default HBC then keeps running without it: Dolphin's log shows
+no IOS reload and no second launch of the channel for 40 s.
+With --reload, `hbc.py net-hang reload` is set first: after the 5 s watchdog
+the log must show one IOS reload and one more launch of the installed
+channel, which answers again and stays up: one relaunch, no loop.
+Usage: python3 tests/dolphin_network_recovery.py [--reload] TEST-WAD
 """
 import pathlib
 import shutil
@@ -33,7 +35,8 @@ def count(run, text):
 
 
 def main():
-    image = pathlib.Path(sys.argv[1]).resolve()
+    reload = sys.argv[1] == "--reload"
+    image = pathlib.Path(sys.argv[-1]).resolve()
     assert image.suffix == ".wad", "requires an installed channel"
     run = smoke.Dolphin(image)
     passed = False
@@ -42,6 +45,10 @@ def main():
         time.sleep(2)
         launches, ios_starts = count(run, LAUNCH), count(run, IOS_START)
         assert launches == 1, launches
+        assert hbc.status(run.address)["net_hang"] == "wait"
+        if reload:
+            hbc.set_net_hang(run.address, "reload")
+            assert hbc.status(run.address)["net_hang"] == "reload"
         for buttons in ("h", "l", "a", "d", "d"):
             key(run.address, buttons)
         state = hbc.status(run.address)["overlay_ui"]
@@ -58,16 +65,27 @@ def main():
             pass
         assert count(run, LAUNCH) == launches, "relaunched before the watchdog"
 
+        if not reload:
+            # No reload: the menu carries on without the network.
+            while time.monotonic() - pressed < 40:
+                assert count(run, LAUNCH) == launches, "relaunched with net-hang wait"
+                assert count(run, IOS_START) == ios_starts, "IOS reloaded with net-hang wait"
+                time.sleep(0.5)
+            assert not run.faults(), run.faults()[:10]
+            print("PASS: wedged cleanup left HBC running, no IOS reload, no relaunch", flush=True)
+            passed = True
+            return
+
         deadline = pressed + 90
         while time.monotonic() < deadline:
             if count(run, LAUNCH) > launches:
                 break
             time.sleep(0.5)
         else:
-            raise AssertionError("stuck cleanup did not recover by channel relaunch")
+            raise AssertionError("net-hang reload did not relaunch the channel")
         relaunched = time.monotonic() - pressed
-        # Only after the 5 s watchdog and the 10 s countdown.
-        assert relaunched >= 14, relaunched
+        # Only after the 5 s watchdog.
+        assert relaunched >= 4.5, relaunched
         assert count(run, IOS_START) == ios_starts + 1, "no fresh IOS before the relaunch"
         smoke.wait_version(run, 60)
         time.sleep(10)

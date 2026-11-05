@@ -54,14 +54,14 @@ void netrecovery_cleanup_complete(void) {
 	_CPU_ISR_Restore(level);
 }
 
-bool netrecovery_take_reload(void) {
+bool netrecovery_take_hang(void) {
 	u32 level;
-	bool reload;
+	bool hung;
 	_CPU_ISR_Disable(level);
-	reload = requested && cleaning &&
+	hung = requested && cleaning &&
 		ticks_to_millisecs(gettime() - cleanup_started) >= cleanup_timeout_ms;
-	if (reload)
+	if (hung)
 		requested = false;
 	_CPU_ISR_Restore(level);
-	return reload;
+	return hung;
 }

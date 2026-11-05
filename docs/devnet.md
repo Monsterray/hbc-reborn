@@ -85,7 +85,12 @@ high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
 (HOME > HBC > Restart network adds one). `transfer_style` is how this
 start shows a file name too long for the on-screen transfer line:
 `scroll`, `bounce` or `truncate`, picked at random; `HBCT` with the name in
-header bytes 4-15 forces one until HBC restarts (`hbc.py transfer-style`). `startup` lists the startup steps as
+header bytes 4-15 forces one until HBC restarts (`hbc.py transfer-style`).
+`net_hang` is what a network cleanup that never returns inside IOS does:
+`wait` (the default: the menu carries on, the network is off until HBC
+starts again) or `reload` (HBC reloads the installed channel at once, for a
+developer's Wii); `HBCR` with `r` or `w` in header byte 4 sets it, saved
+when HBC next exits or launches an app (`hbc.py net-hang`). `startup` lists the startup steps as
 `"name":ms`, the time since `main()` at the end of each, in the order they
 finished; `playtime_cleared` (or `playtime_failed`) is the background write that
 clears the Wii Menu's play record. `zlib_mem` says where the zlib arena landed

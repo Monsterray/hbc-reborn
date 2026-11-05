@@ -1373,5 +1373,20 @@ class FindGuardTest(unittest.TestCase):
             f.assert_called_once_with(hbc.FIND_TIMEOUT, None)
 
 
+
+class NetHangTest(unittest.TestCase):
+    def test_net_hang_sends_hbcr(self):
+        # One 16-byte header: HBCR, then 'r' or 'w' (devnet.c).
+        with mock.patch.object(hbc, "request") as req:
+            hbc.set_net_hang("wii", "reload")
+            hbc.set_net_hang("wii", "wait")
+        self.assertEqual(req.call_args_list[0].args[1], b"HBCRr" + bytes(11))
+        self.assertEqual(req.call_args_list[1].args[1], b"HBCRw" + bytes(11))
+
+    def test_net_hang_refuses_other_modes(self):
+        with mock.patch.object(hbc, "request") as req, self.assertRaises(SystemExit):
+            hbc.set_net_hang("wii", "restart")
+        req.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

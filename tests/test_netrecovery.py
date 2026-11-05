@@ -1,4 +1,5 @@
 """Exercise cleanup supervision independently of the wedged worker mutex."""
+import os
 import pathlib
 import shutil
 import subprocess
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-CC = shutil.which("cc")
+CC = os.environ.get("CC") or shutil.which("clang") or shutil.which("gcc") or shutil.which("cc")
 
 
 @unittest.skipUnless(CC, "no host C compiler")
@@ -34,38 +35,38 @@ int main(void) {
     netrecovery_reset();
     netrecovery_cleanup_begin(); // zero is a valid start time
     now = 100000;
-    assert(!netrecovery_take_reload()); // unrelated cleanup does not request recovery
+    assert(!netrecovery_take_hang()); // unrelated cleanup does not request recovery
     netrecovery_request();
-    assert(netrecovery_take_reload()); // Restart during existing stuck cleanup
-    assert(!netrecovery_take_reload()); // consume only once
+    assert(netrecovery_take_hang()); // Restart during existing stuck cleanup
+    assert(!netrecovery_take_hang()); // consume only once
     netrecovery_reset();
     now = 200000;
     netrecovery_request();
     netrecovery_cleanup_begin();
     now += HBC_NET_CLEANUP_TIMEOUT_MS - 1;
-    assert(!netrecovery_take_reload());
+    assert(!netrecovery_take_hang());
     now++;
-    assert(netrecovery_take_reload()); // Restart led to stuck cleanup
-    assert(!netrecovery_take_reload());
+    assert(netrecovery_take_hang()); // Restart led to stuck cleanup
+    assert(!netrecovery_take_hang());
     netrecovery_reset();
     netrecovery_request();
     netrecovery_cleanup_begin();
     netrecovery_cleanup_complete();
     now += 100000;
-    assert(!netrecovery_take_reload()); // cleanup finished normally
+    assert(!netrecovery_take_hang()); // cleanup finished normally
     netrecovery_cleanup_begin();
     now += HBC_NET_CLEANUP_TIMEOUT_MS;
     netrecovery_ready();
-    assert(!netrecovery_take_reload()); // old requests cannot affect later work
+    assert(!netrecovery_take_hang()); // old requests cannot affect later work
     netrecovery_request();
     netrecovery_reset();
-    assert(!netrecovery_take_reload()); // new boot has no pending request
+    assert(!netrecovery_take_hang()); // new boot has no pending request
     // Automatic fault recovery uses the same supervisor without any user input.
     netrecovery_reset();
     netrecovery_request(); // failure arms supervision before entering cleanup
     netrecovery_cleanup_begin();
     now += HBC_NET_CLEANUP_TIMEOUT_MS;
-    assert(netrecovery_take_reload());
+    assert(netrecovery_take_hang());
     netrecovery_reset();
     // A failed start whose cleanup returns is left to the menu's own retry
     // backoff: no channel reload, however long the network stays down.
@@ -73,24 +74,24 @@ int main(void) {
     netrecovery_cleanup_begin();
     netrecovery_cleanup_complete();
     now += 10 * HBC_NET_CLEANUP_TIMEOUT_MS;
-    assert(!netrecovery_take_reload());
+    assert(!netrecovery_take_hang());
     // After a cancelled start the cleanup may wait out a slow IOS step: the
     // 5 s timeout must not fire, the start's 30 s one does.
     netrecovery_reset();
     netrecovery_request();
     netrecovery_cleanup_begin_after_start();
     now += HBC_NET_CLEANUP_TIMEOUT_MS;
-    assert(!netrecovery_take_reload());
+    assert(!netrecovery_take_hang());
     now += HBC_NET_CLEANUP_AFTER_START_TIMEOUT_MS - HBC_NET_CLEANUP_TIMEOUT_MS - 1;
-    assert(!netrecovery_take_reload());
+    assert(!netrecovery_take_hang());
     now++;
-    assert(netrecovery_take_reload());
+    assert(netrecovery_take_hang());
     // and the next ordinary cleanup is back to 5 s
     netrecovery_reset();
     netrecovery_request();
     netrecovery_cleanup_begin();
     now += HBC_NET_CLEANUP_TIMEOUT_MS;
-    assert(netrecovery_take_reload());
+    assert(netrecovery_take_hang());
     return 0;
 }
 ''')
