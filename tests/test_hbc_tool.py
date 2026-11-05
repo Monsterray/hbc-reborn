@@ -49,6 +49,7 @@ class FakeHBC:
         # Protocol 6: what HBC makes of each upload, for HBCS "upload"; None
         # acts as an older HBC that does not say.
         self.next_result = None
+        self.keep_result = False  # an HBC that restarted: its counter is back at 0
         self.upload = None
         self.requests = []  # (op, path) of every HBCF request
         self.truncate = False
@@ -223,7 +224,7 @@ class FakeHBC:
             data = self.recv(conn, size)
             args = self.recv(conn, args_len)
             self.uploads.append((zlib.decompress(data) if size_un else data, args))
-            if self.next_result is not None:
+            if self.next_result is not None and not self.keep_result:
                 seq = (self.upload or {}).get("seq", 0) + 1
                 self.upload = dict(self.next_result, seq=seq, ago_ms=0)
             if self.log and b"log-me" in args:
@@ -397,6 +398,7 @@ class HBCToolTest(unittest.TestCase):
         self.fake.lastlog = None
         self.fake.exits = 0
         self.fake.next_result = None
+        self.fake.keep_result = False
         self.fake.upload = None
         self.fake.no_rename = False
         self.fake.version = "1.2.0"
@@ -596,6 +598,37 @@ class HBCToolTest(unittest.TestCase):
         self.assertEqual(self.fake.upload_flags[-1], 0)
         self.fake.next_result = None
         self.cli("send", str(app))
+
+    def test_send_no_wait_does_not_wait_for_a_lost_verdict(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(64))
+        # An app that ended and brought HBC back: it answers, but its upload
+        # counter is back at 0, so the verdict never comes (60 s for send).
+        self.fake.next_result = {"result": "launched", "error": None, "text": ""}
+        self.fake.keep_result = True
+        start = time.monotonic()
+        self.cli("send", "--no-wait", str(app), "arg1")
+        self.assertLess(time.monotonic() - start, hbc.NO_WAIT_SECONDS + 4)
+        self.assertEqual(self.fake.uploads[-1][1], b"app.dol\0arg1\0\0")
+
+    def test_send_no_wait_still_reports_an_error_hbc_gives_at_once(self):
+        app = self.tmp / "app.dol"
+        app.write_bytes(bytes(64))
+        self.fake.next_result = {"result": "error", "error": "not_wii_app",
+                                 "text": "This is not a valid Wii application"}
+        with self.assertRaises(SystemExit) as caught:
+            self.cli("send", "--no-wait", str(app))
+        self.assertIn("not_wii_app", str(caught.exception.code))
+        self.fake.next_result = {"result": "launched", "error": None, "text": ""}
+        self.cli("send", "--no-wait", str(app))
+
+    def test_send_no_wait_is_for_send_only(self):
+        with self.assertRaisesRegex(SystemExit, "unknown option"):
+            self.cli("ls", "--no-wait", "sd:/")
+
+    def test_quick_outcome_calls_a_silent_hbc_launched(self):
+        with mock.patch.object(hbc, "request", side_effect=OSError("gone")):
+            self.assertEqual(hbc.upload_outcome(WII, 0, 8, quick=True), {"result": "launched"})
 
     def test_hw_prints_the_info_pages(self):
         out = self.cli("hw")

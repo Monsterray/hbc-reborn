@@ -80,7 +80,9 @@ def answers():
 
 def launch(*args, wait_s=300, dol=APP):
     """Send the app, see HBC go away while it runs, then wait for HBC."""
-    tool("send", str(dol), *args, check=False)
+    # --no-wait: the app replaces HBC, and `send` would wait up to 60 s for a
+    # verdict HBC loses when the app ends first. `wait` follows.
+    tool("send", "--no-wait", str(dol), *args, check=False)
     deadline = time.monotonic() + 30
     while answers() and time.monotonic() < deadline:
         time.sleep(0.5)
