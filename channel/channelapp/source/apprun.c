@@ -47,6 +47,7 @@ static void unlock(void) {}
 
 static const char dir_name[] = "hbc";
 static const char file_name[] = "apps_seen.txt";
+static const char missed_word[] = "missed";
 static const char *tracked[] = { "boot.dol", "boot.elf", "meta.xml", "icon.png" };
 #define TRACKED_COUNT (sizeof(tracked) / sizeof(tracked[0]))
 #define MAX_RECORDS 4096
@@ -66,6 +67,9 @@ typedef struct {
 	char *name;
 	app_stamp stamp;
 	bool seen;
+	// Not seen by the last scan that ended whole. A second such scan in a
+	// row prunes the record; one miss may be a directory read error.
+	bool missed;
 } record;
 
 static record *records;
@@ -119,6 +123,7 @@ static record *table_add(const char *name, const app_stamp *stamp) {
 		return NULL;
 	r->stamp = *stamp;
 	r->seen = false;
+	r->missed = false;
 	record_count++;
 	return r;
 }
@@ -172,8 +177,8 @@ static bool same_stamp(const app_stamp *a, const app_stamp *b) {
 	return true;
 }
 
-// "<name>\tboot.dol=SIZE@TIME boot.elf=- meta.xml=SIZE@TIME icon.png=SIZE@TIME"
-static bool parse_line(char *line, char **name, app_stamp *stamp) {
+// "<name>\tboot.dol=SIZE@TIME boot.elf=- meta.xml=SIZE@TIME icon.png=SIZE@TIME[ missed]"
+static bool parse_line(char *line, char **name, app_stamp *stamp, bool *missed) {
 	char *tab = strchr(line, '\t'), *p;
 	unsigned i;
 
@@ -206,7 +211,8 @@ static bool parse_line(char *line, char **name, app_stamp *stamp) {
 	}
 	while (*p == ' ')
 		p++;
-	return *p == 0;
+	*missed = !strcmp(p, missed_word);
+	return *p == 0 || *missed;
 }
 
 static void table_load(const char *root) {
@@ -233,6 +239,8 @@ static void table_load(const char *root) {
 		size_t len = strlen(line);
 		char *name;
 		app_stamp stamp;
+		bool missed;
+		record *added;
 
 		if (len && line[len - 1] == '\n') {
 			line[--len] = 0;
@@ -245,9 +253,10 @@ static void table_load(const char *root) {
 				;
 			continue;
 		}
-		if (line[0] == '#' || !parse_line(line, &name, &stamp) || table_find(name))
+		if (line[0] == '#' || !parse_line(line, &name, &stamp, &missed) || table_find(name))
 			continue;
-		table_add(name, &stamp);
+		if ((added = table_add(name, &stamp)))
+			added->missed = missed;
 	}
 	table_readable = !ferror(f) && (feof(f) || record_count == MAX_RECORDS);
 	fclose(f);
@@ -292,6 +301,8 @@ static bool table_write(void) {
 			else
 				ok = fprintf(f, "%s%s=-", i ? " " : "", tracked[i]) > 0;
 		}
+		if (ok && rec->missed)
+			ok = fprintf(f, " %s", missed_word) > 0;
 		ok = ok && fputc('\n', f) != EOF;
 	}
 	if (fclose(f))
@@ -348,16 +359,24 @@ void app_run_end(bool complete) {
 	size_t i, kept = 0;
 
 	if (table_open && complete && table_readable) {
+		// libfat's readdir shows a read error as the end of the folder, which
+		// no flag can tell from a whole scan. So a record goes only after two
+		// whole scans in a row missed it (the flag is kept in the file).
 		for (i = 0; i < record_count; ++i) {
-			if (records[i].seen)
-				records[kept++] = records[i];
-			else
-				free(records[i].name);
+			record *r = &records[i];
+
+			if (!r->seen && r->missed) {
+				free(r->name);
+				table_dirty = true;
+				continue;
+			}
+			if (r->seen == r->missed) {	// seen after a miss, or missed the first time
+				r->missed = !r->seen;
+				table_dirty = true;
+			}
+			records[kept++] = *r;
 		}
-		if (kept != record_count) {
-			record_count = kept;
-			table_dirty = true;
-		}
+		record_count = kept;
 		if (table_dirty)
 			table_write();
 	}
@@ -421,8 +440,9 @@ bool app_run_record(const char *boot_path) {
 	if (!r) {
 		ok = (r = table_add(name, &current)) != NULL;
 		table_dirty = ok;
-	} else if (!same_stamp(&r->stamp, &current)) {
+	} else if (!same_stamp(&r->stamp, &current) || r->missed) {
 		r->stamp = current;
+		r->missed = false;
 		table_dirty = true;
 	}
 	if (ok && table_dirty)

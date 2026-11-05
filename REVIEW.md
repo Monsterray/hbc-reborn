@@ -161,6 +161,19 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.5: a badge record goes only after two whole scans miss it
+
+Third audit, item 8: libfat's `readdir` shows a read error as the end of
+the folder, so a scan that ended early looks whole and `app_run_end(true)`
+pruned the records of every app it had not reached. Chosen: prune a record
+only after two whole scans in a row missed it. The first miss writes a
+` missed` word after the record in apps_seen.txt; a scan that sees the app,
+or a launch, clears it; a second miss removes the record. The alternative,
+no pruning on an early scan, cannot work because the early scan cannot be
+told from a whole one. An older HBC reading a marked line drops it (one
+app shows "New" once). Checked: `tests/test_apprun.py`, build with
+`-Werror`.
+
 ### 1.15.4: a table that read as missing is not written over the file
 
 Third audit, item 7: libfat turns a sector read error during path lookup

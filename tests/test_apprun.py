@@ -206,7 +206,7 @@ class AppRunTest(unittest.TestCase):
         self.assertTrue(self.record("Foo", boot="boot.elf"))
         self.assertEqual(self.state("Foo"), UNCHANGED)
 
-    def test_pruning_is_one_write_and_only_after_a_whole_scan(self):
+    def test_pruning_takes_two_whole_scans_in_a_row(self):
         self.assertTrue(self.record("Foo"))
         self.assertTrue(self.record("Bar"))
         self.assertEqual(len(self.lines()), 2)
@@ -216,15 +216,43 @@ class AppRunTest(unittest.TestCase):
         self.assertEqual(self.scan(["Foo"], complete=False), {"Foo": UNCHANGED})
         self.assertEqual(len(self.lines()), 2)
         self.assertEqual(self.api.t_commits(), commits)
+        # One whole scan only marks the miss (a readdir error ends a scan early
+        # and looks whole): the record stays, with the mark, in one write.
         self.assertEqual(self.scan(["Foo"]), {"Foo": UNCHANGED})
         self.assertEqual(self.api.t_commits(), commits + 1)
-        self.assertEqual([l.split("\t")[0] for l in self.lines()], ["Foo"])
+        lines = self.lines()
+        self.assertEqual([l.split("	")[0] for l in lines], ["Foo", "Bar"])
+        self.assertTrue(lines[1].endswith(" missed"))
+        self.assertFalse(lines[0].endswith(" missed"))
+        # Seen again: the mark goes, the history stays.
+        self.api.t_begin(px(self.dev))
+        self.api.t_status(b"Foo")
+        self.api.t_status(b"Bar")      # the scan saw Bar this time
+        self.api.t_end(1)
+        self.assertEqual(self.api.t_commits(), commits + 2)
+        self.assertFalse(any(l.endswith(" missed") for l in self.lines()))
+        # Missed twice in a row: gone, in one write.
+        self.scan(["Foo"])
+        self.assertEqual(self.api.t_commits(), commits + 3)
+        self.assertEqual(self.scan(["Foo"]), {"Foo": UNCHANGED})
+        self.assertEqual(self.api.t_commits(), commits + 4)
+        self.assertEqual([l.split("	")[0] for l in self.lines()], ["Foo"])
         # Nothing left to prune: the next scan writes nothing.
         self.scan(["Foo"])
-        self.assertEqual(self.api.t_commits(), commits + 1)
+        self.assertEqual(self.api.t_commits(), commits + 4)
         # A reinstalled Bar is new again.
         self.make_app(self.dev, "Bar")
         self.assertEqual(self.state("Bar"), NEW)
+
+    def test_a_launch_clears_a_miss_mark(self):
+        self.assertTrue(self.record("Foo"))
+        self.assertTrue(self.record("Bar"))
+        shutil.rmtree(self.dev / "apps" / "Bar")
+        self.scan(["Foo"])
+        self.assertTrue(self.lines()[1].endswith(" missed"))
+        self.make_app(self.dev, "Bar")
+        self.assertTrue(self.record("Bar"))
+        self.assertFalse(any(l.endswith(" missed") for l in self.lines()))
 
     def test_missing_corrupt_and_partial_files(self):
         self.assertEqual(self.state("Foo"), NEW)  # no hbc folder at all
