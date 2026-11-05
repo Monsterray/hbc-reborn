@@ -97,6 +97,7 @@ void gfx_depth_fill (const gfx_rect *r);
 
 void gfx_get_efb_size(u16 *x, u16 *y);
 // The video mode HBC set up, for the HOME overlay (home.c).
+void *gfx_xfb(void);
 GXRModeObj *gfx_video_mode(void);
 void gfx_set_efb_buffer(u32 *buffer);
 

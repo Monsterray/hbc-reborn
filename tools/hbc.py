@@ -38,7 +38,7 @@ CHECKSUM_BYTES_PER_S = 1 << 20
 PUT_ATTEMPTS = 3
 
 # newlib errno values the client acts on
-ENOENT, EACCES, EEXIST, EXDEV, EISDIR, ENOSYS = 2, 13, 17, 18, 21, 88
+ENOENT, EACCES, EEXIST, EXDEV, EISDIR, ENOSYS, ELOOP = 2, 13, 17, 18, 21, 88, 92
 
 
 class HBCError(Exception):
@@ -52,7 +52,7 @@ WII_ERRNO = {1: "EPERM", 2: "ENOENT", 5: "EIO", 6: "ENXIO", 9: "EBADF", 11: "EAG
              12: "ENOMEM", 13: "EACCES", 16: "EBUSY", 17: "EEXIST", 18: "EXDEV", 20: "ENOTDIR",
              21: "EISDIR", 22: "EINVAL", 23: "ENFILE", 24: "EMFILE", 27: "EFBIG",
              28: "ENOSPC", 30: "EROFS", 71: "EPROTO", 77: "EBADMSG", 88: "ENOSYS",
-             90: "ENOTEMPTY", 91: "ENAMETOOLONG", 104: "ECONNRESET", 116: "ETIMEDOUT",
+             90: "ENOTEMPTY", 91: "ENAMETOOLONG", 92: "ELOOP", 104: "ECONNRESET", 116: "ETIMEDOUT",
              134: "ENOTSUP"}
 
 
@@ -62,13 +62,116 @@ def wii_error(code):
     return f"{name} ({os.strerror(host)})" if host else name
 
 
-def wii_address(arg):
+FIND_TIMEOUT = 2.0
+FIND_QUERY = b"HBCU" + bytes(12)
+
+
+def broadcast_targets():
+    """Where a find query goes: 255.255.255.255, and the /24 and /16
+    broadcast addresses of each IPv4 address this PC has (a Wii answers
+    only its own /16, so a wider net is no use)."""
+    addrs = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    try:   # the address of the default route: no packet is sent
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", PORT))
+            addrs.add(s.getsockname()[0])
+    except OSError:
+        pass
+    targets = ["255.255.255.255"]
+    for addr in sorted(addrs):
+        if addr.startswith("127.") or addr == "0.0.0.0":
+            continue
+        a, b, c, _ = addr.split(".")
+        for bcast in (f"{a}.{b}.{c}.255", f"{a}.{b}.255.255"):
+            if bcast not in targets:
+                targets.append(bcast)
+    return targets
+
+
+def parse_find_reply(data):
+    """An HBCU reply: (ip, agent, name), or None for anything else."""
+    if len(data) < 12 or data[:4] != b"HBCU" or data[4] < 1:
+        return None
+    flags, n = data[5], data[6]
+    if len(data) < 12 + n:
+        return None
+    ip = ".".join(str(b) for b in data[8:12])
+    return ip, bool(flags & 1), data[12:12 + n].decode("ascii", "replace")
+
+
+def find_wiis(timeout=FIND_TIMEOUT, targets=None):
+    """Ask with an HBCU query and collect the answers until timeout passes:
+    a list of {"address", "agent", "name"}, one per Wii, in answer order.
+    A console the query reaches on two of the PC's networks answers on each;
+    its own address in the reply makes those one Wii."""
+    found = {}
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.bind(("", 0))
+        for target in targets or broadcast_targets():
+            try:
+                s.sendto(FIND_QUERY, (target, PORT))
+            except OSError:
+                pass   # an interface that cannot broadcast; the others still can
+        deadline = time.monotonic() + timeout
+        while (left := deadline - time.monotonic()) > 0:
+            ready, _, _ = select.select([s], [], [], left)
+            if not ready:
+                break
+            try:
+                data, (src, _) = s.recvfrom(256)
+            except OSError:
+                continue
+            reply = parse_find_reply(data)
+            if not reply:
+                continue
+            ip, agent, name = reply
+            # Connect to where an answer came from, the console's own address if one did.
+            if ip not in found:
+                found[ip] = {"address": src, "agent": agent, "name": name}
+            elif src == ip:
+                found[ip]["address"] = src
+    return list(found.values())
+
+
+def find_line(wii):
+    return f"{wii['address']:<15}  {'app' if wii['agent'] else 'HBC':<3}  {wii['name']}"
+
+
+# Commands that only read from the Wii: with no address set, these may use
+# the one Wii that answers a find. A command that writes, deletes, sends or
+# launches never guesses: it could land on a Dolphin or on someone else's Wii.
+# log is not one: it points the Wii's log at this PC.
+READ_ONLY = ("status", "version", "hw", "ls", "stat", "get", "find", "wait")
+
+
+def wii_address(arg, auto_find=False):
+    # --wii= (an unset shell variable, say) is a mistake, not "find one".
+    if arg is not None and not arg.strip():
+        raise SystemExit("hbc.py: --wii is empty; give the Wii's address")
     for value in (arg, os.environ.get("HBC_WII"), os.environ.get("WII_BENCH_IP"),
                   os.environ.get("WIILOAD", "").removeprefix("tcp:")):
         if value:
             return value
-    raise SystemExit("hbc.py: which Wii? Set HBC_WII to its address, or pass --wii ADDRESS.\n"
-                     "HBC shows the address on its HOME menu, under HBC > Network.")
+    found = find_wiis()
+    if auto_find and len(found) == 1:
+        print(f"hbc.py: using the Wii at {found[0]['address']} (hbc.py find)", file=sys.stderr)
+        return found[0]["address"]
+    lines = ["hbc.py: which Wii? Set HBC_WII to its address, or pass --wii ADDRESS."]
+    if len(found) == 1:
+        lines.append(f"A Wii answered at {found[0]['address']}: pass --wii {found[0]['address']}"
+                     " if that is the one you mean.")
+    elif found:
+        lines.append("More than one Wii answered; pass --wii ADDRESS with one of them:")
+        lines += ["    " + find_line(w) for w in found]
+    lines.append("HBC shows the address on its HOME menu, under HBC > Network.")
+    msg = "\n".join(lines)
+    raise SystemExit(msg)
 
 
 def connect(wii, timeout=TIMEOUT):
@@ -361,6 +464,13 @@ def status(wii):
 
 
 INFO_PAGES = ["System", "Video", "Storage", "USB", "Network"]
+
+
+def set_net_hang(wii, mode):
+    """What a hung network cleanup does on the Wii: wait or reload (HBCR)."""
+    if mode not in ("wait", "reload"):
+        raise SystemExit("hbc.py: net-hang is wait or reload")
+    request(wii, b"HBCR" + mode[:1].encode() + bytes(11))
 
 
 def set_transfer_style(wii, style):
@@ -845,11 +955,56 @@ def get_tree(wii, remote, local, out=print):
     out(f"get: {len(files)} files ({total} bytes)")
 
 
+# Op E (protocol 9): the Wii deletes a tree, or every match of a pattern,
+# itself, and shows "Deleting" with a progress circle. Flags in header byte 5.
+FLAG_GLOB, FLAG_RECURSIVE = 0x02, 0x04
+RM_TIMEOUT = 600   # a big tree takes a while; the Wii answers when it is done
+_no_tree_delete = set()
+
+
+def remote_delete(wii, remote, recursive, glob=False, force=False):
+    """Op E: delete remote, a whole tree with recursive, or with glob the
+    entries of its folder that match its last component. Returns the number
+    of entries deleted, or None when the caller should delete one entry at a
+    time: this HBC or agent is older than protocol 9 (ENOSYS), the tree is
+    nested deeper than it walks (ELOOP), or force and something read-only
+    is in the way (EACCES; nothing was deleted, as the Wii counts first)."""
+    if wii in _no_tree_delete:
+        return None
+    flags = (FLAG_GLOB if glob else 0) | (FLAG_RECURSIVE if recursive else 0)
+    try:
+        with connect(wii, RM_TIMEOUT) as conn:
+            conn.sendall(file_header("E", remote, 0, flags))
+            reply = recv_reply(conn, f"{remote}: Wii returned")
+    except HBCError as exc:
+        if exc.code == ENOSYS:
+            _no_tree_delete.add(wii)
+            return None
+        if exc.code == ELOOP or (exc.code == EACCES and force):
+            return None
+        if exc.code == EACCES:
+            raise HBCError(f"{exc}: something in it is read-only, so nothing was deleted "
+                           f"(hbc.py attrib --recursive -r {remote}, or rm --force)",
+                           exc.code) from None
+        raise
+    return struct.unpack(">I", reply)[0] if len(reply) == 4 else 0
+
+
 def remove_tree(wii, remote, out=print, force=False):
-    """Delete a remote tree: files first, then directories bottom-up. force
-    clears read-only on each entry first."""
+    """Delete a remote tree: in one request when the Wii can walk it itself,
+    else files first, then directories bottom-up. force clears read-only on
+    each entry first."""
     refuse_protected(remote, "recursively delete")
     remote = remote_norm(remote)
+    count = remote_delete(wii, remote, True, force=force)
+    if count is None:
+        count = remove_tree_entries(wii, remote, force)
+    out(f"rm: {count} entries deleted")
+    return count
+
+
+def remove_tree_entries(wii, remote, force=False):
+    """remove_tree one request per entry, for an HBC without op E."""
     if not remote_is_dir(wii, remote):
         remove_one(wii, remote, force)
         return 1
@@ -858,7 +1013,56 @@ def remove_tree(wii, remote, out=print, force=False):
         remove_one(wii, remote_join(remote, rel), force)
     for rel in bottom_up(dirs) + [""]:
         remove_one(wii, remote_join(remote, rel), force)
-    count = len(files) + len(dirs) + 1
+    return len(files) + len(dirs) + 1
+
+
+def is_glob(remote):
+    """True when the path has a * or ? wildcard (a FAT name cannot)."""
+    return any(c in remote for c in "*?")
+
+
+def glob_regex(pattern):
+    """* is any run, ? one character; FAT ignores case, so does this."""
+    return re.compile("".join(".*" if c == "*" else "." if c == "?" else re.escape(c)
+                              for c in pattern), re.I | re.S)
+
+
+def remove_glob(wii, remote, recursive=False, out=print, force=False):
+    """rm with a wildcard in the last component: sd:/logs/*.log. Matches
+    are files, and with recursive folders too."""
+    head, _, pattern = remote.rpartition("/")
+    if is_glob(head) or not head:
+        raise HBCError(f"{remote}: wildcards work only in the last name")
+    folder = head + "/" if head.endswith(":") else head
+    # sd:/b* -r would take bootmii/ with it, usb:/* a whole drive, and
+    # sd:/apps/* -r every app: at a device's top and in its apps folder
+    # (however spelled: sd://, SD:/./Apps), folders are deleted by name only.
+    if recursive and protected(head):
+        raise HBCError(f"{remote}: rm -r takes no wildcard in {folder}; "
+                       "name the folders")
+    count = remote_delete(wii, remote, recursive, glob=True, force=force)
+    if count is None:
+        # An older HBC: expand the pattern here and delete match by match.
+        rx = glob_regex(pattern)
+        entries, truncated = list_entries(wii, folder)
+        if truncated:
+            raise HBCError(f"the Wii truncated the listing of {folder}; "
+                           "refusing to act on a partial listing")
+        matches = [e for e in entries if rx.fullmatch(e["name"])]
+        if not matches:
+            raise HBCError(f"{remote}: Wii returned ENOENT", ENOENT)
+        for e in matches:
+            refuse_protected(remote_join(folder, e["name"]), "delete")
+            if e["type"] == "d" and not recursive:
+                raise HBCError(f"{remote_join(folder, e['name'])} is a directory; use rm -r")
+        count = 0
+        for e in matches:
+            target = remote_join(folder, e["name"])
+            if e["type"] == "d":
+                count += remove_tree_entries(wii, target, force)
+            else:
+                remove_one(wii, target, force)
+                count += 1
     out(f"rm: {count} entries deleted")
     return count
 
@@ -1042,11 +1246,25 @@ def sync(wii, local, remote, delete=False, out=print, checksum_all=False, verify
     failed = []
     offset = None if checksum_all else wii_clock_offset(wii)
     if delete:
+        # A folder that is gone from local goes whole, in one request, with
+        # what it holds; the rest one entry at a time.
+        gone = {d for d in rdirs if d not in ldirset}
+        tops = sorted(d for d in gone if not any(
+            "/".join(d.split("/")[:i]) in gone for i in range(1, d.count("/") + 1)))
+        for rel in tops:
+            count = remote_delete(wii, remote_join(remote, rel), True)
+            if count is None:
+                break
+            deleted += count
+            gone -= {d for d in gone if d == rel or d.startswith(rel + "/")}
+            for f in [f for f in rfiles if f.startswith(rel + "/")]:
+                del rfiles[f]
+            rdirset -= {d for d in rdirset if d == rel or d.startswith(rel + "/")}
         for rel in sorted(f for f in rfiles if f not in lfiles):
             file_request(wii, "D", remote_join(remote, rel))
             del rfiles[rel]
             deleted += 1
-        for rel in bottom_up(d for d in rdirs if d not in ldirset):
+        for rel in bottom_up(d for d in rdirs if d in gone):
             file_request(wii, "D", remote_join(remote, rel))
             rdirset.discard(rel)
             deleted += 1
@@ -1294,8 +1512,9 @@ def run_outcome(wii, seconds=30):
 OVERVIEW = """\
 hbc.py - work on a Wii from your PC through the Homebrew Channel (HBC).
 
-Tell it where your Wii is, once per terminal (the address is on HBC's
-HOME menu, under HBC > Network):
+With one Wii on your network, hbc.py finds it by itself (hbc.py find).
+Otherwise tell it which, once per terminal (the address is on HBC's HOME
+menu, under HBC > Network, and hbc.py find lists every Wii that answers):
 
     export HBC_WII=192.168.1.50          (Windows: set HBC_WII=192.168.1.50)
 
@@ -1310,9 +1529,11 @@ Common tasks
 
 Commands
   The Wii
+    find [ADDRESS...]   list the Wiis on the network: address, HBC or app, name
     status              what is running: version, IOS, memory, SD card, network
     hw                  the Wii's hardware and settings, as DEV > Info shows them
     transfer-style [S]  how HBC shows a long name it is moving (for testing)
+    net-hang [MODE]     wait, or reload HBC, when the network hangs (developers)
     mii-faces           copy the Wii Menu's Mii faces to sd:/mii/RFL_Res.dat
     version             just the version (ends in " agent" for an app, below)
     wait [SECONDS]      wait until HBC answers, after a reboot (default 90)
@@ -1328,7 +1549,7 @@ Commands
     put LOCAL PATH      upload (-r for a folder; missing folders are made)
     sync LOCAL PATH     upload only what changed (--delete removes extras)
     rm PATH             delete a file or empty folder (-r a whole folder,
-                        --force read-only ones too)
+                        --force read-only ones too; * ? match)
     mkdir PATH          make a folder
     mv FROM TO          rename or move a file or folder (also between devices)
     order DIR [APP...]  HBC's Custom app order: show it, or set it (meta.xml)
@@ -1358,6 +1579,25 @@ IOS and its revision, whether AHBPROT is open, free memory, the mounted
 device and the devices seen, the Wii's IP, the log target, the last file
 transfer's timing, and any crash an agent app reported. With --json the
 output is one compact line, for scripts.""",
+    "find": """\
+hbc.py find [--timeout SECONDS] [ADDRESS...]
+
+Lists the Wiis on your network that run HBC, or an app built with the in-app
+agent: one line each with the address, "HBC" or "app", and the name (HBC's,
+or the app's). It asks with one UDP broadcast on port 4299 (HBCU, see
+docs/devnet.md) and listens for 2 s, or --timeout seconds. A Wii answers
+only a PC on its own network (the same /16 as for everything else). Give
+addresses to ask those Wiis directly, for a network a broadcast does not
+reach. --json prints a list. Exits with status 1 when no Wii answers.
+
+When neither --wii nor HBC_WII names a Wii, the read-only commands (status,
+version, hw, ls, stat, get, wait) use the one Wii that answers, and say
+so. Commands that write or launch (send, put, rm, sync, mv, run, log ...) never
+guess: they fail and show the address that answered, to pass with --wii.
+HBC from before HBCU does not answer: name it with --wii or HBC_WII.
+
+    hbc.py find
+    hbc.py find 192.168.1.50""",
     "version": """\
 hbc.py version
 
@@ -1473,10 +1713,19 @@ it). A file that fails is reported and the rest still sync.
     "rm": """\
 hbc.py rm [-r] [--force] PATH
 
-Deletes a file or an empty folder, or with -r a whole folder. Device roots
-(sd:/) and <device>:/apps itself are refused. A read-only entry is
-refused too, unless --force, which clears read-only first (as del /f
-does).""",
+Deletes a file or an empty folder, or with -r a whole folder. A * or ? in
+the last name deletes everything in that folder that matches (case does not
+matter), such as 'sd:/logs/*.log'; quote it so your shell leaves it alone,
+and add -r to take matching folders too. An HBC with protocol 9 walks the
+tree or pattern itself in one request and shows "Deleting" with a progress
+circle on its screen; an older HBC or app agent is sent one request per
+entry. Device roots (sd:/) and <device>:/apps itself are refused, by hbc.py
+and by HBC, and so is -r with a wildcard at a device's top (sd:/b* would
+take bootmii/): name those folders. A read-only entry is refused too, and then nothing is deleted,
+unless --force, which clears read-only first (as del /f does).
+
+    hbc.py rm -r sd:/apps/oldapp
+    hbc.py rm 'sd:/logs/*.log'""",
     "mkdir": """\
 hbc.py mkdir PATH
 
@@ -1583,6 +1832,17 @@ too long for that line scrolls round, bounces from end to end, or is cut
 short with "...": HBC picks one at random each time it starts. This sets
 the one to use until HBC restarts, for testing; with no name it prints the
 current one (HBCS transfer_style). HBC 1.10.4 on.""",
+    "net-hang": """\
+hbc.py net-hang [wait|reload]
+
+What HBC does when a network cleanup never returns inside IOS. libogc cannot
+start the network again until HBC itself starts again, so by default HBC
+waits: the menu and app launches go on, and the network is back the next
+time HBC starts. "reload" has HBC reload the installed channel at once
+instead, for a developer's Wii that must stay reachable; if the network
+hangs on every start, that Wii reloads every few seconds until it is set
+back to "wait". Kept in HBC's settings when HBC next exits or launches an
+app. With no mode it prints the current one (HBCS net_hang).""",
     "hw": """\
 hbc.py hw [--json] [PAGE ...]
 
@@ -1643,6 +1903,11 @@ def split_flags(cmd, args):
         if arg == "--":
             rest += args[i + 1:]
             break
+        flag, eq, inline = arg.partition("=")
+        if eq and flag in known and known[flag][1] and flag.startswith("--"):
+            flags[known[flag][0]] = inline   # --timeout=0.5
+            i += 1
+            continue
         if arg in known:
             dest, takes_value = known[arg]
             if takes_value:
@@ -1682,8 +1947,8 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true",
                         help="JSON output for version, status and ls")
     parser.add_argument("--log-port", type=int, default=LOG_PORT)
-    parser.add_argument("--timeout", type=float, default=300,
-                        help="seconds `run` waits for the app to finish")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="seconds `run` waits for the app to finish (default 300)")
     parser.add_argument("command")
     parser.add_argument("args", nargs=argparse.REMAINDER)
     opts = parser.parse_args(argv)
@@ -1696,11 +1961,27 @@ def main(argv=None):
     except ValueError as exc:
         raise SystemExit(f"hbc.py: {exc}")
     vars(opts).update(flags)
+    timeout_given = opts.timeout is not None   # either position, --timeout N or --timeout=N
+    if opts.timeout is None:
+        opts.timeout = 300
     recursive = flags.get("recursive", False)
     if cmd not in COMMAND_HELP:
         print_help(cmd)
         raise SystemExit(2)
-    wii = wii_address(opts.wii)
+    if cmd == "find":
+        # run's 300 s default is not find's.
+        found = find_wiis(opts.timeout if timeout_given else FIND_TIMEOUT, args or None)
+        if opts.json:
+            print(json.dumps(found))
+        else:
+            for w in found:
+                print(find_line(w))
+        if not found:
+            if not opts.json:
+                print("hbc.py: no Wii answered", file=sys.stderr)
+            raise SystemExit(1)
+        return
+    wii = wii_address(opts.wii, auto_find=cmd in READ_ONLY)
 
     def need(n, usage):
         if len(args) < n:
@@ -1770,6 +2051,10 @@ def main(argv=None):
             print(text)
             if not ok:
                 raise SystemExit(1)
+        elif cmd == "net-hang":
+            if args:
+                set_net_hang(wii, args[0])
+            print(status(wii).get("net_hang", "unknown"))
         elif cmd == "transfer-style":
             if args:
                 set_transfer_style(wii, args[0])
@@ -1889,7 +2174,9 @@ def main(argv=None):
             force = bool(flags.get("force"))
             if force:
                 needs_version(wii, ATTR_SINCE, "clear read-only (rm --force)")
-            if recursive:
+            if is_glob(args[0]):
+                remove_glob(wii, remote_norm(args[0]), recursive, force=force)
+            elif recursive:
                 remove_tree(wii, args[0], force=force)
             else:
                 remove_one(wii, args[0], force)

@@ -58,17 +58,18 @@ def main():
         print(f"HBC {hbc.hbc_wait(wii, 90)} on {wii}", flush=True)
         time.sleep(3)
 
-        # 1. Options: up from Back past Grid edges to the Progress row (Circle,
-        # nearest Back), A, down to Back, left to Ok, A.
+        # 1. Options: up from Back past App badges and Grid edges to the
+        # Progress row (Circle, nearest Back), A, down to Back, left to Ok, A.
         pad.send("stick 0 -1; wait 1")   # the pointer off the screen
         pad.done()
         hbc.send_buttons(wii, "1")
         time.sleep(3)
         shot(wii, out, "options-percent")
-        pad.send("press PadN; wait 2; press PadN; wait 2; press Cross; wait 2")
+        pad.send("press PadN; wait 2; press PadN; wait 2; press PadN; wait 2; press Cross; wait 2")
         pad.done()
         shot(wii, out, "options-circle")
-        pad.send("press PadS; wait 2; press PadS; wait 2; press PadW; wait 2; press Cross; wait 3")
+        pad.send("press PadS; wait 2; press PadS; wait 2; press PadS; wait 2; press PadW; wait 2; "
+                 "press Cross; wait 3")
         pad.done()
         shot(wii, out, "menu")
 

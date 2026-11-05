@@ -13,24 +13,57 @@
 // How far gravity must lie along the remote's length (in g) to count:
 // 0.5 is a 30 degree tilt. Tune on hardware.
 #define SIDEWAYS_TILT 0.5f
+// Scans (about 60 a second) the other orientation must be seen in a row
+// before the remote counts as turned: one report of a twist, a tilt or the
+// sensor bar flipped a sideways remote back to upright mid-use. Leaving
+// sideways takes longer than entering it.
+#define SIDEWAYS_ENTER_SCANS 10
+#define SIDEWAYS_LEAVE_SCANS 30
 
 typedef struct {
 	bool sideways;
 	bool dpad_held;
+	unsigned char streak;   // scans in a row that pointed the other way
 } sideways_remote;
+
+// One scan's evidence: 1 sideways, 0 upright, -1 nothing either way.
+static inline void sideways_vote(sideways_remote *s, int v) {
+	if (v < 0 || v == (int) s->sideways) {
+		if (v >= 0)
+			s->streak = 0;
+		return;
+	}
+	if (++s->streak >= (s->sideways ? SIDEWAYS_LEAVE_SCANS : SIDEWAYS_ENTER_SCANS)) {
+		s->sideways = v;
+		s->streak = 0;
+	}
+}
 
 // Once per scan, before turning its down, held and up buttons. A press and
 // its release keep the orientation they started in.
 static inline void sideways_update(sideways_remote *s, const WPADData *d) {
-	if (!d || d->err != WPAD_ERR_NONE) {
+	// No remote (WPAD_Probe failed: it is off or gone): forget it, or the
+	// next remote paired in this slot would start out turned.
+	if (!d) {
 		s->sideways = s->dpad_held = false;
+		s->streak = 0;
+		return;
+	}
+	// No report this scan (a remote that is quiet or between reports): keep
+	// the orientation. Resetting to upright here flipped a sideways remote
+	// back for good, since a quiet remote sends no reading to turn it
+	// sideways again (real Wii, 2026-11-03: most scans of a remote held still
+	// carried no accelerometer data).
+	if (d->err != WPAD_ERR_NONE) {
+		s->dpad_held = false;
+		s->streak = 0;
 		return;
 	}
 	if (s->dpad_held)
 		;
 	// A remote that sees the sensor bar is pointing, so upright.
 	else if (d->ir.valid)
-		s->sideways = false;
+		sideways_vote(s, 0);
 	else if (d->data_present & WPAD_DATA_ACCEL) {
 		// +X is the remote's left side: with the D-pad at the left and the
 		// buttons tilted towards the player, gravity reads as -X.
@@ -41,9 +74,11 @@ static inline void sideways_update(sideways_remote *s, const WPADData *d) {
 		// upright, so the last orientation stays.
 		if (g2 > 0.64f && g2 < 1.44f) {
 			if (x > SIDEWAYS_TILT && x > y * 1.4f)
-				s->sideways = true;
+				sideways_vote(s, 1);
 			else if (x < -0.35f || (y > 0.35f && y > x * 1.4f))
-				s->sideways = false;
+				sideways_vote(s, 0);
+			else
+				sideways_vote(s, -1);
 		}
 	}
 	s->dpad_held = ((d->btns_h | d->btns_d) & SIDEWAYS_DPAD) != 0;

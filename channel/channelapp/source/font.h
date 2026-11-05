@@ -14,6 +14,7 @@ typedef enum {
 	FONT_BUTTON,
 	FONT_BUTTON_DESEL,
 	FONT_HINT,          // small print: the playground's hint
+	FONT_BADGE,         // the app badge pills (widgets.c); a theme's default size does not apply
 
 	FONT_MAX
 } font_id;
@@ -37,6 +38,7 @@ void font_init (void);
 void font_clear (void);
 void font_deinit (void);
 
+u16 font_get_string_width (font_id id, const char *s, int count);
 int font_get_height (font_id id);
 int font_get_em_height (font_id id);
 int font_get_ascender (font_id id);

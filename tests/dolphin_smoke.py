@@ -399,6 +399,36 @@ def check_devnet(run, log_port=0):
         hbc.remove_tree(wii, "sd:/hbctest/sync", out=quiet)
     print("devnet tools (checksum, sync, trees, app list, EOF): PASS")
 
+    # Op E: the Wii walks a tree, or matches a pattern, itself. A deletion
+    # must also leave the folder it emptied listing correctly.
+    for rel in ("a.log", "B.LOG", "keep.txt", "dir/x.log", "dir/deeper/y.bin"):
+        hbc.file_request(wii, "P", f"sd:/hbctest/rm/{rel}", 1, b"x")
+    hbc.file_request(wii, "M", "sd:/apps")   # so the patterns below have it to refuse
+    for i in range(60):
+        hbc.file_request(wii, "P", f"sd:/hbctest/rm/many/f{i:02}.bin", 1, b"x")
+    quiet = lambda *a: None
+    assert hbc.remove_glob(wii, "sd:/hbctest/rm/*.log", out=quiet) == 2
+    assert hbc.remove_glob(wii, "sd:/hbctest/rm/ma*", recursive=True, out=quiet) == 61
+    listing = hbc.file_request(wii, "L", "sd:/hbctest/rm").decode()
+    assert "keep.txt" in listing and "dir" in listing and "many" not in listing, listing
+    assert not hbc._no_tree_delete, "the Wii refused op E"
+    # EPERM, before anything went; a "." component is EINVAL in any request.
+    for refused, code in (("sd:/*", 1), ("sd:/AP?S", 1), ("sd:/./AP?S", 22)):
+        try:
+            hbc.remove_glob(wii, refused, recursive=True, out=quiet)
+            raise AssertionError(f"{refused} was deleted")
+        except hbc.HBCError as exc:
+            assert exc.code == code, (refused, exc)
+    assert hbc.remove_tree(wii, "sd:/hbctest/rm", out=quiet) == 6   # 3 files, dir, deeper, rm
+    for refused, code in (("sd:/", 1), ("sd:/apps", 1), ("sd:/APPS/", 1), ("sd:/./apps", 22)):
+        try:
+            hbc.remote_delete(wii, refused, True)   # the Wii itself, not hbc.py
+            raise AssertionError(f"{refused} was deleted")
+        except hbc.HBCError as exc:
+            assert exc.code == code, (refused, exc)
+    assert hbc.file_request(wii, "S", "sd:/apps")
+    print("devnet tree and pattern delete: PASS")
+
     hbc.file_request(wii, "D", "sd:/hbctest/sub/blob.bin")
     assert "blob.bin" not in hbc.file_request(wii, "L", "sd:/hbctest/sub").decode()
     hbc.file_request(wii, "D", "sd:/hbctest/sub")
@@ -467,6 +497,11 @@ def main():
     try:
         wait_version(run, seconds)
         print(f"PASS: HBC {expected} answered on {run.address}:4299")
+        # HBCU discovery: asked directly, since a broadcast need not reach
+        # Dolphin's host socket. One HBC answers, by its menu's name.
+        found = hbc.find_wiis(3, [run.address])
+        assert [(w["agent"], w["name"]) for w in found] == [(False, "Homebrew Channel")], found
+        print(f"PASS: HBCU discovery answered from {found[0]['address']}")
         if image.suffix.lower() == ".wad":
             title = run.profile.joinpath("Wii/title", *wad_title(image), "content")
             apps = sorted(p.name for p in title.glob("*.app")) if title.exists() else []

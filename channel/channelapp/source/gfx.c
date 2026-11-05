@@ -194,6 +194,14 @@ void gfx_deinit (void) {
 
 	for (i = 0; i < 4; ++i)
 		VIDEO_WaitVSync();
+
+	// The video is off: a crash from here on has nothing to show, and the
+	// crash screen leaves at once.
+	xfb = NULL;
+}
+
+void *gfx_xfb(void) {
+	return xfb;
 }
 
 GXRModeObj *gfx_video_mode(void) {

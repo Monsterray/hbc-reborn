@@ -135,8 +135,33 @@ msgstr ""
 msgid "Turn page"
 msgstr ""
 
+#: source/dialogs.c
+msgid "App badges:"
+msgstr ""
+
+#: source/dialogs.c
+msgid "Off"
+msgstr ""
+
+#: source/dialogs.c
+msgid "On"
+msgstr ""
+
+# The app badges on an app never run from HBC, and on one that changed since
+#: source/widgets.c
+msgid "New"
+msgstr ""
+
+#: source/widgets.c
+msgid "Updated"
+msgstr ""
+
 #: source/view.c
 msgid "Receiving"
+msgstr ""
+
+#: source/view.c
+msgid "Deleting"
 msgstr ""
 
 #: source/view.c

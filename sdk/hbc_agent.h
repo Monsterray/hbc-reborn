@@ -465,6 +465,13 @@ s32 hbc_agent_home_fb(const struct _gx_rmodeobj *rmode, void *fb0, void *fb1);
  * HOME button, `if ((down & WPAD_BUTTON_HOME) || hbc_agent_home_pending())`. */
 bool hbc_agent_home_pending(void);
 
+/* Press overlay keys as `hbc.py key` does: each of "udlrabh12w" is up, down,
+ * left, right, A, B, HOME, 1, 2 and WAV, taken one every 12 frames; other
+ * characters are skipped. For another input device, such as a USB keyboard
+ * read from on_frame while the overlay is open. */
+#define HBC_AGENT_HAS_PUSH_KEYS 1
+void hbc_agent_push_keys(const char *keys);
+
 /* Show a short message at the top of the HOME overlay for a few seconds.
  * From on_save or a slot item, it replaces the overlay's own "Saved" or
  * "Couldn't save", so an app can say what happened. */

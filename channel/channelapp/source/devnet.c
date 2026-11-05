@@ -33,6 +33,7 @@
 #include "zmem.h"
 #include "usbmsd.h"
 #include "view.h"
+#include "xml.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../../../sdk/hbc_netlog.h"
@@ -267,6 +268,8 @@ static s32 status_json(char *buf, size_t size) {
 	n = grow(n, size, agent_overlay_cost_json(buf + n, size - n));
 	n = grow(n, size, agent_overlay_state(buf + n, size - n));
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style()));
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"net_hang\":\"%s\"",
+			settings.net_hang_reload ? "reload" : "wait"));
 	// The Wii's clock, the one file times (op L, S) come from.
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL)));
 	{
@@ -480,6 +483,19 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		return true;
 	}
 
+	// HBCR: header byte 4, 'r' or 'w': what a hung network cleanup does,
+	// reload the channel or wait for the next start (`hbc.py net-hang`).
+	// Saved with the other settings when HBC exits or launches an app.
+	if (!memcmp(hdr, "HBCR", 4)) {
+		if (hdr[4] != 'r' && hdr[4] != 'w') {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return true;
+		}
+		settings.net_hang_reload = hdr[4] == 'r';
+		devfile_reply(s, 0, NULL, 0);
+		return true;
+	}
+
 	if (!memcmp(hdr, "HBCT", 4)) {
 		char style[13];
 
@@ -576,6 +592,10 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	}
 
 	return false;
+}
+
+const hbc_crash_block *devnet_crash_taken(void) {
+	return have_crash ? &crash : NULL;
 }
 
 void devnet_early_init(void) {

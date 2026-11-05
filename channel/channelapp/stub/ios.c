@@ -25,6 +25,7 @@
 #include "processor.h"
 #include "cache.h"
 #include "system.h"
+#include "ipc_wait.h"
 
 #define virt_to_phys(x) ((u32*)(((u32)(x))&0x7FFFFFFF))
 #define phys_to_virt(x) ((u32*)(((u32)(x))|0x80000000))
@@ -86,23 +87,45 @@ static void ipc_bell(u32 w)
 	ipc_write(1, (ipc_read(1) & 0x30) | w);
 }
 
-static void ipc_wait_ack(void)
-{
-	while ((ipc_read(1) & 0x22) != 0x22)
-		;
-	udelay(100);
-}
-
-static void ipc_wait_reply(void)
-{
-	while ((ipc_read(1) & 0x14) != 0x14)
-		;
-	udelay(100);
-}
-
 static void ipc_irq_ack(void)
 {
 	ipc_write(12, 0x40000000);
+}
+
+// The waits give up: a request of the app that crashed may still be in IOS,
+// and a stub that waits for good freezes the Wii (ipc_wait.h).
+#define TB_PER_US 61   // the time base ticks at 60.75 MHz
+#define ACK_TICKS (500000u * TB_PER_US)
+#define REPLY_TICKS (1000000u * TB_PER_US)
+#define LAUNCH_TICKS (10000000u * TB_PER_US)
+
+// A reply left in ARMMSG: taken and dropped.
+static void ipc_take_reply(void)
+{
+	udelay(100);
+	ipc_read(2);
+	ipc_bell(4);
+	ipc_irq_ack();
+	ipc_bell(8);
+}
+
+// 0 when the wanted bits came, IOS_ETIMEOUT when they did not.
+static int ipc_wait(u32 want, u32 limit)
+{
+	u32 start = mftb();
+
+	for (;;) {
+		switch (ipc_wait_step(ipc_read(1), want, mftb() - start, limit)) {
+		case IPC_WAIT_DONE:
+			udelay(100);
+			return 0;
+		case IPC_WAIT_TAKE_REPLY:
+			ipc_take_reply();
+			break;
+		case IPC_WAIT_TIMEOUT:
+			return IOS_ETIMEOUT;
+		}
+	}
 }
 
 
@@ -117,19 +140,34 @@ struct ipc {
 	u32 user[8];
 };
 
-static struct ipc ipc __attribute__((aligned(64)));
+// A request whose reply never came stays IOS's, and it may still answer into
+// it: the next request takes another one.
+#define IPC_POOL 8
+static struct ipc ipc_pool[IPC_POOL] __attribute__((aligned(64)));
+static u32 ipc_cur;
+#define ipc ipc_pool[ipc_cur]
 
-static void ipc_send_request(void)
+static void ipc_abandon(void)
+{
+	if (ipc_cur < IPC_POOL - 1)
+		ipc_cur++;
+}
+
+static int ipc_send_request(void)
 {
 	DCFlushRange(&ipc, 0x40);
 
 	ipc_write(0, (u32)virt_to_phys(&ipc));
 	ipc_bell(1);
 
-	ipc_wait_ack();
+	if (ipc_wait(IPC_ACK, ACK_TICKS)) {
+		ipc_abandon();
+		return IOS_ETIMEOUT;
+	}
 
 	ipc_bell(2);
 	ipc_irq_ack();
+	return 0;
 }
 
 // Send a request that reboots IOS, such as ES_Launch. IOS acknowledges it
@@ -140,16 +178,22 @@ static int ipc_send_twoack(void)
 {
 	u32 status;
 
+	u32 start;
+
 	DCFlushRange(&ipc, 0x40);
 
 	ipc_write(0, (u32)virt_to_phys(&ipc));
 	ipc_bell(1);
 
-	ipc_wait_ack();
+	if (ipc_wait(IPC_ACK, ACK_TICKS)) {
+		ipc_abandon();
+		return IOS_ETIMEOUT;
+	}
 	ipc_irq_ack();
 	ipc_bell(2);
 
-	for (;;) {
+	start = mftb();
+	while (mftb() - start < LAUNCH_TICKS) {
 		status = ipc_read(1);
 
 		if ((status & 0x22) == 0x22) {
@@ -170,14 +214,21 @@ static int ipc_send_twoack(void)
 			return ipc.result < 0 ? ipc.result : -1;
 		}
 	}
+	ipc_abandon();
+	return IOS_ETIMEOUT;
 }
 
-static void ipc_recv_reply(void)
+static int ipc_recv_reply(void)
 {
-	for (;;) {
-		u32 reply;
+	u32 start = mftb();
 
-		ipc_wait_reply();
+	for (;;) {
+		u32 reply, spent = mftb() - start;
+
+		if (ipc_wait(IPC_REPLY, spent >= REPLY_TICKS ? 0 : REPLY_TICKS - spent)) {
+			ipc_abandon();
+			return IOS_ETIMEOUT;
+		}
 
 		reply = ipc_read(2);
 		ipc_bell(4);
@@ -194,6 +245,7 @@ static void ipc_recv_reply(void)
 	}
 
 	DCInvalidateRange(&ipc, sizeof ipc);
+	return 0;
 }
 
 
@@ -209,8 +261,8 @@ int ios_open(const char *filename, u32 mode)
 	ipc.arg[0] = (u32)virt_to_phys(filename);
 	ipc.arg[1] = mode;
 
-	ipc_send_request();
-	ipc_recv_reply();
+	if (ipc_send_request() || ipc_recv_reply())
+		return IOS_ETIMEOUT;
 
 	return ipc.result;
 }
@@ -222,8 +274,8 @@ int ios_close(int fd)
 	ipc.cmd = 2;
 	ipc.fd = fd;
 
-	ipc_send_request();
-	ipc_recv_reply();
+	if (ipc_send_request() || ipc_recv_reply())
+		return IOS_ETIMEOUT;
 
 	return ipc.result;
 }
@@ -252,9 +304,9 @@ int _ios_ioctlv(int fd, u32 n, u32 in_count, u32 out_count, struct ioctlv *vec, 
 	if(reboot) {
 		return ipc_send_twoack();
 	} else {
-		ipc_send_request();
-		ipc_recv_reply();
-	
+		if (ipc_send_request() || ipc_recv_reply())
+			return IOS_ETIMEOUT;
+
 		for (i = in_count; i < in_count + out_count; i++)
 			if (vec[i].data) {
 				vec[i].data = phys_to_virt((u32)vec[i].data);
@@ -291,7 +343,7 @@ static void ipc_cleanup_request(void) {
 }
 
 void reset_ios(void) {
-	int i;
+	int i, stuck = 0;
 
 	debug_string("Flushing IPC transactions");
 	for (i = 0; i < 10; i++) {
@@ -305,8 +357,34 @@ void reset_ios(void) {
 
 	debug_string("Closing file descriptors");
 	for (i = 0; i < 32; i++) {
-		ios_close(i);
+		// Three closes without a reply: IOS is stuck, and more waiting
+		// only delays what comes next.
+		if (ios_close(i) == IOS_ETIMEOUT && ++stuck >= 3)
+			break;
 		debug_string(".");
 	}
 	debug_string(" Done.\n\r");
+}
+
+// ---- Last resorts, when nothing could launch a title ---------------------------
+
+#define HW_AHBPROT 0x0d800064
+#define HW_RESETS 0x0d800194
+#define HW_CHIPREVID 0x0d8005a0   // 0xcafe in the top half on a Wii U (vWii)
+
+// A system reset through Hollywood: needs AHBPROT open, and is not shown to
+// work on a vWii (way_out.c, panic.c). Returns when it cannot, or did nothing.
+static void hw_reset(void)
+{
+	if (read32(HW_AHBPROT) != 0xffffffff || (read32(HW_CHIPREVID) >> 16) == 0xcafe)
+		return;
+	write32(HW_RESETS, read32(HW_RESETS) & ~1u);
+	udelay(2000000);
+}
+
+// The channel and the System Menu would not launch: reboot the console, which
+// beats a Wii that waits for good. Returns only when nothing worked.
+void ios_last_resort(void)
+{
+	hw_reset();
 }

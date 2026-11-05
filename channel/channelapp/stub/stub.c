@@ -147,6 +147,7 @@ void _main (void) {
 
 fail:
 		debug_string("FAILURE\n\r");
+		ios_last_resort();
 		while(1);
 }
 

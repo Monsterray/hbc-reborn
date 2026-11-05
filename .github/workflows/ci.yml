@@ -57,6 +57,7 @@ jobs:
           make -C tests/launch_title EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C tests/membench EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C tests/mii_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
+          make -C tests/wpad_queue_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C sdk/mii/example EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
       - name: Build the banner

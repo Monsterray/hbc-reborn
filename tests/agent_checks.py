@@ -278,6 +278,9 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         assert 0 < st["agent_stack_used"] < st["agent_stack_size"], st
         assert st["exit_requested"] is False and st["uptime_ms"] > 0, st
         heap_before = st["heap_free"]
+        # HBCU discovery: the agent answers with the app's name.
+        found = hbc.find_wiis(3, [wii])
+        assert [(w["agent"], w["name"]) for w in found] == [(True, "agent_app")], found
 
         samples = {"random": os.urandom(300_001), "zeros": bytes(200_000),
                    "exact": os.urandom(65536), "tiny": b"x"}

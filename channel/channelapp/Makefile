@@ -54,13 +54,15 @@ LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte
 MACHDEP = -g -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
 CFLAGS = $(MACHDEP) -Os -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
 # using -Os for the stub makes it dependent on libgcc
-CFLAGS_STUB = $(MACHDEP) -O2 -Wall $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
+CFLAGS_STUB = $(MACHDEP) -O2 -Wall -fno-asynchronous-unwind-tables $(EXTRA_CFLAGS) -DBASE_ADDR=$(BASE_ADDR) $(DIR_INCLUDES:%=-I%)
 ASFLAGS = -D_LANGUAGE_ASSEMBLY -DHW_RVL
 # The Wii has no no-execute stack; say so, since toolchain crt objects lack the note.
 LDFLAGS_COMMON = -Wl,-z,noexecstack
 LDFLAGS_STUB = $(MACHDEP) $(LDFLAGS_COMMON) -Wl,-Ttext=0x80001800 -Wl,--section-start,.sbss=0x80005000 -Wl,-e,_start -nostartfiles -nodefaultlibs
 LDFLAGS_APP = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) \
 	      $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp.map
+# The Wii Remotes' command queues, out of libogc's kernel heap (source/wpadqueue.c).
+LDFLAGS_APP += -Wl,--wrap=wiiuse_init_cmd_queue
 # make DEBUG_POISON=1: poison fresh and freed heap memory (source/poison.c)
 ifeq ($(DEBUG_POISON),1)
 CFLAGS += -DDEBUG_POISON $(if $(POISON_MODE),-DPOISON_MODE=$(POISON_MODE))

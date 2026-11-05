@@ -126,6 +126,14 @@ static bool _get_gradient(mxml_node_t *node, const char *element,
 }
 
 // sync with font.h
+static void _get_badge(mxml_node_t *node, const char *element, theme_badge_t *badge) {
+	node = node ? mxmlFindElement(node, node, element, NULL, NULL, MXML_DESCEND_FIRST) : NULL;
+	if (!node)
+		return;
+	_get_color(node, "fill", &badge->fill);
+	_get_color(node, "text", &badge->text);
+}
+
 static const char *targets[FONT_MAX] = {
 	"label",
 	"dlgtitle",
@@ -134,7 +142,8 @@ static const char *targets[FONT_MAX] = {
 	"appdesc",
 	"button",
 	"button_desel",
-	"hint"
+	"hint",
+	"badge"
 };
 
 static void _get_font(mxml_node_t *node) {
@@ -408,7 +417,9 @@ bool settings_load(void) {
 	settings.browse_mode = 0;
 	settings.progress_arc = 0;
 	settings.edge_paging = 0;
+	settings.new_badges = 0;
 	settings.sideways_remotes = 0;
+	settings.net_hang_reload = 0;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
 	memset(settings.avatar_mii, 0, sizeof(settings.avatar_mii));
 
@@ -466,7 +477,9 @@ bool settings_load(void) {
 	settings.browse_mode = _get_elem_int(node, "browse_mode", 0);
 	settings.progress_arc = _get_elem_int(node, "progress_arc", 0) == 1;
 	settings.edge_paging = _get_elem_int(node, "edge_paging", 0) == 1;
+	settings.new_badges = _get_elem_int(node, "new_badges", 0) == 1;
 	settings.sideways_remotes = _get_elem_int(node, "sideways_remotes", 0) == 1;
+	settings.net_hang_reload = _get_elem_int(node, "net_hang_reload", 0) == 1;
 	s =_get_elem_cdata(node, "app_sel");
 	if (s) {
 		strncpy(settings.app_sel, s, sizeof(settings.app_sel));
@@ -527,8 +540,14 @@ bool settings_save(void) {
 	mxmlNewInteger(node, settings.progress_arc);
 	node = mxmlNewElement(data, "edge_paging");
 	mxmlNewInteger(node, settings.edge_paging);
+	node = mxmlNewElement(data, "new_badges");
+	mxmlNewInteger(node, settings.new_badges);
 	node = mxmlNewElement(data, "sideways_remotes");
 	mxmlNewInteger(node, settings.sideways_remotes);
+	if (settings.net_hang_reload) {
+		node = mxmlNewElement(data, "net_hang_reload");
+		mxmlNewInteger(node, settings.net_hang_reload);
+	}
 
 	if (strlen(settings.app_sel) > 0) {
 		node = mxmlNewElement(data, "app_sel");
@@ -640,6 +659,8 @@ bool load_theme_xml(char *buf) {
 
 	_get_color(node, "font_color", &theme.default_font.color);
 	_get_gradient(node, "progress_gradient", &theme.progress);
+	_get_badge(node, "badge_new", &theme.badge_new);
+	_get_badge(node, "badge_updated", &theme.badge_updated);
 
 	fnode = mxmlFindElement(node, root, "font", NULL, NULL, MXML_DESCEND_FIRST);
 	while (fnode != NULL) {
