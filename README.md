@@ -747,9 +747,11 @@ python3 tools/wii-bench/wiibench.py wait <id>
   `devkitpro/devkitppc` container with warnings as errors. It also builds the
   host tools and runs the Python tests on Windows, Linux, and macOS. Pass
   `EXTRA_CFLAGS=-Werror` to any `make` to check locally.
-- Every commit bumps both version fields, `CHANNEL_VERSION_STR` in
+- Each push bumps both version fields once, `CHANNEL_VERSION_STR` in
   `channel/channelapp/config.h` and `CHANNEL_VERSION` in
-  `channel/title/Makefile`, to the same release.
+  `channel/title/Makefile`, to the same release. Between bumps HBC reports
+  the release plus `+N.gHASH` (commits since the bump and git's hash, from
+  `build_tag.h`), so each test build still has its own version.
 - Text is LF everywhere, on every platform (`.gitattributes`). A few upstream
   files kept exactly as they came are marked `-text` there and keep CRLF. A
   checkout made before 1.8.3 on Windows still has CRLF files; run

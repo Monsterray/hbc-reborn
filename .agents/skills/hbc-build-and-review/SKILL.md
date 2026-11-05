@@ -60,8 +60,8 @@ WIILOAD="tcp:$wii_ip" /opt/devkitpro/tools/bin/wiiload channel/channelapp/channe
 python3 tools/hbc.py --wii "$wii_ip" wait
 ```
 
-The second command polls port 4299 with a read-only `HBCV` query until HBC answers and prints its version; compare it with `CHANNEL_VERSION_STR`.
+The second command polls port 4299 with a read-only `HBCV` query until HBC answers and prints its version; compare it with `CHANNEL_BUILD_STR` in `channel/channelapp/build_tag.h` (the release plus `+N.gHASH` between releases).
 
 ## Packaging and release checks
 
-For WAD changes, parse the ticket and TMD and verify both content sizes and decrypted SHA-1 hashes. Do not print, copy into the repo, or stage keys. Before a commit, inspect staged names and bump both version fields named in `AGENTS.md`. State whether validation covers a DOL boot, a WAD build, or an installed channel.
+For WAD changes, parse the ticket and TMD and verify both content sizes and decrypted SHA-1 hashes. Do not print, copy into the repo, or stage keys. Before a commit, inspect staged names; before a push, bump both version fields named in `AGENTS.md` once. State whether validation covers a DOL boot, a WAD build, or an installed channel.

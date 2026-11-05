@@ -13,6 +13,7 @@
 #include <zlib.h>
 
 #include "../config.h"
+#include "../build_tag.h"
 #include "blob.h"
 #include "tcp.h"
 #include "appentry.h"
@@ -428,8 +429,8 @@ static void * ld_tcp_func (void *arg) {
 			}
 
 			if (!memcmp(buf, "HBCV", 4)) {
-				tcp_write(sn, (const u8 *)CHANNEL_VERSION_STR,
-						sizeof(CHANNEL_VERSION_STR), NULL, NULL);
+				tcp_write(sn, (const u8 *)CHANNEL_BUILD_STR,
+						sizeof(CHANNEL_BUILD_STR), NULL, NULL);
 				tcp_close(sn);
 				continue;
 			}

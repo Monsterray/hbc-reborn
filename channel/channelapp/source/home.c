@@ -21,6 +21,7 @@
 #include <network.h>
 
 #include "../config.h"
+#include "../build_tag.h"
 #include "../../../sdk/hbc_agent.h"
 #include "controls.h"
 #include "gfx.h"
@@ -184,7 +185,7 @@ void home_init(void) {
 	hbc_agent_config cfg = { 0 };
 
 	cfg.name = "The Homebrew Channel";
-	cfg.version = CHANNEL_VERSION_STR;
+	cfg.version = CHANNEL_BUILD_STR;
 
 	// HBC answers port 4299 itself (loader.c, devnet.c), so the agent must
 	// not start a second server or bring up the network on its own. It
@@ -257,7 +258,7 @@ home_action home_show(void) {
 	u32 ip = net_gethostip();
 
 	// Refresh the info rows; the overlay copies them each frame.
-	snprintf(version_text, sizeof(version_text), "%s", CHANNEL_VERSION_STR);
+	snprintf(version_text, sizeof(version_text), "%s", CHANNEL_BUILD_STR);
 	snprintf(ios_text, sizeof(ios_text), "IOS%d v%d.%d", IOS_GetVersion(),
 			 IOS_GetRevisionMajor(), IOS_GetRevisionMinor());
 	if (loader_tcp_initialized() && ip)

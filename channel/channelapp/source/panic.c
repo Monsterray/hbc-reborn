@@ -8,6 +8,7 @@
 #include "gfx.h"
 #include "devnet.h"
 #include "../config.h"
+#include "../build_tag.h"
 #include "../../../sdk/hbc_agent.h"
 #include "panic_core.h"
 
@@ -362,7 +363,7 @@ static void hbc_exception_screen(unsigned exid, PPCContext *ctx)
 	info.dar = dar; info.dsisr = dsisr;
 	info.uptime_ms = (u32) ((gettime() - start_time) / (TB_PER_S / 1000));
 	info.thread = (u32) KThreadGetSelf();
-	info.app = "HBC " CHANNEL_VERSION_STR;
+	info.app = "HBC " CHANNEL_BUILD_STR;
 	info.frames = frames; info.nframes = nframes;
 	// HBC crashed soon after its start last time too: the System Menu, not
 	// another reload of the same crash. Read before the block is replaced.

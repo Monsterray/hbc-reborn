@@ -49,6 +49,10 @@ import hbc  # noqa: E402
 
 config = (root / "channel/channelapp/config.h").read_text()
 expected = re.search(r'^#define CHANNEL_VERSION_STR "([^"]+)"', config, re.M)[1]
+# What the last build reports: the release plus its git build tag (Makefile).
+build_tag = root / "channel/channelapp/build_tag.h"
+if build_tag.exists():
+    expected = re.search(r'"([^"]+)"', build_tag.read_text())[1]
 
 KEEP_PROFILE = os.environ.get("HBC_KEEP_PROFILE") == "1"
 PROFILE_PREFIX = "hbc-dolphin-"

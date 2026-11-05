@@ -19,6 +19,7 @@
 #include <zlib.h>
 
 #include "../config.h"
+#include "../build_tag.h"
 #include "appentry.h"
 #include "devfile.h"
 #include "devnet.h"
@@ -202,7 +203,7 @@ static s32 status_json(char *buf, size_t size) {
 			"\"heap_free\":%u,\"tcp_stack_used\":%u,"
 			"\"tcp_stack_size\":%u,\"init_ms\":%u,\"scan_ms\":%u,"
 			"\"ip\":\"%u.%u.%u.%u\",\"net_starts\":%u,\"apps\":%u,\"device\":",
-			CHANNEL_VERSION_STR, DEVNET_PROTO, IOS_GetVersion(), IOS_GetRevision(),
+			CHANNEL_BUILD_STR, DEVNET_PROTO, IOS_GetVersion(), IOS_GetRevision(),
 			read32(0x0d800064) == 0xffffffff ? "true" : "false",
 			SYS_GetArena1Size(), SYS_GetArena2Size(),
 			heap.fordblks, loader_tcp_stack_used(),

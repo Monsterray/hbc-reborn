@@ -15,6 +15,7 @@
 #include <debug.h>
 
 #include "../config.h"
+#include "../build_tag.h"
 #include "controls.h"
 #include "keyboard.h"
 #include "appentry.h"
@@ -387,7 +388,7 @@ void main_real(void) {
 	// the play record's NAND write (about 120 ms) would hold up any IOS call
 	// made meanwhile. The fade-in below makes none.
 	playtime_destroy((u64) hbc_start);
-	hlog("The Homebrew Channel %s, IOS%d v%d\n", CHANNEL_VERSION_STR, IOS_GetVersion(),
+	hlog("The Homebrew Channel %s, IOS%d v%d\n", CHANNEL_BUILD_STR, IOS_GetVersion(),
 		 IOS_GetRevision());
 	view_bubbles = true;
 
