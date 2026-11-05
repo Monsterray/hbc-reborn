@@ -238,9 +238,10 @@ crash-2 (8 s into the menu) reloaded after the countdown with its record
 (20261105-002121-069b88); crash-3 (the screen faults itself) left by the stub
 and kept the first record (20261105-002324-2c7557). The capture card showed
 no picture during these runs, so the screen itself was not seen. The
-crash-loop guard looped on the Wii while Priiloader autoboot was changed
-mid-test (20261105-003228-c06d2e); it is to be run again with Priiloader
-booting the System Menu and video recorded. The hardware reset path and a
+crash-loop guard: with a crash-1 build installed as LULZ and Priiloader
+booting the System Menu, starting LULZ from the Wii Menu gave a black screen
+and then the Wii Menu again, twice (1.15.1). The first try looked like a loop
+while Priiloader still autobooted an HBC (20261105-003228-c06d2e). The hardware reset path and a
 stub started with IOS wedged cannot be shown in Dolphin.
 
 ### 1.14.31: a network hang leaves HBC running; reloading is a developer setting
