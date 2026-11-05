@@ -456,6 +456,12 @@ whichever Wii is free first, unless it names one.
     (`sd:/bootmii`) or a cIOS, or reads a disc (`--needs disc` keeps it off `devwii`, so it
     would land on `lrwii`), says `--wii devwii` (or `--wii lrwii` when Monty asked for that
     console), never `--wii dev`.
+  - **`--each` with `--wii GROUP`: one copy per Wii.** `add --wii dev --each ...` queues the job
+    once for every Wii of the group (`devwii` and `lrwii`), each copy named `NAME @wii` and pinned
+    to its Wii, and prints one `ID wii` line per copy. Without `--each` the job runs on one Wii only.
+    **Use it sparingly**: for a major update or a release, when the same result from each Wii
+    is worth the Wii time (two consoles are busy for it). A Wii that lacks a part the job
+    `--needs` gets no copy. Everything said about `lrwii` still applies to its copy.
   - A group may hold a pinned Wii: the group name asks for it explicitly (that is how `lrwii`,
     pinned, is in `dev`). `any` never reaches a pinned Wii, nor does a job with no `--wii`.
   - A Wii's name and a group's name can't be the same (the Wii was called `dev` before

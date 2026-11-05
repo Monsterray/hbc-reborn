@@ -2201,6 +2201,7 @@ Tool work, no version of its own.
 - **After the next push:** rebuild the lease server container; `pool.json` keeps lrwii's saved
   groups over the environment's, so run `wiibench.py wii lrwii --group dev` once.
 - **Lanes:** the name column is 6 wide for `devwii`.
+- **`add --wii GROUP --each`:** one copy per member (named `NAME @wii`, pinned to it, `each` in the job); a member that lacks a needed part gets none; it says to use it sparingly (major updates, releases).
 
 #### Bump: a person tells a waiting turn the Wii is back
 

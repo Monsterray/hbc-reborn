@@ -1462,6 +1462,26 @@ class MultiWiiTest(unittest.TestCase):
         job = json.loads((self.home / "queue/pending" / f"{r.stdout.strip()}.json").read_text())
         self.assertEqual(job["needs"], ["network"])
 
+    def test_each_queues_one_copy_for_every_wii_of_the_group(self):
+        env = dict(self.env, WII_BENCH_WIIS="devwii=127.0.0.1:9 lacks:disc group:dev, lr=127.0.0.2:9 pinned group:dev, prod=127.0.0.3:9 pinned")
+        add = lambda *a: subprocess.run([sys.executable, str(BENCH), "add", *a, "--name", "rel", "--", sys.executable, "-c", "0"],
+                                        env=env, capture_output=True, text=True, timeout=30)
+        r = add("--each")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--each needs --wii GROUP", r.stderr)
+        r = add("--wii", "dev", "--each")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Use it sparingly", r.stderr)
+        got = dict(line.split() for line in r.stdout.splitlines())
+        self.assertEqual(sorted(got.values()), ["devwii", "lr"])
+        for jid, wii in got.items():
+            job = json.loads((self.home / "queue/pending" / f"{jid}.json").read_text())
+            self.assertEqual((job["want_wii"], job["name"], job["each"]), (wii, f"rel @{wii}", "dev"))
+        r = add("--wii", "dev", "--each", "--needs", "disc")                                 # devwii lacks a disc: lr only
+        self.assertEqual([l.split()[1] for l in r.stdout.splitlines()], ["lr"])
+        r = add("--wii", "nope", "--each")
+        self.assertEqual(r.returncode, 1)
+
     def test_the_benchs_own_pool_has_dev_as_a_group_of_two_wiis(self):
         import re
         text = (BENCH.parent / "compose.yaml").read_text()

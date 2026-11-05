@@ -1630,6 +1630,7 @@ def cmd_add(a):
         job["want_wii"] = a.wii
     if a.needs:
         job["needs"] = sorted(set(a.needs))
+    names = None
     if job.get("want_wii") or job.get("needs"):
         names = pool_names(timeout=3)
         groups = sorted(set().union(*GROUPS.values())) if GROUPS else []
@@ -1640,15 +1641,32 @@ def cmd_add(a):
             sys.exit(f"add: no Wii can take this job: it needs {', '.join(job['needs'])}, and "
                      + "; ".join(f"{n} lacks {', '.join(sorted(LACKS[n]))}" for n in names if LACKS.get(n))
                      + (f" ({job['want_wii']} asked for)" if job.get("want_wii") else ""))
+    each = [None]
+    if a.each:                                     # one copy per Wii of the group
+        if not a.wii or a.wii == "any":
+            sys.exit("add: --each needs --wii GROUP: every Wii of that group gets its own copy of the job")
+        if names is None:
+            sys.exit("add: --each needs the pool from the lease server, which did not answer")
+        each = [n for n in names if (a.wii == n or a.wii in GROUPS.get(n, ())) and may_use(dict(job, want_wii=n), n)]
+        if not each:
+            sys.exit(f"add: no Wii of {a.wii} can take this job")
+        print(f"add: --each queues {len(each)} jobs, one per Wii ({', '.join(each)}). Use it sparingly: "
+              "for a major update or a release, when the same test on each Wii is worth the extra Wii time.",
+              file=sys.stderr, flush=True)
     if not a.no_check:
         missing = command_missing(a.cmd, job["cwd"])
         if missing:
             sys.exit(f"add: {missing}; the job would fail at once (exit 127, or 9009 on Windows). "
                      "Fix the command, or --no-check if it only exists by the time the job runs")
-    tmp = PENDING / f"{job_id}.tmp"
-    tmp.write_text(json.dumps(job, indent=1))
-    fs_retry(tmp.rename, PENDING / f"{job_id}.json")
-    print(job_id, flush=True)
+    for wii in each:
+        one = dict(job)
+        if wii:
+            one["id"] = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+            one["want_wii"], one["name"], one["each"] = wii, f"{job['name']} @{wii}", a.wii
+        tmp = PENDING / f"{one['id']}.tmp"
+        tmp.write_text(json.dumps(one, indent=1))
+        fs_retry(tmp.rename, PENDING / f"{one['id']}.json")
+        print(one["id"] + (f" {wii}" if wii else ""), flush=True)
     start_dispatcher()
     send_queue()
 
@@ -3734,6 +3752,9 @@ def main():
     s.add_argument("--no-check", action="store_true", help="queue it even if its program is not found now")
     s.add_argument("--wii", metavar="NAME", help="run it on this Wii, or on any free Wii of this group "
                    "(default, or `any`: whichever unpinned Wii is free)")
+    s.add_argument("--each", action="store_true",
+                   help="with --wii GROUP: queue one copy of the job for EVERY Wii of the group, not one job for "
+                        "whichever is free. Use it sparingly: a major update or a release, for more data")
     s.add_argument("--needs", action="append", metavar="PART",
                    help="a part the job needs, e.g. disc: never on a Wii whose pool entry says lacks:PART")
     s.add_argument("--collect", action="append", metavar="PATH",
