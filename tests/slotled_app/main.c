@@ -119,6 +119,23 @@ static void check(void)
 	r = (int)ticks_to_millisecs(gettime());
 	slotled_wait();
 	say("slotled_wait: %d ms (600 expected)\n", (int)ticks_to_millisecs(gettime()) - r);
+	{
+		// A full flash over a dim level must hand back to the dim level,
+		// not stop the timer with the pin on (seen on the Wii, 1.14.33).
+		u32 on = 0, n = 0;
+		u64 end;
+
+		slotled_set(24);
+		hold(50);
+		slotled_flash(255, 40);
+		slotled_wait();
+		hold(20);
+		for (end = gettime() + millisecs_to_ticks(40); gettime() < end; n++)
+			on += (*(volatile u32 *)0xCD0000C0 & 0x20) != 0;
+		say("after a flash over 24: pin on in %u of %u samples\n", (unsigned)on, (unsigned)n);
+		slotled_set(0);
+		hold(20);
+	}
 	slotled_shutdown();
 	say("pin %s at the start, %s now\n", before ? "on" : "off",
 	    (*(volatile u32 *)0xCD0000C0 & 0x20) ? "on" : "off");

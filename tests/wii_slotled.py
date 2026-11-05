@@ -19,7 +19,7 @@ The capture card cannot see the slot light, so `demo` and `ios` are only
 as good as the person watching.
 
 usage: tests/wii_slotled.py check | demo | ios [--first N] [--last N] | save N
-queue: wiibench.py add --name slotled-STEP --cwd REPO -- C:/Python312/python.exe tests/wii_slotled.py STEP
+queue: wiibench.py add --wii devwii --name slotled-STEP --cwd REPO -- C:/Python312/python.exe tests/wii_slotled.py STEP
 """
 
 import argparse
@@ -139,6 +139,10 @@ def check_report(text):
     need(re.search(r"at 255: OUT [0-9a-f]*[2367abef][0-9a-f]\b", text) is not None, "255 is on")
     m = re.search(r"slotled_wait: (\d+) ms", text)
     need(m is not None and 580 <= int(m.group(1)) <= 640, "three 200 ms blinks take 600 ms")
+    m = re.search(r"after a flash over 24: pin on in (\d+) of (\d+) samples", text)
+    # Level 24 is on for 35 us of each 4 ms period: about 1%.
+    need(m is not None and int(m.group(2)) > 0 and int(m.group(1)) * 20 < int(m.group(2)),
+         "a flash hands back to the dim level")
     m = re.search(r"pin (on|off) at the start, (on|off) now", text)
     need(m is not None and m.group(1) == m.group(2), "the light is left as it was found")
     need(text.rstrip().endswith("done"), "the app finished")

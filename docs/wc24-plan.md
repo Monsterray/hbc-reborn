@@ -163,6 +163,38 @@ This part is separate from WiiConnect24, and smaller:
 - **Not planned:** anything that logs into WFC for an app. That is a game's
   own protocol.
 
+### Future research: waking the Wii from the network
+
+Not in any phase. Record findings here before anything is built.
+
+- **The idea:** wake-on-LAN for a Wii in WiiConnect24 standby (the yellow
+  power light): a packet or a WiiConnect24 download turns it fully on.
+- **Why the Wii cannot do it now:**
+  - In standby the PowerPC is off. Only IOS runs, on the Starlet, with KD
+    downloading on its schedule.
+  - KD only fetches; it listens for nothing.
+  - Nintendo's software never wakes the Wii from the network.
+- **What exists:** `/dev/stm/immediate` ioctl 0x2005, `IOCTL_STM_WAKEUP` in
+  libogc's `stm.c`, leaves idle mode. In standby no app runs to send it, so
+  only code inside IOS could.
+- **What it would take:**
+  - A module in a custom IOS (the d2x cIOS fork), loaded in the IOS that
+    runs in standby. That would need a patched boot path, because standby
+    uses the IOS the Wii Menu chose.
+  - It watches the network: a magic packet, or a result KD downloaded.
+  - Then it sends the wake.
+- **What to learn first, all from documents or decomps, never from our
+  Wii's dumps (those are for ironic only):**
+  - Which IOS runs in standby.
+  - Whether the network stays up between KD's checks.
+  - What 0x2005 does from idle mode.
+  - How the Wii Remote's power button wakes it, over Bluetooth.
+- **The risk:** a mistake in standby IOS code can leave the Wii unbootable
+  until BootMii. Every step is attended, on the dev Wii only.
+- **Simpler options to try first:**
+  - A notice without a wake: the mail glow (part 4), or a Message Board post.
+  - A PC acting as a paired Wii Remote and pressing its power button.
+
 ## Phases and checks
 
 Each phase is its own commit (or several) on `develop`, with a bench run.

@@ -324,7 +324,7 @@ static void stop_ticking(void)
 /* At the start of each period, with interrupts off. */
 static void period_start(syswd_t alarm, void *arg)
 {
-	int level, done = 0;
+	int level, done = 0, flashing = 0;
 	u32 us;
 
 	(void)alarm;
@@ -339,6 +339,7 @@ static void period_start(syswd_t alarm, void *arg)
 	if (flash_left) {
 		flash_left--;
 		level = flash_level;
+		flashing = 1;
 	}
 	shown = level;
 	us = slotled_duty_us(level);
@@ -347,7 +348,9 @@ static void period_start(syswd_t alarm, void *arg)
 		struct timespec t = { 0, (long)us * 1000 };
 		SYS_SetAlarm(off_alarm, &t, off_edge, NULL);
 	}
-	if (ended && !flash_left && (us == 0 || us == SLOTLED_PERIOD_US)) {
+	/* Stop only on the held level itself: a flash's last period may be
+	 * 0 or full while the level beneath it is not. */
+	if (ended && !flashing && (us == 0 || us == SLOTLED_PERIOD_US)) {
 		SYS_CancelAlarm(period_alarm);
 		ticking = 0;
 	}

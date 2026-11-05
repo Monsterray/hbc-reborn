@@ -13,8 +13,8 @@ Wii.
 |---|---|---|---|---|
 | 1 | Which GPIO bank reaches the pin: `0xCD0000C0`, `0xCD8000C0`, or both? And without AHBPROT (an app started from a disc or a channel, not HBC)? | `slotled_init` takes the first bank whose direction bit is set. If a bank reads 0 without AHBPROT, the library still works, but we should say so. | `wii_slotled.py check` prints both banks. Run it again from an app without HBC's AHBPROT. | partly answered (2026-11-04, below): from HBC, both banks work. Still open: an app without AHBPROT |
 | 2 | Is `IPL.IDL` 2 bytes (libogc, Dolphin) or 3 (WiiBrew)? Which byte is Slot illumination? | `slotled_saved_level` and `slotled_save_level` take the last byte. That is right for 2 bytes; for 3 it relies on WiiBrew. | `check` prints the raw bytes. Then set Slot illumination in Wii Settings to each value and read it again. | answered (2026-11-04/05, below): 2 bytes, shutdown mode then Slot illumination. A check in Wii Settings would confirm it |
-| 3 | What do IOS's 30 flash patterns look like? Which one is "new mail"? | `slotled_ios_flash` takes a number with no name. The WiiConnect24 SDK wants the mail pattern (docs/wc24-plan.md, part 4). | Watch `wii_slotled.py ios`: each pattern is named on the TV for 5 s. Write one line per pattern here. | open |
-| 4 | How does a pattern end? Can a running pattern be stopped, and does it go on after the app exits or IOS reloads? | We cannot offer `slotled_ios_stop()` yet, and the README cannot say whether the light outlives the app. | Watch `ios`: after the last pattern, does the light stop? Exit to HBC, then launch another app, and watch. Try pattern 0 at priority 255. | open |
+| 3 | What do IOS's 30 flash patterns look like? Which one is "new mail"? | `slotled_ios_flash` takes a number with no name. The WiiConnect24 SDK wants the mail pattern (docs/wc24-plan.md, part 4). | Watch `wii_slotled.py ios`: each pattern is named on the TV for 5 s. Write one line per pattern here. | filmed (2026-11-05, below): what each looks like, if the numbering holds. Still open: which is new mail |
+| 4 | How does a pattern end? Can a running pattern be stopped, and does it go on after the app exits or IOS reloads? | We cannot offer `slotled_ios_stop()` yet, and the README cannot say whether the light outlives the app. | Watch `ios`: after the last pattern, does the light stop? Exit to HBC, then launch another app, and watch. Try pattern 0 at priority 255. | partly (2026-11-05, below): patterns end by themselves. Still open: stopping one, and outliving the app |
 | 5 | The rest of ioctl 0x6001: the user-pattern layout (flag bit 16: a `u16` pattern and a count, where in the 32-byte buffer?), flag bit 17 ("does not start the loop"), and the output words | It is needed for custom IOS patterns, which keep running while the PowerPC does other work, even in standby. | `slotled_ios_flash_raw` with probes, watched. It can also be read from IOS's STM module in a public disassembly or decomp, if one exists. Never from our own Wii's dumps: those are for ironic only. | open |
 | 6 | Who wins when IOS flashes and slotled drives the pin at the same time? Does the IOS level (0x6002) change anything for direct effects? | The README says "a direct effect wins". That is the expected behaviour, but it is unproven. | Start `slotled_ios_flash`, then `slotled_pulse`. Watch; then stop the pulse and watch again. | open |
 | 7 | What do 4 ms periods cost on hardware? Is 20 µs the shortest visible on-time? Do the levels look even, and does 250 Hz flicker? | Proof of "two short interrupts a period" and of the level curve. The curve may want a stronger power than 2. | `check` gives the busy-loop share. `demo` step 1 shows levels 8, 32, 96 and 255: watch them, and try lower levels. | cost answered (2026-11-04, below). Still open: how the levels look |
@@ -65,3 +65,65 @@ with the owner's OK):
   libogc holds its own, and `slotled_ios_level` through slotled's handle
   returned 0. The fallback to libogc's `STM_SetLedMode` is only for an IOS
   that refuses; Dolphin behaves the same.
+
+**2026-11-05, dev Wii, filmed by the owner** (phone videos, not in git;
+bench jobs 20261105-095048-c03368 `demo` and 20261105-095048-e57440 `ios`).
+Read frame by frame: the blue of the slot's rim, per frame, at 30 fps. The
+phone's exposure changes, so only *off*, *dim* and *bright* and the timings
+count, not the levels.
+
+- **`demo`:** blink (200/200 ms), pulse (2 s), heartbeat, Morse SOS (dots
+  80 ms, dashes 240 ms), the wave and the fade-out all looked as written.
+  - **A bug, fixed in 1.15.13:** in step 6 the first `slotled_flash` left
+    the light fully on for 4.3 s instead of 40 ms flashes over level 24.
+    The timer stopped on the flash's last period, because that period was
+    full on. `check` now tests a flash over level 24. In Dolphin it fails on
+    the old code (pin on in every sample) and passes on the new one (on 0.9%
+    of the time).
+  - Step 1 (levels 8, 32, 96, 255) is not on the video, so item 7's look is
+    still open.
+- **`ios`:**
+  - The three IOS levels alone lit nothing: 0x6002 sets how bright
+    patterns are, and does not turn the light on.
+  - All 30 patterns returned 0, with output words 0.
+  - The numbering below assumes the first light (14.2 s into the video) is
+    pattern 0. Each window is 5 s, the last one cut short.
+
+| Pattern | What it showed |
+|---|---|
+| 0 | quick flickers, dim 1.5 s, then bright to the end |
+| 1 | bright, steady |
+| 2 | bright 1.1 s, then off |
+| 3 | off 0.4 s, bright 1.2 s, then off |
+| 4 | a 0.2 s blip, then off |
+| 5 | bright 2.1 s, then off |
+| 6 | bright 1 s, then off |
+| 7 | two blinks (0.5 s on, 0.23 s off), then off |
+| 8 | a 0.2 s double blip, then off |
+| 9 | bright 2.2 s, then off |
+| 10 | bright 2.4 s, then off |
+| 11 | bright 1 s, off 3.8 s, a blip at the end |
+| 12 | bright 1.9 s, then off |
+| 13 | two blinks (0.5 s on, 0.23 s off), then off |
+| 14 | a 0.2 s blip, off 2.6 s, then bright 2.1 s |
+| 15 | bright 0.3 s, off 2.6 s, then bright 1.9 s |
+| 16 | two blinks, off 1 s, bright 1.9 s, then off |
+| 17 | blips, dim 2.6 s, then bright 2.1 s |
+| 18 | a blip, dim 2.6 s, then bright 1.9 s |
+| 19 | two blinks, dim 1.6 s, fast flicker, then bright |
+| 20 | dim, steady |
+| 21 | off |
+| 22 | off |
+| 23 | two blinks, then dim |
+| 24 | flicks, dim 1.4 s, then bright 2.6 s |
+| 25 | flicks, dim 3.1 s, then flicks |
+| 26 | flicks, dim 1.3 s, then bright 2.5 s |
+| 27 | flicks, dim 1.5 s, then bright 2.5 s |
+| 28 | off after 0.2 s |
+| 29 | off (cut short) |
+
+  - Most patterns end by themselves within a few seconds. After the last,
+    the light was off until the video ended.
+  - None looks like a slow endless pulse in a 5 s window, so which one is
+    new mail is still open. Next: hold each candidate for 30 s, or film the
+    Wii Menu's own mail glow and compare.
