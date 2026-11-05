@@ -161,6 +161,16 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.7: a network upload waits for the scan before it is added
+
+Third audit, item 10: the menu loop took an uploaded app's change from
+`devnet_take_app_change` and called `app_entry_add` at once, even while the
+scan thread was loading the list. `app_entry_add` blocks the UI until the
+scan ends and the scan could add the same app a second time. The loop now
+leaves the change queued while `app_entry_is_loading()` and takes it on a
+frame after the scan. No host test: main.c needs libogc. Checked: build
+with `-Werror`.
+
 ### 1.15.6: a scan marks every app seen whatever the badge setting
 
 Third audit, item 9: `app_entry_load_single` read `settings.new_badges`

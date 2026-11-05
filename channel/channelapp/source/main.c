@@ -499,7 +499,11 @@ void main_real(void) {
 			app_entry *added = NULL;
 			bool reload = false;
 
-			while (devnet_take_app_change(changed, sizeof(changed))) {
+			// While a scan runs the changes stay queued: app_entry_add would
+			// block the UI until it ends and could add an app the scan adds too.
+			// They are taken on a frame after it.
+			while (!app_entry_is_loading() &&
+					devnet_take_app_change(changed, sizeof(changed))) {
 				if (!reload) {
 					app_sel = browser_sel();
 					if (app_sel)
