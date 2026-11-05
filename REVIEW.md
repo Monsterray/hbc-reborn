@@ -161,6 +161,17 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.11: queued agent keys are dropped when HOME closes
+
+Fourth audit, item 14: the overlay takes one key per 12 frames, so keys sent
+faster than that (`hbc.py key`, a typed burst) were still in the agent's
+queue when HOME closed, and a queued `h` opened HOME again. `home_watched`
+now calls the new `agent_key_clear` as soon as the overlay returns, which
+covers `hbc_agent_home` and `hbc_agent_home_fb` (HBC's own home.c uses the
+latter). No host test: the queue sits behind libogc's ISR macros in the
+agent. Checked: channel and `tests/agent_app` build with `-Werror`.
+
+
 ### 1.15.10: a failed tree delete says how far it got
 
 Fourth audit, item 13: a failed op E (an I/O error halfway through a

@@ -1805,6 +1805,7 @@ static s32 home_watched(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	agent_overlay_open = true;
 	res = home(rmode, fb0, fb1);
 	agent_overlay_open = false;
+	agent_key_clear();   // keys the overlay did not get to must not reopen it
 	hbc_agent_alive_reset();
 	return res;
 }

@@ -339,6 +339,17 @@ int agent_key_pop(void) {
 	return k;
 }
 
+// Drop every queued key. The overlay takes one key per 12 frames, so keys
+// typed faster than that are still queued when it closes, and a queued 'h'
+// would open HOME again.
+void agent_key_clear(void) {
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	key_head = key_count = 0;
+	_CPU_ISR_Restore(level);
+}
+
 bool hbc_agent_home_pending(void) {
 	u32 level;
 	bool home = false;
