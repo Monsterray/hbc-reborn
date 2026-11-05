@@ -3032,7 +3032,7 @@ def job_problem(j):
     return None
 
 
-LANE_PREFIX = 13      # columns before a lane's cells: "  dev   .213 "
+LANE_PREFIX = 14      # columns before a lane's cells: "  devwii .213 "
 LANE_STATS = 26       # columns after them: jobs, failed, busy, longest wait
 
 

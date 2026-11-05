@@ -580,18 +580,18 @@ render_lanes() {
     (( ${NROWS[lanes]:-0} == 0 )) && return
     heading "$c_cyan" "WIIS, HOUR BY HOUR" "last ${HOURS} h, ${KV[lane_step]:-?} a cell, oldest on the left" lanes
     printf -v stats ' │%5s%5s%6s%8s' JOBS FAIL BUSY "LONGEST"
-    lines+=("${c_gray}  $(printf '%-11s' '')${KV[lane_ticks]:-}${stats}${c_reset}")
+    lines+=("${c_gray}  $(printf '%-12s' '')${KV[lane_ticks]:-}${stats}${c_reset}")
     for (( i = 0; i < ${NROWS[lanes]}; i++ )); do
         row_fields lanes "$i"
         lane_cells "${F[2]}"
         printf -v stats ' │%5s%5s%6s%8s' "${F[4]}" "${F[5]}" "${F[6]}" "${F[7]}"
-        local head; printf -v head '  %-5s %-4s ' "${F[0]:0:5}" "${F[1]:0:4}"
+        local head; printf -v head '  %-6s %-4s ' "${F[0]:0:6}" "${F[1]:0:4}"
         lines+=("${c_bold}${head}${c_reset}${V}${c_gray}${stats}${c_reset}")
         if [[ "${F[3]}" =~ [^\ ] ]] && [ "${F[3]}" != "-" ]; then
-            lines+=("${c_gray}             ${F[3]}${c_reset}")
+            lines+=("${c_gray}              ${F[3]}${c_reset}")
         fi
     done
-    lines+=("             ${c_green}█ ok${c_reset}  ${c_red}█ failed or froze${c_reset}  ${c_cyan}█ running${c_reset}  ${c_yellow}░ waiting for HBC${c_reset}  ${c_bold}${c_magenta}⚑${c_reset} ${c_gray}used outside the queue  · idle${c_reset}")
+    lines+=("              ${c_green}█ ok${c_reset}  ${c_red}█ failed or froze${c_reset}  ${c_cyan}█ running${c_reset}  ${c_yellow}░ waiting for HBC${c_reset}  ${c_bold}${c_magenta}⚑${c_reset} ${c_gray}used outside the queue  · idle${c_reset}")
     lines+=("")
 }
 

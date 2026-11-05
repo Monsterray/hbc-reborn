@@ -1462,6 +1462,28 @@ class MultiWiiTest(unittest.TestCase):
         job = json.loads((self.home / "queue/pending" / f"{r.stdout.strip()}.json").read_text())
         self.assertEqual(job["needs"], ["network"])
 
+    def test_the_benchs_own_pool_has_dev_as_a_group_of_two_wiis(self):
+        import re
+        text = (BENCH.parent / "compose.yaml").read_text()
+        pool = self.wb.parse_pool(re.search(r'WII_BENCH_WIIS: "(.*?)"', text).group(1))
+        by = {w["name"]: w for w in pool}
+        self.assertEqual(list(by), ["devwii", "lrwii", "prod"])                             # devwii first: old dispatchers
+        self.assertEqual(by["devwii"]["groups"], ["dev"])
+        self.assertEqual(by["lrwii"]["groups"], ["dev", "devprod"])
+        self.assertEqual((by["lrwii"]["pinned"], by["prod"]["pinned"], by["devwii"]["pinned"]), (True, True, False))
+        self.assertEqual(by["prod"]["groups"], [])                                           # real data: no group
+        self.assertEqual(by["devwii"]["lacks"], ["disc"])
+        l = self.wb.Leases(ttl=60, clock=lambda: 0.0, pool=pool)
+        l.grace_until = 0
+        a = l.acquire({"ticket": "a", "host": "h", "name": "ja", "want": "dev"})
+        b = l.acquire({"ticket": "b", "host": "h", "name": "jb", "want": "dev"})
+        self.assertEqual((a["slot"], b["slot"]), ("devwii", "lrwii"))                        # two at once
+        self.assertFalse(l.acquire({"ticket": "c", "host": "h", "name": "jc", "want": "devwii"})["granted"])
+        l.release({"ticket": "a", "wii": "hbc"})
+        l.release({"ticket": "b", "wii": "hbc"})
+        c = l.acquire({"ticket": "c", "host": "h", "name": "jc", "want": "any"})
+        self.assertEqual(c["slot"], "devwii")                                                # no --wii: never lrwii
+
     def test_a_group_takes_the_job_to_any_free_wii_in_it(self):
         pool = self.wb.parse_pool("dev=10.0.0.1 group:dev group:bench, dev2=10.0.0.2 group:dev, lr=10.0.0.3 pinned group:lab")
         self.assertEqual([(w["name"], w["groups"]) for w in pool],

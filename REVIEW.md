@@ -2188,6 +2188,20 @@ Tool work, no version of its own.
   - `add` accepting a group's name and refusing an unknown one;
   - the manage page in a live terminal: select a Wii, the pin question, typing a group name.
 
+#### The dev Wii is `devwii`; `dev` is a group (2026-11-05)
+
+Tool work, no version of its own.
+
+- **Why:** a group can't share a Wii's name (`--wii dev` would mean two things), and Monty wants
+  `lrwii` and the dev Wii testing for different projects at once. So the Wii is `devwii` and
+  the group `dev` holds `devwii` and `lrwii` (pinned, so only a group or name reaches it; `devprod`
+  is `lrwii` alone). Old `--wii dev` scripts keep working as the group.
+- **Risk handled in the docs:** NAND, `sd:/bootmii` and cIOS work must say `--wii devwii`. bootmii-reborn,
+  WiiStation, USB Loader GX, Wii64, priiloader-reborn, the skill and the kit say so.
+- **After the next push:** rebuild the lease server container; `pool.json` keeps lrwii's saved
+  groups over the environment's, so run `wiibench.py wii lrwii --group dev` once.
+- **Lanes:** the name column is 6 wide for `devwii`.
+
 #### Bump: a person tells a waiting turn the Wii is back
 
 Tool work, no version of its own.

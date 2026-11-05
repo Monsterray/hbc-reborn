@@ -254,12 +254,12 @@ The two lines under the tabs, on every page:
 - **Every Wii on one line**, problems first:
 
   ```text
-  ▲ prod waiting 6m40s for HBC: Wii busy or off  │  ▶ dev vbagx tests (12) 3m12s/30m00s +2 queued  │  ● lrwii free (pinned)
+  ▲ prod waiting 6m40s for HBC: Wii busy or off  │  ▶ devwii vbagx tests (12) 3m12s/30m00s +2 queued  │  ● lrwii free (pinned)
   ```
 
   `✖` left out of HBC, `▲` waiting for HBC, `▶` running, `●` free, `○` the lease server
   doesn't answer. When the line doesn't fit, each Wii gets a shorter form (`▲ prod HBC? 6m40s`),
-  then only its times (`▲ prod 6m40s  ▶ dev 3m12s +2  ● lrwii`).
+  then only its times (`▲ prod 6m40s  ▶ devwii 3m12s +2  ● lrwii`).
 - Whether the lease server answers, what this dispatcher is doing, and how many errors and
   warnings the window holds.
 
@@ -397,23 +397,23 @@ whichever Wii is free first, unless it names one.
   or newlines, in `$WII_BENCH_WIIS`. This bench's, in `compose.yaml`:
 
   ```bash
-  WII_BENCH_WIIS="dev=192.168.8.213 lacks:disc group:dev, lrwii=192.168.8.243 pinned, prod=192.168.8.200 pinned"
+  WII_BENCH_WIIS="devwii=192.168.8.213 lacks:disc group:dev, lrwii=192.168.8.243 pinned group:dev group:devprod, prod=192.168.8.200 pinned"
   ```
 
   | Name | Address | Takes | Lacks | Known faults |
   |---|---|---|---|---|
-  | `dev` | 192.168.8.213 | any job: the bench Wii | `disc` | The disc drive is broken. Its USB flash drive (the SanDisk) is bad. |
-  | `lrwii` | 192.168.8.243 | only `add --wii lrwii`: the living-room Wii, real data | | Slot 249 holds d2x r65535: a USB write through it can hang. |
+  | `devwii` | 192.168.8.213 | any job: the bench Wii. Group `dev`. | `disc` | The disc drive is broken. Its USB flash drive (the SanDisk) is bad. |
+  | `lrwii` | 192.168.8.243 | only `add --wii lrwii` or `--wii dev` / `--wii devprod`: the living-room Wii, real data. Groups `dev`, `devprod`. | | Slot 249 holds d2x r65535: a USB write through it can hang. |
   | `prod` | 192.168.8.200 | only `add --wii prod`: the everyday Wii, real data | | |
 
-  - **dev's disc drive** (USB Loader GX, 2026-10-24, jobs `20261024-224050-0fdbe5`,
+  - **devwii's disc drive** (USB Loader GX, 2026-10-24, jobs `20261024-224050-0fdbe5`,
     `-225416-cf8733` and `-225416-7aa8eb`):
     - The drive sees the disc: cover status 2, and DI reset succeeds.
     - Every disc ID read fails: -2 through d2x cIOS 249 (v11.1.0-rc1) and through 251 (base
       58), and -16 through stock IOS 58.
     - The same disc (New Super Mario Bros. Wii, SMNE01) reads on `lrwii`.
-    - A failed disc read on `dev` says nothing about the code under test.
-  - **dev's SanDisk** is behind 20-second-to-minutes writes and sectors that landed as junk
+    - A failed disc read on `devwii` says nothing about the code under test.
+  - **devwii's SanDisk** is behind 20-second-to-minutes writes and sectors that landed as junk
     (cIOS Research's finding). Don't trust USB writes there.
   - **lrwii's slot 249** holds d2x r65535, which is old and has no backup: never overwrite it.
     A USB write through it can stop answering. A disc dump froze there at 16.53 MB on
@@ -448,23 +448,29 @@ whichever Wii is free first, unless it names one.
     monitor show which Wii each job got.
   - **`--wii NAME` for a Wii** (`--wii lrwii`) runs the job on that Wii only.
   - **`--wii GROUP` for a group** (`--wii dev`) runs it on any free Wii of that group. A group is
-    a `group:NAME` mark in the pool, again for each; a Wii can be in several. The bench's dev
-    Wiis are the group `dev`, so an agent that says `--wii dev` uses a second dev Wii as soon
-    as one is added to the group, and jobs for a group don't hold up other jobs.
-  - A group may hold a pinned Wii: the group name asks for it explicitly. `any` never does.
-  - A Wii's own name and a group's name can't be the same, except for the Wii itself (a Wii
-    `dev` in group `dev`: `--wii dev` then means every Wii of the group).
+    a `group:NAME` mark in the pool, again for each; a Wii can be in several (tags). Jobs for a
+    group don't hold up other jobs.
+  - **This bench's groups:** `dev` is `devwii` and `lrwii`, so two jobs added with `--wii dev`
+    run at once, one on each; `devprod` is `lrwii` alone (the name for work on the living-room
+    console). `--wii devwii` is the dev Wii alone. A job that writes NAND, the boot files
+    (`sd:/bootmii`) or a cIOS, or reads a disc (`--needs disc` keeps it off `devwii`, so it
+    would land on `lrwii`), says `--wii devwii` (or `--wii lrwii` when Monty asked for that
+    console), never `--wii dev`.
+  - A group may hold a pinned Wii: the group name asks for it explicitly (that is how `lrwii`,
+    pinned, is in `dev`). `any` never reaches a pinned Wii, nor does a job with no `--wii`.
+  - A Wii's name and a group's name can't be the same (the Wii was called `dev` before
+    2026-11-05, so `dev` could not be a group then); a Wii can be in no group of its own name.
   - `add` refuses a name that is neither a Wii nor a group.
 - **Changing the pool without a restart:** the manager, from the monitor's manage page or the
   command line, on the lease server:
 
   ```bash
   python tools/wii-bench/wiibench.py wii                       # list: pinned, groups, lacks
-  python tools/wii-bench/wiibench.py wii dev2 --group dev      # dev2 joins group dev
-  python tools/wii-bench/wiibench.py wii dev2 --ungroup dev
+  python tools/wii-bench/wiibench.py wii devwii2 --group dev   # devwii2 joins group dev
+  python tools/wii-bench/wiibench.py wii devwii2 --ungroup dev
   python tools/wii-bench/wiibench.py wii lrwii --pin           # only --wii lrwii jobs run there
   python tools/wii-bench/wiibench.py wii lrwii --unpin         # any job may run there
-  python tools/wii-bench/wiibench.py wii dev --lacks disc      # (and --has disc)
+  python tools/wii-bench/wiibench.py wii devwii --lacks disc   # (and --has disc)
   ```
 
   The manage page prints its keys twice: a legend at the top by group (SELECT, JOB, WII,
