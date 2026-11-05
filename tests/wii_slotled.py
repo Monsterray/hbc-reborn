@@ -10,6 +10,10 @@
            (--first/--last, 0..29), 5 s each, named on the TV
   save N   writes the Wii's SYSCONF (Slot illumination N, 0..2) and reads it
            back. Only on the owner's request: it is the Wii Menu's setting.
+           /shared2/sys is copied to the PC before and after (tests/nandget,
+           read-only); the job passes only if exactly the one byte changed
+           and SYSCONF kept its owner and permissions. The first copy is
+           the backup: put it back with tests/nandput if anything is wrong.
 
 The capture card cannot see the slot light, so `demo` and `ios` are only
 as good as the person watching.
@@ -31,6 +35,7 @@ PROTECTED = ("192.168.8.200", "192.168.8.243")  # real data: never written by th
 PY = sys.executable
 HBC = str(root / "tools" / "hbc.py")
 APP = root / "tests" / "slotled_app" / "slotled_app.dol"
+NANDGET = root / "tests" / "nandget" / "nandget.dol"
 RESULT = "sd:/slotled_test/result.txt"
 
 
@@ -52,9 +57,9 @@ def answers():
     return subprocess.run([PY, HBC, "--timeout", "3", "version"], capture_output=True).returncode == 0
 
 
-def launch(*args, wait_s=300):
+def launch(*args, wait_s=300, dol=APP):
     """Send the app, see HBC go away while it runs, then wait for HBC."""
-    tool("send", str(APP), *args, check=False)
+    tool("send", str(dol), *args, check=False)
     deadline = time.monotonic() + 30
     while answers() and time.monotonic() < deadline:
         time.sleep(0.5)
@@ -67,6 +72,54 @@ def report(out):
     text = path.read_text(errors="replace")
     print("-- result.txt --\n" + text, flush=True)
     return text
+
+
+def sysconf_copy(dest):
+    """/shared2/sys/SYSCONF as it is now, through nandget (read-only)."""
+    launch("/shared2/sys", "sd:/slbak_sys", dol=NANDGET)
+    tool("get", "-r", "sd:/slbak_sys", str(dest))
+    print(f"-- {dest.name}/result.txt --\n" + (dest / "result.txt").read_text(errors="replace"), flush=True)
+    sc = dest / "SYSCONF"
+    data = sc.read_bytes() if sc.exists() else b""
+    if len(data) != 0x4000 or data[:4] != b"SCv0" or data[-4:] != b"SCed":
+        sys.exit(f"{sc}: not a whole SYSCONF ({len(data)} bytes)")
+    return data
+
+
+def illum(sc):
+    """Slot illumination in a SYSCONF image (the last byte of IPL.IDL), or None."""
+    if len(sc) != 0x4000 or sc[:4] != b"SCv0" or sc[-4:] != b"SCed":
+        return None
+    count = int.from_bytes(sc[4:6], "big")
+    for i in range(count):
+        off = int.from_bytes(sc[6 + 2 * i:8 + 2 * i], "big")
+        if sc[off] == (2 << 5 | 6) and sc[off + 1:off + 8] == b"IPL.IDL":
+            return sc[off + 9 + sc[off + 8]]
+    return None
+
+
+def check_saved(after, text, value, before=None):
+    """The save's report, and the SYSCONF it left (and the one before, if known)."""
+    ok = True
+
+    def need(cond, what):
+        nonlocal ok
+        print(("ok   " if cond else "FAIL ") + what, flush=True)
+        ok &= bool(cond)
+
+    old = re.search(r"^before: (-?\d+)", text, re.M)
+    need(re.search(rf"slotled_save_level\({value}\): 0$", text, re.M), "slotled_save_level returned 0")
+    need(re.search(rf"^SYSCONF now: {value}$", text, re.M), "the app read the new level back")
+    attrs = re.findall(r"^attributes (?:before|after): (.*)$", text, re.M)
+    need(len(attrs) == 2 and attrs[0] == attrs[1] and attrs[0].startswith("0:"), "owner and permissions unchanged")
+    need(illum(after) == value, f"the SYSCONF left holds {value}")
+    if before is not None:
+        diff = [i for i in range(0x4000) if before[i] != after[i]]
+        if old and int(old.group(1)) == value:
+            need(not diff, "no byte changed: the level was already set")
+        else:
+            need(len(diff) == 1, f"exactly one byte changed: {[hex(i) for i in diff[:8]]}")
+    return ok
 
 
 def check_report(text):
@@ -114,7 +167,13 @@ def main():
     else:
         if a.value is None or not 0 <= a.value <= 2:
             sys.exit("save takes 0, 1 or 2")
+        if not NANDGET.exists():
+            sys.exit("build tests/nandget first: nothing was run")
+        before = sysconf_copy(out / "before")
         launch("save", str(a.value))
+        text = report(out)
+        after = sysconf_copy(out / "after")
+        return 0 if check_saved(after, text, a.value, before) and text.rstrip().endswith("done") else 1
     text = report(out)
     return 0 if text.rstrip().endswith("done") else 1
 

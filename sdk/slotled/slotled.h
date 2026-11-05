@@ -152,7 +152,10 @@ int slotled_ios_flash_raw(const uint32_t in[8], uint32_t out[8]);
 int slotled_saved_level(void);
 
 /* Saves it in SYSCONF (and sets the IOS level to match). The Wii Menu
- * uses it from the next boot. Writes the NAND: only on the user's request. */
+ * uses it from the next boot. Writes the NAND: only on the user's request.
+ * It rewrites the file in place, as libogc's CONF_SaveChanges does, so the
+ * file keeps its owner and permissions; only that one byte changes. Then it
+ * reads the file back and returns SLOTLED_E_IOS if it differs. */
 int slotled_save_level(int illum);
 
 /* ---- Pure parts (also on a PC) ---------------------------------------- */

@@ -6,7 +6,10 @@ a Wii's would (tests/wii_slotled.py checks it the same way).
 Dolphin keeps the GPIO register but shows no slot light, so this proves the
 code runs, not what the light looks like: that is tests/wii_slotled.py demo.
 
-usage: tests/dolphin_slotled.py      (after make -C tests/slotled_app)"""
+`save N` runs the save instead, on the run's own throwaway NAND, and checks
+the report and the SYSCONF Dolphin is left with.
+
+usage: tests/dolphin_slotled.py [save N]   (after make -C tests/slotled_app)"""
 
 import pathlib
 import subprocess
@@ -24,7 +27,11 @@ APP = root / "tests" / "slotled_app" / "slotled_app.dol"
 def main():
     if not APP.exists():
         sys.exit(f"{APP} is missing: make -C tests/slotled_app")
-    run = dolphin_smoke.Dolphin(APP, sd=True, net=False)
+    save = sys.argv[1:3] if sys.argv[1:2] == ["save"] else None
+    if save and (len(save) != 2 or save[1] not in ("0", "1", "2")):
+        sys.exit("usage: tests/dolphin_slotled.py [save 0|1|2]")
+    files = {"Load/WiiSDSync/slotled_test/args.txt": " ".join(save) + "\n"} if save else None
+    run = dolphin_smoke.Dolphin(APP, sd=True, net=False, files=files)
     result = run.profile / "Load" / "WiiSDSync" / "slotled_test" / "result.txt"
     time.sleep(25)
     # A normal close, so Dolphin copies its SD card back to the folder.
@@ -35,7 +42,12 @@ def main():
         run.stop()
     text = result.read_text(errors="replace") if result.exists() else ""
     print("-- result.txt --\n" + (text or "(none)"))
-    ok = bool(text) and wii_slotled.check_report(text)
+    if save:
+        sc = run.profile / "Wii" / "shared2" / "sys" / "SYSCONF"
+        data = sc.read_bytes() if sc.exists() else b""
+        ok = bool(text) and wii_slotled.check_saved(data, text, int(save[1]))
+    else:
+        ok = bool(text) and wii_slotled.check_report(text)
     faults = run.faults()
     for line in faults:
         print("fault: " + line[:160])

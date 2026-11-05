@@ -604,6 +604,22 @@ int slotled_saved_level(void)
 	return idl[r - 1] > SLOTLED_ILLUM_BRIGHT ? SLOTLED_E_FORMAT : idl[r - 1];
 }
 
+/* Read the file back after closing it, in blocks, and compare. */
+static int sysconf_matches(const char *path, const u8 *want, u32 size)
+{
+	static u8 blk[0x200] ATTRIBUTE_ALIGN(32);
+	s32 fd = IOS_Open(path, 1);
+	u32 at;
+
+	if (fd < 0)
+		return 0;
+	for (at = 0; at < size; at += sizeof blk)
+		if (IOS_Read(fd, blk, sizeof blk) != (s32)sizeof blk || memcmp(blk, want + at, sizeof blk))
+			break;
+	IOS_Close(fd);
+	return at >= size;
+}
+
 int slotled_save_level(int illum)
 {
 	static u8 sc[0x4000] ATTRIBUTE_ALIGN(32);
@@ -634,6 +650,8 @@ int slotled_save_level(int illum)
 		}
 	}
 	IOS_Close(fd);
+	if (old != illum && !sysconf_matches(path, sc, sizeof sc))
+		return SLOTLED_E_IOS;
 	return slotled_ios_level(illum);
 }
 

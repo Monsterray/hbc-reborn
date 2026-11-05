@@ -125,6 +125,21 @@ static int sysconf_now(void)
 	return r == (s32)sizeof sc ? slotled_sysconf_illum(sc, sizeof sc, -1) : -1;
 }
 
+// SYSCONF's owner and permissions, which a save must leave as they were.
+static void sysconf_attr(const char *when)
+{
+	static char path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/shared2/sys/SYSCONF";
+	u32 owner = 0;
+	u16 group = 0;
+	u8 attr = 0, own = 0, grp = 0, other = 0;
+	s32 r = ISFS_Initialize();
+
+	if (r >= 0)
+		r = ISFS_GetAttr(path, &owner, &group, &attr, &own, &grp, &other);
+	say("%s: %d: owner %08x group %04x attr %u perms %u %u %u\n", when, (int)r,
+	    (unsigned)owner, group, attr, own, grp, other);
+}
+
 static void demo(void)
 {
 	static const slotled_step wave[] = {
@@ -227,6 +242,23 @@ int main(int argc, char **argv)
 	if (fatInitDefault()) {
 		mkdir("sd:/slotled_test", 0777);
 		report = fopen("sd:/slotled_test/result.txt", "w");
+		// Dolphin passes no arguments: tests/dolphin_slotled.py leaves them
+		// in args.txt, read once and deleted.
+		if (argc < 2) {
+			static char line[64], *args[4];
+			FILE *f = fopen("sd:/slotled_test/args.txt", "r");
+
+			if (f) {
+				if (fgets(line, sizeof line, f)) {
+					args[0] = "slotled_app";
+					for (argc = 1; argc < 4 && (args[argc] = strtok(argc == 1 ? line : NULL, " \r\n")); argc++)
+						;
+					argv = args;
+				}
+				fclose(f);
+				unlink("sd:/slotled_test/args.txt");
+			}
+		}
 	}
 	say("slotled_app (slotled %s):", SLOTLED_VERSION);
 	for (i = 1; i < argc; ++i)
@@ -239,9 +271,11 @@ int main(int argc, char **argv)
 	} else if (!strcmp(argv[1], "ios")) {
 		ios(argc > 2 ? atoi(argv[2]) : 0, argc > 3 ? atoi(argv[3]) : SLOTLED_IOS_PATTERNS - 1);
 	} else if (argc == 3 && !strcmp(argv[1], "save")) {
-		say("before: %d\n", slotled_saved_level());
+		sysconf_attr("attributes before");
+		say("before: %d\n", sysconf_now());
 		say("slotled_save_level(%d): %d\n", atoi(argv[2]), slotled_save_level(atoi(argv[2])));
 		say("SYSCONF now: %d\n", sysconf_now());
+		sysconf_attr("attributes after");
 	} else {
 		say("usage: check | demo | ios [FIRST [LAST]] | save N\n");
 	}
