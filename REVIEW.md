@@ -161,6 +161,15 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.6: a scan marks every app seen whatever the badge setting
+
+Third audit, item 9: `app_entry_load_single` read `settings.new_badges`
+again for every app of a scan. Turning badges off in the Options dialog
+mid-scan left the later apps unmarked, and `app_run_end(true)` then pruned
+their records. During a scan it now always calls `app_run_status` (which
+marks the app seen) and keeps the state only while the setting is on. No
+host test: appentry.c needs libogc. Checked: build with `-Werror`.
+
 ### 1.15.5: a badge record goes only after two whole scans miss it
 
 Third audit, item 8: libfat's `readdir` shows a read error as the end of

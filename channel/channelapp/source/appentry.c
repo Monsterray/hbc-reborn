@@ -229,10 +229,16 @@ static app_entry *app_entry_load_single (const char *dirname, bool in_scan) {
 	entry->size = st.st_size;
 	entry->run_state = APP_RUN_UNCHANGED;
 	// Options > App badges: only then read the device's apps_seen.txt.
-	if (type != AET_THEME && settings.new_badges && device_active >= 0) {
+	if (type != AET_THEME && device_active >= 0) {
 		if (in_scan) {
-			entry->run_state = app_run_status(dirname);
-		} else {
+			// Always mark the app seen while the scan runs: with badges
+			// turned off midway, the apps after that point would be missed
+			// and pruned. The badge shows only while the setting is on.
+			app_run_state state = app_run_status(dirname);
+
+			if (settings.new_badges)
+				entry->run_state = state;
+		} else if (settings.new_badges) {
 			char root[16];
 
 			snprintf(root, sizeof(root), "%s:", devices[device_active].name);
