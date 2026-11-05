@@ -77,6 +77,9 @@ static void badge_gen_pill(badge_pill *bp, const char *label) {
 static void badge_gen_bar(gfx_entity *bar, u8 *pixels, int tile_w) {
 	int x, y, w = (tile_w - 2 * BADGE_BAR_INSET) & ~3;
 
+	// A tiny theme tile would give a negative width.
+	if (w < 4)
+		w = 4;
 	if (w > BADGE_BAR_MAX_W)
 		w = BADGE_BAR_MAX_W;
 	memset(pixels, 0, BADGE_BAR_MAX_W * BADGE_BAR_H * 4);
@@ -427,7 +430,7 @@ static void widget_new_badge(widget *w, const app_entry *entry, gfx_entity *bar)
 	const badge_pill *bp;
 	const theme_badge_t *colors;
 	bool updated = entry->run_state == APP_RUN_UPDATED;
-	int count, glyphs, n = 0;
+	int count, glyphs, n = 0, x;
 	u16 pill_x, text_w;
 
 	memset(l, 0, sizeof(*l));
@@ -435,7 +438,9 @@ static void widget_new_badge(widget *w, const app_entry *entry, gfx_entity *bar)
 		return;
 	bp = &badge_pills[updated ? BADGE_UPDATED : BADGE_NEW];
 	colors = updated ? &theme.badge_updated : &theme.badge_new;
-	pill_x = w->width - BADGE_INSET - bp->pill.w;
+	// A tiny theme tile would wrap the u16.
+	x = w->width - BADGE_INSET - bp->pill.w;
+	pill_x = x < 0 ? 0 : x;
 	text_w = bp->pill.w - 6;
 	glyphs = font_get_char_count(FONT_BADGE, bp->label, text_w);
 	count = 1 + glyphs + (updated ? 1 : 0);

@@ -161,6 +161,15 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.8: badge widths on a tiny theme tile are clamped
+
+Third audit, item 11: `badge_gen_bar` computed `tile_w - 2 * BADGE_BAR_INSET`
+without a floor, so a theme tile under 16 px gave a negative width. It
+now has a floor of 4. `widget_new_badge` stored `w->width - BADGE_INSET -
+pill.w` in a `u16`, which wrapped to a huge x on a tile narrower than the
+pill; it is now clamped at 0. No host test: widgets.c needs libogc and
+the GX types. Checked: build with `-Werror`.
+
 ### 1.15.7: a network upload waits for the scan before it is added
 
 Third audit, item 10: the menu loop took an uploaded app's change from
