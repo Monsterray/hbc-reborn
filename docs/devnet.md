@@ -158,7 +158,7 @@ character, and paths of 256 bytes or more.
 | `M` | create a directory and its parents | none |
 | `A` | change FAT attributes: `size` bits 0-7 the values, bits 8-15 the mask of those to change (`r` 0x01, `h` 0x02, `s` 0x04, `a` 0x20; a mask bit outside those, or a `size` of 0x10000 or more, is `EINVAL`, and value bits outside the mask are ignored); a mask of 0 only reads (protocol 8, HBC 1.10.15) | the attributes after, as letters |
 | `R` | rename or move: `path` is the source, `size` the length of the destination path, which follows it; flags bit 1 replaces a file at the destination (protocol 7, HBC 1.10.14) | the destination as it ended up |
-| `E` | delete a tree or a pattern's matches (protocol 9; flags below) | u32 entries deleted |
+| `E` | delete a tree or a pattern's matches (protocol 9; flags below) | u32 entries deleted; on a failure after deleting began, the status is the error and the payload is u32 deleted, u32 total (HBC 1.15.9) |
 
 Op `E` takes flags in header byte 5: `0x04` deletes directories with
 everything under them (without it a directory must be empty, else
@@ -170,7 +170,13 @@ nothing is `ENOENT`. HBC walks the tree itself, so a recursive delete or a
 It counts every entry first, so a request that cannot succeed (`ENOTEMPTY`,
 `EACCES` for a read-only entry, `EPERM`, `ENAMETOOLONG`, or `ELOOP` for a
 tree nested more than 16 levels) deletes nothing; after that it deletes
-files and then each emptied folder, and stops at the first error. Whatever
+files and then each emptied folder, and stops at the first error. A failure
+after the deleting began (an I/O error, say) is sent with a payload of two
+u32: the entries deleted so far and the total counted, and `hbc.py` says
+"removed N of M before: <error>" and does not fall back to entry-by-entry
+deletes. A failure before any delete (the checks above) has no payload, as
+before; an older `hbc.py` ignores the payload of an error reply, and an older
+HBC sends none, so either pairing works. Whatever
 the client asks, HBC never deletes a device root or `<device>:/apps` itself,
 however it is spelled (`sd:/APPS/`) or matched (`sd:/*`, `sd:/AP?S`): `EPERM`
 (a `.` component is `EINVAL` in every request). The

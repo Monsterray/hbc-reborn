@@ -161,6 +161,19 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.10: a failed tree delete says how far it got
+
+Fourth audit, item 13: a failed op E (an I/O error halfway through a
+recursive delete) sent an error with no payload, so `hbc.py` could not say
+how much was gone. `file_remove` now sends u32 deleted and u32 total with the
+error once deleting has begun; `hbc.py` reports "removed N of M before:
+<error>" and does not fall back to entry-by-entry deletes. A success still
+sends the 4-byte count and an error before any delete still sends nothing, so
+an older `hbc.py` or HBC pairs as before (documented in `docs/devnet.md`).
+Checked: new host test with a fake Wii that fails mid-delete; build with
+`-Werror`.
+
+
 ### 1.15.9: a listing name cannot leave the folder `get -r` writes into
 
 Fourth audit, item 12: `get -r` is a read-only command, so it may talk to

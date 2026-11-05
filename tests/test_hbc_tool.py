@@ -54,6 +54,7 @@ class FakeHBC:
         self.truncate = False
         self.tree_delete = False  # protocol 9: op E; else ENOSYS as an older HBC
         self.rm_depth = 16        # a deeper tree is refused with ELOOP
+        self.rm_fail_after = None  # op E fails with EIO after this many entries
         self.agent = False  # an agent app answers instead of HBC
         self.agent_uptime_ms = 1000
         self.crash = None
@@ -148,7 +149,10 @@ class FakeHBC:
             entries += files + sorted(dirs, key=lambda d: -d.count("/")) + [t]
         if any(self.attrs.get(e, 0) & 1 for e in entries):
             return self.reply(conn, -EACCES)   # read-only: kept, as op D keeps it
-        for e in entries:
+        for n, e in enumerate(entries):
+            if self.rm_fail_after is not None and n == self.rm_fail_after:
+                # An I/O error mid-delete: the reply carries done and total.
+                return self.reply(conn, -5, struct.pack(">II", n, len(entries)))
             self.files.pop(e, None)
             self.dirs.discard(e)
         self.reply(conn, 0, struct.pack(">I", len(entries)))
@@ -385,6 +389,7 @@ class HBCToolTest(unittest.TestCase):
         self.fake.truncate = False
         self.fake.tree_delete = False
         self.fake.rm_depth = 16
+        self.fake.rm_fail_after = None
         hbc._no_tree_delete.clear()
         self.fake.agent = False
         self.fake.agent_uptime_ms = 1000
@@ -940,6 +945,16 @@ class HBCToolTest(unittest.TestCase):
         self.assertFalse(self.remote("sd:/apps/gone"))
         self.assertNotIn("sd:/apps/gone/sub/deeper", self.fake.dirs)
         self.assertNotIn("sd:/apps/gone", self.fake.dirs)
+
+    def test_failed_tree_delete_says_how_far_it_got(self):
+        self.fake.tree_delete = True
+        self.fake.rm_fail_after = 2
+        self.put({"sd:/part/a.bin": b"a", "sd:/part/b.bin": b"b", "sd:/part/c.bin": b"c"})
+        start = len(self.fake.requests)
+        with self.assertRaisesRegex(SystemExit, r"removed 2 of 4 before: EIO"):
+            self.cli("rm", "-r", "sd:/part")
+        # No fallback to entry-by-entry deletes after a partial failure.
+        self.assertEqual(self.deletes(start), [("E", "sd:/part")])
 
     def test_listing_names_that_would_leave_the_folder_are_refused(self):
         for name in ("", ".", "..", "../x", "a/b", "a\\b", "C:\\x", "C:x", "a\0b", "/abs"):

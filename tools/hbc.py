@@ -979,8 +979,20 @@ def remote_delete(wii, remote, recursive, glob=False, force=False):
     try:
         with connect(wii, RM_TIMEOUT) as conn:
             conn.sendall(file_header("E", remote, 0, flags))
-            reply = recv_reply(conn, f"{remote}: Wii returned")
+            status, length = struct.unpack(">iI", recv_exact(conn, 8))
+            body = recv_exact(conn, length)
+            if status < 0 and length == 8:
+                # A failure after deleting began (HBC 1.15.9): done and total.
+                done, total = struct.unpack(">II", body)
+                partial = HBCError(f"{remote}: removed {done} of {total} before: "
+                                   f"{wii_error(-status)}", -status)
+                partial.partial = True
+                raise partial
+            check_status(status, f"{remote}: Wii returned")
+            reply = body
     except HBCError as exc:
+        if getattr(exc, "partial", False):
+            raise   # some entries are gone: no fallback, say how far it got
         if exc.code == ENOSYS:
             _no_tree_delete.add(wii)
             return None
