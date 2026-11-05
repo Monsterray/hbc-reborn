@@ -14,11 +14,20 @@
            read-only); the job passes only if exactly the one byte changed
            and SYSCONF kept its owner and permissions. The first copy is
            the backup: put it back with tests/nandput if anything is wrong.
+  sysconf  read-only: copies /shared2/sys to the PC and prints Slot
+           illumination and IPL.IDL (--compare FILE: the bytes that differ
+           from an earlier SYSCONF copy)
+  install  puts the app on the SD card as sd:/apps/slotled_test, with a
+           meta.xml without <ahb_access/>: started from HBC's menu, by a
+           person, it runs `check` without AHBPROT (an app sent over the
+           network always keeps it)
+  fetch    gets and checks the report such a run left
 
 The capture card cannot see the slot light, so `demo` and `ios` are only
 as good as the person watching.
 
 usage: tests/wii_slotled.py check | demo | ios [--first N] [--last N] | save N
+                            | sysconf [--compare FILE] | install | fetch
 queue: wiibench.py add --wii devwii --name slotled-STEP --cwd REPO -- C:/Python312/python.exe tests/wii_slotled.py STEP
 """
 
@@ -37,6 +46,18 @@ HBC = str(root / "tools" / "hbc.py")
 APP = root / "tests" / "slotled_app" / "slotled_app.dol"
 NANDGET = root / "tests" / "nandget" / "nandget.dol"
 RESULT = "sd:/slotled_test/result.txt"
+# No <ahb_access/>: HBC reloads IOS without AHBPROT before starting it.
+META = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>slotled test (no AHBPROT)</name>
+  <coder>hbc-reborn</coder>
+  <short_description>sdk/slotled's check, without AHBPROT</short_description>
+  <long_description>Runs tests/slotled_app's read-only check. Its report goes to sd:/slotled_test/result.txt.</long_description>
+  <arguments>
+    <arg>check</arg>
+  </arguments>
+</app>
+"""
 
 
 def bench_wii():
@@ -151,10 +172,11 @@ def check_report(text):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("step", choices=("check", "demo", "ios", "save"))
+    ap.add_argument("step", choices=("check", "demo", "ios", "save", "sysconf", "install", "fetch"))
     ap.add_argument("value", nargs="?", type=int)
     ap.add_argument("--first", type=int, default=0)
     ap.add_argument("--last", type=int, default=29)
+    ap.add_argument("--compare", type=pathlib.Path)
     a = ap.parse_args()
     bench_wii()
     out = pathlib.Path(os.environ.get("WII_BENCH_OUT", "."))
@@ -162,6 +184,26 @@ def main():
     if a.step == "check":
         launch("check")
         return 0 if check_report(report(out)) else 1
+    if a.step == "sysconf":
+        data = sysconf_copy(out / "now")
+        print(f"Slot illumination: {illum(data)}", flush=True)
+        if a.compare:
+            old = a.compare.read_bytes()
+            diff = [i for i in range(0x4000) if old[i] != data[i]]
+            print(f"{len(diff)} byte(s) differ from {a.compare}:", flush=True)
+            for i in diff[:64]:
+                print(f"  {i:#06x}: {old[i]:02x} -> {data[i]:02x}", flush=True)
+        return 0
+    if a.step == "install":
+        app = out / "slotled_test"
+        app.mkdir(exist_ok=True)
+        (app / "boot.dol").write_bytes(APP.read_bytes())
+        (app / "meta.xml").write_bytes(META.encode())
+        tool("put", "-r", str(app), "sd:/apps/slotled_test")
+        return 0
+    if a.step == "fetch":
+        text = report(out)
+        return 0 if check_report(text) else 1
     if a.step == "demo":
         print("Watch the slot light: each effect is named on the TV.", flush=True)
         launch("demo")

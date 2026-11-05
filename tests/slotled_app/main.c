@@ -72,6 +72,9 @@ static void check(void)
 	u32 idle, busy, before;
 	int i, r;
 
+	// 0xffffffff with AHBPROT (sent over the network, or <ahb_access/>);
+	// started from HBC's menu without that tag, IOS reloaded without it.
+	say("IOS %d, AHBPROT %08x\n", IOS_GetVersion(), *(volatile u32 *)0xCD800064);
 	for (i = 0; i < 2; i++) {
 		volatile u32 *b = (volatile u32 *)banks[i];
 

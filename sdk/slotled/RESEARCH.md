@@ -11,7 +11,7 @@ Wii.
 
 | # | Question | Why it matters | How to answer | Status |
 |---|---|---|---|---|
-| 1 | Which GPIO bank reaches the pin: `0xCD0000C0`, `0xCD8000C0`, or both? And without AHBPROT (an app started from a disc or a channel, not HBC)? | `slotled_init` takes the first bank whose direction bit is set. If a bank reads 0 without AHBPROT, the library still works, but we should say so. | `wii_slotled.py check` prints both banks. Run it again from an app without HBC's AHBPROT. | partly answered (2026-11-04, below): from HBC, both banks work. Still open: an app without AHBPROT |
+| 1 | Which GPIO bank reaches the pin: `0xCD0000C0`, `0xCD8000C0`, or both? And without AHBPROT (an app started from a disc or a channel, not HBC)? | `slotled_init` takes the first bank whose direction bit is set. If a bank reads 0 without AHBPROT, the library still works, but we should say so. | `wii_slotled.py check` prints both banks. Run it again from an app without HBC's AHBPROT. | answered (2026-11-04/05, below): both banks work, with and without AHBPROT |
 | 2 | Is `IPL.IDL` 2 bytes (libogc, Dolphin) or 3 (WiiBrew)? Which byte is Slot illumination? | `slotled_saved_level` and `slotled_save_level` take the last byte. That is right for 2 bytes; for 3 it relies on WiiBrew. | `check` prints the raw bytes. Then set Slot illumination in Wii Settings to each value and read it again. | answered (2026-11-04/05, below): 2 bytes, shutdown mode then Slot illumination. A check in Wii Settings would confirm it |
 | 3 | What do IOS's 30 flash patterns look like? Which one is "new mail"? | `slotled_ios_flash` takes a number with no name. The WiiConnect24 SDK wants the mail pattern (docs/wc24-plan.md, part 4). | Watch `wii_slotled.py ios`: each pattern is named on the TV for 5 s. Write one line per pattern here. | filmed (2026-11-05, below): what each looks like, if the numbering holds. Still open: which is new mail |
 | 4 | How does a pattern end? Can a running pattern be stopped, and does it go on after the app exits or IOS reloads? | We cannot offer `slotled_ios_stop()` yet, and the README cannot say whether the light outlives the app. | Watch `ios`: after the last pattern, does the light stop? Exit to HBC, then launch another app, and watch. Try pattern 0 at priority 255. | partly (2026-11-05, below): patterns end by themselves. Still open: stopping one, and outliving the app |
@@ -20,7 +20,7 @@ Wii.
 | 7 | What do 4 ms periods cost on hardware? Is 20 µs the shortest visible on-time? Do the levels look even, and does 250 Hz flicker? | Proof of "two short interrupts a period" and of the level curve. The curve may want a stronger power than 2. | `check` gives the busy-loop share. `demo` step 1 shows levels 8, 32, 96 and 255: watch them, and try lower levels. | cost answered (2026-11-04, below). Still open: how the levels look |
 | 8 | Does anything else drive the light while an app runs: disc insertion, new mail arriving, IOS reloads, HBC at exit? | It decides whether `slotled_shutdown` must restore the light more carefully, and what an app may assume at start. | Insert a disc and send the Wii a mail (WiiLink, from lrwii) while `demo` runs. Note what the light does at app exit and at HBC start. | open |
 | 9 | Can a second `/dev/stm/immediate` handle be opened while libogc holds one? | `slotled_ios_*` open their own handle and fall back to libogc's. If IOS allows only one, the fallback is the only path. | Add a line to `check` that prints the handle result, then run `ios`. | answered (2026-11-05, below): yes |
-| 10 | Does `slotled_save_level` work from HBC (NAND permission for `/shared2/sys/SYSCONF`)? Does the Wii Menu show the new value, and use it at the next boot? | The save path is untested on hardware. | `wii_slotled.py save N` on the dev Wii, only on the owner's request, with a SYSCONF backup first (`tests/nandget`). Then check Wii Settings, and the mail glow after a reboot. | the write is answered (2026-11-05, below). Still open: Wii Settings and the next boot, attended |
+| 10 | Does `slotled_save_level` work from HBC (NAND permission for `/shared2/sys/SYSCONF`)? Does the Wii Menu show the new value, and use it at the next boot? | The save path is untested on hardware. | `wii_slotled.py save N` on the dev Wii, only on the owner's request, with a SYSCONF backup first (`tests/nandget`). Then check Wii Settings, and the mail glow after a reboot. | answered (2026-11-05, below): Wii Settings shows what was saved, and its own change reads back |
 | 11 | In WiiConnect24 standby (yellow light), does IOS use the light for new mail at the saved level, and could an app leave a pattern running into standby? | It is needed for docs/wc24-plan.md part 4: "a light when mail came overnight". | Attended: put the dev Wii in standby with WiiConnect24 on, send it mail from lrwii, and watch. | open |
 
 ## Answered
@@ -127,3 +127,19 @@ count, not the levels.
   - None looks like a slow endless pulse in a 5 s window, so which one is
     new mail is still open. Next: hold each candidate for 30 s, or film the
     Wii Menu's own mail glow and compare.
+
+**2026-11-05, dev Wii, attended by the owner:**
+
+- **Item 1, without AHBPROT:** `wii_slotled.py install` put the app on the
+  SD card with a meta.xml without `<ahb_access/>`, and the owner started it
+  from HBC's menu. It reported `IOS 58, AHBPROT 00000000`. Both banks still
+  read `OUT 00008000 DIR 0000c320`, `slotled_init` returned 0, all 9 checks
+  passed (bench job 20261105-112544-2ff01e fetched it), and the owner saw
+  the flashes. slotled needs no AHBPROT.
+- **Item 10, the Wii Menu:** after `save 2` (job 20261105-105212-8011ca,
+  one byte changed), Wii Settings showed Slot illumination *Bright*. The
+  owner set it back to *Dim* there and reset the Wii.
+  `wii_slotled.py sysconf --compare` (job 20261105-112544-77632c) then read
+  Slot illumination 1, and 0 bytes different from the backup taken before
+  the first save. The Wii Menu's own write changes only that byte, like
+  slotled's.

@@ -83,6 +83,9 @@ network.
 
 ## Things to know
 
+- **Tested on a real Wii:** every call, with and without AHBPROT. The saved
+  setting shows up in Wii Settings, and a change made there reads back. See
+  [RESEARCH.md](RESEARCH.md).
 - **Who drives the light:** the direct calls and IOS drive the same pin. While
   a direct effect runs, it wins.
 - **The saved setting:** after `slotled_save_level`, libogc's `CONF_Get`
