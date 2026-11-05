@@ -10,7 +10,7 @@ permission check is back: an app is refused /shared1 again.
 The file is Nintendo's: it stays in the run folder and on the Wii's SD card,
 never in the repository.
 
-queue: wiibench.py add --wii dev --name mii-faces --cwd REPO --timeout 900 -- <python> tests/wii_mii_faces.py
+queue: wiibench.py add --wii devwii --name mii-faces --cwd REPO --timeout 900 -- <python> tests/wii_mii_faces.py
 """
 
 import hashlib

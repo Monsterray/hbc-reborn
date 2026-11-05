@@ -15,7 +15,7 @@ tv_circle_*) and Options (tv_options_*). A channel DOL boot saves no
 settings, so the installed HBC keeps its own; the folder is removed after.
 Ends in the installed HBC.
 
-queue: wiibench.py add --wii dev --name transfer-progress --cwd REPO --timeout 900 -- <python> tests/wii_transfer_progress.py
+queue: wiibench.py add --wii devwii --name transfer-progress --cwd REPO --timeout 900 -- <python> tests/wii_transfer_progress.py
 """
 
 import os

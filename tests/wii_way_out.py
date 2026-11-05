@@ -20,7 +20,7 @@ same with AHBPROT read as closed) runs one, only with someone at the Wii
 guard against a reset loop): wait that long between reset runs, or the run
 ends in the stub instead.
 
-    python C:/tools/wii-bench/wiibench.py add --wii dev --name "way out" \\
+    python C:/tools/wii-bench/wiibench.py add --wii devwii --name "way out" \\
         --cwd <this tree> -- <python> tests/wii_way_out.py
 """
 
@@ -174,7 +174,7 @@ def main():
     if wii in PRODUCTION:
         raise SystemExit(f"{wii} is a production Wii: the way-out tests run on the bench Wii only")
     if not os.environ.get("WII_BENCH_JOB"):
-        raise SystemExit("run this as a wii-bench queue job (wiibench.py add --wii dev ...)")
+        raise SystemExit("run this as a wii-bench queue job (wiibench.py add --wii devwii ...)")
     print(f"HBC {hbc.hbc_wait(wii, 90)} on {wii}")
     if opts.reset:
         if not opts.someone_at_the_wii:

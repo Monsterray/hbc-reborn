@@ -14,7 +14,7 @@ are missing). For each animation in HBCS "anims" (`hbc.py anim NAME`):
 
 Ends in the installed HBC.
 
-queue: wiibench.py add --wii dev --name avatar-anims --cwd REPO --timeout 1800 -- <venv python> tests/wii_avatar_anims.py [NAME ...]
+queue: wiibench.py add --wii devwii --name avatar-anims --cwd REPO --timeout 1800 -- <venv python> tests/wii_avatar_anims.py [NAME ...]
 """
 
 import io

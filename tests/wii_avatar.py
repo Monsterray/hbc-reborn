@@ -17,7 +17,7 @@ Every 10 s, and when HBC stops answering, the TV through the bench's
 capture card goes to the run folder too (tv_*.png), to tell a crash screen
 from a hang.
 
-queue: wiibench.py add --wii dev --name avatar --cwd REPO --timeout 900 -- <python> tests/wii_avatar.py [--seconds N] [--built]
+queue: wiibench.py add --wii devwii --name avatar --cwd REPO --timeout 900 -- <python> tests/wii_avatar.py [--seconds N] [--built]
 """
 
 import argparse

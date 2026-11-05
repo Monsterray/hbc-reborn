@@ -10,7 +10,7 @@ queue job, against the HBC that is running (nothing is sent to it):
 
 sd:/apps/hbctest-readback is removed after.
 
-queue: wiibench.py add --wii dev --name put-readback --cwd REPO --timeout 600 -- <python> tests/wii_put_readback.py
+queue: wiibench.py add --wii devwii --name put-readback --cwd REPO --timeout 600 -- <python> tests/wii_put_readback.py
 """
 
 import os

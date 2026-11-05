@@ -4,7 +4,7 @@ an app reaches it through ES without NAND rights: tests/mii_res_probe, as a
 queue job. The probe's report and the file go to the job's run folder only:
 the file is Nintendo's, for the developer's own tools, never the repository.
 
-queue: wiibench.py add --wii dev --name mii-res --cwd REPO --timeout 600 -- <python> tests/wii_mii_res.py
+queue: wiibench.py add --wii devwii --name mii-res --cwd REPO --timeout 600 -- <python> tests/wii_mii_res.py
 """
 
 import hashlib

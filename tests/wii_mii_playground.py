@@ -22,7 +22,7 @@ folder: face_NAME.png and anim_*.png (HBC's own picture), tv_*.png and
 tv_slap.mp4 (the capture card). Ends in the installed HBC; with --stay, in
 this tree's, on the app list, for someone to use.
 
-queue: wiibench.py add --wii dev --name mii-playground --cwd REPO --timeout 900 -- <python> tests/wii_mii_playground.py [--stay]
+queue: wiibench.py add --wii devwii --name mii-playground --cwd REPO --timeout 900 -- <python> tests/wii_mii_playground.py [--stay]
 """
 
 import os

@@ -6,7 +6,7 @@ capture card pictures it (tv_receive_*): "Receiving hbctest-recv/boot.dol"
 above the bar, the PC's address lower left. The app must load (hbc.py send
 fails with HBC's reason otherwise); it then exits, back to the installed HBC.
 
-queue: wiibench.py add --wii dev --name receive-caption --cwd REPO --timeout 600 -- <python> tests/wii_receive_caption.py
+queue: wiibench.py add --wii devwii --name receive-caption --cwd REPO --timeout 600 -- <python> tests/wii_receive_caption.py
 """
 
 import os

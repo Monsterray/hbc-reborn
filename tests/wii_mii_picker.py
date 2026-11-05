@@ -17,7 +17,7 @@ to the job's run folder: picker_page_N.png (HBC's own picture) and tv_*.png
 settings, so the installed HBC keeps its own avatar. Ends in the installed
 HBC.
 
-queue: wiibench.py add --wii dev --name mii-picker --cwd REPO --timeout 900 -- <python> tests/wii_mii_picker.py
+queue: wiibench.py add --wii devwii --name mii-picker --cwd REPO --timeout 900 -- <python> tests/wii_mii_picker.py
 """
 
 import os
