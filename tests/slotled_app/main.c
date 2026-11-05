@@ -84,6 +84,20 @@ static void check(void)
 	r = CONF_Get("IPL.IDL", idl, sizeof idl);
 	say("IPL.IDL: %d bytes: %02x %02x %02x\n", r, idl[0], idl[1], idl[2]);
 	say("slotled_saved_level: %d\n", slotled_saved_level());
+	{
+		// libogc holds /dev/stm/immediate from the start: can a second
+		// handle open (RESEARCH.md item 9)? Then the saved level again,
+		// through slotled's own handle, which changes nothing visible.
+		static const char dev[] ATTRIBUTE_ALIGN(32) = "/dev/stm/immediate";
+		s32 fd = IOS_Open(dev, 0);
+		int saved = slotled_saved_level();
+
+		say("second STM handle: %d\n", (int)fd);
+		if (fd >= 0)
+			IOS_Close(fd);
+		if (saved >= 0)
+			say("slotled_ios_level(%d): %d\n", saved, slotled_ios_level(saved));
+	}
 	if (slotled_get() < 0)
 		return;
 	idle = spin();

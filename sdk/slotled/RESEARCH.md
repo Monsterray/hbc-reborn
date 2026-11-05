@@ -19,7 +19,7 @@ Wii.
 | 6 | Who wins when IOS flashes and slotled drives the pin at the same time? Does the IOS level (0x6002) change anything for direct effects? | The README says "a direct effect wins". That is the expected behaviour, but it is unproven. | Start `slotled_ios_flash`, then `slotled_pulse`. Watch; then stop the pulse and watch again. | open |
 | 7 | What do 4 ms periods cost on hardware? Is 20 µs the shortest visible on-time? Do the levels look even, and does 250 Hz flicker? | Proof of "two short interrupts a period" and of the level curve. The curve may want a stronger power than 2. | `check` gives the busy-loop share. `demo` step 1 shows levels 8, 32, 96 and 255: watch them, and try lower levels. | cost answered (2026-11-04, below). Still open: how the levels look |
 | 8 | Does anything else drive the light while an app runs: disc insertion, new mail arriving, IOS reloads, HBC at exit? | It decides whether `slotled_shutdown` must restore the light more carefully, and what an app may assume at start. | Insert a disc and send the Wii a mail (WiiLink, from lrwii) while `demo` runs. Note what the light does at app exit and at HBC start. | open |
-| 9 | Can a second `/dev/stm/immediate` handle be opened while libogc holds one? | `slotled_ios_*` open their own handle and fall back to libogc's. If IOS allows only one, the fallback is the only path. | Add a line to `check` that prints the handle result, then run `ios`. | open |
+| 9 | Can a second `/dev/stm/immediate` handle be opened while libogc holds one? | `slotled_ios_*` open their own handle and fall back to libogc's. If IOS allows only one, the fallback is the only path. | Add a line to `check` that prints the handle result, then run `ios`. | answered (2026-11-05, below): yes |
 | 10 | Does `slotled_save_level` work from HBC (NAND permission for `/shared2/sys/SYSCONF`)? Does the Wii Menu show the new value, and use it at the next boot? | The save path is untested on hardware. | `wii_slotled.py save N` on the dev Wii, only on the owner's request, with a SYSCONF backup first (`tests/nandget`). Then check Wii Settings, and the mail glow after a reboot. | the write is answered (2026-11-05, below). Still open: Wii Settings and the next boot, attended |
 | 11 | In WiiConnect24 standby (yellow light), does IOS use the light for new mail at the saved level, and could an app leave a pattern running into standby? | It is needed for docs/wc24-plan.md part 4: "a light when mail came overnight". | Attended: put the dev Wii in standby with WiiConnect24 on, send it mail from lrwii, and watch. | open |
 
@@ -57,3 +57,11 @@ with the owner's OK):
 - **How to write it:** in place, as libogc's `CONF_SaveChanges` does.
   Dolphin's way, a new `/tmp/SYSCONF` renamed over the old one, would leave
   the file owned by the app's own user ID when done from homebrew.
+
+**2026-11-05, dev Wii, `wii_slotled.py check`** (bench job
+20261105-004739-573792, exit 0, all checks ok):
+
+- **Item 9:** a second `/dev/stm/immediate` handle opens (fd 6) while
+  libogc holds its own, and `slotled_ios_level` through slotled's handle
+  returned 0. The fallback to libogc's `STM_SetLedMode` is only for an IOS
+  that refuses; Dolphin behaves the same.
