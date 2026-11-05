@@ -70,7 +70,7 @@ static void check(void)
 	static const u32 banks[] = { 0xCD0000C0, 0xCD8000C0 };
 	u8 idl[3] = { 0, 0, 0 };
 	u32 idle, busy, before;
-	int i, r;
+	int i, r, init;
 
 	// 0xffffffff with AHBPROT (sent over the network, or <ahb_access/>);
 	// started from HBC's menu without that tag, IOS reloaded without it.
@@ -81,8 +81,8 @@ static void check(void)
 		say("GPIOB at %08x: OUT %08x DIR %08x IN %08x\n", banks[i], b[0], b[1], b[2]);
 	}
 	before = *(volatile u32 *)0xCD0000C0 & 0x20;
-	r = slotled_init();
-	say("slotled_init: %d\n", r);
+	init = slotled_init();
+	say("slotled_init: %d\n", init);
 	CONF_Init();
 	r = CONF_Get("IPL.IDL", idl, sizeof idl);
 	say("IPL.IDL: %d bytes: %02x %02x %02x\n", r, idl[0], idl[1], idl[2]);
@@ -101,7 +101,7 @@ static void check(void)
 		if (saved >= 0)
 			say("slotled_ios_level(%d): %d\n", saved, slotled_ios_level(saved));
 	}
-	if (slotled_get() < 0)
+	if (init < 0)
 		return;
 	idle = spin();
 	say("slotled_pulse: %d\n", slotled_pulse(0, 255, 1000, 0));
@@ -109,6 +109,20 @@ static void check(void)
 	say("busy loop: %u off, %u pulsing (%u.%u%% to the timer)\n", idle, busy,
 	    idle > busy ? (idle - busy) * 100 / idle : 0,
 	    idle > busy ? (idle - busy) * 1000 / idle % 10 : 0);
+	{
+		// A bad argument (on_ms over 65535) must leave the pulse running.
+		// Three samples: two on a triangle wave can match by chance.
+		int a, b, c;
+
+		r = slotled_blink(255, 70000, 0, 0);
+		a = slotled_get();
+		hold(100);
+		b = slotled_get();
+		hold(150);
+		c = slotled_get();
+		say("bad blink: %d; pulse still running: %s (levels %d, %d, %d)\n", r,
+		    a != b || b != c ? "yes" : "no", a, b, c);
+	}
 	say("slotled_set(128): %d, then 255, 0\n", slotled_set(128));
 	hold(300);
 	say("slotled_get: %d\n", slotled_get());

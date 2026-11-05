@@ -21,8 +21,10 @@ while (running) {
 slotled_shutdown();                    // before exit: the light as it was found
 ```
 
-Every call returns at once. The effect runs from a timer interrupt, with no
-thread. A new effect replaces the one running.
+Every direct call returns at once, except `slotled_wait`. The effect runs
+from a timer interrupt, with no thread. A new effect replaces the one
+running, and a call that fails leaves it running. `slotled_save_level`
+writes the NAND, so it takes a moment.
 
 ## What it does
 

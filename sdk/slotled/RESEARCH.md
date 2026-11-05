@@ -2,12 +2,22 @@
 
 Each item below needs a real Wii, or a document nobody has published yet.
 The library works without them, but each one limits or blurs part of it.
-When one is answered, record the answer, the date and the proof here. Then
-fix the code, README.md and slotled.h to match.
 
-Jobs run through the bench queue on the dev Wii only (`tests/wii_slotled.py`).
-The capture card cannot see the slot light, so "watch" means a person at the
-Wii.
+**Help wanted.** The items still open are left for anyone with a Wii:
+1. Run `tests/slotled_app` (build it with `make -C tests/slotled_app`).
+   Send it with `tools/hbc.py run tests/slotled_app/slotled_app.dol demo`,
+   or `ios`, and film the slot light with a phone. The TV names each step.
+2. Open an issue or a pull request with what you saw, the step names, your
+   Wii's model, and the video if you can share it.
+3. Each answer goes here, with its date and proof. Then the code, README.md
+   and slotled.h are fixed to match.
+
+`demo` and `ios` change only the light. Leave `save` alone unless you mean
+to change your Slot illumination setting: it writes SYSCONF.
+
+On the project's own bench, jobs run through the queue on the dev Wii only
+(`tests/wii_slotled.py`). The capture card cannot see the slot light, so
+"watch" means a person at the Wii.
 
 | # | Question | Why it matters | How to answer | Status |
 |---|---|---|---|---|
