@@ -74,7 +74,8 @@ static char table_root[PATH_MAX];
 // table_readable: the file was read to its end, or there was none. After
 // any other failure (EIO, a card pulled while reading) the table is only
 // part of the file: never write it back, nor prune from it.
-static bool table_dirty, table_open, table_readable;
+// table_missing: the file read as "not found" (ENOENT), the table is empty.
+static bool table_dirty, table_open, table_readable, table_missing;
 
 static void table_free(void) {
 	size_t i;
@@ -87,6 +88,7 @@ static void table_free(void) {
 	table_dirty = false;
 	table_open = false;
 	table_readable = false;
+	table_missing = false;
 }
 
 static record *table_find(const char *name) {
@@ -224,6 +226,7 @@ static void table_load(const char *root) {
 	}
 	if (!f) {
 		table_readable = errno == ENOENT;
+		table_missing = table_readable;
 		return;
 	}
 	while (record_count < MAX_RECORDS && fgets(line, sizeof(line), f)) {
@@ -264,6 +267,11 @@ static bool table_write(void) {
 			!file_path(part, sizeof(part), table_root, ".part") ||
 			!file_path(backup, sizeof(backup), table_root, ".bak") ||
 			snprintf(dir, sizeof(dir), "%s/%s", table_root, dir_name) >= (int) sizeof(dir))
+		return false;
+	// libfat turns a sector read error during the path lookup into ENOENT, so
+	// "not found" at load can be a file that is there. Writing this empty
+	// table over it would erase every app's history (and mark all "New").
+	if (table_missing && (!stat(path, &st) || !stat(backup, &st)))
 		return false;
 	if (MKDIR(dir) && errno != EEXIST)
 		return false;

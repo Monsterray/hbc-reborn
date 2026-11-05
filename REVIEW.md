@@ -161,6 +161,16 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.4: a table that read as missing is not written over the file
+
+Third audit, item 7: libfat turns a sector read error during path lookup
+into ENOENT (its directory.c ignores the result of readPartialSector). One
+such fopen of apps_seen.txt made an empty table look readable; the next
+app launch wrote a one-line record over the real file and every app showed
+"New". `table_write` now refuses when the load saw the file as missing but
+`stat()` finds it (or its `.bak`). Checked: `tests/test_apprun.py` (a
+fopen that lies with ENOENT), build with `-Werror`.
+
 ### 1.15.3: an accept() network reset closes the listener
 
 Second audit, item 2: `net_accept` returning -ENETRESET cleaned up the

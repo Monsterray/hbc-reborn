@@ -44,13 +44,24 @@ WRAPPER = """#include <errno.h>
 #include <string.h>
 #include "apprun.h"
 #undef rename
+#undef fopen
 int rename(const char *from, const char *to);
+FILE *fopen(const char *path, const char *mode);
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
 #else
 #define EXPORT __attribute__((visibility("default")))
 #endif
-static int fail_commit, commits;
+static int fail_commit, commits, hide_seen;
+/* libfat: a sector read error during the path lookup reads as ENOENT. */
+FILE *apprun_test_fopen(const char *path, const char *mode) {
+    if (hide_seen && mode[0] == 'r' && strstr(path, "apps_seen.txt")) {
+        errno = ENOENT;
+        return NULL;
+    }
+    return fopen(path, mode);
+}
+EXPORT void t_hide_seen(int hide) { hide_seen = hide; }
 int apprun_test_rename(const char *from, const char *to) {
     FILE *f = fopen(to, "rb");
     if (f) { fclose(f); errno = EEXIST; return -1; }
@@ -82,13 +93,14 @@ class AppRunTest(unittest.TestCase):
         src = ROOT / "channel/channelapp/source"
         cmd = [CC, "-shared", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
                "-D_CRT_NONSTDC_NO_WARNINGS", "-include", str(b / "compat.h"),
-               "-Drename=apprun_test_rename", "-I", str(src),
+               "-Drename=apprun_test_rename", "-Dfopen=apprun_test_fopen", "-I", str(src),
                str(src / "apprun.c"), str(b / "wrapper.c"), "-o", str(lib)]
         if os.name != "nt":
             cmd.insert(2, "-fPIC")
         subprocess.run(cmd, check=True)
         api = cls.api = ctypes.CDLL(str(lib))
         api.t_fail_commit.argtypes = [ctypes.c_int]
+        api.t_hide_seen.argtypes = [ctypes.c_int]
         api.t_commits.restype = ctypes.c_int
         api.t_begin.argtypes = [ctypes.c_char_p]
         api.t_status.argtypes = [ctypes.c_char_p]
@@ -110,6 +122,7 @@ class AppRunTest(unittest.TestCase):
 
     def tearDown(self):
         self.api.t_fail_commit(0)
+        self.api.t_hide_seen(0)
 
     @staticmethod
     def make_app(dev, name, boot="boot.dol"):
@@ -249,6 +262,25 @@ class AppRunTest(unittest.TestCase):
         self.seen.with_name("apps_seen.txt.bak").rmdir()
         self.seen.with_name("keep").rename(self.seen)
         self.assertEqual(self.seen.read_bytes(), before)
+
+    def test_a_file_that_reads_as_missing_but_exists_is_never_rewritten(self):
+        # 1.15.4 (audit 7): libfat reports a read error in the path lookup as
+        # ENOENT. The empty table must not replace the file that is there.
+        self.assertTrue(self.record("Foo"))
+        self.assertTrue(self.record("Bar"))
+        before = self.seen.read_bytes()
+        commits = self.api.t_commits()
+        self.api.t_hide_seen(1)
+        self.assertFalse(self.record("Foo"))
+        self.scan(["Foo"])                                  # a whole scan prunes nothing
+        self.assertEqual(self.api.t_commits(), commits)
+        self.assertEqual(self.seen.read_bytes(), before)
+        self.api.t_hide_seen(0)
+        self.assertEqual(self.scan(["Foo", "Bar"]), {"Foo": UNCHANGED, "Bar": UNCHANGED})
+        # A file that is really not there still starts a new table.
+        self.seen.unlink()
+        self.assertTrue(self.record("Foo"))
+        self.assertEqual(len(self.lines()), 1)
 
     def test_names_ignore_case(self):
         # FAT: MyApp and myapp are one folder.
