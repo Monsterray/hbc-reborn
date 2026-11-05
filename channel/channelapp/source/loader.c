@@ -377,8 +377,7 @@ static void * ld_tcp_func (void *arg) {
 			}
 
 			ta->state = LDTCPS_INITIALIZED;
-			if (!tcp_restart)
-				netrecovery_ready();
+			netrecovery_ready_unless(&tcp_restart);
 
 			continue;
 		}
@@ -635,8 +634,10 @@ static u32 net_retry_ms;
 // HOME > HBC > Restart network. The worker sees the flag even in a busy
 // start; an idle one is woken by loader_signal_threads().
 void loader_tcp_restart (void) {
-	netrecovery_request();
+	// The flag first: a worker coming up in between then keeps the request
+	// (netrecovery_ready_unless), or clears it before it is made.
 	tcp_restart = true;
+	netrecovery_request();
 }
 
 void loader_signal_threads (void) {

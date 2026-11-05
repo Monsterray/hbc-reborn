@@ -14,6 +14,10 @@ void netrecovery_reset(void);
 void netrecovery_request(void);
 // The listener is up again: forget any earlier request.
 void netrecovery_ready(void);
+// The same, unless *restart is set: checked and cleared with interrupts off,
+// so a Restart network asked for in between keeps its watched cleanup.
+// The menu sets *restart before it calls netrecovery_request().
+void netrecovery_ready_unless(const volatile bool *restart);
 void netrecovery_cleanup_begin(void);
 // The same, for a cleanup that has to wait out an IOS step a cancelled start
 // left in flight (net_deinit() waits for it): such a step can legitimately

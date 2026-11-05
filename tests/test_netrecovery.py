@@ -58,6 +58,24 @@ int main(void) {
     now += HBC_NET_CLEANUP_TIMEOUT_MS;
     netrecovery_ready();
     assert(!netrecovery_take_hang()); // old requests cannot affect later work
+
+    // The listener coming up while a Restart is asked for keeps its request.
+    {
+        volatile bool restart = true;
+        netrecovery_reset();
+        netrecovery_request();
+        netrecovery_ready_unless(&restart);
+        netrecovery_cleanup_begin();
+        now += HBC_NET_CLEANUP_TIMEOUT_MS;
+        assert(netrecovery_take_hang());
+        restart = false;
+        netrecovery_reset();
+        netrecovery_request();
+        netrecovery_ready_unless(&restart);
+        netrecovery_cleanup_begin();
+        now += HBC_NET_CLEANUP_TIMEOUT_MS;
+        assert(!netrecovery_take_hang());
+    }
     netrecovery_request();
     netrecovery_reset();
     assert(!netrecovery_take_hang()); // new boot has no pending request

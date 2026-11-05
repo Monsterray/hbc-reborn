@@ -161,6 +161,16 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.2: a Restart network keeps its watchdog
+
+Second audit, item 1: the TCP worker cleared the recovery request when its
+listener came up unless `tcp_restart` was set, a check and a clear with the
+menu able to run in between (`loader_tcp_restart` requested, then set the
+flag). A Restart asked for in that gap lost its watched cleanup, so a hung
+cleanup was never reported. `netrecovery_ready_unless` checks and clears
+with interrupts off, and the menu sets the flag before the request.
+Checked: `tests/test_netrecovery.py`, build with `-Werror`.
+
 ### 1.15.0: the crash handler leaves by HBC's own stub and shows more
 
 Review of the exception screen (and the stub it ends in) found:
