@@ -78,6 +78,25 @@ class MemoryLayoutTest(unittest.TestCase):
         self.assertTrue(calls, "no calls in main?")
         self.assertEqual(calls[0], "panic_install_exception_screen")
 
+    def test_arena_starts_right_after_bss(self):
+        # newrvl.ld used to reserve 0x24000 bytes (0x20000 + 0x4000) after .bss
+        # for __stack_addr and __intrstack, which libogc 3 does not use (its
+        # stacks are static, in tuxedo). That is heap HBC can have.
+        nm = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
+        sym = {line.split()[2]: int(line.split()[0], 16) for line in nm.splitlines() if len(line.split()) == 3}
+        self.assertIn("__Arena1Lo", sym)
+        self.assertNotIn("__stack_addr", sym)
+        self.assertNotIn("__intrstack_addr", sym)
+        self.assertEqual(sym["__Arena1Lo"], (sym["_end"] + 31) & -32,
+                         "__Arena1Lo is not the 32-byte aligned end of .bss")
+
+    def test_early_panic_handler_is_hbcs(self):
+        # libogc's weak __SYS_InstallPanicHandler installs its own screen; a
+        # crash before main() (static constructors, crt0) must reach HBC's.
+        out = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
+        kinds = {line.split()[2]: line.split()[1] for line in out.splitlines() if len(line.split()) == 3}
+        self.assertEqual(kinds.get("__SYS_InstallPanicHandler"), "T", "HBC's strong __SYS_InstallPanicHandler is missing")
+
     def test_small_data_base_is_the_section_start(self):
         nm = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
         base = {line.split()[2]: int(line.split()[0], 16) for line in nm.splitlines() if len(line.split()) == 3}

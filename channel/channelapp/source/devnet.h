@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <gctypes.h>
+#include "../../../sdk/hbc_agent.h"
 
 // Developer protocol version reported by HBCS; 2 adds framed transfers, 3
 // crash reports (HBCC) and the in-app agent's exit request (HBCX), 4 the
@@ -22,6 +23,9 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip);
 // Takes the crash report an agent-enabled app left and the kept log target
 // from MEM2. Call first in main(), before allocations can reach them.
 void devnet_early_init(void);
+// The crash report devnet_early_init() took, until HBCC clears it, or NULL.
+// The crash screen compares it with its own crash (panic_crash_loop).
+const hbc_crash_block *devnet_crash_taken(void);
 // Restores the app log target that survived the last app launch.
 void devnet_init(void);
 // Records how long HBC took to reach its menu, for the status reply.

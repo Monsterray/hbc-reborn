@@ -594,6 +594,10 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	return false;
 }
 
+const hbc_crash_block *devnet_crash_taken(void) {
+	return have_crash ? &crash : NULL;
+}
+
 void devnet_early_init(void) {
 	hbc_crash_block *cb = (hbc_crash_block *) HBC_CRASH_ADDR;
 	hbc_netlog_block *keep = (hbc_netlog_block *) HBC_NETLOG_KEEP_ADDR;

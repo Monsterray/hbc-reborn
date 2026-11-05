@@ -161,6 +161,88 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.0: the crash handler leaves by HBC's own stub and shows more
+
+Review of the exception screen (and the stub it ends in) found:
+
+- The stub's IPC waits had no limit. A request of the crashed app still in
+  IOS left its late reply in ARMMSG, IOS then acked nothing more, and the stub
+  waited for an ack for good. Now an ack waits 0.5 s, a reply 1 s, a launch
+  10 s; a reply that arrives while waiting for an ack is taken; a request
+  that timed out gets a fresh `ipc` struct (IOS may still write the old one);
+  `reset_ios` stops after three closes with no reply; and the stub ends in
+  `ios_last_resort`, a hardware reset where AHBPROT is open and the chip is
+  not a vWii, before its final loop. The stub is 5056 bytes (limit 5888):
+  `-fno-asynchronous-unwind-tables` drops its unused `.eh_frame`.
+- A crash before HBC had installed its stub ended in libogc's `__reload`,
+  which calls `SYS_ResetSystem` (IOS and threads, from inside an exception)
+  when no stub is there. The handler and `_panic` now install `stub_bin` and
+  jump to it; `__reload` and `SYS_ResetSystem` are not called. libogc's weak
+  `__SYS_InstallPanicHandler` is overridden, so a crash before `main` (static
+  constructors) reaches HBC's screen, not libogc's.
+- `HW_RESETS` was written with no AHBPROT or vWii check, and `_panic` waited
+  for the reset button for good. Both are gated; `_panic` counts 20 s, shows
+  "Reloading in N s", then leaves by the stub; its VI polling loops are
+  bounded, and it does not draw when the framebuffer address read from the VI
+  is implausible (a VI never set up gave address 0 and wrote over the stub).
+- The screen used `__console_init` and `kprintf` (newlib's stream lock,
+  `setvbuf`, the heap). It now has its own text and a YUY2 renderer
+  (`source/panic.c`, logic in `source/panic_core.h`), redrawn every second.
+- HBC's own crash left no `hbc_crash_block`. The handler fills it first
+  thing (the agent's layout, app "HBC 1.15.0", reason "thread XXXXXXXX:
+  cause"), so `hbc.py crash` shows it after the reload.
+- The backtrace starts with `ctx->lr`, then the agent's back-chain walk, with
+  a range check on the whole 4 or 8 byte read (MEM1 and MEM2; the thread's
+  stack may be in the MEM2 heap, which the first plan did not allow).
+- More on screen: HBC version, thread, uptime, DAR and DSISR for DSI and
+  Alignment, and a cause decoded from SRR1 and DSISR.
+- The audio DMA is stopped first, so a half-dead HBC does not loop a buffer.
+- `gfx_deinit` clears `xfb`, so a crash on the exit path (video blanked)
+  leaves at once instead of drawing on a blank screen.
+- `newrvl.ld` reserved 0x24000 bytes after `.bss` for `__stack_addr` and
+  `__intrstack`, which libogc 3 does not use (its stacks are static in
+  tuxedo). `__Arena1Lo` now starts at the 32-byte aligned end of `.bss`.
+- The countdown no longer goes negative if the reload returns: the handler
+  does not return, it ends in a hardware reset or a spin.
+
+Checked: `tests/test_panic_host.py` (range check, walk, cause text, crash
+block validity, the IPC wait truth table and its end across a time base
+wrap), `tests/test_memory_layout.py` (arena start, early handler),
+`tests/stub_layout.sh`, build with `-Werror`.
+
+- A crash on every start reloaded for good: the stub starts the installed
+  channel, which crashed again (before 1.15.0 such a crash reset the Wii).
+  When HBC crashes within 30 s of its start and the record before it (the
+  MEM2 block, or the copy `devnet_early_init` took) is HBC's own crash within
+  30 s of its start, the stub is pointed at the System Menu instead
+  (`panic_crash_loop`). Where Priiloader autoboots an HBC, the loop goes on
+  through Priiloader until RESET is held at power-on: HBC cannot change that.
+- The cause text called DSISR bit 5 "lwarx/stwcx to write-through". On the
+  750 it is a direct-store segment, and a real Wii's segment registers make
+  every address below 0x80000000 one: a store to address 0xA gave DSISR
+  06000000 on the bench Wii. It now reads "direct-store segment (bad
+  address)".
+
+Checked: `tests/test_panic_host.py` (range check, walk, cause text, crash
+block validity, the crash-loop rule, the IPC wait truth table and its end
+across a time base wrap), `tests/test_memory_layout.py` (arena start, early
+handler), build with `-Werror`, host suite 321 tests. Dolphin: the agent
+crash, fatal, hang and exit checks on the 1.15.0 WAD; a crash-1 WAD built as
+LULZ starts twice, then the stub launches 00000001/00000002 (Dolphin's NAND
+has no Wii Menu to show).
+
+On the dev Wii (2026-11-05): crash-1 (a fault before the video is up) went
+back to the installed 1.14.0 at once and `hbc.py crash` showed "HBC 1.15.0
+crashed after 0.0 s: DSI", DAR 0000000a (job 20261105-002047-cf301a);
+crash-2 (8 s into the menu) reloaded after the countdown with its record
+(20261105-002121-069b88); crash-3 (the screen faults itself) left by the stub
+and kept the first record (20261105-002324-2c7557). The capture card showed
+no picture during these runs, so the screen itself was not seen. The
+crash-loop guard looped on the Wii while Priiloader autoboot was changed
+mid-test (20261105-003228-c06d2e); it is to be run again with Priiloader
+booting the System Menu and video recorded. The hardware reset path and a
+stub started with IOS wedged cannot be shown in Dolphin.
+
 ### 1.14.31: a network hang leaves HBC running; reloading is a developer setting
 
 PR 22 reloaded the whole channel when a network cleanup hung inside IOS,
