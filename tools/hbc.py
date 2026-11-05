@@ -694,6 +694,10 @@ def parse_entry(line):
     HBC 1.10.15 only "r" was sent), readonly, hidden, system, archive,
     name."""
     kind, size, mtime, flags, name = line.split(" ", 4)
+    # A name is one path component: "get -r" joins it onto a local folder, so a
+    # hostile or broken Wii must not be able to say "..", "C:\x" or "/etc".
+    if name in ("", ".", "..") or any(c in name for c in "/\\:\0"):
+        raise HBCError(f"the Wii listed an unsafe name {name!r}; refusing to use it")
     attrs = "" if flags == "-" else flags
     return {"type": kind, "size": int(size), "mtime": int(mtime), "attrs": attrs,
             "readonly": "r" in attrs, "hidden": "h" in attrs, "system": "s" in attrs,

@@ -941,6 +941,22 @@ class HBCToolTest(unittest.TestCase):
         self.assertNotIn("sd:/apps/gone/sub/deeper", self.fake.dirs)
         self.assertNotIn("sd:/apps/gone", self.fake.dirs)
 
+    def test_listing_names_that_would_leave_the_folder_are_refused(self):
+        for name in ("", ".", "..", "../x", "a/b", "a\\b", "C:\\x", "C:x", "a\0b", "/abs"):
+            with self.assertRaises(hbc.HBCError, msg=repr(name)):
+                hbc.parse_entry(f"f 1 0 - {name}")
+        self.assertEqual(hbc.parse_entry("f 1 0 - ok name.txt")["name"], "ok name.txt")
+
+    def test_get_r_refuses_a_hostile_listing_and_writes_nothing(self):
+        real = hbc.list_entries
+        hbc.list_entries = lambda wii, path: ([hbc.parse_entry("f 1 0 - ..")], False)
+        try:
+            with self.assertRaises(hbc.HBCError):
+                hbc.get_tree(WII, "sd:/apps/x", str(self.tmp / "out"), out=lambda _: None)
+        finally:
+            hbc.list_entries = real
+        self.assertFalse((self.tmp / "out").exists())
+
     def test_tree_too_deep_for_the_wii_falls_back_to_one_request_per_entry(self):
         self.fake.tree_delete = True
         self.fake.rm_depth = 1

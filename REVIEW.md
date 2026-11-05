@@ -161,6 +161,17 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### 1.15.9: a listing name cannot leave the folder `get -r` writes into
+
+Fourth audit, item 12: `get -r` is a read-only command, so it may talk to
+an auto-found Wii, but `get_tree` joined the names in the Wii's listing onto
+a local path unchecked. A hostile or broken Wii could send `..`, `C:\x` or an
+absolute path and write outside the target folder. `parse_entry` now refuses
+a name that is empty, `.`, `..` or has `/`, `\`, `:` or a NUL, with an
+`HBCError` that names it; nothing is skipped silently. Checked: three new
+host tests in `tests/test_hbc_tool.py`.
+
+
 ### 1.15.8: badge widths on a tiny theme tile are clamped
 
 Third audit, item 11: `badge_gen_bar` computed `tile_w - 2 * BADGE_BAR_INSET`
