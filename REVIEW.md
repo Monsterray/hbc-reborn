@@ -161,6 +161,35 @@ From the 1.3.6 review, each verified in the code first:
   so `hbc.py` timed out while it was open (found taking a picture of the new
   five-device layout in Dolphin). It now does, like the popups since 1.9.5.
 
+### Third and fourth audit fixes (1.15.2-1.15.12) on the dev Wii
+
+Checked on 2026-11-05, with Monty at the Wii:
+
+- Restart network (1.15.2): `net_starts` went from 1 to 2 in 0.5 s, and HBC
+  kept answering (1.15.12 DOL, job 20261105-092808-e4bb81).
+- `get -r` (1.15.9): `sd:/apps/ftpii` came down whole (boot.dol, icon.png,
+  meta.xml), so the name check refuses nothing real.
+- HOME key burst (1.15.11): "h", then 24 "b", then "h" in one send. HOME
+  closed and stayed closed (job 20261105-093245-a1ec13).
+- Badge records (1.15.4, 1.15.5): 1.15.15 (build 25c23d4) was installed as
+  LULZ, with App badges on and three restarts from the Wii Menu. Badges
+  stayed on, apps_seen.txt kept its record and none had ` missed`. A DOL
+  sent over Wiiload cannot test this: it has no NAND data folder, so badges
+  start off and the scan does not prune. LULZ went back to 1.14.0 after.
+- Upload during a scan (1.15.7): two uploads of a 3-file app came back
+  whole on read-back, and the app showed in its folder. Each upload began
+  about 18 s after the DOL was sent, so the scan may already have ended.
+- USB keyboard (1.15.12): held, fast and two-key presses all worked, with
+  no key stuck or lost (Monty).
+- Not checked on the Wii: 1.15.6 (badges off mid-scan) and 1.15.10 (a
+  failed delete). The scan takes 480 ms for 25 apps, which is too short to
+  change Options by hand. A failed delete would need the SD card pulled
+  mid-delete. 1.15.8 needs a theme with a tile under 16 px.
+- Seen during the run: twice, HBC 1.15.15 reset a status request (HBCS)
+  while Options was open. Some file requests also timed out, perhaps while
+  another session used the Wii. Trigger to look: a reset that repeats with
+  only one client.
+
 ### 1.15.12: the keyboard's IOS report buffer has a cache line of its own
 
 Fourth audit, item 15 (hardening): in `struct kbd`, `report[8]` and `keys[8]`
