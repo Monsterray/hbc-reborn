@@ -61,6 +61,7 @@ import json
 import re
 import os
 import pathlib
+import shutil
 import signal
 import socket
 import struct
@@ -1706,6 +1707,23 @@ def pool_names(timeout=10):
     return [w["name"] for w in pool]
 
 
+def requeue_running():
+    """At a dispatcher's start: a job left in RUNNING by a dispatcher that died mid-job goes back
+    to the queue. One that has a record in DONE finished and only its clean-up failed: it must
+    never run again (an attended hang test did, 2026-11-06). Logs already copied to DONE go."""
+    for p in jobs(RUNNING):
+        if (DONE / p.name).exists():
+            fs_retry(p.unlink)
+            continue
+        fs_retry(p.rename, PENDING / p.name)
+    for p in RUNNING.glob("*.log"):
+        if (DONE / p.name).exists() and not (RUNNING / f"{p.stem}.json").exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
 def job_window():
     """Windows: the dispatcher has no console, so each console job (python.exe) gets a
     window of its own. Show it minimized and without taking the focus."""
@@ -1764,8 +1782,17 @@ def run_job(p, started=None, wii=None):
     job["secs"] = int(time.monotonic() - t0)
     job["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
     (DONE / f"{job['id']}.json").write_text(json.dumps(job, indent=1))
-    fs_retry(log.rename, DONE / log.name)
+    # The record leaves RUNNING first: a job left there is requeued when a dispatcher starts.
     fs_retry(r.unlink)
+    try:
+        fs_retry(log.rename, DONE / log.name)
+    except PermissionError:
+        # A process the job started can outlive it with the log as its stdout (wiicap's video
+        # from d2xdiag.py and install_cios.py), and Windows will not move an open file. On
+        # 2026-11-05 that crashed the turn with the job still in RUNNING, and the next
+        # dispatcher ran that attended hang test again on its own. Copy it; the stale one in
+        # RUNNING has no record, so nothing requeues it, and a later start removes it.
+        shutil.copyfile(log, DONE / log.name)
     (RUNNING / f"{job['id']}.stop").unlink(missing_ok=True)
     say(f"done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s")
     return job
@@ -2533,8 +2560,7 @@ def cmd_run(a):
             if not dispatcher_pid():
                 LOCK.unlink(missing_ok=True)
     try:
-        for p in jobs(RUNNING):                    # a dispatcher that died mid-job: requeue it
-            fs_retry(p.rename, PENDING / p.name)
+        requeue_running()
         clear_stale_recoveries()
         # One turn per Wii at a time: each waits for a Wii with a job of its own, and runs it and
         # the jobs that follow on that Wii. Without a lease server, the same lease logic runs here.

@@ -2332,5 +2332,55 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(len(json.loads(old.stdout)), 3)
 
 
+class LockedLogTest(unittest.TestCase):
+    """2026-11-06: d2xdiag.py's video capture outlived its job with the job's log as stdout.
+    Windows would not move the open log, the turn crashed with the job still in RUNNING, and the
+    next dispatcher start requeued it: an attended hang test ran again with nobody asking."""
+
+    def setUp(self):
+        self.wb = import_wiibench()
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.home = pathlib.Path(d.name)
+        for sub in ("pending", "running", "done", "runs"):
+            (self.home / sub).mkdir()
+
+    def patched(self):
+        from unittest import mock
+        import contextlib
+        stack = contextlib.ExitStack()
+        for name, sub in (("PENDING", "pending"), ("RUNNING", "running"), ("DONE", "done"), ("RUNS", "runs")):
+            stack.enter_context(mock.patch.object(self.wb, name, self.home / sub))
+        stack.enter_context(mock.patch.object(self.wb, "STATE", self.home / "dispatcher.state"))
+        return stack
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows refuses to move an open file")
+    def test_a_log_held_open_after_the_job_leaves_nothing_to_requeue(self):
+        # The job exits at once; its grandchild keeps the log open for 4 s (fs_retry gives up at 2 s).
+        hold = "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'])"
+        p = self.home / "pending" / "j1.json"
+        p.write_text(json.dumps({"id": "j1", "name": "held log", "cmd": [sys.executable, "-c", hold],
+                                 "cwd": str(self.home), "timeout": 60}))
+        with self.patched():
+            job = self.wb.run_job(p)
+        import time
+        self.addCleanup(time.sleep, 3)             # runs before the folder's clean-up: let go of the log
+        self.assertEqual(job["exit"], 0)
+        self.assertTrue((self.home / "done" / "j1.json").exists())
+        self.assertTrue((self.home / "done" / "j1.log").exists())
+        self.assertFalse((self.home / "running" / "j1.json").exists())
+
+    def test_a_start_does_not_requeue_a_job_that_finished(self):
+        for d in ("running", "done"):
+            (self.home / d / "j2.json").write_text(json.dumps({"id": "j2", "name": "finished"}))
+        (self.home / "running" / "j3.json").write_text(json.dumps({"id": "j3", "name": "cut off"}))
+        (self.home / "running" / "j2.log").write_text("copied already\n")
+        (self.home / "done" / "j2.log").write_text("copied already\n")
+        with self.patched():
+            self.wb.requeue_running()
+        self.assertEqual(sorted(p.name for p in (self.home / "pending").iterdir()), ["j3.json"])
+        self.assertEqual(list((self.home / "running").iterdir()), [])
+
+
 if __name__ == "__main__":
     unittest.main()
