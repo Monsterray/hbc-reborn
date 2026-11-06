@@ -457,7 +457,7 @@ wrap_words() {
 
 # card <row> -- the card of one Wii, IW characters inside, into CL
 card() {
-    local name ip state lab right left_ pad d bw fill el tm bar
+    local name ip state lab right left_ pad d bw fill el tm bar col
     row_fields wiis "$1"
     name="${F[$WF_NAME]}"; ip="${F[$WF_IP]}"; state="${F[$WF_STATE]}"
     wii_look "$state"
@@ -495,7 +495,8 @@ card() {
     f $WF_LEASE; card_line "" "$V" "$c_gray"
     printf -v d '%*s' "$IW" ''
     CL+=("${c_gray}│ ${d// /┄} │${c_reset}")
-    f $WF_NEXT1; card_line "next" "${V:-nothing queued}" "$([ -n "$V" ] || echo "$c_gray")"
+    f $WF_NEXT1; col=""; [ -n "$V" ] || col="$c_gray"        # (no command substitution here: it forks, 14-200 ms on Git Bash)
+    card_line "next" "${V:-nothing queued}" "$col"
     f $WF_NEXT2; lab="$V"; f $WF_MORE; [ -n "$V" ] && lab+=" (+$V more)"
     card_line " " "$lab"
     f $WF_LASTNAME
@@ -509,7 +510,8 @@ card() {
         card_line "last" "no job in the window" "$c_gray"; card_line "" ""
     fi
     f $WF_WINJOBS; lab="$V job"; [ "$V" = 1 ] || lab+="s"; lab+=" · "; f $WF_WINFAILED; lab+="$V failed · "; f $WF_WINBUSY; lab+="$V busy"
-    f $WF_WIN; card_line "$V" "$lab" "$([ "${F[$WF_WINFAILED]}" != 0 ] && echo "$c_yellow")"
+    f $WF_WIN; col=""; [ "${F[$WF_WINFAILED]}" != 0 ] && col="$c_yellow"
+    card_line "$V" "$lab" "$col"
     f $WF_TAKES; lab="$V"; f $WF_LOGPORT; [ -n "$V" ] && lab+=" · log port $V"
     card_line "" "$lab" "$c_gray"
     printf -v d '%*s' $(( IW + 2 )) ''
@@ -576,11 +578,12 @@ lane_cells() {
 
 # render_lanes -- the history page's WIIS, HOUR BY HOUR: the window in cells, one lane per Wii
 render_lanes() {
-    local i stats
+    local i stats pad
     (( ${NROWS[lanes]:-0} == 0 )) && return
     heading "$c_cyan" "WIIS, HOUR BY HOUR" "last ${HOURS} h, ${KV[lane_step]:-?} a cell, oldest on the left" lanes
     printf -v stats ' │%5s%5s%6s%8s' JOBS FAIL BUSY "LONGEST"
-    lines+=("${c_gray}  $(printf '%-12s' '')${KV[lane_ticks]:-}${stats}${c_reset}")
+    printf -v pad '%-12s' ''
+    lines+=("${c_gray}  ${pad}${KV[lane_ticks]:-}${stats}${c_reset}")
     for (( i = 0; i < ${NROWS[lanes]}; i++ )); do
         row_fields lanes "$i"
         lane_cells "${F[2]}"

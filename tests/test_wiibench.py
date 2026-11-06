@@ -1923,6 +1923,20 @@ class MonitorTest(unittest.TestCase):
         self.assertIn("It never contacts the Wii", r.stdout)
 
 
+class MonitorForkTest(unittest.TestCase):
+    def test_a_frame_forks_nothing(self):
+        """On Git Bash a "$(...)" costs 14-200 ms; a frame drawn with a few of them took almost a
+        second. Only startup, actions and a failed snapshot's message may use one."""
+        import re
+        allowed = ("$PY", "tput", "mktemp", "HERE=", "tail -n 1", "brew", "$(( ")
+        bad = []
+        for n, line in enumerate((BENCH.parent / "monitor.sh").read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0] if line.lstrip().startswith("#") else line
+            if re.search(r"\$\((?!\()", code) and not any(a in code for a in allowed) and not line.lstrip().startswith("#"):
+                bad.append(f"{n}: {line.strip()}")
+        self.assertEqual(bad, [], "a command substitution forks on every frame")
+
+
 class CardWrapTest(unittest.TestCase):
     """monitor.sh's wrap_words, which wraps a job's name on its Wii's card."""
 

@@ -2230,6 +2230,7 @@ Tool work, no version of its own.
 - **After the next push:** rebuild the lease server container; `pool.json` keeps lrwii's saved
   groups over the environment's, so run `wiibench.py wii lrwii --group dev` once.
 - **Lanes:** the name column is 6 wide for `devwii`.
+- **Monitor speed (2026-11-05):** the cards and the lanes header used `$(...)` per frame; on this PC a fork cost 130-300 ms, so the queue page took 919 ms a frame and history 208 ms. Fork-free now: 55 ms and 21 ms (manage 27, errors 117 with ~100 rows). `MonitorForkTest` fails if a frame's code gains a command substitution. The snapshot coprocess answers in ~110 ms (mostly the lease server round trip).
 - **`add --wii GROUP --each`:** one copy per member (named `NAME @wii`, pinned to it, `each` in the job); a member that lacks a needed part gets none; it says to use it sparingly (major updates, releases).
 
 #### Bump: a person tells a waiting turn the Wii is back
