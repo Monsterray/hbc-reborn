@@ -2844,10 +2844,21 @@ def _when(t, now):
     return time.strftime("%H:%M:%S" if lt[:3] == ln[:3] else "%m-%d %H:%M", lt)
 
 
+_MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
 def _parse_local(s):
+    """A log line's "YYYY-MM-DD HH:MM:SS" as epoch seconds, local time; None if it is not one.
+    By hand: time.strptime took 10 us a line, and the log tail is 5000 lines a refresh."""
     try:
-        return time.mktime(time.strptime(s, "%Y-%m-%d %H:%M:%S"))
-    except (TypeError, ValueError):
+        if len(s) != 19 or s[4] != "-" or s[7] != "-" or s[10] != " " or s[13] != ":" or s[16] != ":":
+            return None
+        y, mo, d, h, mi, sec = int(s[:4]), int(s[5:7]), int(s[8:10]), int(s[11:13]), int(s[14:16]), int(s[17:19])
+        if not (1 <= mo <= 12 and 1 <= d <= _MONTH_DAYS[mo - 1] + (mo == 2 and y % 4 == 0 and (y % 100 != 0 or y % 400 == 0))
+                and h < 24 and mi < 60 and sec < 62):
+            return None                                # mktime would carry it over instead of refusing
+        return time.mktime((y, mo, d, h, mi, sec, 0, 0, -1))
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -2895,6 +2906,7 @@ class SnapCache:
 
     def __init__(self):
         self.jobs, self.hist, self.local, self.log = {}, None, None, None
+        self.problems = None                           # (the log lines, their problems): until the log changes
         self.down_until, self.down_error = 0.0, None   # the lease server failed: ask again later
 
 
@@ -3038,11 +3050,17 @@ def queue_order_turns(status, queues, my_qid=None, my_jobs=None):
     return out
 
 
-def dispatcher_log_problems(since, lines=None):
+def dispatcher_log_problems(since, lines=None, cache=None):
     """Problems this workstation's dispatcher logged since `since`: (t, severity, kind, detail).
-    A traceback is one problem, its last line the detail, at the time of the line before it."""
+    A traceback is one problem, its last line the detail, at the time of the line before it.
+    With a cache, the log is read through once per change (it was every refresh: 60 ms)."""
+    if lines is None:
+        lines = _log_lines()
+    if cache is not None and cache.problems and cache.problems[0] is lines:
+        return [p for p in cache.problems[1] if p[0] >= since]
     out, ts, tb = [], None, None
-    for line in (_log_lines() if lines is None else lines):
+    since_all, since = since, 0
+    for line in lines:
         t = _parse_local(line[:19]) if len(line) >= 19 else None
         if t is not None:
             if tb:
@@ -3060,7 +3078,9 @@ def dispatcher_log_problems(since, lines=None):
             tb[1] = line.strip()[:160]
     if tb:
         out.append((tb[0], "err", "dispatcher crashed", tb[1]))
-    return [p for p in out if p[0] >= since]
+    if cache is not None:
+        cache.problems = (lines, out)
+    return [p for p in out if p[0] >= since_all]
 
 
 def job_problem(j):
@@ -3496,7 +3516,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                 problems.append(dict(t=t, severity="warn", kind="left the line", host=host, job=e.get("name"), id="-",
                                      detail=f"stopped asking after {e.get('waited_s')} s: its dispatcher went away"))
     log = _log_lines(cache)
-    for t, sev, kind, detail in dispatcher_log_problems(since, log):
+    for t, sev, kind, detail in dispatcher_log_problems(since, log, cache):
         problems.append(dict(t=t, severity=sev, kind=kind, host=socket.gethostname(), job="-", id="-", detail=detail))
     if pending and not pid:
         problems.append(dict(t=now, severity="warn", kind="no dispatcher", host=socket.gethostname(), job="-", id="-",

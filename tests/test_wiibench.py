@@ -1935,6 +1935,40 @@ class MonitorTest(unittest.TestCase):
         self.assertIn("It never contacts the Wii", r.stdout)
 
 
+import time
+
+
+class SnapshotSpeedTest(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(BENCH.parent))
+        import wiibench
+        self.wb = wiibench
+
+    def test_a_log_time_parses_like_strptime(self):
+        for s in ("2026-11-06 12:15:52", "2028-02-29 23:59:59", "2026-02-29 10:00:00", "2026-13-01 00:00:00",
+                  "2026-11-06 24:00:00", "2026-11-31 00:00:00", "2026-11-06T12:15:52", "nope", "", None):
+            try:
+                want = time.mktime(time.strptime(s, "%Y-%m-%d %H:%M:%S"))
+            except (TypeError, ValueError):
+                want = None
+            self.assertEqual(self.wb._parse_local(s), want, s)
+
+    def test_the_log_is_read_through_once_a_change(self):
+        lines = ["2026-11-06 10:00:00 lease lost for x: gaierror",
+                 "2026-11-06 11:00:00 lease taken for x on dev",
+                 "Traceback (most recent call last):", "ValueError: boom",
+                 "2026-11-06 12:00:00 the lease server http://h:1 is unreachable"]
+        cache = self.wb.SnapCache()
+        first = self.wb.dispatcher_log_problems(0, lines, cache)
+        self.assertEqual(first, self.wb.dispatcher_log_problems(0, lines))
+        self.assertIs(cache.problems[0], lines)
+        late = time.mktime((2026, 11, 6, 10, 30, 0, 0, 0, -1))
+        again = self.wb.dispatcher_log_problems(late, lines, cache)       # the cached list, filtered by time
+        self.assertEqual(again, [p for p in first if p[0] >= late])
+        self.assertEqual(again, self.wb.dispatcher_log_problems(late, lines))
+        self.assertLess(len(again), len(first))
+
+
 class MonitorForkTest(unittest.TestCase):
     def test_a_frame_forks_nothing(self):
         """On Git Bash a "$(...)" costs 14-200 ms; a frame drawn with a few of them took almost a
