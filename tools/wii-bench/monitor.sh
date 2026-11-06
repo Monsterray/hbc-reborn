@@ -112,7 +112,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] =
     exit 2
 fi
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd)"; [ -n "$HERE" ] || HERE="$(cd . && pwd)"
 BENCH="$HERE/wiibench.py"
 # shellcheck source=lib/monitor_lib.sh
 source "$HERE/lib/monitor_lib.sh"
@@ -126,7 +126,8 @@ done
 unset _l _t
 
 PY=""
-for p in ${WII_BENCH_PYTHON:-} python3 python; do
+PYS="python3 python"; case "$OSTYPE" in msys*|cygwin*) PYS="python python3" ;; esac   # python3 is the Store stub there: 230 ms to fail
+for p in ${WII_BENCH_PYTHON:-} $PYS; do
     # The Windows Store's python3 stub exists but runs nothing; ask each one for a version.
     if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then
         PY="$p"; break
@@ -1021,6 +1022,25 @@ sel_wii() {
         row_fields wiis "$i"
         [ "${F[$WF_NAME]}" = "$SELECTED" ] && { WSEL=$i; return 0; }
     done
+    return 1
+}
+
+# The library's n/p keys look the current page up with "$(monitor_page_index)": two forks a key,
+# and a fork can stall for most of a second on a busy Windows PC. The same keys, fork-free.
+monitor_page_key() {
+    local key="$1" n="${#MONITOR_PAGES[@]}" i=0 at=0 pg
+    case "$key" in
+        [1-9])
+            (( key - 1 < n )) && MONITOR_PAGE="${MONITOR_PAGES[$(( key - 1 ))]}"
+            return 0 ;;
+        n|N|$'\t'|p|P)
+            for pg in "${MONITOR_PAGES[@]}"; do [ "$pg" = "$MONITOR_PAGE" ] && at=$i; (( i++ )); done
+            case "$key" in
+                p|P) MONITOR_PAGE="${MONITOR_PAGES[$(( ( at + n - 1 ) % n ))]}" ;;
+                *)   MONITOR_PAGE="${MONITOR_PAGES[$(( ( at + 1 ) % n ))]}" ;;
+            esac
+            return 0 ;;
+    esac
     return 1
 }
 

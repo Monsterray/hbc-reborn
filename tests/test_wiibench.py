@@ -2252,6 +2252,21 @@ class MonitorTtyTest(unittest.TestCase):
         self.key("q")
         self.assertEqual(self.proc.wait(timeout=10), 0)
 
+    def test_n_and_p_cycle_the_pages(self):
+        self.start()
+        self.wait(self.has("[1 queue]"), "the queue page")
+        self.key("n")
+        self.wait(self.has("[2 errors]"), "n: the next page")
+        self.key("p")
+        self.key("p")
+        self.wait(self.has("[5 manage]"), "p twice: the last page")
+        self.key("n")
+        self.wait(self.has("[1 queue]"), "n: around to the first")
+        self.key("3")
+        self.wait(self.has("[3 history]"), "3: the third page")
+        self.key("q")
+        self.assertEqual(self.proc.wait(timeout=10), 0)
+
     def test_the_manage_page_pins_and_groups_a_wii(self):
         self.start()
         self.wait(self.has("[1 queue]"), "the queue page")
