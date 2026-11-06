@@ -25,20 +25,24 @@ static u32 queued_up;
 void controls_init (void) {
 	int i;
 
-	keyboard_init ();
-
+	// The remotes (Bluetooth, /dev/usb/oh1) before the keyboard: a USB drive
+	// a reset left stuck holds IOS's USB stack, and WPAD_Init behind the
+	// keyboard worker's first USB call waited until the drive was pulled
+	// (22 s on the bench Wii, 2026-11-06). Opened first, it takes the usual
+	// few milliseconds and the remotes keep working.
 	i = WPAD_Init ();
 
-	if(i < 0) {
+	if(i < 0)
 		gprintf("WPAD_Init failed: %d\n",i);
-		return;
+	else {
+		for(i=0;i<WPAD_MAX_WIIMOTES;i++) {
+			WPAD_SetDataFormat (i, WPAD_FMT_BTNS_ACC_IR);
+			WPAD_SetVRes (i, view_width + 128, view_height + 128);
+		}
+		WPAD_SetIdleTimeout (300);	// 5 minutes, as libogc and the Wii Menu
 	}
 
-	for(i=0;i<WPAD_MAX_WIIMOTES;i++) {
-		WPAD_SetDataFormat (i, WPAD_FMT_BTNS_ACC_IR);
-		WPAD_SetVRes (i, view_width + 128, view_height + 128);
-	}
-	WPAD_SetIdleTimeout (300);	// 5 minutes, as libogc and the Wii Menu
+	keyboard_init ();
 }
 
 void controls_deinit (void) {
