@@ -2230,6 +2230,7 @@ Tool work, no version of its own.
 - **After the next push:** rebuild the lease server container; `pool.json` keeps lrwii's saved
   groups over the environment's, so run `wiibench.py wii lrwii --group dev` once.
 - **Lanes:** the name column is 6 wide for `devwii`.
+- **Error audit (7 days, 370 jobs, 73 not ok):** `bash` in a job resolved to WSL's `/bin/bash` (5 of the 8 jobs that failed to start; no `C:/` paths, no Windows Python): `job_command` now runs a bare `bash`/`sh` as Git Bash. Left for the projects, with the counts: `sd:/autoinput.txt already exists` (USB Loader GX, 4: a stale file from an earlier hang), `the app did not close its log` (hbc.py, 7), `send` of HBC itself timing out (3, the known false failure), freezes that held a Wii for hours (one overnight: 8 h 2 min, 28691 s, the bench has no remote power), 12 outside-the-queue warnings (a job that left an app running, or a person at the Wii).
 - **Monitor speed (2026-11-05):** the cards and the lanes header used `$(...)` per frame; on this PC a fork cost 130-300 ms, so the queue page took 919 ms a frame and history 208 ms. Fork-free now: 55 ms and 21 ms (manage 27, errors 117 with ~100 rows). `MonitorForkTest` fails if a frame's code gains a command substitution. The snapshot coprocess answers in ~110 ms (mostly the lease server round trip).
 - **`add --wii GROUP --each`:** one copy per member (named `NAME @wii`, pinned to it, `each` in the job); a member that lacks a needed part gets none; it says to use it sparingly (major updates, releases).
 

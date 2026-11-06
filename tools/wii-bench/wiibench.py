@@ -1473,6 +1473,21 @@ def default_name(cmd):
     return name[:80]
 
 
+def job_command(cmd):
+    """The command as the job runs it. On Windows a bare `bash` or `sh` is found on PATH as WSL's
+    /bin/bash, which cannot open C:/... paths or run C:/Python312/python.exe: 5 of 8 jobs that
+    failed to start between 2026-11-02 and 2026-11-05 died that way ("No such file or
+    directory", exit 127). Those run Git Bash's instead."""
+    import shutil
+    if WINDOWS and cmd and cmd[0].lower() in ("bash", "sh", "bash.exe", "sh.exe"):
+        git = shutil.which("git")
+        for base in ([pathlib.Path(git).parent.parent] if git else []) + [pathlib.Path(r"C:\Program Files\Git")]:
+            for exe in ("bin/bash.exe", "usr/bin/bash.exe"):
+                if (base / exe).exists():
+                    return [str(base / exe)] + list(cmd[1:])
+    return list(cmd)
+
+
 def command_missing(cmd, cwd):
     """Why the command cannot start, or None. Its program is looked up as the job would: a path
     relative to the job's folder, else on PATH (with PATHEXT on Windows). In 2026-10-12..19 three
@@ -1725,7 +1740,7 @@ def run_job(p, started=None, wii=None):
                WII_BENCH_JOB=job["id"], WII_BENCH_OUT=str(out_dir), WII_BENCH_JOB_START=f"{time.time():.3f}")
     with open(log, "w") as out:
         try:
-            proc = subprocess.Popen(job["cmd"], cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(job_command(job["cmd"]), cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, env=env,
                                     **(job_window() if WINDOWS else {"start_new_session": True}))
             limit, stop = time.monotonic() + (job.get("timeout") or TIMEOUT), RUNNING / f"{job['id']}.stop"

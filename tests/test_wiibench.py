@@ -1462,6 +1462,18 @@ class MultiWiiTest(unittest.TestCase):
         job = json.loads((self.home / "queue/pending" / f"{r.stdout.strip()}.json").read_text())
         self.assertEqual(job["needs"], ["network"])
 
+    def test_a_bare_bash_runs_as_git_bash_on_windows(self):
+        from unittest import mock
+        git = self.home / "Git"
+        (git / "bin").mkdir(parents=True)
+        (git / "cmd").mkdir()
+        (git / "bin" / "bash.exe").write_text("")
+        with mock.patch.object(self.wb, "WINDOWS", True), mock.patch("shutil.which", return_value=str(git / "cmd" / "git.exe")):
+            self.assertEqual(self.wb.job_command(["bash", "-c", "x"]), [str(git / "bin" / "bash.exe"), "-c", "x"])
+            self.assertEqual(self.wb.job_command(["python", "x.py"]), ["python", "x.py"])
+        with mock.patch.object(self.wb, "WINDOWS", False):
+            self.assertEqual(self.wb.job_command(["bash", "-c", "x"]), ["bash", "-c", "x"])
+
     def test_each_queues_one_copy_for_every_wii_of_the_group(self):
         env = dict(self.env, WII_BENCH_WIIS="devwii=127.0.0.1:9 lacks:disc group:dev, lr=127.0.0.2:9 pinned group:dev, prod=127.0.0.3:9 pinned")
         add = lambda *a: subprocess.run([sys.executable, str(BENCH), "add", *a, "--name", "rel", "--", sys.executable, "-c", "0"],
