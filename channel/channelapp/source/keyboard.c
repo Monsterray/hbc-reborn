@@ -165,7 +165,7 @@ static void kbd_look (void) {
 			kbds[i].state = KBD_FREE;
 		}
 
-	if(USB_GetDeviceList (list, 16, USB_CLASS_HID, &count) < 0)
+	if(USB_GetDeviceList (list, 16, USB_CLASS_HID, &count) < 0 || stopping)
 		return;
 	// Forget devices that are gone: their IDs can come back on another one.
 	for(i = kept = 0; i < seen_count; i++) {
@@ -181,12 +181,34 @@ static void kbd_look (void) {
 			seen[seen_count++] = list[i].device_id;
 }
 
+// USB_Initialize and the device list are synchronous IOS calls, and IOS's
+// USB stack can stop answering for good: a USB drive left in the middle of a
+// transfer by a reset (port power survives one) held it until the drive was
+// unplugged (the bench Wii, 2026-11-06, after d2x's watchdog reset). On the
+// main thread that was a black screen before HBC's first frame. They run on
+// this thread instead; the reads it starts answer in the IPC interrupt.
+static lwp_t worker = LWP_THREAD_NULL;
+static volatile bool worker_done = true;
+static u8 worker_stack[16 * 1024] ATTRIBUTE_ALIGN (32);
+
+static void *kbd_worker (void *arg) {
+	(void) arg;
+	// HBC starts USB only when it looks for a drive (usbmsd.c); a second
+	// call does nothing.
+	if(USB_Initialize () >= 0)
+		while(!stopping) {
+			kbd_look ();
+			for(u32 t = 0; t < LOOK_FRAMES && !stopping; t++)
+				usleep (1000000 / 60);
+		}
+	worker_done = true;
+	return NULL;
+}
+
 void keyboard_init (void) {
 	if(inited)
 		return;
-	// HBC starts USB only when it looks for a drive (usbmsd.c); a second
-	// call does nothing.
-	if(USB_Initialize () < 0)
+	if(!worker_done)	// the last one never came back from IOS: no second
 		return;
 	memset (kbds, 0, sizeof(kbds));
 	memset (keys_pressed, 0, sizeof(keys_pressed));
@@ -194,6 +216,11 @@ void keyboard_init (void) {
 	seen_count = 0;
 	frames = 0;
 	stopping = false;
+	worker_done = false;
+	if(LWP_CreateThread (&worker, kbd_worker, NULL, worker_stack, sizeof(worker_stack), 40) < 0) {
+		worker_done = true;
+		return;
+	}
 	inited = true;
 }
 
@@ -203,6 +230,13 @@ void keyboard_shutdown (void) {
 	if(!inited)
 		return;
 	stopping = true;
+	// The worker ends at its next look; one stuck in IOS is left behind
+	// (it touches no slot until IOS answers, and then sees stopping).
+	for(t = 0; t < 200 && !worker_done; t++)
+		usleep (1000);
+	if(worker_done && worker != LWP_THREAD_NULL)
+		LWP_JoinThread (worker, NULL);
+	worker = LWP_THREAD_NULL;
 	for(i = 0; i < KBD_MAX; i++) {
 		if(kbds[i].state == KBD_FREE)
 			continue;
@@ -224,8 +258,7 @@ void keyboard_scan (void) {
 
 	if(!inited)
 		return;
-	if(frames++ % LOOK_FRAMES == 0)
-		kbd_look ();
+	frames++;	// new keyboards: kbd_worker looks every LOOK_FRAMES frames' time
 
 	memset (keys_now, 0, sizeof(keys_now));
 	_CPU_ISR_Disable (level);
