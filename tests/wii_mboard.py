@@ -111,7 +111,7 @@ def launch(dol, *args, start_s=30, wait_s=300):
     back. Needs no net log: the app's own report goes to the SD card."""
     t0 = time.monotonic()
     # An app that is done within 10 s has HBC back before `send` can tell
-    # it launched, and `send` then fails though the app ran (REVIEW.md):
+    # it launched, and `send` then fails though the app ran (docs/history/1.10.md, 1.10.9):
     # the app's own report says what happened.
     tool("send", str(dol), *args, check=False)
     deadline = time.monotonic() + start_s

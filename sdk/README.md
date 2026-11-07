@@ -13,8 +13,8 @@ or two files you copy into your project.
 | [mii](mii/README.md) | Miis: read, make, edit and draw them, the Mii database, a Remote's Miis | public domain | writes the Mii database or a Remote's Miis only when the app saves |
 
 Plans: [docs/wc24-plan.md](../docs/wc24-plan.md) (sdk/wc24, all of
-WiiConnect24). Ideas for later are at the top of [REVIEW.md](../REVIEW.md)'s
-findings.
+WiiConnect24). Ideas for later are in [docs/review.md](../docs/review.md)'s open
+items.
 
 ## Licences
 

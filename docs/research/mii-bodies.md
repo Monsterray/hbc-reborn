@@ -329,7 +329,7 @@ already has, at run time, the way the SDK loads `RFL_Res.dat`:
 
    (sdk/mii does not: it skins on the CPU and sends the posed vertices
    through the FIFO. The GPU hangs seen while it was written were HBC's
-   GX FIFO in MEM2, not this choice: REVIEW.md, 1.10.26.)
+   GX FIFO in MEM2, not this choice: docs/history/1.10.md, 1.10.26.)
 
    Weighted (multi-bone) vertices need the draw list's weighting matrices,
    which are blended on the CPU (opcode 0x03).

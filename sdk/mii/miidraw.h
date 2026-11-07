@@ -423,7 +423,7 @@ typedef struct {
 	 * pixel at a Mii 150, 90, 50 and 25 pixels tall (drawn smaller: from
 	 * 90, 39, 30.5 and 25), the hair by a quarter.
 	 * A head is about 480 triangles, more than a far body: in a crowd the
-	 * GPU's time is mostly heads (REVIEW.md, 1.11.8). Some ms to build;
+	 * GPU's time is mostly heads (docs/history/1.11.md, 1.11.8). Some ms to build;
 	 * Miis sharing a part through a cache share its levels. */
 	int lods;
 	/* 1: the faces drawn by the GPU, as RFL does (RFLiMakeTexture): about

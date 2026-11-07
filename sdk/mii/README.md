@@ -346,7 +346,7 @@ if (ok) {
   ```
 - **Many Miis.** A crowd is what the Wii's CPU and memory allow, not its
   GPU, until the CPU's part is small. What helps, all measured on the
-  bench Wii (REVIEW.md, 1.11.6 to 1.11.10):
+  bench Wii (docs/history/1.11.md, 1.11.6 to 1.11.10):
   - One `mii_cache` for the crowd (`mii_model_opts.cache`): Miis share
     each part that comes out the same, byte for byte (the same hair, face
     shape, textures). With 32 px faces and the normal one only, a random
@@ -407,7 +407,7 @@ if (ok) {
   heap: once MEM1's part of the heap runs out, the heap gives MEM2, and a
   GPU fed its commands from MEM2 stalled at random on a real Wii (never in
   Dolphin). HBC lost days to this when linking this library grew its .bss
-  (REVIEW.md, 1.10.26). A Mii adds under 2 KB of commands a frame (its
+  (docs/history/1.10.md, 1.10.26). A Mii adds under 2 KB of commands a frame (its
   lists and arrays stay in memory, where the GPU reads them).
 - **Builds with libogc 3 and libogc2.** HBC uses libogc 3; every function
   here also compiles and links with devkitPPC r41-2 and libogc2.

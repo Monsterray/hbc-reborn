@@ -29,7 +29,7 @@ replacing it.
 | Message Board: the library, the board's formats | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md) |
 | Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
 | USB keyboard as a Wii Remote | [`channel/channelapp/source/keyboard.c`](channel/channelapp/source/keyboard.c), [`keymap.c`](channel/channelapp/source/keymap.c) |
-| Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
+| Review plan and open items; each release's findings; versions | [`docs/review.md`](docs/review.md), [`docs/history/`](docs/history/), [`CHANGELOG.md`](CHANGELOG.md) |
 
 This code differs from the official HBC build, which adds protection
 features, and comes with no warranty. The installer is not included.
@@ -760,7 +760,7 @@ python3 tools/wii-bench/wiibench.py wait <id>
 - [`AGENTS.md`](AGENTS.md) and the
   [project skill](.agents/skills/hbc-build-and-review/SKILL.md) hold the
   detailed build, Dolphin, and hardware procedures;
-  [`WII_DEVELOPMENT.md`](WII_DEVELOPMENT.md) covers the reload stub and return
+  [`docs/research/return-path.md`](docs/research/return-path.md) covers the reload stub and return
   path.
 
 ## License

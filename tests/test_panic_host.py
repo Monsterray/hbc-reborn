@@ -2,8 +2,8 @@
 (channel/channelapp/source/panic_core.h: where a stack walk may read, the
 backtrace, the cause text, the crash block `hbc.py crash` reads) and the
 stub's IPC wait (channel/channelapp/stub/ipc_wait.h: a limit, late replies
-taken). What this cannot show: the screen itself and a real IOS (REVIEW.md,
-1.14.32)."""
+taken). What this cannot show: the screen itself and a real IOS (docs/history/1.15.md,
+1.15.0)."""
 
 import os
 import pathlib

@@ -1,6 +1,6 @@
 # HBC agent guidance
 
-For build, review, Dolphin, Wii, or release work, read [the HBC project skill](.agents/skills/hbc-build-and-review/SKILL.md). Use [README.md](README.md) for contributor setup and [REVIEW.md](REVIEW.md) for the subsystem review plan and findings.
+For build, review, Dolphin, Wii, or release work, read [the HBC project skill](.agents/skills/hbc-build-and-review/SKILL.md). Use [README.md](README.md) for contributor setup, [docs/review.md](docs/review.md) for the review plan and open items, and [docs/history/](docs/history/) for each release's findings and hardware results ([CHANGELOG.md](CHANGELOG.md) lists the versions).
 
 - Use the installed devkitPro toolchain and standard host-tool locations. Keep local Python packages in `.venv`.
 - Never convert bases, add offsets or work out sizes in your head: run it (`python -c "print(hex(553649152))"`) and quote the output. Before calling a tool's number wrong, put both raw values side by side in one base, converted by a tool; a gap of one round step (0x400, a power of two) is as often a conversion slip as a bug. A finding that changes a design or a file format gets one re-check against the raw logs first.
@@ -10,4 +10,4 @@ For build, review, Dolphin, Wii, or release work, read [the HBC project skill](.
 - Bump the version once per push, not per commit: the last commit before a push sets both version fields in `channel/channelapp/config.h` and `channel/title/Makefile` to the same next `major.minor.patch`, and its title starts `HBC x.y.z:`. Commits in between leave both fields alone. Each build still names itself: the Makefile's `build_tag.h` makes HBC report `x.y.z+N.gHASH` (`.dirty` for uncommitted changes), so compare a test build's answer with that, not with config.h.
 - Versions: the patch number for each push; the minor number (patch back to 0) for a release with a headline feature, in a commit titled "Release HBC x.y.0", tagged `vx.y.0`. The WAD's title version packs `major << 11 | minor << 5 | patch`, so a patch number stops at 31.
 - Text files are LF in the repo and in every checkout: `.gitattributes` sets `* text=auto eol=lf`, which overrides Git for Windows' `core.autocrlf=true`. Write LF. The few upstream files kept byte-for-byte with CRLF are marked `-text` there; keep their endings when editing them. `tests/test_line_endings.py` checks it, and `tools/fix_line_endings.py` converts a checkout made before 1.8.3.
-- Prefer a focused fix with a matching check. Record larger ideas in `REVIEW.md` with evidence and a clear trigger.
+- Prefer a focused fix with a matching check. Record larger ideas in `docs/review.md`'s open items with evidence and a clear trigger, and a release's findings in its `docs/history/<minor>.md`.

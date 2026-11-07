@@ -51,7 +51,7 @@ The app picks one:
     to restore after.
   - Call it before the frame, as `mii_capture` is called today.
   - The hangs 1.10.21 blamed on capturing were HBC's GX FIFO in MEM2, not
-    the copy (REVIEW.md, 1.10.26).
+    the copy (docs/history/1.10.md, 1.10.26).
 
 HBC will offer both modes, with a setting.
 
@@ -69,7 +69,7 @@ HBC will offer both modes, with a setting.
      `GX_SetArray(GX_POSMTXARRAY/GX_NRMMTXARRAY)`.
    - Host test: posed by the palette, every vertex matches CPU skinning
      within 0.01.
-   1b. **Crowds.** Done (HBC 1.11.6 to 1.11.8; REVIEW.md has the numbers):
+   1b. **Crowds.** Done (HBC 1.11.6 to 1.11.8; docs/history/1.11.md has the numbers):
    - Memory: the GPU's copies only, textures RGB5A3 and shapes packed s16
      as RFL keeps them, only the expressions asked for
      (`mii_model_opts`), parts shared through a `mii_cache`. A Mii went

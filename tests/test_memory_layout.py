@@ -4,7 +4,7 @@
 
 The GX FIFO must be in MEM1. Taken from the heap it went to MEM2 once HBC's
 .bss grew (1.10.21), and fed from MEM2 the GPU stalled at random on a real
-Wii, never in Dolphin (REVIEW.md, 1.10.26).
+Wii, never in Dolphin (docs/history/1.10.md, 1.10.26).
 
 The small-data base (r13, _SDA_BASE_) must be the start of .sdata. libogc's
 ps_guMtxConcat loads its (0, 1) pair with a psq_l, whose displacement is 12

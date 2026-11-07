@@ -531,7 +531,7 @@ and the format is unknown).
 
 The overlay drives the remote's speaker through
 [`sdk/wiispk`](../sdk/wiispk/README.md), which follows Nintendo's SDK
-(REVIEW.md 1.7.6 and 1.8.0):
+(docs/history/1.7.md, 1.7.6, and 1.8.md, 1.8.0):
 - It puts the remote's link in sniff mode (5 ms) and runs the SDK's start-up
   sequence.
 - It encodes each 20-byte report just before sending it, every 6.67 ms:
