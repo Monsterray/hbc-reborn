@@ -26,8 +26,8 @@ replacing it.
 | Banner, WAD packaging, PyWii | [`channel/banner`](channel/banner), [`channel/title`](channel/title), [`pywii`](pywii) |
 | WiiPAX executable packer, host `wiiload` | [`wiipax`](wiipax), [`channel/wiiload`](channel/wiiload) |
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
-| Message Board: the library, the board's formats | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md) |
-| Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
+| Message Board: the library, the board's formats | [`docs/mboard/README.md`](docs/mboard/README.md), [`docs/mboard/play-log.md`](docs/mboard/play-log.md), [`docs/mboard/storage.md`](docs/mboard/storage.md) |
+| Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii/README.md`](docs/mii/README.md) |
 | USB keyboard as a Wii Remote | [`channel/channelapp/source/keyboard.c`](channel/channelapp/source/keyboard.c), [`keymap.c`](channel/channelapp/source/keymap.c) |
 | Review plan and open items; each release's findings; versions | [`docs/review.md`](docs/review.md), [`docs/history/`](docs/history/), [`CHANGELOG.md`](CHANGELOG.md) |
 

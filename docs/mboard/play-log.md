@@ -2,7 +2,11 @@
 
 How the Wii Menu (4.3U, v513) records play time, worked out in an isolated
 Dolphin profile (2026-09-30) so HBC can log each app it runs. Tools are in
-`tools/msgboard/`; nothing here was tested on a real Wii's Message Board yet.
+`tools/msgboard/`. Since checked on the bench Wii: its board showed the lines
+the installed 1.8.9 wrote ([1.9 history](../history/1.9.md), "Play log
+names"), and 1.10.9's sdk/mboard writer added a Play History line the Wii Menu
+kept ([1.10 history](../history/1.10.md#1109-sdkmboard-posts-to-the-wii-message-board)).
+The writer is `mboard_play_vff()` ([the Message Board guide](README.md)).
 
 ## play_rec.dat
 

@@ -1,6 +1,6 @@
 """The Mii library (sdk/mii) on the PC, against a model of its own.
 
-The bit fields are decoded here from docs/mii.md's table, the CRC is
+The bit fields are decoded here from docs/mii/README.md's table, the CRC is
 Python's binascii.crc_hqx (CRC-16/XMODEM), and the database and Wii Remote
 layouts are built here byte by byte, so the C code is checked against
 something it does not share.
@@ -31,7 +31,7 @@ DB_FILE_SIZE, DB_SIZE, DB_CRC, NODES, HDATA = 0xBE6C0, 0x1F1E0, 0x1F1DE, 0x1D08,
 BLOCK = 0x2F0
 REAL_DB = os.environ.get("MII_REAL_DB", "")
 
-# docs/mii.md: (offset, [(name, bits), ...]) from the top bit down.
+# docs/mii/README.md: (offset, [(name, bits), ...]) from the top bit down.
 WORDS = [
     (0x00, [("_p0", 1), ("sex", 1), ("birth_month", 4), ("birth_day", 5), ("fav_color", 4), ("favorite", 1)]),
     (0x20, [("face_type", 3), ("face_color", 3), ("face_tex", 4), ("_p1", 3), ("local_only", 1), ("kind", 2)]),

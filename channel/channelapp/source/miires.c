@@ -1,5 +1,5 @@
 // "Save Mii faces": copies the Wii's own Mii models to sd:/mii for apps that
-// draw Miis (docs/research/mii-rendering.md, docs/research/mii-bodies.md,
+// draw Miis (docs/mii/rendering.md, docs/mii/bodies.md,
 // sdk/mii): the faces, RFL_Res.dat, from the Wii Menu, and the bodies,
 // maleBody.brres and femaleBody.brres, with its effects (effect_nigaoe.breff
 // and .breft, 1.12.2), from the Mii Channel. The files are

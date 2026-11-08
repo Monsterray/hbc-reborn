@@ -24,7 +24,7 @@
  * faces drawn by the GPU (opts.gpu_faces, then mii_model_make_faces between
  * frames). sdk/mii/README.md, "Many Miis", has the numbers.
  *
- * How it draws (docs/research/mii-rendering.md has the sources):
+ * How it draws (docs/mii/rendering.md has the sources):
  *   - The head is RFL's (the Wii's face library): each part's shape from
  *     RFL_Res.dat, placed by the faceline's nose, beard and hair anchors and
  *     the Mii's sizes and positions, coloured from RFL's tables.

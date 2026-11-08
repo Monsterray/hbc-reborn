@@ -203,13 +203,13 @@ anything that points to it.
 
 ## Docs
 
-- [docs/mboard.md](../../docs/mboard.md): every call, the files and IOS
+- [docs/mboard/README.md](../../docs/mboard/README.md): every call, the files and IOS
   calls, what can go wrong, and the proof on a Wii.
-- [docs/messageboard-messages.md](../../docs/messageboard-messages.md): how
+- [docs/mboard/storage.md](../../docs/mboard/storage.md): how
   the board stores a message, and what sets the sender, icon, contents and
   stationery.
-- [docs/messageboard.md](../../docs/messageboard.md): the play history.
-- [docs/mii.md](../../docs/mii.md): Mii data, and what makes a Mii valid.
+- [docs/mboard/play-log.md](../../docs/mboard/play-log.md): the play history.
+- [docs/mii/README.md](../../docs/mii/README.md): Mii data, and what makes a Mii valid.
 
 ## Licence
 

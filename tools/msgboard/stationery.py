@@ -5,7 +5,7 @@ sdk/mboard's mboard_msg.board) that gives a letter its own look on a Wii.
     stationery.py LETTER.png THUMB.png [--sound WAV] [--chjump TITLE-ID] -o board.arc
 
 The archive is laid out as the WiiLink letters the Wii Menu files carry
-(docs/messageboard-messages.md, "custom stationery and a board icon"):
+(docs/mboard/storage.md, "custom stationery and a board icon"):
 
     letter_LZ.bin     LZ77-compressed U8: img/my_Letter_a.tpl .. _i.tpl, the
                       letter cut into a 9-slice frame (a b c / d e f / g h i:

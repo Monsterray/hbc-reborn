@@ -43,7 +43,7 @@
  *     whole set survives an interruption. A Remote whose copies are both broken
  *     reads as MII_E_FORMAT, never as an empty set to write over.
  *
- * docs/mii.md has the formats, their sources and the proof on a Wii. This
+ * docs/mii/README.md has the formats, their sources and the proof on a Wii. This
  * file and mii.c are in the public domain: copy them into your project.
  */
 

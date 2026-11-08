@@ -4,7 +4,7 @@ Play history: the same sessions as tests/test_cdblog.py must give the same
 bytes as the reference the Wii Menu accepted (tools/msgboard/cdb_log.py).
 
 Receive box: a post must leave what the SDK's NWC24CommitMsg() leaves for a
-game's message to its own Wii (docs/mboard.md), checked here with a FAT
+game's message to its own Wii (docs/mboard/README.md), checked here with a FAT
 reader of its own; a post it refuses must leave both files as they were.
 Set MBOARD_REAL_BOX to a folder holding a Wii's wc24recv.ctl and .mbx to
 also post into a copy of those.

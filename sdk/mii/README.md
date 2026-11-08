@@ -651,7 +651,7 @@ mii_draw(&crowd[i], &pose, view, place);
   Wii's bodies) and `miifx.c` (the effects) with `mii.c`.
 
 The head's numbers come from RFL as the CC0 decompilations show it; the
-code is this library's own. [docs/research/mii-rendering.md](../../docs/research/mii-rendering.md)
+code is this library's own. [docs/mii/rendering.md](../../docs/mii/rendering.md)
 has the sources.
 
 ## Versions
@@ -663,7 +663,7 @@ has the sources.
 
 The two parts have their own version numbers. "sdk/mii 2.0" in the
 changelog (HBC 1.11.2 and 1.11.3) is the name of the plan for the next
-drawing API, [docs/mii-sdk-2.md](../../docs/mii-sdk-2.md), not a release: its
+drawing API, [docs/plans/mii-sdk-2.md](../../docs/plans/mii-sdk-2.md), not a release: its
 first steps shipped as drawing versions 1.1.0 to 1.5.1, and the 2.0 API itself
 is not started.
 
@@ -721,11 +721,11 @@ outside those files.
 
 ## Docs and tests
 
-- [docs/mii.md](../../docs/mii.md): the Mii data, the database, the hidden
+- [docs/mii/README.md](../../docs/mii/README.md): the Mii data, the database, the hidden
   database, a Remote's Miis, the creation ID and the CRCs, each with its
   source, and the proof on a Wii.
-- [docs/mii-sdk-2.md](../../docs/mii-sdk-2.md): the plan for sdk/mii 2.0.
-- [docs/research/mii-rendering.md](../../docs/research/mii-rendering.md):
+- [docs/plans/mii-sdk-2.md](../../docs/plans/mii-sdk-2.md): the plan for sdk/mii 2.0.
+- [docs/mii/rendering.md](../../docs/mii/rendering.md):
   the sources for the drawing.
 - [sdk/mboard](../mboard): Message Board letters with a Mii as the icon.
 - [example/](example): a whole program (`make -C sdk/mii/example`).

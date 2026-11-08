@@ -1,7 +1,7 @@
 # Research: how Nintendo builds, scales and draws a Mii's body
 
 Gathered on 2026-10-24 to make `sdk/mii/miidraw.c` (`make_body`) look like
-the Wii's own Miis. This note continues [mii-rendering.md](mii-rendering.md)
+the Wii's own Miis. This note continues [rendering.md](rendering.md)
 section 4, which already covers RFL (head only), Wii Sports' kokeshi loader
 and the trouser colour rules. Read that first. Every claim below names its
 source. "Not found" means that it was searched for and not found. "Inference"

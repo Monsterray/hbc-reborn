@@ -1,4 +1,4 @@
-"""Reference implementation of HBC's play log writer (docs/messageboard.md):
+"""Reference implementation of HBC's play log writer (docs/mboard/play-log.md):
 add one record to the Message Board's play log in a cdb.vff image, creating
 the day's message when there is none. HBC's C version follows this.
 

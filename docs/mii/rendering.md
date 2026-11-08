@@ -1,7 +1,7 @@
 # Research: drawing Miis (faces and bodies) on a Wii
 
 Gathered on 2026-10-24 for a Mii renderer in the HBC SDK. `sdk/mii` already
-reads and writes the Mii data (`sdk/mii/mii.h`, [../mii.md](../mii.md)). This
+reads and writes the Mii data (`sdk/mii/mii.h`, [the Mii guide](README.md)). This
 note covers the other half: how a Wii turns those 74 bytes into a picture,
 where the art comes from, and what we may use.
 
@@ -42,7 +42,7 @@ named. Where something was not checked, the note says so.
   `RFL_NANDLoader.c` opens `/shared2/FaceLib/RFL_Res.dat` directly
   (`scResFileFullPathName`, `NANDPrivateOpen`) when no resource is cached.
 - **That loose file is normally absent.** The bench Wii's
-  `/shared2/menu/FaceLib` holds only `RFL_DB.dat` ([../mii.md](../mii.md),
+  `/shared2/menu/FaceLib` holds only `RFL_DB.dat` ([the Mii guide](README.md),
   "Where a Wii keeps its Miis"). GBAtemp users report the same from NAND
   dumps (GBAtemp thread, below; forum report, not checked by us).
 - **Callers pass the resource in memory instead.** `RFLInitRes(work,
@@ -318,7 +318,7 @@ RFL has no body (section 1.5). What games do:
   contradicts itself between black and grey).
 - **Shirt**: the favourite colour (`cFavoriteColor` above; Wii Sports
   `GetFavoriteColor`).
-- **Height and build** are 0-128 in RFL's check ([../mii.md](../mii.md));
+- **Height and build** are 0-128 in RFL's check ([the Mii guide](README.md));
   WiiBrew says 0-127.
 - **Mii Channel and Mario Kart Wii bodies**: no decompilation or
   documentation of the Mii Channel's body or its scaling was found. Mario
@@ -351,7 +351,7 @@ RFL has no body (section 1.5). What games do:
   shipped, never cached to SD by default.
 - **Facts about formats and behaviour**: offsets, field meanings, index
   rules, colour values, placement formulas. They are needed for
-  interoperability, and `docs/mii.md` already works this way. Write them up
+  interoperability, and `docs/mii/README.md` already works this way. Write them up
   in our own words with sources; write our own code.
 - **Our own art** for anything RFL does not supply (body, hands, a
   placeholder head).
@@ -406,7 +406,7 @@ So an SDK app gets the file only by one of these:
 **Chosen (2026-10-24): the user supplies the file, and HBC makes that one
 press.** HOME > HBC > Save Mii faces (`hbc.py mii-faces`) lifts the check
 for its reads only, copies the file to `sd:/mii/RFL_Res.dat` and puts the
-check back ([../mii.md](../mii.md#the-face-models-rfl_resdat)). SDK apps
+check back ([the Mii guide](README.md#the-face-models-rfl_resdat)). SDK apps
 read the SD copy and never lift the check themselves.
 - **No resource**: a placeholder or a renderer of our own (step 5).
 
@@ -457,7 +457,7 @@ The plan as first written:
 
 - **Host**: parser tests against the developer's own file (skipped
   otherwise); range checks on every index a Mii can hold (types up to the
-  limits in `docs/mii.md`, plus the expression parts: eyes 26, 48, 49 and
+  limits in `docs/mii/README.md`, plus the expression parts: eyes 26, 48, 49 and
   mouths 10, 12, 24).
 - **Dolphin**: the emulated NAND needs a System Menu for step 2 of 6.2, or
   the SD path. Render icons of the six default guests and of
@@ -511,7 +511,7 @@ Formats and data:
 - WiiBrew, Mii data: <https://wiibrew.org/wiki/Mii_data>
 - WiiBrew, libmii: <https://wiibrew.org/wiki/Libmii>, and
   <https://wiibrew.org/wiki/Libmii/Rendering_Miis>
-- [../mii.md](../mii.md) and `sdk/mii/mii.h` in this repository.
+- [the Mii guide](README.md) and `sdk/mii/mii.h` in this repository.
 
 Successors and renderers:
 

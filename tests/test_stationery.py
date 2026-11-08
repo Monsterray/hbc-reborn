@@ -1,5 +1,5 @@
 """tools/msgboard/stationery.py: the board data that gives a Message Board letter
-its own stationery, icon and sound (docs/messageboard-messages.md).
+its own stationery, icon and sound (docs/mboard/storage.md).
 
 Each encoder is read back with a decoder written here, not the tool's own: the
 RGB5A3 textures, the U8 archives, Nintendo's LZ77 and the DSP-ADPCM sound.

@@ -27,7 +27,7 @@
  * to it. Call from one thread at a time, with ISFS free to use. Only
  * mboard_send_msg touches the network (through KD).
  *
- * docs/mboard.md has the formats and the proof on a Wii. Needs nothing beyond
+ * docs/mboard/README.md has the formats and the proof on a Wii. Needs nothing beyond
  * libogc. This file and mboard.c are in the public domain: copy them into
  * your project.
  */
@@ -119,7 +119,7 @@ int mboard_mii(int slot, uint8_t face[MBOARD_FACE_SIZE]);
 int mboard_log_play(const char *name_utf8, const char *id, uint32_t seconds);
 
 /* ---- The Address Book ------------------------------------------------------------
- * /shared2/wc24/nwc24fl.bin, the Wii Menu's Address Book (docs/mboard.md,
+ * /shared2/wc24/nwc24fl.bin, the Wii Menu's Address Book (docs/mboard/README.md,
  * "The Address Book"). Each call pauses KD around the file, as KD reads and
  * writes it too. */
 

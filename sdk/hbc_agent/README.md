@@ -357,7 +357,7 @@ stale), and Save Mii faces, which copies the Wii Menu's Mii face models
 (`RFL_Res.dat`) and the Mii Channel's male and female bodies with their
 animations (`maleBody.brres`, `femaleBody.brres`) and effects
 (`effect_nigaoe.breff`, `.breft`) to `sd:/mii` for apps that draw Miis
-([docs/mii.md](../../docs/mii.md#the-face-models-rfl_resdat)).
+([docs/mii/README.md](../../docs/mii/README.md#the-face-models-rfl_resdat)).
 
 When the network fails to start, HBC tries again by itself. Each start has 30
 seconds in all, and Restart network or launching an app cancels one that IOS

@@ -1,5 +1,5 @@
 // Where is the Wii's Mii face resource (RFL_Res.dat), and can an app read it?
-// A read-only probe for docs/research/mii-rendering.md.
+// A read-only probe for docs/mii/rendering.md.
 //
 // usage (argv from Wiiload): mii_res_probe.dol [--unlock] [SD-DIR]
 //   writes SD-DIR/result.txt (default sd:/mii_res) and, when it finds one,

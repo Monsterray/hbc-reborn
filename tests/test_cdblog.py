@@ -3,7 +3,7 @@ builds it into playtime.c since 1.10.9), against the reference the Wii Menu
 accepted in Dolphin
 (tools/msgboard/cdb_log.py): the same sessions, on the same image, must give
 the same bytes. The image is built here, as the Wii Menu leaves an empty
-cdb.vff (docs/messageboard.md); a real one stays on the Wii."""
+cdb.vff (docs/mboard/play-log.md); a real one stays on the Wii."""
 
 import importlib.util
 import os

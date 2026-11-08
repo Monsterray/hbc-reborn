@@ -2,7 +2,7 @@
 
 These notes were gathered on 2026-10-22 and 2026-10-23, first while adding
 Mii faces to `sdk/mboard` (`mboard_msg.face`, `mboard_mii()`; see
-[mboard.md](mboard.md)), then for the Mii library, `sdk/mii` (below). Each
+[the Message Board guide](../mboard/README.md)), then for the Mii library, `sdk/mii` (below). Each
 fact names its source. Most are from the Wii Menu decompilation
 ([koopthekoopa/wii-ipl](https://github.com/koopthekoopa/wii-ipl), 4.3U), whose
 `libs/RVLFaceLib` is the RFL library the Wii Menu links. The rest are from
@@ -23,7 +23,7 @@ says so.
   file. The bench Wii's `FaceLib` folder holds only `RFL_DB.dat`. An app
   cannot read the Wii Menu's copy without NAND rights: HBC's HOME >
   HBC > Save Mii faces copies it to the SD card (below, and
-  [research/mii-rendering.md](research/mii-rendering.md) for drawing Miis).
+  [rendering.md](rendering.md) for drawing Miis).
 
 ## RFL_DB.dat
 
@@ -283,7 +283,7 @@ face: the record held all 74 bytes at offset 0x1F8 (`tests/dolphin_mboard.py
 
 ## sdk/mii: the library
 
-[`sdk/mii`](../sdk/mii) does all of the above from homebrew:
+[`sdk/mii`](../../sdk/mii) does all of the above from homebrew:
 
 - a Mii as a struct and back, and the check;
 - new Miis and IDs;
@@ -291,7 +291,7 @@ face: the record held all 74 bytes at offset 0x1F8 (`tests/dolphin_mboard.py
 - `RFL_DB.dat`: the 100 slots and the hidden database;
 - a Wii Remote's Miis.
 
-Its [README](../sdk/mii/README.md) has the API. These are the choices it
+Its [README](../../sdk/mii/README.md) has the API. These are the choices it
 makes:
 
 - **It refuses rather than repairs.** Nothing is written to a database
@@ -425,7 +425,7 @@ its content 4, a shared content in `/shared1`: 686,372 bytes, version 0x39D.
 
 An app cannot read it: `ES_OpenTitleContent` refuses the Wii Menu's contents
 (-1026) and ISFS refuses `/shared1` and the title's content folder (-102)
-(`tests/mii_res_probe`, [research/mii-rendering.md](research/mii-rendering.md#62-finding-rfl_resdat)).
+(`tests/mii_res_probe`, [rendering.md](rendering.md#62-finding-rfl_resdat)).
 So the user provides their own copy, and HBC makes that one press:
 
 - **HOME > HBC > Save Mii faces** (or `hbc.py mii-faces`, request `HBCM`)
@@ -441,7 +441,7 @@ So the user provides their own copy, and HBC makes that one press:
   `Channel/Character.szs` (Yaz0, in a U8 archive in its content
   `00000019.app` on the bench Wii) to `sd:/mii`: Nintendo's skeleton, the
   skinned shirt and trousers, and 21 animations
-  ([research/mii-bodies.md](research/mii-bodies.md#3-the-mii-channels-body-model)).
+  ([bodies.md](bodies.md#3-the-mii-channels-body-model)).
   0.7 to 0.9 s for faces and bodies on the bench Wii. Without a Mii Channel
   the faces are still saved, and the toast says so.
 - **Keep them on your own SD card.** The files are Nintendo's: an app
@@ -456,9 +456,9 @@ So the user provides their own copy, and HBC makes that one press:
 `miidraw.c` draws a Mii's head from `RFL_Res.dat` as RFL does;
 `miibody.c` puts it on the Mii Channel's own body, animated, or
 `miidraw.c` builds a body of its own when the bodies are not saved
-([the SDK README](../sdk/mii/README.md#drawing-miis-miidraw),
-[research/mii-rendering.md](research/mii-rendering.md) and
-[research/mii-bodies.md](research/mii-bodies.md) for the sources). HBC's
+([the SDK README](../../sdk/mii/README.md#drawing-miis-miidraw),
+[rendering.md](rendering.md) and
+[bodies.md](bodies.md) for the sources). HBC's
 avatar (1.10.21, the Wii's bodies from 1.10.26) is the first user.
 
 - **The body**: the MDL0's 20 bones and two skinned meshes, posed from

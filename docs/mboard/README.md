@@ -15,9 +15,9 @@ go wrong, and the proof on real Wiis. It was worked out in October 2026 from:
 - WiiLink's mail server (WiiLink24/Mail-Server);
 - the bench Wii and LRWii.
 
-[messageboard-messages.md](messageboard-messages.md) has the board's
-message and record formats, [messageboard.md](messageboard.md) the play
-history, and [mii.md](mii.md) Mii data.
+[storage.md](storage.md) has the board's
+message and record formats, [play-log.md](play-log.md) the play
+history, and [the Mii guide](../mii/README.md) Mii data.
 
 ```c
 #include "mboard.h"
@@ -87,7 +87,7 @@ mboard_post_msg(&m);
 | Field | Header or part | Limit (the SDK's) | Refused with |
 | --- | --- | --- | --- |
 | `title`, `body` | `X-Wii-AltName`; the text part | 34 and 1,000 UTF-16 units (more is cut) | `MBOARD_E_ARG` (empty) |
-| `face` | `X-WiiFace`: 74 bytes of `RFLCharData` | a creation ID; the Wii Menu also checks every part ([mii.md](mii.md)) | `MBOARD_E_ARG` (ID 0) |
+| `face` | `X-WiiFace`: 74 bytes of `RFLCharData` | a creation ID; the Wii Menu also checks every part ([the Mii guide](../mii/README.md)) | `MBOARD_E_ARG` (ID 0) |
 | `jpeg` | an `image/jpeg` part; the Wii Menu converts it, and files the message as `odh` | starts `FF D8 FF`; the photo and board data together under 0x245B0 | `MBOARD_E_ARG`, `MBOARD_E_TOO_BIG` |
 | `board` | an `application/x-wii-msgboard` part: a U8 archive of stationery (below) and/or `chjump.bin` (a button that opens a channel) | starts `55 AA 38 2D`; at most 0x1E000 | `MBOARD_E_ARG`, `MBOARD_E_TOO_BIG` |
 | `reply` | no `X-Wii-MB-NoReply` | | |
@@ -168,7 +168,7 @@ accepted.
 ## Stationery: a letter's own look, icon and music
 
 A letter's border, its icon on the board and a sound are board data,
-`mboard_msg.board`. [`tools/msgboard/stationery.py`](../tools/msgboard/stationery.py)
+`mboard_msg.board`. [`tools/msgboard/stationery.py`](../../tools/msgboard/stationery.py)
 makes it on the PC from images and a WAV:
 
     stationery.py LETTER.png THUMB.png [--sound tune.wav] [--chjump 000100014F484243] -o board.arc
@@ -176,7 +176,7 @@ makes it on the PC from images and a WAV:
 The app ships the archive and passes it as `board`. The layout is the one
 WiiLink's letters carry. Repacked with this tool, a copy of one is byte for
 byte the same, and the Wii Menu files it. The Wii Menu's own rules for every
-part are in [messageboard-messages.md](messageboard-messages.md).
+part are in [storage.md](storage.md).
 
 - **The letter** is 512 x 376.
   - **The textures.** The tool cuts it into a 9-slice frame of TPL textures,
@@ -203,7 +203,7 @@ part are in [messageboard-messages.md](messageboard-messages.md).
 - **Size limits.** The whole archive must stay within 0x1E000 bytes. The
   letter must unpack to less than 400 KiB, and the icon to less than 30 KiB.
 
-[`tools/msgboard/stationery_themes.py`](../tools/msgboard/stationery_themes.py)
+[`tools/msgboard/stationery_themes.py`](../../tools/msgboard/stationery_themes.py)
 makes five examples, drawn and scored in code:
 
 | Theme | Size | Music |
@@ -226,7 +226,7 @@ titles (`MBOARD_E_FULL`).
   `playtime.c` patch).
 - **The writer** is the one HBC's own play log uses: HBC builds `mboard.c`
   without its libogc half for it.
-- **The format** is in [messageboard.md](messageboard.md).
+- **The format** is in [play-log.md](play-log.md).
 
 ## The Address Book
 
@@ -287,7 +287,7 @@ WiiConnect24 send path. They do not post at all:
 - **Mario Party 9:** it links only the SDK's start-up and shutdown calls
   (`NWC24iSetRtcCounter`, `NWC24SuspendScheduler`).
 - **Their board entries** are the Wii Menu's own play history, from
-  `play_rec.dat` ([messageboard.md](messageboard.md)).
+  `play_rec.dat` ([play-log.md](play-log.md)).
 
 Games that do post, such as Super Mario Galaxy with its letters, use the SDK's
 `NWC24CommitMsg()`. With exactly one recipient equal to the Wii's own number,
@@ -430,7 +430,7 @@ There is no Subject: the board shows the alt name as the sender. A title is
 cut at 34 UTF-16 units (35 with the NUL), and a body at 1,000.
 
 The other header lines and the multipart layout are in
-[messageboard-messages.md](messageboard-messages.md):
+[storage.md](storage.md):
 
 - `X-WiiFace`, `X-Wii-MB-RegDate` and `X-Wii-MB-Delay`;
 - the multipart layout for a photo and board data.
@@ -531,7 +531,7 @@ profile's), checked by tracing it in Dolphin:
   Every file `cdb.vff` had was kept, and the restore put all three files back
   byte for byte. An earlier run with an all-zero Mii filed the message
   without the face, because a Mii's eyebrow Y must be 3 or more
-  ([mii.md](mii.md)).
+  ([the Mii guide](../mii/README.md)).
 
 ### On the bench Wii
 

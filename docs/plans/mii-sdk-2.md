@@ -9,7 +9,7 @@ to 6, the 2.0 API, are not started. Begun on branch `mii-sdk-2` from HBC
 ## What "standard" means here
 
 These patterns come from Nintendo's own Mii library (RFL, in the Wii Menu
-decompilation: docs/research/mii-rendering.md, sections 1.5 and 1.6) and
+decompilation: docs/mii/rendering.md, sections 1.5 and 1.6) and
 from NW4R's model drawing:
 
 - **The app owns the camera.** The library draws into the app's frame with

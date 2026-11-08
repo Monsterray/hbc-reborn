@@ -4,10 +4,10 @@ This note covers how a message sits on the Wii Message Board, and which
 fields set what the board shows: the sender name, the Mii icon, the text, a
 photo, and board data. It complements three other notes:
 
-- [messageboard.md](messageboard.md): the play log and its `playtimelog`
+- [play-log.md](play-log.md): the play log and its `playtimelog`
   records.
-- [mboard.md](mboard.md): the `sdk/mboard` library and the receive-box route.
-- [mii.md](mii.md): Mii data.
+- [the Message Board guide](README.md): the `sdk/mboard` library and the receive-box route.
+- [the Mii guide](../mii/README.md): Mii data.
 
 The first version of this note was written on 2026-10-22. It was audited the
 same day against two sources:
@@ -168,7 +168,7 @@ them from the SDK's format strings).
 | Header | What it sets |
 | --- | --- |
 | `X-Wii-AltName:` | the sender's name: UTF-16BE with its NUL, as base64 in 42-byte pieces, each line `" " base64 CRLF`; up to 35 units. A board message has no Subject. |
-| `X-WiiFace:` | the icon: a Mii's 74-byte `RFLCharData` (no CRC), base64 in 42-byte pieces. The Wii Menu shows it only if the Mii is valid, and also adds it to the hidden Mii database ([mii.md](mii.md)). |
+| `X-WiiFace:` | the icon: a Mii's 74-byte `RFLCharData` (no CRC), base64 in 42-byte pieces. The Wii Menu shows it only if the Mii is valid, and also adds it to the hidden Mii database ([the Mii guide](../mii/README.md)). |
 | `X-Wii-MB-NoReply: -` | no Reply button |
 | `X-Wii-MB-RegDate: %04X` | the date it is filed under: `(year - 2000) << 9 \| month << 5 \| day`, month 1-12, year 2000-2035 (`NWC24SetMsgMBRegDate`) |
 | `X-Wii-MB-Delay: %02X` | hours to hold it back (see below) |
@@ -336,14 +336,14 @@ after the letter opens, with the board's music muted.
 ### The address book and a contact's Mii
 
 `/shared2/wc24/nwc24fl.bin` holds each contact's nickname and Wii number,
-and the contact's Mii as its creation ID only; [mboard.md](mboard.md), "The
+and the contact's Mii as its creation ID only; [the Message Board guide](README.md), "The
 address book", has the layout. The Mii a letter carries (`X-WiiFace`) is what
 puts a friend's Mii into the Wii's hidden Mii database, where the Address
 Book can find it by that ID.
 
 ## Doing it from homebrew
 
-Use sdk/mboard ([mboard.md](mboard.md)):
+Use sdk/mboard ([the Message Board guide](README.md)):
 
 - **`mboard_post()`** posts text to the Wii's own board.
 - **`mboard_post_msg()`** adds a Mii, a JPEG, board data (stationery

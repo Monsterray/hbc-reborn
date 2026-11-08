@@ -474,7 +474,7 @@ def board_check(out, post_dir, full_msg):
     filed = {k: v for k, v in c1.items() if k not in c0 and body.split("\n")[0].encode("utf-16-be") in v}
     ok = check(ok, filed, f"the Wii Menu filed the message: {list(filed)}")
     if full_msg:
-        # The board record after CDB's 0x400-byte header (docs/messageboard-messages.md).
+        # The board record after CDB's 0x400-byte header (docs/mboard/storage.md).
         rfl = post_dir / "before" / "facelib" / "RFL_DB.dat"
         _, mii = first_mii(rfl.read_bytes()) if rfl.exists() else (None, None)
         for k, v in filed.items():

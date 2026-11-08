@@ -1,5 +1,5 @@
 /*
- * mii.c - Miis from homebrew; see mii.h and docs/mii.md. Public domain.
+ * mii.c - Miis from homebrew; see mii.h and docs/mii/README.md. Public domain.
  *
  * In order: bytes and the CRC, a Mii (its bit fields, the check, names,
  * new Miis, the creation ID), files, the database (RFL_DB.dat: the 100
@@ -9,7 +9,7 @@
  *
  * The layouts and rules are RFL's, the Mii library the Wii Menu and games
  * link (RVLFaceLib in the Wii Menu decompilation, koopthekoopa/wii-ipl);
- * docs/mii.md names the source of each. The code is written from those
+ * docs/mii/README.md names the source of each. The code is written from those
  * descriptions, not copied.
  */
 

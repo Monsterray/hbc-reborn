@@ -17,7 +17,7 @@ API, and exactly what the library changes on the Wii.
 | [mboard](mboard/README.md) | Message Board posts, mail to other Wiis, the address book, the play history | Public domain | Writes the WiiConnect24 mail boxes and address book on the NAND; the play history needs AHBPROT |
 | [mii](mii/README.md) | Miis: read, make, edit and draw them, the Mii database, a Remote's Miis | Public domain | Writes the Mii database or a Remote's Miis only when the app saves |
 
-Planned: [sdk/wc24](../docs/wc24-plan.md), all of WiiConnect24. Ideas for later
+Planned: [sdk/wc24](../docs/plans/wc24.md), all of WiiConnect24. Ideas for later
 are in [docs/review.md](../docs/review.md)'s open items.
 
 ## Using one

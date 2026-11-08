@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Study a Wii's Mii face resource, RFL_Res.dat (docs/research/mii-rendering.md).
+"""Study a Wii's Mii face resource, RFL_Res.dat (docs/mii/rendering.md).
 
   mii_res.py info FILE           the archives: parts, sizes, texture formats
   mii_res.py dump FILE DIR       every shape as OBJ, every texture as PNG

@@ -4,7 +4,7 @@
 // the Message Board at its next start. HBC spoils that record, as it always
 // has: one record cannot tell HBC from the apps it runs. Instead HBC logs
 // each session itself, straight into the Message Board's play log in
-// cdb.vff (sdk/mboard's mboard_play_vff(), docs/messageboard.md): its own time in the menu, and
+// cdb.vff (sdk/mboard's mboard_play_vff(), docs/mboard/play-log.md): its own time in the menu, and
 // each app it launched, timed from the launch to HBC's return. A pending
 // launch is kept in HBC's data folder so it survives the app.
 //

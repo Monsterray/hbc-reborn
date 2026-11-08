@@ -1,6 +1,6 @@
 /*
  * mboard.c - the Wii Message Board from homebrew; see mboard.h and
- * docs/mboard.md. Public domain.
+ * docs/mboard/README.md. Public domain.
  *
  * In order: bytes, the VFF (FAT16 and FAT12 volumes in NAND files), the play
  * history (cdb.vff), the mailboxes (posts and sends), the Address Book,
@@ -484,7 +484,7 @@ static void num83(char *out, int v, int digits) {
 }
 
 /* ---- Today's Play History (cdb.vff) ---------------------------------------
- * docs/messageboard.md has the format. */
+ * docs/mboard/play-log.md has the format. */
 
 #define CDB_SIZE 0x01400000u
 #define TEXT_AT 0x548u
