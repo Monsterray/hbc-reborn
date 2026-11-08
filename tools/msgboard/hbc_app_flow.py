@@ -1,5 +1,5 @@
 """Dolphin check of HBC's play log with an app: boot this tree's retail WAD in
-the Wii Menu profile on day DAY, send tests/agent_app over Wiiload, let it run,
+the Wii Menu profile on day DAY, send tests/apps/agent_app over Wiiload, let it run,
 exit it back to HBC, close Dolphin (HBC's power-off logs its own session), and
 print the day's message.
 
@@ -29,7 +29,7 @@ runner = subprocess.Popen([sys.executable, str(here / "dolphin_sysmenu.py"), "in
 wii = dolphin_smoke.host_address()
 print("HBC:", hbc.hbc_wait(wii, 90), flush=True)
 time.sleep(20)                                   # HBC's own first session
-hbc.send(wii, str(root / "tests/agent_app/agent_app.dol"), ["stay", "120"])
+hbc.send(wii, str(root / "tests/apps/agent_app/agent_app.dol"), ["stay", "120"])
 deadline = time.monotonic() + 60
 while time.monotonic() < deadline:
     try:

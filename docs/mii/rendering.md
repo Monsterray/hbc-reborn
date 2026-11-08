@@ -378,8 +378,8 @@ Try in this order:
 Check: count 18, version >= 0x39D, every offset inside the file. Fail with a
 clear error, never a crash.
 
-**Checked on the bench Wii** (2026-10-24, `tests/mii_res_probe` through
-`tests/wii_mii_res.py`, System Menu v513, IOS58 with AHBPROT open): an app
+**Checked on the bench Wii** (2026-10-24, `tests/apps/mii_res_probe` through
+`tests/wii/wii_mii_res.py`, System Menu v513, IOS58 with AHBPROT open): an app
 reaches none of these.
 
 | Path | Result |
@@ -461,7 +461,7 @@ The plan as first written:
   mouths 10, 12, 24).
 - **Dolphin**: the emulated NAND needs a System Menu for step 2 of 6.2, or
   the SD path. Render icons of the six default guests and of
-  `tests/dolphin_mboard.py`'s `test_mii()`. Compare frame dumps with the Wii
+  `tests/dolphin/dolphin_mboard.py`'s `test_mii()`. Compare frame dumps with the Wii
   Menu's own icons of the same Miis (Address Book, Message Board). Dolphin's
   EFB copies and destination alpha are close to the hardware's, but compare
   on the Wii too.

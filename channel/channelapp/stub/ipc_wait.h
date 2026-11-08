@@ -1,5 +1,5 @@
 // What the stub's IPC wait does on each look at the control register, as a pure
-// function (tests/panic_host/test.c runs it on the PC). The stub used to spin
+// function (tests/host/panic_host/test.c runs it on the PC). The stub used to spin
 // with no limit: with a request of the crashed app still in flight, IOS's late
 // reply sat in ARMMSG (Y1), IOS then acked nothing more, and the stub waited
 // for an ack that could not come (sdk/hbc_agent/way_out.c has the same logic).

@@ -18,7 +18,7 @@ The archive is laid out as the WiiLink letters the Wii Menu files carry
 Images are any size PIL reads; they are scaled to fit and kept with their
 alpha (RGB5A3 TPLs). The whole archive must stay within the board data's
 0x1E000 bytes (sdk/mboard's MBOARD_BOARD_MAX); a long sound is what overflows.
-Pure Python plus Pillow; tests/test_stationery.py checks every encoder against
+Pure Python plus Pillow; tests/host/test_stationery.py checks every encoder against
 a decoder of its own.
 """
 

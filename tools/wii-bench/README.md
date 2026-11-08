@@ -6,7 +6,7 @@ use it at a time, and several agents and projects want it, so every test goes th
 
 ```bash
 python tools/wii-bench/wiibench.py add --name "HBC devnet" --cwd . -- \
-    python tests/wii_devnet.py
+    python tests/wii/wii_devnet.py
 python tools/wii-bench/wiibench.py wait <id>     # blocks; prints the log tail; exits with the job's code
 python tools/wii-bench/wiibench.py status        # Wii free/busy, dispatcher, running, pending, last done
 python tools/wii-bench/wiibench.py cancel <id>   # only a job that has not started

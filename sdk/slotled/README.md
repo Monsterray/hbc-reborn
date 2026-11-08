@@ -93,7 +93,7 @@ than `SLOTLED_MAX_STEPS` steps).
 | `slotled_save_level(illum)` | Writes it to SYSCONF and sets the IOS level to match; the Wii Menu uses it from the next boot. It rewrites the file in place, as libogc's `CONF_SaveChanges` does, so the file keeps its owner and permissions; only that one byte changes. Then it reads the file back and returns `SLOTLED_E_IOS` if it differs. This writes the NAND, so call it only when the user asks. |
 
 **On a PC.** These are plain C and build with `-DSLOTLED_NO_OGC`;
-`tests/test_slotled.py` tests them.
+`tests/host/test_slotled.py` tests them.
 
 | Name | What it does |
 | --- | --- |
@@ -118,7 +118,7 @@ ends.
   may not show.
 - **How brightness works:** the light is switched in 4 ms periods (250 Hz),
   with two short interrupts per period. A steady 0 or 255 costs nothing:
-  the timer stops until the next change. `tests/slotled_app check` measures
+  the timer stops until the next change. `tests/apps/slotled_app check` measures
   the cost.
 
 ## IOS patterns
@@ -164,8 +164,8 @@ network.
   [RESEARCH.md](RESEARCH.md).
 - **Open questions:** [RESEARCH.md](RESEARCH.md) lists what is still to find
   out on a real Wii.
-- **Bench tests:** [tests/wii_slotled.py](../../tests/wii_slotled.py) runs
-  `tests/slotled_app` on a Wii.
+- **Bench tests:** [tests/wii/wii_slotled.py](../../tests/wii/wii_slotled.py) runs
+  `tests/apps/slotled_app` on a Wii.
   - `check` is read-only and runs unattended.
   - `demo` and `ios` need a person to watch the light. The capture card
     cannot see it.

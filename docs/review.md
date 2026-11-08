@@ -52,6 +52,16 @@ shutdown. Either turn that into a full keyboard SDK in `sdk/` (like
 core), or send libogc a fix PR that makes libwiikeyboard as robust. Then HBC
 and other apps can use it.
 
+### The keyboard host test fails since the USB worker thread
+
+`tests/host/test_keyboard.py` stopped compiling at d37bbd5 (2026-11-06), which
+moved USB setup and the device list onto a thread: its stub headers have no
+`lwp_t`, `LWP_CreateThread` or `LWP_JoinThread`, and its checks expect
+`keyboard_scan()` to look for devices itself, which the worker does now. Give
+the stub a real thread (or run `kbd_worker`'s look from a stub hook) and wait
+for the look in the test. Found 2026-11-07 while moving the tests; the move
+did not cause it.
+
 ### More keyboard keys
 
 The keyboard works but needs a lot more bindings to feel right (Monty,
@@ -71,7 +81,7 @@ Measurements a doc quotes that are out of date. Each needs a run, not a guess.
 - **The agent's cost.** "What it costs" in
   [sdk/hbc_agent/README.md](../sdk/hbc_agent/README.md#what-it-costs) was
   measured on HBC 1.7.1. The HOME overlay has gained pages and features since.
-  Re-run `tests/agent_cost.py` on the bench Wii (queued) and in the build, and
+  Re-run `tests/wii/agent_cost.py` on the bench Wii (queued) and in the build, and
   update the README's figures and the 1.8 MB overlay figure for
   `hbc_agent_home()` against `hbc_agent_home_fb()`.
 

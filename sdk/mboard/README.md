@@ -100,7 +100,7 @@ touches the network (through KD).
 | `int mboard_friend_remove(slot)` | Removes a contact. |
 
 **Cores for any storage.** The calls above read the console's settings and
-clock, open the files through IOS, and call these. `tests/mboard_host` runs
+clock, open the files through IOS, and call these. `tests/host/mboard_host` runs
 them on PC images. Define `MBOARD_NO_OGC` to build `mboard.c` without libogc:
 then only these exist (HBC builds it so, for its play log).
 

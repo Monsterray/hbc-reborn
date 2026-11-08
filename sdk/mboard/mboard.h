@@ -151,7 +151,7 @@ int mboard_friend_remove(int slot);
 
 /* ---- The cores, on any storage ----------------------------------------------------
  * The calls above read the console's settings and clock, open the files
- * through IOS, and call these. tests/mboard_host runs them on PC images.
+ * through IOS, and call these. tests/host/mboard_host runs them on PC images.
  * Define MBOARD_NO_OGC to build mboard.c without libogc: then only these
  * exist (the Homebrew Channel builds it so, for its play log). */
 

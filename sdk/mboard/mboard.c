@@ -14,7 +14,7 @@
  * DeleteFriendInfo() write it. The play-history writer is the one the
  * Homebrew Channel logs with (playtime.c builds this file, its cores only),
  * checked byte for byte against the Wii Menu's accepted reference
- * (tests/test_cdblog.py, tests/test_mboard.py).
+ * (tests/host/test_cdblog.py, tests/host/test_mboard.py).
  */
 
 #include <stdlib.h>

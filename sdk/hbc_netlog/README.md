@@ -49,7 +49,7 @@ python3 tools/hbc.py run myapp.dol -- --verbose    # "--" before arguments that 
 python3 tools/hbc.py log                           # or: wait for apps started from the Wii's menu
 ```
 
-[`tests/netlog_app`](../../tests/netlog_app) is a complete example.
+[`tests/apps/netlog_app`](../../tests/apps/netlog_app) is a complete example.
 
 ## Add it to your app
 

@@ -1,0 +1,491 @@
+"""Checks for sdk/hbc_agent, shared by tests/wii/wii_agent.py and
+tests/dolphin/dolphin_smoke.py --agent.
+
+check_agent() needs HBC answering on `wii` with an SD card, and ends with
+HBC answering again. It runs tests/apps/agent_app three times: once to exercise
+status, files, logging and `exit`; once to show that a plain Wiiload upload
+to a running agent app lands in HBC; and once to crash it, returning the
+crash report HBC saw (or None when that HBC predates crash reports).
+"""
+
+import os
+import pathlib
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+import zlib
+
+root = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root / "tests" / "lib"))
+import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import hbc  # noqa: E402
+
+# AGENT_APP_DOL picks another build (tests/apps/agent_app's Makefile variants);
+# its .elf beside it gives the crash report's names.
+APP = pathlib.Path(os.environ.get("AGENT_APP_DOL") or root / "tests/apps/agent_app/agent_app.dol")
+ELF = APP.with_suffix(".elf")
+
+
+def raw_move(wii, src, dst, flags=0):
+    """Op R without hbc.py's own checks: (status errno name or "ok", reply)."""
+    payload = dst.encode()
+    with socket.create_connection((wii, hbc.PORT), timeout=15) as conn:
+        conn.sendall(hbc.file_header("R", src, len(payload), flags) + payload)
+        try:
+            return "ok", hbc.recv_reply(conn).decode()
+        except hbc.HBCError as exc:
+            return hbc.WII_ERRNO.get(exc.code, str(exc.code)), ""
+
+
+def raw_attr(wii, path, value, mask):
+    """Op A without hbc.py's checks: (errno name or "ok", letters)."""
+    with socket.create_connection((wii, hbc.PORT), timeout=15) as conn:
+        conn.sendall(hbc.file_header("A", path, value | mask << 8))
+        try:
+            return "ok", hbc.recv_reply(conn).decode()
+        except hbc.HBCError as exc:
+            return hbc.WII_ERRNO.get(exc.code, str(exc.code)), ""
+
+
+def check_attrs(wii, base):
+    """FAT attributes (op A, the listing, HBC 1.10.15) on the Wii's own FAT
+    layer, under base (made and removed here): each one set and cleared,
+    read-only kept by writes and deletes, and the errors a normal FS gives."""
+    quiet = lambda *a: None
+
+    def attrs(path):
+        return hbc.stat_remote(wii, path)["attrs"]
+
+    hbc.put_file(wii, f"{base}/f.bin", b"F")
+    hbc.file_request(wii, "M", f"{base}/d")
+    hbc.put_file(wii, f"{base}/full/x.bin", b"X")
+    assert "a" in attrs(f"{base}/f.bin"), attrs(f"{base}/f.bin")   # FAT marks a new file archive
+    for letter in "rhsa":
+        on = hbc.set_attrs(wii, f"{base}/f.bin", add=letter)
+        assert letter in on and letter in attrs(f"{base}/f.bin"), (letter, on)
+        off = hbc.set_attrs(wii, f"{base}/f.bin", remove=letter)   # clearing: libogc 3's FAT_setAttr cannot
+        assert letter not in off and letter not in attrs(f"{base}/f.bin"), (letter, off)
+    # Read-only: kept, and named, by every write and delete.
+    hbc.set_attrs(wii, f"{base}/f.bin", add="r")
+    hbc.set_attrs(wii, f"{base}/d", add="rh")
+    assert attrs(f"{base}/d") == "rh", attrs(f"{base}/d")
+    entries = {e["name"]: e for e in hbc.list_entries(wii, base)[0]}
+    assert entries["f.bin"]["readonly"] and entries["d"]["hidden"], entries
+    for op, path, want in (("D", f"{base}/f.bin", "EACCES"), ("D", f"{base}/d", "EACCES"),
+                           ("D", f"{base}/full", "ENOTEMPTY")):
+        try:
+            hbc.file_request(wii, op, path)
+            raise AssertionError(f"{op} {path} was not refused")
+        except hbc.HBCError as exc:
+            assert hbc.WII_ERRNO.get(exc.code) == want, (path, exc)
+    try:
+        hbc.put_file(wii, f"{base}/f.bin", b"over")
+        raise AssertionError("a put over a read-only file was not refused")
+    except hbc.HBCError as exc:
+        assert exc.code == hbc.EACCES, exc
+    assert hbc.get_file(wii, f"{base}/f.bin") == b"F"
+    # A read-only entry can still be renamed, as on any FAT.
+    assert hbc.move(wii, f"{base}/f.bin", f"{base}/g.bin", out=quiet) == f"{base}/g.bin"
+    assert "r" in attrs(f"{base}/g.bin")
+    # Op A's own refusals.
+    assert raw_attr(wii, f"{base}/g.bin", 0x10, 0x10)[0] == "EINVAL"    # the directory bit
+    assert raw_attr(wii, f"{base}/nosuch", 1, 1)[0] == "ENOENT"
+    assert raw_attr(wii, "sd:/", 0, 0)[0] == "ok"                       # a root: read only
+    hbc.remove_tree(wii, base, out=quiet, force=True)
+    print("devnet attributes: PASS")
+
+
+def check_move(wii, base, apps=False):
+    """Op R (rename and move, HBC 1.10.14) on the Wii's own FAT layer, under
+    base (made and removed here). With apps, also that HBC's app list follows
+    an app folder renamed under sd:/apps."""
+    quiet = lambda *a: None
+
+    def names(path):
+        return {e["name"] for e in hbc.list_entries(wii, path)[0]}
+
+    hbc.put_file(wii, f"{base}/a.bin", b"A" * 1000)
+    hbc.put_file(wii, f"{base}/dir/x.bin", b"X")
+    hbc.put_file(wii, f"{base}/dir/sub/y.bin", b"Y" * 70_000)
+    assert hbc.move(wii, f"{base}/a.bin", f"{base}/b.bin", out=quiet) == f"{base}/b.bin"
+    assert hbc.get_file(wii, f"{base}/b.bin") == b"A" * 1000
+    assert "a.bin" not in names(base)
+    # Into a folder: a trailing "/" (made if missing), or a folder that is there.
+    assert hbc.move(wii, f"{base}/b.bin", f"{base}/new/", out=quiet) == f"{base}/new/b.bin"
+    assert hbc.move(wii, f"{base}/new/b.bin", f"{base}/dir", out=quiet) == f"{base}/dir/b.bin"
+    # A folder with its contents, in place, whatever their size.
+    assert hbc.move(wii, f"{base}/dir", f"{base}/moved", out=quiet) == f"{base}/moved"
+    assert names(f"{base}/moved") == {"b.bin", "x.bin", "sub"}
+    assert hbc.get_file(wii, f"{base}/moved/sub/y.bin") == b"Y" * 70_000
+    assert "dir" not in names(base)
+    # A case-only rename: FAT finds the source itself under the new name.
+    assert hbc.move(wii, f"{base}/moved/x.bin", f"{base}/moved/X.BIN", out=quiet) == \
+        f"{base}/moved/X.BIN"
+    assert "X.BIN" in names(f"{base}/moved"), names(f"{base}/moved")
+    # Refusals, each leaving everything as it was.
+    hbc.put_file(wii, f"{base}/c.bin", b"C")
+    for src, dst, flags, want in (
+            (f"{base}/c.bin", f"{base}/moved/b.bin", 0, "EEXIST"),
+            (f"{base}/moved", f"{base}/c.bin", 2, "ENOTDIR"),
+            (f"{base}/moved", f"{base}/moved/sub/in", 0, "EINVAL"),
+            (f"{base}/nosuch", f"{base}/n", 0, "ENOENT"),
+            ("sd:/", f"{base}/root", 0, "EINVAL"),
+            (f"{base}/c.bin", "sd:/../x", 0, "EINVAL"),
+            (f"{base}/c.bin", "usb:/c.bin", 0, "EXDEV")):
+        got = raw_move(wii, src, dst, flags)[0]
+        assert got == want, (src, dst, flags, got, want)
+    assert hbc.get_file(wii, f"{base}/c.bin") == b"C"
+    assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"A" * 1000
+    # --replace replaces a file.
+    assert raw_move(wii, f"{base}/c.bin", f"{base}/moved/b.bin", 2) == ("ok", f"{base}/moved/b.bin")
+    assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"C"
+    # Names FAT reads as another one, and names that are the source itself
+    # (the 2026-10-24 audit): never a lost file, never a folder inside itself.
+    hbc.put_file(wii, f"{base}/keep.bin", b"K")
+    for dst in (f"{base}/keep.bin.", f"{base}/keep.bin ", f"{base}/./x"):
+        got = raw_move(wii, f"{base}/keep.bin", dst, 2)[0]
+        assert got == "EINVAL", (dst, got)
+    assert hbc.get_file(wii, f"{base}/keep.bin") == b"K"
+    hbc.put_file(wii, f"{base}/\u00c9t\u00e9.bin", b"E")
+    got = raw_move(wii, f"{base}/\u00c9t\u00e9.bin", f"{base}/\u00e9t\u00e9.bin", 2)
+    survivors = [e["name"] for e in hbc.list_entries(wii, base)[0] if e["name"].lower().endswith("t\u00e9.bin")]
+    assert len(survivors) == 1, (got, survivors)   # renamed, or refused: never deleted
+    assert hbc.get_file(wii, f"{base}/{survivors[0]}") == b"E"
+    assert raw_move(wii, f"{base}/moved", f"{base}/MOVED/sub/in", 0)[0] == "EINVAL"
+    hbc.put_file(wii, f"{base}/ro.bin", b"R")
+    hbc.set_attrs(wii, f"{base}/ro.bin", add="r")
+    assert raw_move(wii, f"{base}/keep.bin", f"{base}/ro.bin", 2)[0] == "EACCES"   # read-only kept
+    assert hbc.get_file(wii, f"{base}/ro.bin") == b"R"
+    assert raw_move(wii, "sd:/APPS", "sd:/apps-moved", 0)[0] == "EINVAL"   # never the apps folder
+    hbc.remove_tree(wii, base, out=quiet, force=True)
+
+    if apps:
+        app = (root / "tests/apps/netlog_app/netlog_app.dol").read_bytes()
+        hbc.put_file(wii, "sd:/apps/hbcmvone/boot.dol", app)
+
+        def listed(name):
+            return name in hbc.status(wii).get("app_list", {}).get("order", [])
+        deadline = time.monotonic() + 8
+        while not listed("hbcmvone"):
+            assert time.monotonic() < deadline, "the uploaded app did not appear"
+            time.sleep(0.2)
+        hbc.move(wii, "sd:/apps/hbcmvone", "sd:/apps/hbcmvtwo", out=quiet)
+        deadline = time.monotonic() + 8
+        while listed("hbcmvone") or not listed("hbcmvtwo"):
+            assert time.monotonic() < deadline, "the app list did not follow the rename"
+            time.sleep(0.2)
+        hbc.remove_tree(wii, "sd:/apps/hbcmvtwo", out=quiet)
+    print("devnet rename and move: PASS")
+
+
+class LogCollector:
+    """Accept any number of app log connections and keep their text."""
+
+    def __init__(self, port):
+        self.server = hbc.LogServer(port)
+        self.lock = threading.Lock()
+        self.text = ""
+        self.closed = 0
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        while True:
+            try:
+                conn, _ = self.server.sock.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            threading.Thread(target=self.read, args=(conn,), daemon=True).start()
+
+    def read(self, conn):
+        conn.settimeout(1)
+        with conn:
+            while True:
+                try:
+                    chunk = conn.recv(4096)
+                except TimeoutError:
+                    continue
+                except (ConnectionResetError, OSError):
+                    break  # IOS closes sockets with a reset
+                if not chunk:
+                    break
+                with self.lock:
+                    self.text += chunk.decode("utf-8", "replace")
+        with self.lock:
+            self.closed += 1
+
+    def wait_for(self, needle, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            with self.lock:
+                if needle in self.text:
+                    return
+            time.sleep(0.2)
+        raise AssertionError(f"no {needle!r} in the app log; got {self.text!r}")
+
+    def close(self):
+        self.server.close()
+
+
+def wait_agent(wii, seconds=30):
+    deadline, last = time.monotonic() + seconds, None
+    while time.monotonic() < deadline:
+        try:
+            last = hbc.version(wii, hbc.POLL_TIMEOUT)
+            if hbc.is_agent(last):
+                return last
+        except (OSError, hbc.HBCError) as exc:
+            last = exc
+        time.sleep(0.5)
+    raise AssertionError(f"the agent did not answer within {seconds} s: {last}")
+
+
+def symbol_range(name):
+    """(start, end) of a function in agent_app.elf, from nm."""
+    nm = hbc.devkit_tool("powerpc-eabi-nm")
+    if not nm:
+        return None
+    out = subprocess.run([nm, "-S", str(ELF)], capture_output=True, text=True).stdout
+    m = re.search(rf"^([0-9a-f]+) ([0-9a-f]+) T {name}$", out, re.M)
+    return (int(m[1], 16), int(m[1], 16) + int(m[2], 16)) if m else None
+
+
+def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
+    """back_in_hbc(wii) runs whenever an app has exited, and must leave an
+    HBC with crash reports answering; the default waits for HBC."""
+    back = back_in_hbc or (lambda w: hbc.hbc_wait(w, 60))
+    back(wii)
+    reports_crash = hbc.status(wii).get("proto", 1) >= 3
+    if reports_crash:
+        hbc.request(wii, b"HBCC")
+
+    log = LogCollector(log_port)
+    try:
+        log.server.register(wii)
+
+        # 1. Status, files and logging inside a running app.
+        hbc.send(wii, str(APP), ["stay", "180"])
+        text = wait_agent(wii)
+        log.wait_for("agent_app: network 0", 30)
+        st = hbc.status(wii)
+        print("agent status:", st)
+        assert text == st["version"] + hbc.AGENT_SUFFIX, (text, st)
+        assert st["agent"] is True and st["app"] == "agent_app" and st["app_version"] == "1", st
+        assert st["device"] == "sd" and "sd" in st["inserted"], st
+        assert 0 < st["agent_stack_used"] < st["agent_stack_size"], st
+        assert st["exit_requested"] is False and st["uptime_ms"] > 0, st
+        heap_before = st["heap_free"]
+        # HBCU discovery: the agent answers with the app's name.
+        found = hbc.find_wiis(3, [wii])
+        assert [(w["agent"], w["name"]) for w in found] == [(True, "agent_app")], found
+
+        samples = {"random": os.urandom(300_001), "zeros": bytes(200_000),
+                   "exact": os.urandom(65536), "tiny": b"x"}
+        hbc.file_request(wii, "M", "sd:/hbctest/agent")
+        for name, blob in samples.items():
+            path = f"sd:/hbctest/agent/{name}.bin"
+            hbc.put_file(wii, path, blob)
+            up = hbc.status(wii)["last"]
+            assert hbc.get_file(wii, path) == blob, name
+            down = hbc.status(wii)["last"]
+            assert hbc.checksum(wii, path) == (len(blob), zlib.crc32(blob)), name
+            assert hbc.file_request(wii, "G", path) == blob, f"{name} (protocol 1 read)"
+            print(f"  {name}: {len(blob)} bytes, wire up {up['wire']} / down {down['wire']}, "
+                  f"up {up['ms']} ms / down {down['ms']} ms")
+        raw = os.urandom(50_000)
+        hbc.file_request(wii, "P", "sd:/hbctest/agent/raw.bin", len(raw), raw)
+        listing = hbc.file_request(wii, "L", "sd:/hbctest/agent").decode()
+        for name in list(samples) + ["raw"]:
+            assert f" {name}.bin" in listing, listing
+        hbc.remove_tree(wii, "sd:/hbctest", out=lambda *a: None)
+        try:
+            hbc.file_request(wii, "L", "sd:/hbctest/../x")
+            raise AssertionError("the agent accepted a bad path")
+        except hbc.HBCError:
+            pass
+        st = hbc.status(wii)
+        print(f"  heap {heap_before} free before transfers, {st['heap_free']} after; "
+              f"agent stack {st['agent_stack_used']} of {st['agent_stack_size']}")
+        print("agent files and status: PASS")
+        check_move(wii, "sd:/hbcmv")
+        check_attrs(wii, "sd:/hbcattr")
+
+        check_overlay(wii, log, st)
+
+        # 2. `hbc.py exit`: the app sees the request and exits to HBC.
+        start = time.monotonic()
+        assert hbc.exit_app(wii)
+        log.wait_for("agent_app: exit requested", 10)
+        print(f"agent exit to HBC: PASS ({time.monotonic() - start:.1f} s until HBC answered)")
+        back(wii)
+
+        # 3. A plain Wiiload upload to a running agent app ends up in HBC, so
+        # a retry works (hbc.py send/run do that exit first themselves).
+        hbc.send(wii, str(APP), ["stay", "180"])
+        wait_agent(wii)
+        try:
+            hbc.send(wii, str(APP), ["exit"])
+        except OSError:
+            pass  # the agent resets the connection
+        back(wii)
+        print("agent Wiiload upload returns to HBC: PASS")
+
+        # 4. A crash: libogc's screen, then back to HBC with a report.
+        # The app lives about a second, too short to poll for reliably; its
+        # log line shows it ran.
+        hbc.send(wii, str(APP), [crash_mode])
+        log.wait_for(f"agent_app: crashing ({crash_mode})", 30)
+        hbc.hbc_wait(wii, 60)
+        # The first HBC back takes the report (an installed 1.5.0 or later
+        # does too), before back() may send this tree's DOL.
+        first = hbc.status(wii)
+        crash = first.get("crash") if first.get("proto", 1) >= 3 else None
+        back(wii)
+        if crash is None and reports_crash:
+            crash = hbc.status(wii).get("crash")
+        if reports_crash:
+            check_crash(crash, crash_mode)
+            hbc.request(wii, b"HBCC")
+            assert hbc.status(wii)["crash"] is None
+            print("agent crash report: PASS")
+
+        # 5. The other ways an app stops, and what it printed last: a fatal,
+        # the hang watchdog, a plain exit. Checked by the HBC the app returns
+        # to, which has to have protocol 4 (an older one ignores these).
+        for mode, line in (("fatal", "agent_app: stopping (fatal)"),
+                           ("hang", "agent_app: hanging"),
+                           ("exit", "mode 'exit'")):
+            hbc.send(wii, str(APP), [mode])
+            log.wait_for(line, 30)
+            hbc.hbc_wait(wii, 90)
+            first = hbc.status(wii)
+            if first.get("proto", 1) < 4:
+                print(f"agent {mode}: skipped (HBC {first.get('version')} has protocol "
+                      f"{first.get('proto')})")
+                back(wii)
+                continue
+            report, kept = first.get("crash"), hbc.lastlog(wii)
+            back(wii)
+            check_stop(mode, report, kept)
+            hbc.request(wii, b"HBCC")
+            print(f"agent {mode} and its kept log: PASS")
+        return crash
+    finally:
+        hbc.LogServer.unregister(wii)
+        log.close()
+
+
+def strip_luma(wii):
+    """Mean luma of the bottom tenth of the TV picture, where the overlay's
+    strip sits over agent_app's colour bars."""
+    width, height, data = hbc.screen(wii)
+    rows = data[width * 2 * (height * 9 // 10):]
+    return sum(rows[0::2]) / (len(rows) // 2)
+
+
+def overlay_keys(wii, keys, settle=1.0):
+    hbc.send_keys(wii, keys)
+    time.sleep(settle + 0.25 * len(keys))
+
+
+def check_overlay(wii, log, st):
+    """The HOME overlay, driven with `hbc.py key` and seen with `hbc.py screen`."""
+    # Whether sd:/screenshots was there before (the user's own screenshots):
+    # then only the screenshot taken here is deleted, never the folder.
+    had_folder = any(e["type"] == "d" and e["name"] == "screenshots"
+                     for e in hbc.list_entries(wii, "sd:/")[0])
+    shots_before = {n for _, _, n in hbc.list_dir(wii, "sd:/screenshots")[0]} if had_folder else set()
+    app = strip_luma(wii)
+    overlay_keys(wii, "h")
+    log.wait_for("agent_app: overlay\n", 10)
+    shown = strip_luma(wii)
+    assert shown < app - 20, f"the strip did not appear (luma {app:.0f} -> {shown:.0f})"
+
+    # Shot is right of Exit, which has the focus when the overlay opens.
+    overlay_keys(wii, "ra", settle=3)
+    after = {n for _, _, n in hbc.list_dir(wii, "sd:/screenshots")[0]}
+    new = sorted(after - shots_before)
+    assert new, f"Shot saved nothing: {sorted(after)}"
+    size = next(s for _, s, n in hbc.list_dir(wii, "sd:/screenshots")[0] if n == new[-1])
+    width, height, _ = hbc.screen(wii)
+    assert size == 54 + width * height * 3, (new[-1], size)
+
+    # DEV > Save runs the app's hook: left past the app slot to DEV, then
+    # down from the Actions tab (Restart app is greyed out) to Save.
+    overlay_keys(wii, "lll" "a" "d" "a")
+    log.wait_for("agent_app: saved", 10)
+    assert hbc.get_file(wii, "sd:/hbctest/agent_save.txt") == b"saved by agent_app\n"
+
+    # HOME closes everything and gives the app its picture back.
+    overlay_keys(wii, "h", settle=2)
+    log.wait_for("agent_app: overlay closed (0)", 10)
+    closed = strip_luma(wii)
+    assert abs(closed - app) < 8, f"the app's picture did not come back ({app:.0f} -> {closed:.0f})"
+
+    # The app's own slot, left of Exit, closes the overlay and runs in the app.
+    overlay_keys(wii, "h")
+    overlay_keys(wii, "la", settle=2)
+    log.wait_for("agent_app: hello from the app slot", 10)
+
+    for name in new:
+        hbc.file_request(wii, "D", f"sd:/screenshots/{name}")
+    if not had_folder and not (after - set(new)):
+        hbc.file_request(wii, "D", "sd:/screenshots")
+    hbc.remove_tree(wii, "sd:/hbctest", out=lambda *a: None)
+    print(f"agent overlay: PASS (strip luma {app:.0f} -> {shown:.0f} -> {closed:.0f}, "
+          f"shot {new[-1]}, remote handles {'found' if st.get('wpad_handles') else 'not found'})")
+
+
+def check_stop(mode, crash, kept):
+    """A fatal, a hang or an exit as HBC reports it, with the kept log."""
+    print(hbc.crash_report(crash, str(ELF)) if crash else f"{mode}: no crash report")
+    assert kept, f"{mode}: no kept log"
+    print(f"  kept log: {kept['why']}, {len(kept['text'])} bytes, ends "
+          f"{kept['text'].rstrip().splitlines()[-1]!r}")
+    if mode == "exit":
+        assert crash is None, crash
+        assert kept["why"] == "exit" and "mode 'exit'" in kept["text"], kept
+        return
+    assert crash and crash["app"] == "agent_app", crash
+    addrs = [int(crash["pc"], 16), int(crash["lr"], 16)] + [int(f, 16) for f in crash["frames"]]
+    # HBC 1.10.18 on: a fatal leaves through exit() (libogc's own way, not
+    # checked); the hang watchdog checks IOS first, which answers here, and
+    # from 1.10.24 launches HBC through ES itself rather than through the stub.
+    if "way_out" in crash:
+        assert crash["way_out"] == ("not_checked" if mode == "fatal" else "es_launch"), crash
+    if mode == "fatal":
+        assert crash["kind"] == "fatal" and crash["code"] == 0x81, crash
+        assert crash["reason"] == "test fatal, value 42", crash
+        assert kept["why"] == "fatal" and "agent_app: stopping (fatal)" in kept["text"], kept
+        assert "fatal (129): test fatal, value 42" in kept["text"], kept
+        fn = symbol_range("agent_app_fatal")
+    else:
+        assert crash["kind"] == "hang" and crash["reason"].startswith("no hbc_agent_alive()"), crash
+        assert kept["why"] == "hang" and "agent_app: hanging" in kept["text"], kept
+        fn = symbol_range("agent_app_hang")
+    main = symbol_range("main")
+    if fn and main:
+        # Where it stopped, or the call into it from main.
+        assert any(fn[0] <= a < fn[1] or main[0] <= a - 4 < main[1] for a in addrs), (fn, crash)
+
+
+def check_crash(crash, crash_mode="crash"):
+    print(hbc.crash_report(crash, str(ELF)))
+    assert crash and crash["app"] == "agent_app", crash
+    fn = "agent_app_crash" if crash_mode == "crash" else "agent_app_trap"
+    if crash_mode == "crash":
+        assert crash["name"] == "DSI" and crash["dar"] == "00000010", crash
+    else:
+        assert crash["name"] == "program", crash
+    where = symbol_range(fn)
+    if where:
+        assert where[0] <= int(crash["pc"], 16) < where[1], (fn, where, crash["pc"])
+        main = symbol_range("main")
+        frames = [int(f, 16) for f in crash["frames"]] + [int(crash["lr"], 16)]
+        # A return address follows its call: a call to a noreturn function can
+        # be main's last instruction, leaving the address just past main.
+        assert any(main[0] <= f - 4 < main[1] for f in frames), (main, crash)

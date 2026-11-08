@@ -4,7 +4,7 @@
   mii_res.py info FILE           the archives: parts, sizes, texture formats
   mii_res.py dump FILE DIR       every shape as OBJ, every texture as PNG
 
-The file is Nintendo's: read it from your own Wii (tests/wii_mii_res.py puts
+The file is Nintendo's: read it from your own Wii (tests/wii/wii_mii_res.py puts
 a copy in the bench job's run folder) and keep it and its dumps out of the
 repository. Big-endian layout, from the RFL decompilations:
 

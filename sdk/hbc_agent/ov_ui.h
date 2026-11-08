@@ -1,6 +1,6 @@
 /* The overlay's layout, animation and input handling, as portable C.
  * overlay.c feeds it live data (ov_ext) and controller presses each frame
- * and carries out the actions it asks for; tests/overlay_preview feeds it
+ * and carries out the actions it asks for; tests/host/overlay_preview feeds it
  * made-up data and renders frames on the PC. */
 
 #ifndef OV_UI_H

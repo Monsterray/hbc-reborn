@@ -206,7 +206,7 @@ range; the limits are in `RFLi_FaceConfig.h`.
 an all-zero face fails the check. The first Dolphin run used such a face, and
 the Wii Menu filed the message without the Mii: the board record's face
 offset was 0. With `test_mii()` (every part in range), the Wii Menu kept the
-face: the record held all 74 bytes at offset 0x1F8 (`tests/dolphin_mboard.py
+face: the record held all 74 bytes at offset 0x1F8 (`tests/dolphin/dolphin_mboard.py
 --full`, 2026-10-22).
 
 ## A Mii as a message's icon
@@ -278,7 +278,7 @@ face: the record held all 74 bytes at offset 0x1F8 (`tests/dolphin_mboard.py
     one that came on a letter.
   - The Mii the user chose for a contact in the Wii Menu was stored the same
     way: Testorb's ID, on the bench Wii.
-- **`tests/dolphin_mboard.py`'s `test_mii()`** builds a valid Mii from the
+- **`tests/dolphin/dolphin_mboard.py`'s `test_mii()`** builds a valid Mii from the
   field table above. It is a worked example of packing the bit fields.
 
 ## sdk/mii: the library
@@ -364,7 +364,7 @@ makes:
 
 Tests:
 
-- **`tests/test_mii.py`** runs on the PC. It checks:
+- **`tests/host/test_mii.py`** runs on the PC. It checks:
   - the fields against the table above;
   - every limit, names and IDs;
   - the CRCs, against Python's `binascii.crc_hqx`;
@@ -376,7 +376,7 @@ Tests:
   It also runs on a copy of the bench Wii's own `RFL_DB.dat`. Each Mii in it
   packs back to the same bytes and passes the check, and an add and a
   remove leave the file as it was.
-- **`tests/dolphin_mii.py`** runs `tests/mii_app` in Dolphin on a fresh
+- **`tests/dolphin/dolphin_mii.py`** runs `tests/apps/mii_app` in Dolphin on a fresh
   NAND that holds a database with one Mii:
   - it adds a Mii, saves it and loads it again (only that slot and the CRC
     change);
@@ -388,8 +388,8 @@ Tests:
 
   Dolphin keeps an emulated Remote's memory only while it runs, so the Remote
   half runs in one boot.
-- **`tests/wii_mii.py`** is the proof on the bench Wii (2026-10-23). Each
-  step copies the database before and after through `tests/nandget`:
+- **`tests/wii/wii_mii.py`** is the proof on the bench Wii (2026-10-23). Each
+  step copies the database before and after through `tests/apps/nandget`:
   - `check`: the database loads in 725 ms, its CRC right. The one Mii there,
     made on that Wii, passes the check, and `mii_is_home` says it was made
     there. So RFL's ID recipe and `mii_wifi_mac` agree with the Mii Channel.
@@ -398,7 +398,7 @@ Tests:
     Mii's 0x40 bytes of data remain, as with RFL.
   - `add`: "HBC Mii" goes into slot 1. Only that slot and the CRC changed, the
     CRC is right, and a fresh load holds the same Mii.
-  - `restore`: a backup goes back through `tests/nandput`, and the file
+  - `restore`: a backup goes back through `tests/apps/nandput`, and the file
     matches it byte for byte.
 
   - `check` with a real Wii Remote 1, which carries 10 Miis made on other
@@ -425,7 +425,7 @@ its content 4, a shared content in `/shared1`: 686,372 bytes, version 0x39D.
 
 An app cannot read it: `ES_OpenTitleContent` refuses the Wii Menu's contents
 (-1026) and ISFS refuses `/shared1` and the title's content folder (-102)
-(`tests/mii_res_probe`, [rendering.md](rendering.md#62-finding-rfl_resdat)).
+(`tests/apps/mii_res_probe`, [rendering.md](rendering.md#62-finding-rfl_resdat)).
 So the user provides their own copy, and HBC makes that one press:
 
 - **HOME > HBC > Save Mii faces** (or `hbc.py mii-faces`, request `HBCM`)
@@ -448,7 +448,7 @@ So the user provides their own copy, and HBC makes that one press:
   reads them from `sd:/mii` at run time and never ships them.
 - **`tools/mii_res.py`** lists a copy (`info`) and dumps every shape as OBJ
   and every texture as PNG (`dump`), for study. Its layout is in the
-  research notes; `tests/test_mii_res.py` checks the tool on a synthetic
+  research notes; `tests/host/test_mii_res.py` checks the tool on a synthetic
   file.
 
 ## Drawing a Mii (sdk/mii/miidraw)
@@ -492,13 +492,13 @@ avatar (1.10.21, the Wii's bodies from 1.10.26) is the first user.
   tables, and the face (eyes, eyebrows, mouth, mustache, mole) composited
   on the CPU for each expression, at RFL's positions. The shape textures
   keep their own wrap: the glasses are one lens mirrored across.
-- **Shown on the bench Wii** (2026-10-24, `tests/wii_avatar.py`): HBC at 60
+- **Shown on the bench Wii** (2026-10-24, `tests/wii/wii_avatar.py`): HBC at 60
   frames a second for a minute with the avatar, 19 us of CPU a frame. The
   first build sent each vertex through the GX FIFO (about 240 KB a frame)
   and overran HBC's 256 KB FIFO on the Wii: garbage triangles, then a hang
   that needed a power cycle. Dolphin showed neither. Each part is now a
   display list.
-- `tests/test_miidraw.py` checks the library on the PC, and
+- `tests/host/test_miidraw.py` checks the library on the PC, and
   `mii_app.dol draw` its icon and capture on a Wii or in Dolphin.
 
 ## Sources

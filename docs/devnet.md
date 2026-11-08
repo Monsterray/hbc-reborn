@@ -324,7 +324,7 @@ drawing.
 
 ### Performance
 
-Measured on the bench Wii (802.11g, IOS58) with `tests/wii_netbench.py`:
+Measured on the bench Wii (802.11g, IOS58) with `tests/wii/wii_netbench.py`:
 
 | Data | Protocol 1 up / down | Framed up / down |
 | --- | --- | --- |
@@ -339,7 +339,7 @@ conditions, so compare interleaved runs.
 
 zlib's state lives in a 320 KiB MEM1 arena reserved at startup, because by
 the time a transfer runs the menu has filled MEM1 and the heap returns MEM2.
-`tests/membench` measured, on the Wii:
+`tests/apps/membench` measured, on the Wii:
 
 | | MEM1 | MEM2 | Locked cache, DMA from MEM2 |
 | --- | --- | --- | --- |
@@ -462,7 +462,7 @@ with `guard_reload_stub`: 22 KiB) comes from the top of the MEM2 arena at
 `hbc_agent_init()`, as libogc takes WPAD's and the network's buffers, and
 the agent's `HBCS` says where: `"agent_mem":{"addr","bytes","from"}`, from
 `arena2_top`, or `heap` when the app had already taken the whole arena.
-`tests/wii_agent_mem2.py` checks both on a Wii.
+`tests/wii/wii_agent_mem2.py` checks both on a Wii.
 
 ### Stopping the agent, and lending the port
 
@@ -494,7 +494,7 @@ in progress (its client gets an error), and starts no network until
 `hbc_agent_listen(true)`. It returns once the port is free to bind. It is
 the same switch as the overlay's DEV "hbc.py connection", which shows it.
 
-`tests/wii_agent_stop.py` checks both on a Wii (agent_app's `stop`,
+`tests/wii/wii_agent_stop.py` checks both on a Wii (agent_app's `stop`,
 `restart`, `listen` and `stopcrash` modes).
 
 ### HOME overlay
@@ -510,8 +510,8 @@ showing, then draws its own frames in two framebuffers: the copy, dimmed,
 with the strip and menus drawn by `ov_ui.c` and `ov_draw.c` in software
 (YUYV, HBC's Droid fonts pre-rendered by `mkfont.py`). It never touches the
 app's GX state, and hands the VI the app's framebuffer back when it closes.
-Those two files are portable C, so `tests/overlay_preview` renders every
-page on the PC and `tests/test_overlay_ui.py` walks them in CI.
+Those two files are portable C, so `tests/host/overlay_preview` renders every
+page on the PC and `tests/host/test_overlay_ui.py` walks them in CI.
 
 LEDs, IR sensitivity and the sensor bar position need wiiuse's per-remote
 handle, which libogc keeps in a static array. The agent finds it from
@@ -696,12 +696,12 @@ Sources for the hardware behaviour, and what is not proven:
   the reset, which the kept log next to it did on the bench Wii.
 - Dolphin models none of this: AHBPROT always reads open, `HW_RESETS` bit 0
   and STM's hot reset do nothing, and its IPC always answers.
-  `tests/dolphin_way_out.py` shows the decisions with the agent's test bits.
-  `tests/test_way_out.py` runs `way_out.c` against a model of the IPC
+  `tests/dolphin/dolphin_way_out.py` shows the decisions with the agent's test bits.
+  `tests/host/test_way_out.py` runs `way_out.c` against a model of the IPC
   registers, which also raises the IPC interrupt on a Y write, as Dolphin's
   `WiiIPC` does. Neither shows how a real IOS wedges.
 
-On the bench Wii (2026-10-24, `tests/wii_way_out.py`, HBC 1.10.9 installed,
+On the bench Wii (2026-10-24, `tests/wii/wii_way_out.py`, HBC 1.10.9 installed,
 the agent's test bits, with the first draft's order and its `Abra` word):
 
 - Healthy closes took 25 ms and left through the stub.

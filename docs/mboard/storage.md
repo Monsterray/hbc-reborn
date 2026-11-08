@@ -162,7 +162,7 @@ them in this order:
 5. MIME-Version, then the parts
 
 The three `X-Wii-MB-*` headers are written only for a board message.
-sdk/mboard writes the same, byte for byte (`tests/test_mboard.py` rebuilds
+sdk/mboard writes the same, byte for byte (`tests/host/test_mboard.py` rebuilds
 them from the SDK's format strings).
 
 | Header | What it sets |
@@ -281,7 +281,7 @@ one file, `chjump.bin`, 0x56 bytes, big-endian:
 | 0x1C | the argument's length, NUL included, padded to 2 bytes |
 | 0x20 | the argument: `/startup?initpage=showTitle&titleId=0001000148435845` |
 
-That is a "go to this channel" button. `tests/dolphin_mboard.py`'s
+That is a "go to this channel" button. `tests/dolphin/dolphin_mboard.py`'s
 `chjump_arc()` rebuilds this archive byte for byte, and builds others. The
 Wii Menu kept a `chjump.bin` that opens HBC in the record unchanged. Whether
 the board shows a working button for it has not been checked on screen.

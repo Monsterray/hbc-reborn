@@ -548,7 +548,7 @@ the user copies their own to `sd:/mii`, and nothing ships them.
   frame drew nothing where the Miis had stood: a crowd of them in the clear
   colour). Draw them after the opaque parts of the scene.
 - `Nc_zzz01` goes on until `mii_fx_stop`.
-- On the PC, `mii_fx_particles` lists each particle (`tests/test_miifx.py`).
+- On the PC, `mii_fx_particles` lists each particle (`tests/host/test_miifx.py`).
 
 ```c
 static mii_fx fx;
@@ -585,7 +585,7 @@ part is small. What helps, all measured on the bench Wii
   goes to about 380, 340, 270 and 180 (the hair folds at half the
   tolerance: its thin pieces cracked), the body's 750 to about 490, 410, 320
   and 240, all drawn as strips. The GPU's time in a crowd is vertices.
-  `tests/mii_app parade` walks Miis through the levels over lines on the
+  `tests/apps/mii_app parade` walks Miis through the levels over lines on the
   grass where each begins.
 - Drawing is the hardware's work: the bones on the paired-single unit, each
   head level a display list the GPU fetches itself, the matrix palette's
@@ -644,9 +644,9 @@ mii_draw(&crowd[i], &pose, view, place);
   `Graphics.Hacks.EFBToTextureEnable=False`, so a CPU read of `mii_capture`'s
   texture sees zeros there; drawing it works either way.
 - **On the PC.** With `-DMII_NO_OGC` everything but drawing builds
-  (`tests/miidraw_host` writes a Mii's meshes as OBJ and its faces as RGBA;
+  (`tests/host/miidraw_host` writes a Mii's meshes as OBJ and its faces as RGBA;
   with `MII_BODY`, a Wii body posed by `MII_ANIM` and `MII_FRAME`;
-  `tests/miifx_host` plays an effect and prints its particles).
+  `tests/host/miifx_host` plays an effect and prints its particles).
 - **Files.** `miidraw.c` (faces, the built body, drawing), `miibody.c` (the
   Wii's bodies) and `miifx.c` (the effects) with `mii.c`.
 
@@ -730,10 +730,10 @@ outside those files.
 - [sdk/mboard](../mboard): Message Board letters with a Mii as the icon.
 - [example/](example): a whole program (`make -C sdk/mii/example`).
 
-Tests: `tests/test_mii.py` on the PC, `tests/dolphin_mii.py` in Dolphin, and
-`tests/wii_mii.py` on the bench Wii. For drawing: `tests/test_miidraw.py`,
-`tests/test_miifx.py`, `tests/miidraw_host`, `tests/miifx_host` and
-`tests/mii_app`.
+Tests: `tests/host/test_mii.py` on the PC, `tests/dolphin/dolphin_mii.py` in Dolphin, and
+`tests/wii/wii_mii.py` on the bench Wii. For drawing: `tests/host/test_miidraw.py`,
+`tests/host/test_miifx.py`, `tests/host/miidraw_host`, `tests/host/miifx_host` and
+`tests/apps/mii_app`.
 
 ## What it changes on the Wii
 

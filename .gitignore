@@ -75,8 +75,8 @@ desktop.ini
 # Wiki pages built by tools/wiki.py
 /build/
 
-# Overlay preview renders (tests/overlay_preview/preview.py)
-/tests/overlay_preview/out/
+# Overlay preview renders (tests/host/overlay_preview/preview.py)
+/tests/host/overlay_preview/out/
 
 # --- wii-bench: the lease server's history on the homeserver ------------
 /tools/wii-bench/history/

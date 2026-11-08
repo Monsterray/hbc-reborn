@@ -1,6 +1,6 @@
 """Dolphin check of the play log's name for a Wiiload upload without the
 agent: boot this tree's retail WAD in the Wii Menu profile on day DAY, send
-tests/rtc_shift as MyTool/boot.dol (hbc.py names it "MyTool"; rtc_shift
+tests/apps/rtc_shift as MyTool/boot.dol (hbc.py names it "MyTool"; rtc_shift
 exits at once), close Dolphin, and print the day's message.
 
     python tools/msgboard/hbc_named_flow.py DAY      (YYYY-MM-DD, a day with no message)"""
@@ -31,7 +31,7 @@ print("HBC:", hbc.hbc_wait(wii, 90), flush=True)
 time.sleep(20)
 tmp = pathlib.Path(tempfile.mkdtemp()) / "MyTool"
 tmp.mkdir()
-shutil.copy(root / "tests/rtc_shift/rtc_shift.dol", tmp / "boot.dol")
+shutil.copy(root / "tests/apps/rtc_shift/rtc_shift.dol", tmp / "boot.dol")
 hbc.send(wii, str(tmp / "boot.dol"), ["0"])
 time.sleep(5)
 print("back:", hbc.hbc_wait(wii, 90), flush=True)

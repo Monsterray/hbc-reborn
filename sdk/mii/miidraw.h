@@ -269,7 +269,7 @@ int mii_body_make_lods(mii_body *body, const float *tolerances, int n);
 /* The level for a Mii this many pixels tall on screen (mii_pixels_tall):
  * 0 (the whole body) from 90, then one level more under each of 90, 39,
  * 30.5 and 25, as far as made. Chosen by eye on a real Wii, Miis walking
- * through the levels (tests/mii_app parade). */
+ * through the levels (tests/apps/mii_app parade). */
 int mii_body_lod_for(const mii_body *body, float pixels_tall);
 
 /* ---- A Mii, built -------------------------------------------------------- */

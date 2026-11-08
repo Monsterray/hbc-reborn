@@ -61,7 +61,7 @@ python3 tools/hbc.py get sd:/apps/myapp/save.dat   # while the app runs
 python3 tools/hbc.py crash --elf myapp.elf         # after a crash: where it happened
 ```
 
-[`tests/agent_app`](../../tests/agent_app) is a complete example, and HBC's own
+[`tests/apps/agent_app`](../../tests/apps/agent_app) is a complete example, and HBC's own
 HOME menu ([`channel/channelapp/source/home.c`](../../channel/channelapp/source/home.c))
 is a commented one.
 
@@ -304,7 +304,7 @@ the highest priority (the hang watchdog's) checks each once a second:
   failed allocations with their size and caller.
 
 `no_safety` leaves out any of the defaults (the `HBC_AGENT_NO_*` bits above).
-[docs/devnet.md](../../docs/devnet.md) has the details and `tests/agent_cost.py`
+[docs/devnet.md](../../docs/devnet.md) has the details and `tests/wii/agent_cost.py`
 measures what they cost.
 
 The hang watchdog is a thread at the highest priority, so a spinning app
@@ -407,7 +407,7 @@ While open, the overlay borrows three framebuffers, about 1.8 MB at 640x480
 
 ## What it costs
 
-Measured on a real Wii with `tests/agent_cost.py` (HBC 1.7.1, 640x480):
+Measured on a real Wii with `tests/wii/agent_cost.py` (HBC 1.7.1, 640x480):
 
 | | Cost |
 | --- | --- |

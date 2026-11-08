@@ -163,7 +163,7 @@ accepted.
 - **The user agreement:** LRWii's User Agreements screen stayed black. Its
   EULA channel was an old one, HAKE version 1, which runs on IOS20, and
   Nintendo stubbed IOS20. HAKE version 3, on IOS56, fixed it.
-  `tests/wii_eulacheck.py` finds this.
+  `tests/wii/wii_eulacheck.py` finds this.
 
 ## Stationery: a letter's own look, icon and music
 
@@ -486,7 +486,7 @@ profile's), checked by tracing it in Dolphin:
 
 ### On the PC
 
-- **`tests/test_mboard.py`, posts:**
+- **`tests/host/test_mboard.py`, posts:**
   - into an empty box, with and without `mb`;
   - a long message over several clusters, and two posts in a row;
   - a half-finished post retried;
@@ -504,18 +504,18 @@ profile's), checked by tracing it in Dolphin:
 - **The same file, the Address Book:** add, set and remove, byte for byte as
   the SDK writes them, and the refusals.
 - **The play history:** the same sessions are compared with
-  `tools/msgboard/cdb_log.py` byte for byte (`tests/test_cdblog.py`, and
-  `tests/test_mboard.py`).
-- **`tests/test_stationery.py`:** reads each stationery encoder back with a
+  `tools/msgboard/cdb_log.py` byte for byte (`tests/host/test_cdblog.py`, and
+  `tests/host/test_mboard.py`).
+- **`tests/host/test_stationery.py`:** reads each stationery encoder back with a
   decoder of its own, and builds all five themes.
 
 ### In Dolphin, with the real Wii Menu 4.3U
 
-- **`tests/dolphin_mboard.py --restore`.**
+- **`tests/dolphin/dolphin_mboard.py --restore`.**
   - **Filed:** the Wii Menu filed the post as
     `/2026/10/01/12/05/HBLW_01/txt/3279E781.000`, holding the text, and
     every file `cdb.vff` had was kept.
-  - **Restored:** `tests/nandput` then restored the box and `cdb.vff` byte
+  - **Restored:** `tests/apps/nandput` then restored the box and `cdb.vff` byte
     for byte.
   - **Tracing:** `--ipl-symbols` gives Dolphin a map of the Wii Menu and
     logs its import. That trace found the padding.
@@ -536,7 +536,7 @@ profile's), checked by tracing it in Dolphin:
 ### On the bench Wii
 
 The bench Wii is `dev` (192.168.8.213): IOS58, Wii Menu 4.3U, registered with
-WiiLink. Every job ran through the queue (`tests/wii_mboard.py`).
+WiiLink. Every job ran through the queue (`tests/wii/wii_mboard.py`).
 
 - **A post** (job 20261022-114201-8b8b7c). `mboard_post` returned
   `MBOARD_OK` in 163 ms.
@@ -594,9 +594,9 @@ Not yet tried on a Wii:
 
 ## Restore path
 
-- **Copying out:** `tests/nandget` copies a NAND folder to the SD card
+- **Copying out:** `tests/apps/nandget` copies a NAND folder to the SD card
   (`--unlock` for the Wii Menu's).
-- **Putting back:** `tests/nandput SD-DIR NAND-DIR FILE...` puts files back
+- **Putting back:** `tests/apps/nandput SD-DIR NAND-DIR FILE...` puts files back
   over the originals. It writes same-size files only, then reads them back
   and compares.
 - **WiiConnect24 paused:** both pause KD around `/shared2/wc24`. A copy that
@@ -610,7 +610,7 @@ Not yet tried on a Wii:
 To put it back:
 
     wiibench.py add --name mboard-restore --cwd REPO --timeout 2400 -- \
-      C:/Python312/python.exe tests/wii_mboard.py restore BACKUP_DIR
+      C:/Python312/python.exe tests/wii/wii_mboard.py restore BACKUP_DIR
 
 That also undoes everything the Wii Menu has filed since. The restore ran in
 Dolphin (`--restore`); on the bench Wii it has not been needed.
