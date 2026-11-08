@@ -38,6 +38,8 @@ _PATTERN = re.compile(
     re.IGNORECASE)
 
 here = pathlib.Path(__file__).resolve().parent
+# This test, in any project: its own pattern and examples would match.
+SELF = ("test_workstation_paths.py", "workstation_paths_test.py")
 
 
 def repo_root():
@@ -56,7 +58,7 @@ def findings():
     out = subprocess.run(["git", "-c", f"safe.directory={root.as_posix()}", "ls-files", "-z"],
                          cwd=root, capture_output=True, check=True).stdout
     for name in filter(None, out.decode("utf-8", "replace").split("\0")):
-        if any(fnmatch.fnmatch(name, p) for p in EXEMPT):
+        if any(fnmatch.fnmatch(name, p) for p in EXEMPT) or name.rsplit("/", 1)[-1] in SELF:
             continue
         try:
             data = (root / name).read_bytes()
