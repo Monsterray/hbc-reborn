@@ -46,7 +46,7 @@
 #include "dvd.h"
 #include "panic.h"
 #include "manage.h"
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "xml.h"
 #include "title.h"
 

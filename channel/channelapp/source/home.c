@@ -1,4 +1,4 @@
-// HBC's HOME button, built on the in-app agent's overlay (sdk/hbc_agent.h).
+// HBC's HOME button, built on the in-app agent's overlay (sdk/hbc_agent/hbc_agent.h).
 //
 // This file doubles as the worked example for apps that want the overlay:
 // everything HBC does to use it is here, and each step says why. In short:
@@ -22,7 +22,7 @@
 
 #include "../config.h"
 #include "../build_tag.h"
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "controls.h"
 #include "gfx.h"
 #include "keyboard.h"

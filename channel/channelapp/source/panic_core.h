@@ -4,7 +4,7 @@
 // runs inside an exception, where a held lock or a corrupt heap must not matter.
 // tests/panic_host/test.c runs this file on the PC.
 //
-// Include after <gctypes.h> and sdk/hbc_agent.h.
+// Include after <gctypes.h> and sdk/hbc_agent/hbc_agent.h.
 
 #ifndef PANIC_CORE_H
 #define PANIC_CORE_H

@@ -37,8 +37,8 @@
 #include "xml.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
-#include "../../../sdk/hbc_netlog.h"
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_netlog/hbc_netlog.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 
 static const char *device_names[DEVICE_COUNT] = { "sd", "usb", "carda", "cardb", "usb2" };
 static u32 log_ip;

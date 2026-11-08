@@ -25,7 +25,7 @@
 
 #include <gctypes.h>
 #define HBC_AGENT_LAYOUT_ONLY
-#include "../../sdk/hbc_agent.h"
+#include "../../sdk/hbc_agent/hbc_agent.h"
 
 #define WAY_OUT_HOST
 

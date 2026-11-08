@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <gctypes.h>
 
-#include "../hbc_agent.h"
+#include "hbc_agent.h"
 #include "ogc_flavor.h"
 
 const hbc_agent_config *agent_cfg(void);
@@ -46,7 +46,7 @@ void agent_request_exit(void) __attribute__((noreturn));
 void agent_power_off(void) __attribute__((noreturn));
 extern void __reload(void) __attribute__((noreturn));
 /* way_out.c: leaves for HBC once the crash block and kept log are written,
- * checking IOS answers first (../hbc_agent.h, "The way out"). */
+ * checking IOS answers first (hbc_agent.h, "The way out"). */
 void agent_leave(void) __attribute__((noreturn));
 /* agent.c: a way out into the log, the crash block and the kept log; and
  * whether the last agent chose a reset under 10 minutes ago. */

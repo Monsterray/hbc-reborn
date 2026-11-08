@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 #include <gctypes.h>
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 
 // Developer protocol version reported by HBCS; 2 adds framed transfers, 3
 // crash reports (HBCC) and the in-app agent's exit request (HBCX), 4 the

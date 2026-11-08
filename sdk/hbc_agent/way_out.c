@@ -1,4 +1,4 @@
-// The way out when an app stops (../hbc_agent.h, "The way out"): back to
+// The way out when an app stops (hbc_agent.h, "The way out"): back to
 // HBC even when IOS has wedged.
 //
 // libogc's __reload() jumps to the reload stub at 0x80001800. The stub turns

@@ -9,7 +9,7 @@
 
 #include "controls.h"
 #include "gfx.h"
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "keyboard.h"
 
 static s32 pointer_owner = -1;

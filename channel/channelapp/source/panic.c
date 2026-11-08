@@ -9,7 +9,7 @@
 #include "devnet.h"
 #include "../config.h"
 #include "../build_tag.h"
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "panic_core.h"
 
 #include "panic.h"

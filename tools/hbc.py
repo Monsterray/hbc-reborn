@@ -1569,7 +1569,7 @@ Commands
     mkdir PATH          make a folder
     mv FROM TO          rename or move a file or folder (also between devices)
     order DIR [APP...]  HBC's Custom app order: show it, or set it (meta.xml)
-  Apps built with the in-app agent (sdk/hbc_agent.h)
+  Apps built with the in-app agent (sdk/hbc_agent/hbc_agent.h)
     exit                ask the running app to go back to HBC
     key KEYS            press buttons on it: h (HOME), u d l r, a, b, 1, 2, w
     screen FILE.png     save a picture of what the TV shows
@@ -1634,10 +1634,10 @@ cannot load it, run says why and exits with status 1; a .zip is installed
 and run returns (--yes, as for send).
 
 The Wii Message Board's play log lists the app by the name its agent gives
-itself (sdk/hbc_agent.h), else by --name, else by its folder for an
+itself (sdk/hbc_agent/hbc_agent.h), else by --name, else by its folder for an
 apps/NAME/boot.dol, else by the file's name.
 
-The app's output reaches the PC if it uses sdk/hbc_netlog.h. The PC must
+The app's output reaches the PC if it uses sdk/hbc_netlog/hbc_netlog.h. The PC must
 accept incoming connections on --log-port (4405 by default): allow it once
 in your firewall.
 

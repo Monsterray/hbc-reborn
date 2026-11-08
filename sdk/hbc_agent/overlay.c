@@ -25,7 +25,7 @@
 #include <ogc/lwp_queue.h>
 #include <wiiuse/wpad.h>
 
-#include "../hbc_agent.h"
+#include "hbc_agent.h"
 #include "agent_int.h"
 #include "sideways.h"
 #include "ogc_flavor.h"

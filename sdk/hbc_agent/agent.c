@@ -1,5 +1,5 @@
 // The in-app agent: HBC's developer protocol (docs/devnet.md) inside a
-// running app, plus a crash recorder. See ../hbc_agent.h for the API.
+// running app, plus a crash recorder. See hbc_agent.h for the API.
 //
 // One thread, below the app's, accepts connections on the Wiiload port and
 // answers HBCV, HBCS, HBCF (the same file requests as HBC, from
@@ -46,8 +46,8 @@
 #include "agent_int.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
-#include "../hbc_netlog.h"
-#include "../hbc_agent.h"
+#include "../hbc_netlog/hbc_netlog.h"
+#include "hbc_agent.h"
 
 #define AGENT_STACK (12 * 1024)
 #define AGENT_PROTO 4

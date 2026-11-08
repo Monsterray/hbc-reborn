@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <gctypes.h>
-#include "../../sdk/hbc_agent.h"
+#include "../../sdk/hbc_agent/hbc_agent.h"
 #include "../../channel/channelapp/source/panic_core.h"
 #include "../../channel/channelapp/stub/ipc_wait.h"
 

@@ -376,7 +376,7 @@ slept 20 ms whenever IOS had no data ready and uploads ran at 0.62 MB/s.
 | 20 | 12 | reserved, 0 |
 
 Port 0 clears the block. The block survives the jump to the next app. An app
-that includes [`sdk/hbc_netlog.h`](../sdk/hbc_netlog.h) and calls
+that includes [`sdk/hbc_netlog`](../sdk/hbc_netlog/README.md) and calls
 `hbc_netlog_init()` connects to that address and copies `stdout` and `stderr`
 to it, still writing to any console it set up first.
 
@@ -416,7 +416,7 @@ query does not answer it; reach it by address.
 
 ## In-app agent
 
-An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent.h) answers on port
+An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent/README.md) answers on port
 4299 while it runs, with the same framing:
 
 | Request | Agent's answer |
@@ -583,7 +583,7 @@ goes straight to libogc's own crash screen, which shows that fault; the
 block keeps the app's crash, without the note.
 `frames` are return addresses found by walking the stack's back chain; a
 leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
-`sdk/hbc_agent.h`: magic `HBCC`, version 2, the exception number
+`sdk/hbc_agent/hbc_agent.h`: magic `HBCC`, version 2, the exception number
 (`PPC_EXCPT_*`), `pc`, `msr`, `lr`, `cr`, `ctr`, `dar`, `dsisr`, `sp`,
 `uptime_ms`, twelve frames, the app name (20 bytes), `kind`, `code`, the
 reason (64 bytes), and a rotate-and-XOR check word over the rest. From

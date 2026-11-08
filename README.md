@@ -18,8 +18,8 @@ replacing it.
 | Channel app, loader, reload stub | [`channel/channelapp`](channel/channelapp) |
 | Developer network (Wii side) | [`channel/channelapp/source/devnet.c`](channel/channelapp/source/devnet.c), [`devstream.c`](channel/channelapp/source/devstream.c) |
 | PC client for the developer network | [`tools/hbc.py`](tools/hbc.py) |
-| App-side network log header | [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) |
-| In-app agent: the tools and crash reports inside a running app | [`sdk/hbc_agent.h`](sdk/hbc_agent.h), [`sdk/hbc_agent`](sdk/hbc_agent) |
+| App-side network log header | [`sdk/hbc_netlog`](sdk/hbc_netlog/README.md) |
+| In-app agent: the tools and crash reports inside a running app | [`sdk/hbc_agent`](sdk/hbc_agent/README.md) |
 | Wii Message Board: posts, mail to another Wii, play history (HBC's play log too) | [`sdk/mboard`](sdk/mboard) |
 | Miis: the data, the Mii database, a Wii Remote's Miis | [`sdk/mii`](sdk/mii) |
 | Wii Remote speaker driver | [`sdk/wiispk`](sdk/wiispk) |
@@ -90,7 +90,7 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `net-hang [wait\|reload]` | What HBC does when a network cleanup hangs inside IOS: carry on without the network until it next starts (the default), or reload itself at once (for a developer's Wii); with no mode, print the current one. |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |
 | `order [--clear] APPS [FOLDER ...]` | HBC's Custom app order (see [Your own app order](#your-own-app-order)): with only `APPS` (e.g. `sd:/apps`), print the apps in that order with their `<sort_id>`; with folders, give them 10, 20, 30... in the order named, editing or making each `meta.xml`; `--clear` removes every `<sort_id>`. |
-| `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
+| `exit` | Ask the running [agent](sdk/hbc_agent/README.md) app to exit to HBC, and wait for HBC. |
 | `key KEYS` | Send controller presses to HBC's HOME menu or the running agent app: `h` (HOME, opens or closes its overlay), `u` `d` `l` `r` (D-pad), `a`, `b`. For scripted tests and for driving the overlay from the PC. |
 | `screen FILE.png` | Save what the TV shows, from HBC or a running agent app, overlay included. |
 | `crash [--elf FILE] [--clear]` | Print the crash an agent app reported: exception, registers, backtrace, and with `--elf` function names and source lines (needs devkitPPC's `addr2line`). `--clear` forgets it. |
@@ -141,37 +141,10 @@ measurements.
 
 ### Seeing your app's output
 
-Copy [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h) into your project (it is public
-domain and needs only libogc) and call `hbc_netlog_init()` once, after any
-video or console setup:
-
-```c
-#include "hbc_netlog.h"
-
-int main(int argc, char **argv) {
-    // ... VIDEO_Init, console setup, etc. ...
-    hbc_netlog_init();                   // 0 when connected; harmless otherwise
-    printf("hello from the Wii, argc=%d\n", argc);
-    return 0;                            // the log closes at exit()
-}
-```
-
-Then run it from the PC:
-
-```sh
-python3 tools/hbc.py run myapp.dol level1
-python3 tools/hbc.py run myapp.dol -- --verbose   # "--" before app arguments that start with "-"
-```
-
-`stdout` and `stderr` still reach any on-screen console you set up first.
-When you start apps from the Wii's own menu instead, keep
-`python3 tools/hbc.py log` running on the PC: HBC remembers the PC's address
-for the apps it launches, also after one returns to the installed channel. Call `hbc_netlog_close()` if your app leaves
-without `exit()`. [`tests/netlog_app`](tests/netlog_app) is a complete
-example.
-
-The PC must accept inbound TCP on the log port: 4405 by default, or pick one
-with `--log-port`. On Windows, allow it once in Windows Defender Firewall.
+Add [`sdk/hbc_netlog`](sdk/hbc_netlog/README.md) to your app (one public-domain
+header) and call `hbc_netlog_init()` once; `hbc.py run myapp.dol` then prints
+everything the app writes. Its README has the example, the firewall note and
+what to do for apps started from the Wii's own menu.
 
 ### A typical loop
 
@@ -259,312 +232,19 @@ steps of 10 leave room to put an app between two others by hand. An app's
 update that brings its own `meta.xml` drops its number, so run `order`
 again afterwards.
 
-### Keeping the tools inside your app
+### SDKs for your app
 
-Link the agent into a development build and `hbc.py` keeps working while
-your app runs: `status`, the file commands, and `log` reach the app instead
-of HBC, `run` and `send` ask it to exit to HBC before sending the next
-build, and a crash comes back as a report instead of a frozen screen.
+Small libraries for any libogc app live in [`sdk/`](sdk/README.md). Each one's
+README has a quick start, the API, and what it changes on the Wii.
 
-```sh
-make -C sdk/hbc_agent            # builds sdk/hbc_agent/libhbcagent.a
-```
-
-```c
-#include <fat.h>
-#include "hbc_netlog.h"
-#include "hbc_agent.h"
-
-int main(int argc, char **argv) {
-    // ... video setup ...
-    fatInitDefault();                 // mount first; the agent serves what the app mounted
-    hbc_netlog_init();
-    hbc_agent_init(NULL);             // one low-priority thread, about 20 KiB while idle
-    while (!hbc_agent_exit_requested()) {
-        // ... one frame ...
-    }
-    return 0;                         // back to HBC
-}
-```
-
-Link with `-I<hbc-reborn>/sdk -L<hbc-reborn>/sdk/hbc_agent -lhbcagent -lfat -lz -logc`.
-
-That is for devkitPro's current libogc (3.x). For an app on libogc2
-(Extrems' fork) or libogc 1.x, build the agent against that libogc and link
-the copy it makes, with the devkitPPC the app uses:
-
-```sh
-make -C sdk/hbc_agent OGC=libogc2        # sdk/hbc_agent/libogc2/libhbcagent.a
-make -C sdk/hbc_agent OGC=libogc-1.8.23  # sdk/hbc_agent/libogc-1.8.23/libhbcagent.a
-```
-
-Everything works the same there, crash reports included (the agent adds its
-own exception entry, `sdk/hbc_agent/ogc_exc.S`, to the older libogc's
-exception table). The one difference: those libogcs' WPAD has no pairing
-call, so the overlay's Connect asks for the Wii's SYNC button.
-
-#### Safety tools
-
-The agent also guards the app, at no cost until something goes wrong:
-
-- **Stack overflow.** The CPU's data breakpoint watches the main thread's
-  stack 1 KiB above its bottom; the first write there stops the app with a
-  `stack` report at the exact instruction. Markers below it catch a frame
-  big enough to step over it.
-- **`assert()` and `abort()`** come back as reports (`assert` with
-  `file:line: expression`) instead of a frozen screen.
-- **Reset and Power**, when the app left libogc's defaults: Reset exits to
-  HBC, Power switches off after the app's `on_exit`.
-- **SD and USB are written back** when the app exits, after its own
-  `atexit` handlers, so a quick exit does not lose a save.
-- **Frame pacing** in `hbc.py status` (`safety.frames`): frames a second,
-  the longest frame, frames that ran late.
-- **Every thread's state** at the end of the kept log after a crash, fatal,
-  hang or abort: priority, state, stack left and where it is waiting.
-
-Two cost a little time each second, so an app asks for them:
-`guard_reload_stub` keeps a copy of the loader's reload stub and puts it back
-before exit (an app that overwrites low memory still gets back to HBC), and
-`track_memory` records the lowest free MEM1, MEM2 and heap. Linking with
-`-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign` also counts
-failed allocations with their size and caller. `no_safety` leaves out any of
-the defaults; `docs/devnet.md` has the details and `tests/agent_cost.py`
-measures what they cost.
-
-Then:
-
-```sh
-python3 tools/hbc.py run myapp.dol        # again and again: each run replaces the last
-python3 tools/hbc.py status               # the app's name, uptime, memory, agent stack
-python3 tools/hbc.py get sd:/apps/myapp/save.dat   # while the app runs
-python3 tools/hbc.py crash --elf myapp.elf         # after a crash: where it happened
-```
-
-#### The HOME overlay
-
-Call `hbc_agent_home()` when HOME is pressed, and the agent shows its
-overlay over your game's last frame, in the Homebrew Channel's style:
-
-```c
-WPAD_ScanPads();
-if ((WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME) || hbc_agent_home_pending())
-    hbc_agent_home(rmode);            // returns when the user closes it
-```
-
-On a GameCube controller, HBC opens HOME with Z and START together, so
-START alone stays a game's pause button; do the same with
-`(PAD_ButtonsDown(0) & PAD_BUTTON_START) && (PAD_ButtonsHeld(0) & PAD_TRIGGER_Z)`
-and set `gc_pads` so the overlay reads the controller too.
-
-A status strip shows the app, the clock, and the four remotes' player LEDs
-and batteries, over five buttons:
-
-| Button | What it does |
+| SDK | What it gives your app |
 | --- | --- |
-| DEV | Actions: Restart app, Pause, Save, Log (the app's recent output), Reset remotes, Sync clock (sets the Wii's clock from an NTP server, keeping its time zone), Log to PC, the crash screen's time, and the `hbc.py` connection. Info: time, play time, network, SD space, the app, and MEM1 and MEM2 free, used and total in KB, then five pages read when one opens: System (console and model, region, serial, console ID, Wii Menu, IOS and AHBPROT, boot2, CPU, Hollywood revision, language), Video (mode, cable, TV type, 16:9, 480p, PAL 60, sound, sensor bar, paired remotes), Storage (SD and USB size and free space, NAND free, GameCube memory cards), USB (each device on the ports, by vendor and product ID) and Network (IP and netmask, gateway, DNS, MAC, the Wii Menu connection in use). |
-| (app slot) | Whatever the app puts there with `hbc_agent_set_slot(0, ...)`; blank otherwise. |
-| Exit | The Homebrew Channel, System Menu, Restart Wii, Power off. |
-| Shot | Saves the game's frame to `sd:/screenshots/<app>-NNN.bmp`. An app can replace it with `hbc_agent_set_slot(1, ...)`. |
-| WiiMote | A card per remote (Find: a chime that gets louder; More: battery, extension, MotionPlus, rumble on or off, speaker volume with a chirp, Test with an ADPCM and a PCM tune and a WAV player for `speaker.wav` on SD or USB, Calibrate, Disconnect; Test and Calibrate switch a MotionPlus on to show and measure its gyro, and switch it back off as they close, so the app gets the remote back as it left it), and Settings: connect a remote, disconnect all, sensor bar, IR sensitivity, auto power-off, rumble for all. |
-
-An app can give a slot a menu of its own instead of one action
-(`hbc_agent_set_slot_menu`), with buttons and live info rows. HBC's own HOME
-menu is this overlay, set up in
-[`channel/channelapp/source/home.c`](channel/channelapp/source/home.c): a
-commented example of every step, from the config to lending the overlay its
-framebuffers and handling Exit through HBC's own shutdown. Its HBC slot
-holds what the old HOME menu had: HBC's and IOS's versions, the Wii's IP,
-About, Launch BootMii, Exit to System Menu, and Shutdown, plus Restart
-network, which shuts the network down and joins it again (for a Wi-Fi
-connection that went stale), and Save Mii faces, which copies the Wii
-Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's male and
-female bodies with their animations (`maleBody.brres`,
-`femaleBody.brres`) and effects (`effect_nigaoe.breff`, `.breft`) to
-`sd:/mii` for apps that draw Miis
-([docs/mii.md](docs/mii.md#the-face-models-rfl_resdat)).
-
-When the network fails to start, HBC tries again by itself. Each start
-has 30 seconds in all, and Restart network or launching an app cancels
-one that IOS never finishes. Shutting the network down can itself hang
-inside IOS (libogc's `net_deinit` waits for a reply that never comes); if
-it has not returned after 5 seconds, HBC says so for 10 seconds and then
-starts the installed channel again with a fresh IOS.
-
-Point a Wii Remote at the screen and HBC's hand cursor follows it, turning as you twist the remote: the
-button under it lights up and A presses it, and pointing at a bar button
-while a menu is open switches straight to that menu. The overlay turns on
-IR for every connected remote while it is open and gives each back its
-previous mode when it closes. The D-pad moves the highlight when no remote
-points at the screen, A chooses, B goes back one level, and HOME closes
-everything.
-
-Controller settings > Sideways remote (off by default; `sideways_remotes`
-in the config turns it on to start) is for a Wii Remote held sideways with
-its D-pad at the left: tilt the buttons towards you and the D-pad turns to
-match, Up acting as Left, Right as Up, and so on. A remote pointing at the
-screen, or held upright, reads as usual; lying flat keeps the last way it
-was held. It turns after about a sixth of a second held the new way, and
-back after about half a second, so a brief twist or a glimpse of the sensor
-bar does not flip it. The overlay always follows it; an app's own menus can too, by
-calling `hbc_agent_remotes_scanned()` after `WPAD_ScanPads()` and passing a
-remote's buttons through `hbc_agent_remote_buttons(chan, buttons)`, as HBC's
-app list does, with a data format that includes the accelerometer. Classic and GameCube controllers are never turned. HBC keeps
-this one setting in its settings.xml.
-
-Controller settings last until the app exits; nothing is
-written to the Wii's own settings, except that Connect remote may save the
-new remote in the Wii's pairing list as the Sync button would, and Reconnect
-in player order saves the new order. Reconnect works like the Wii Menu's:
-every remote disconnects, then each one you press 1 and 2 on (any button, for
-a paired one) becomes the next player, 1 to 4; Done, a fourth remote, or
-closing the overlay ends it (libogc 3 builds only). A GameCube controller's
-START closes the overlay, like HOME. Link the
-overlay with `-lwiiuse -lbte` (which WPAD apps already use); while open it
-borrows three framebuffers, about 1.8 MB at 640x480. Set `on_save` and
-`on_restart` in `hbc_agent_config` to enable Save and Restart app.
-
-#### What the agent costs
-
-Measured on a real Wii with `tests/agent_cost.py` (HBC 1.7.1, 640x480):
-
-| | Cost |
-| --- | --- |
-| Code | 25.6 KB for the agent (network, files, crash reports), 77 KB more for the overlay (of which about 30 KB are its fonts and pointer) |
-| Static data | 17 KB for the agent (half of it the Log page's 8 KB of recent output), 21 KB for the overlay (its threads' stacks and state) |
-| Start-up | `hbc_agent_init()`: 13 KB of heap and 16 KB of MEM1 arena (its thread's 12 KB stack, of which it uses 3 to 4.5 KB) |
-| Idle | 5 wake-ups a second to check for a connection, 140 µs each: 0.07% of the CPU |
-| File transfers | about 28 KB of heap kept after the first (the rest is freed after each); zlib and CRC work of 9 to 130 ms per upload and 50 to 620 ms per download of 2 to 5 MB, on the agent's thread |
-| HOME overlay, while open | 1.8 MB: a copy of the frame and two framebuffers (HBC lends the framebuffers from low MEM1); 7.9 ms average and 14 ms at most to draw a frame that changed, nothing for frames that did not, so it keeps 60 fps |
-| HOME overlay, closed | nothing: no thread, no memory |
-
-`hbc.py status` shows the live figures: `agent_idle_wakes`, `agent_idle_us`,
-`agent_request_ms`, `agent_stack_used`, `heap_arena`, and `overlay` (frames
-drawn, average and worst frame time, memory borrowed) after the overlay
-was open.
-
-The agent's thread runs below your main thread, so a loop that waits for
-each frame never loses time to it; an app that never blocks starves it and
-the tools time out. It holds no transfer buffers while idle and frees them
-after each transfer (about 280 KiB, plus up to 260 KiB of zlib state for a
-compressed download). If your app calls `net_init()` itself, do it before
-`hbc_agent_init()`: libogc's `net_init()` hangs if it runs while another
-thread is starting the network. After a crash the agent shows libogc's crash
-screen for 3 s and returns to HBC, which keeps the report until you read or
-clear it; `run` prints it and exits with status 3. A plain `wiiload` to a
-running agent app fails once and leaves the Wii in HBC, so the retry works.
-[`sdk/hbc_agent.h`](sdk/hbc_agent.h) has the options (priority, crash
-screen time, exit callback) and [`tests/agent_app`](tests/agent_app) is a
-complete example. The agent contains HBC's own code, so it is GPL like the
-rest of HBC: keep it in development builds (for example behind an
-`#ifdef`), or release your app under a compatible license.
-
-### Wii Remote speaker audio in your app
-
-[`sdk/wiispk`](sdk/wiispk) is the speaker driver HBC's HOME menu uses, as a
-library of its own. It is two files that need only libogc, under the zlib
-licence (not GPL), so any app can copy them in. It plays sound on the remote's
-speaker cleanly, where libogc's `WPAD_SendStreamData` stutters and turns to
-noise, and it loads any PCM WAV file. [Its README](sdk/wiispk/README.md) has
-the API and explains what libogc gets wrong.
-
-### Posting to the Wii Message Board from your app
-
-[`sdk/mboard`](sdk/mboard) is two files that need only libogc, in the public
-domain, so any app can copy them in. They put a message on the Wii Message
-Board the way a game does, or add a line to the day's play history:
-
-```c
-#include "mboard.h"
-
-mboard_post("WiiStation", "Played Final Fantasy VII\nfor 42 minutes.");
-mboard_log_play("Final Fantasy VII", "WSFF7", 42 * 60);   // needs AHBPROT
-```
-
-Beyond a simple post:
-
-- **`mboard_post_msg()`** adds what a game's message can carry:
-  - a Mii as its icon (`mboard_mii()` reads one from the Wii's Mii database);
-  - a photo;
-  - stationery (`tools/msgboard/stationery.py` makes a border, a board icon
-    and music);
-  - a button that opens a channel;
-  - a Reply button;
-  - a delay, and the date it is filed under.
-- **`mboard_send_msg()`** sends the same message to another Wii by its Wii
-  number, through the WiiConnect24 mail server (WiiLink's today).
-- **`mboard_friends()`** and `mboard_friend_add`, `_set` and `_remove` read
-  and edit the Address Book.
-
-Only sending needs the internet, and nothing deletes what is already on the
-board. HBC's own play log is this library's writer.
-
-Docs:
-
-- [`docs/mboard.md`](docs/mboard.md): the API, the files and IOS calls, what
-  can go wrong, and the proof on a Wii.
-- [`docs/messageboard-messages.md`](docs/messageboard-messages.md): how the
-  board stores a message and what sets the sender, icon and contents.
-- [`docs/messageboard.md`](docs/messageboard.md): the play history.
-- [`docs/mii.md`](docs/mii.md): Mii data.
-
-### The disc-slot light in your app
-
-[`sdk/slotled`](sdk/slotled) is two files under the zlib licence. It drives
-the blue slot light three ways:
-- **Directly:** 256 levels, blink, pulse, heartbeat, Morse and flashes for
-  activity, from a timer, with no thread.
-- **Through IOS:** its off/dim/bright level and its own flash patterns.
-- **The saved setting:** the Wii Menu's Slot illumination.
-
-[Its README](sdk/slotled/README.md) says what each way changes on the Wii,
-and [RESEARCH.md](sdk/slotled/RESEARCH.md) lists what is still to find out.
-
-### Miis in your app
-
-[`sdk/mii`](sdk/mii) is two files, in the public domain. They give an app
-what the Wii's own Mii library gives games. Compile `mii.c` as C and link
-with `-lwiiuse -lbte -logc -lm`.
-
-```c
-#include <gccore.h>
-#include <ogc/lwp_watchdog.h>   // gettime()
-#include "mii.h"
-
-mii_db db = { 0 };
-mii m;
-uint32_t seed = (uint32_t) gettime();
-
-mii_random(&m, MII_ANY, MII_ANY, &seed);   // or mii_default(), or edit any field
-mii_set_name(m.name, "Homebrew");
-m.height = 90;                             // 0 shortest .. 128 tallest
-if (mii_make_id(&m) == MII_OK && mii_db_load(&db) == MII_OK) {
-    if (mii_db_add(&db, &m) >= 0)          // into the Mii Channel's plaza
-        mii_db_save(&db);
-    mii_db_free(&db);
-}
-```
-
-- **A Mii as a struct**, packed to and from the 74 bytes every Wii file
-  holds. `mii_check()` says whether the Wii would accept it, and why not.
-- **`.mii` files**: the 74-byte form and the 76-byte form with a CRC.
-- **The Mii database**: the Mii Channel's 100 Miis, and the hidden database
-  of Miis met on letters and Remotes. It reads, adds, changes and removes
-  them. It never writes a database whose CRC is wrong.
-- **A Wii Remote's 10 Miis**: `mii_remote_read()` and `mii_remote_write()`.
-
-[Its README](sdk/mii/README.md) has the API, worked examples and what each
-error means. [`sdk/mii/example`](sdk/mii/example) is a whole program, and
-[`docs/mii.md`](docs/mii.md) has the formats and their sources.
-
-`miidraw.c` and `miidraw.h` draw a Mii with GX: the head as the Wii draws
-it, from the user's own face models (`sd:/mii/RFL_Res.dat`, saved with HOME
-> HBC > Save Mii faces), all seven expressions, and a body, posed. Capture
-it into a texture with alpha, make a head icon, or draw it in your own 3D
-scene ([the SDK README](sdk/mii/README.md#drawing-miis-miidraw)). HBC's
-avatar is the worked example: your favourite Mii stands beside the app
-list, breathes, looks around, blinks, smiles and waves, looks at the Wii
-Remote's pointer, and A on it shows the next Mii
-([`avatar.c`](channel/channelapp/source/avatar.c)).
+| [hbc_netlog](sdk/hbc_netlog/README.md) | Your app's `printf` output on the PC |
+| [hbc_agent](sdk/hbc_agent/README.md) | HBC's tools inside your running app: `hbc.py` file commands, status and restart, crash reports, a HOME overlay |
+| [wiispk](sdk/wiispk/README.md) | Clean Wii Remote speaker sound (HBC's HOME menu uses it) |
+| [mboard](sdk/mboard/README.md) | Message Board posts, mail to other Wiis, the Address Book, the play history (HBC's play log is its writer) |
+| [slotled](sdk/slotled/README.md) | The disc-slot light: levels, effects, IOS patterns, the saved setting |
+| [mii](sdk/mii/README.md) | Miis: read, make, edit and draw them, the Mii database, a Remote's Miis |
 
 ## Installing the channel on a Wii
 
@@ -767,7 +447,7 @@ python3 tools/wii-bench/wiibench.py wait <id>
 
 Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
-[`sdk/hbc_netlog.h`](sdk/hbc_netlog.h), [`sdk/mboard`](sdk/mboard) and
+[`sdk/hbc_netlog`](sdk/hbc_netlog/README.md), [`sdk/mboard`](sdk/mboard) and
 [`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
 [`sdk/wiispk`](sdk/wiispk) and [`sdk/slotled`](sdk/slotled) are under the zlib
 licence. The agent library (`sdk/hbc_agent`) is built from HBC's own sources

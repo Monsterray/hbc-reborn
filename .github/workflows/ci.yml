@@ -86,8 +86,8 @@ jobs:
             tests/netlog_app/netlog_app.dol
             tests/agent_app/agent_app.dol
             sdk/hbc_agent/libhbcagent.a
-            sdk/hbc_agent.h
-            sdk/hbc_netlog.h
+            sdk/hbc_agent/hbc_agent.h
+            sdk/hbc_netlog/hbc_netlog.h
 
   host:
     name: Host tools and Python (${{ matrix.os }})

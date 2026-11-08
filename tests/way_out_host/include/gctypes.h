@@ -1,5 +1,5 @@
 /* Host stand-in for libogc's gctypes.h: sdk/hbc_agent/way_out.c and the crash
- * block layout in sdk/hbc_agent.h, built on a PC by tests/test_way_out.py. */
+ * block layout in sdk/hbc_agent/hbc_agent.h, built on a PC by tests/test_way_out.py. */
 #ifndef HOST_GCTYPES_H
 #define HOST_GCTYPES_H
 #include <stdbool.h>
