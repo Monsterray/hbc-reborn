@@ -171,7 +171,7 @@ def dolphin(boot, rtc, seconds, pad=None, extra=()):
         args += ["-C", s]
     args += boot
     proc = subprocess.Popen(args)
-    helper = subprocess.Popen([sys.executable, str(root / "tools/msgboard/dsu_pad.py"), "26761", pad]) if pad else None
+    helper = subprocess.Popen([sys.executable, str(root / "tools/dsu_pad.py"), "26761", pad]) if pad else None
     deadline = time.monotonic() + seconds
     while proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.5)

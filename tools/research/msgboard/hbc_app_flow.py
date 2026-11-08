@@ -3,13 +3,13 @@ the Wii Menu profile on day DAY, send tests/apps/agent_app over Wiiload, let it 
 exit it back to HBC, close Dolphin (HBC's power-off logs its own session), and
 print the day's message.
 
-    python tools/msgboard/hbc_app_flow.py DAY      (YYYY-MM-DD, a day with no message)"""
+    python tools/research/msgboard/hbc_app_flow.py DAY      (YYYY-MM-DD, a day with no message)"""
 import os, pathlib, struct, subprocess, sys, time
 
-root = pathlib.Path(__file__).resolve().parents[2]
+root = pathlib.Path(__file__).resolve().parents[3]
 here = pathlib.Path(__file__).parent
-sys.path.insert(0, str(root / "tools"))
-sys.path.insert(0, str(root / "tests"))
+sys.path.insert(0, str(root / "tests" / "lib"))
+import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
 import hbc  # noqa: E402
 import dolphin_smoke  # noqa: E402
 
@@ -24,7 +24,7 @@ with socket.socket() as probe:
     if probe.connect_ex((dolphin_smoke.host_address(), 4299)) == 0:
         raise SystemExit("TCP 4299 is in use by another Dolphin on this PC; try again when it is free")
 env = dict(os.environ, RTC=f"{day}T17:00", EXTRA="Dolphin.Core.EnableCheats=True")
-runner = subprocess.Popen([sys.executable, str(here / "dolphin_sysmenu.py"), "install",
+runner = subprocess.Popen([sys.executable, str(root / "tools" / "msgboard" / "dolphin_sysmenu.py"), "install",
                            str(root / "channel/title/channel_retail.wad"), "170"], env=env)
 wii = dolphin_smoke.host_address()
 print("HBC:", hbc.hbc_wait(wii, 90), flush=True)

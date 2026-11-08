@@ -6,7 +6,7 @@ profile, with an SD card and Wii Remote 1 mapped to the pad), puts three
 copies of tests/apps/agent_app (mode "meta": prints its argv, IOS and AHBPROT,
 and exits) under sd:/apps
 with meta.xml files that between them use every option HBC reads, then
-drives the menu with a scripted pad (tools/msgboard/dsu_pad.py) as a person
+drives the menu with a scripted pad (tools/dsu_pad.py) as a person
 would and checks what each app got:
 
   A  name, author, version, release_date (date and time), short and long
@@ -143,7 +143,7 @@ class Pad:
 
     def __init__(self):
         self.proc = subprocess.Popen(
-            [sys.executable, "-u", str(root / "tools/msgboard/dsu_pad.py"), PAD_PORT, "-"],
+            [sys.executable, "-u", str(root / "tools/dsu_pad.py"), PAD_PORT, "-"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
 
     def send(self, steps):

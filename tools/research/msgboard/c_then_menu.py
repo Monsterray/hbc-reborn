@@ -2,12 +2,12 @@
 the Dolphin profile's cdb.vff with it, have the Wii Menu merge a play_rec.dat
 record into the same day, and print the day's message.
 
-    python tools/msgboard/c_then_menu.py DAY   (DAY: YYYY-MM-DD, a day with no message yet)"""
+    python tools/research/msgboard/c_then_menu.py DAY   (DAY: YYYY-MM-DD, a day with no message yet)"""
 import os, pathlib, shutil, struct, subprocess, sys, tempfile
 
-root = pathlib.Path(__file__).resolve().parents[2]
+root = pathlib.Path(__file__).resolve().parents[3]
 here = pathlib.Path(__file__).parent
-sys.path.insert(0, str(here))
+sys.path.insert(0, str(root / "tools" / "msgboard"))
 import cdb_log  # noqa: E402
 
 BASE = pathlib.Path.home() / "Documents" / "hbc-dolphin-sysmenu"
@@ -31,7 +31,7 @@ subprocess.run([py, str(here / "playrec_re.py"), "rec_at", "HBC Menu Romeo", "HR
                 f"{day}T20:00", f"{day}T20:10"], check=True)
 env = dict(os.environ, RTC=f"{day}T20:15",
            PAD="wait 20; press Cross; wait 2; press Cross; wait 2; press Cross; wait 8")
-subprocess.run([py, str(here / "dolphin_sysmenu.py"), "menu", "50"], env=env, capture_output=True)
+subprocess.run([py, str(root / "tools" / "msgboard" / "dolphin_sysmenu.py"), "menu", "50"], env=env, capture_output=True)
 img = VFF.read_bytes()
 y, m, d = (int(x) for x in day.split("-"))
 v = cdb_log.Vff(bytearray(img))

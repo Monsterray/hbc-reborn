@@ -30,6 +30,8 @@ Every document in hbc-reborn, by who it is for. Start with the
 | [review.md](review.md) | The review plan and the open items |
 | [history/](history/) | Each release's findings and hardware results |
 | [CHANGELOG.md](../CHANGELOG.md) | One line per version |
+| [tools/README.md](../tools/README.md) | Every tool and what it does; one-off research scripts in [tools/research/](../tools/research/README.md) |
+| [tests/README.md](../tests/README.md) | Every test, by where it runs, with what it covers |
 | [tools/wiki.py](../tools/wiki.py) | Builds the GitHub wiki from the README, these guides and the SDK READMEs; edit the files here, never the wiki |
 | [plans/](plans/) | Plans in progress: [the November 2026 reorganization](plans/2026-11-reorg.md), [sdk/mii 2.0](plans/mii-sdk-2.md), [sdk/wc24](plans/wc24.md) |
 

@@ -19,6 +19,7 @@ repository. Big-endian layout, from the RFL decompilations:
   texture:  a BTI-like 0x20 header (format, size, wrap, image offset at 0x1C)
 """
 
+import argparse
 import pathlib
 import struct
 import sys
@@ -247,18 +248,32 @@ def dump(data, out):
     print(f"dumped to {out}")
 
 
-def main():
-    if len(sys.argv) < 3 or sys.argv[1] not in ("info", "dump") or (sys.argv[1] == "dump") != (len(sys.argv) == 4):
-        raise SystemExit(__doc__)
-    data = pathlib.Path(sys.argv[2]).read_bytes()
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  python tools/mii_res.py info RFL_Res.dat
+  python tools/mii_res.py dump RFL_Res.dat out/
+
+exit codes: 0 done; 1 the file is not a readable RFL_Res.dat (message on
+stderr); 2 bad usage (argparse's own).""")
+    sub = ap.add_subparsers(dest="command", required=True, metavar="{info,dump}")
+    p = sub.add_parser("info", help="the archives: parts, sizes, texture formats")
+    p.add_argument("file", metavar="FILE")
+    p = sub.add_parser("dump", help="every shape as OBJ, every texture as PNG")
+    p.add_argument("file", metavar="FILE")
+    p.add_argument("dir", metavar="DIR")
+    args = ap.parse_args(argv)
+    data = pathlib.Path(args.file).read_bytes()
     try:
-        if sys.argv[1] == "info":
+        if args.command == "info":
             info(data)
         else:
-            dump(data, pathlib.Path(sys.argv[3]))
+            dump(data, pathlib.Path(args.dir))
     except (ResError, struct.error) as exc:
-        raise SystemExit(f"{sys.argv[2]}: {exc}")
+        raise SystemExit(f"{args.file}: {exc}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

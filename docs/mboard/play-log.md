@@ -127,7 +127,7 @@ half, since 1.10.9; it was HBC's own `cdblog.c` before):
 - SYSCONF `IPL.CD` and `IPL.CD2` set to 1 (`tools/msgboard/sysconf_cd.py`).
   Dolphin's default 0 means initial setup is not done: the Wii Menu then resets
   SYSCONF and deletes `cdb.vff` on every boot.
-- A scripted Wii Remote (`tools/msgboard/dsu_pad.py`, the DSU protocol) to
+- A scripted Wii Remote (`tools/dsu_pad.py`, the DSU protocol) to
   press A past the Health and Safety screen: the Wii Menu adds play_rec.dat to
   the log only after that.
 

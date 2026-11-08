@@ -10,7 +10,7 @@ data: its heads draw nothing visible, so the coins look plain).
      opens on the avatar's page, 2 pages of 15 coins, and draws all 20
      heads.
   3. B closes it; the avatar is as it was.
-  4. The pad (tools/msgboard/dsu_pad.py, as tests/dolphin/dolphin_meta.py drives
+  4. The pad (tools/dsu_pad.py, as tests/dolphin/dolphin_meta.py drives
      it): + to page 2, D-pad right, A: the avatar is that Mii (slot 16).
   5. The pointer: the picker again, - back to page 1; a second on the
      middle coin of the second row shows its name; A chooses it.

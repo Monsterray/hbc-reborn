@@ -1,71 +1,112 @@
 """Run Dolphin on the hbc-dolphin-sysmenu profile: `install WAD SECONDS` boots
 (and so installs) a WAD; `menu SECONDS` boots the installed Wii Menu. Only the
 Dolphin started here is stopped. Lists the Wii Menu's NAND data folder after."""
-import pathlib, subprocess, sys, time
+import argparse, os, pathlib, subprocess, sys, time
 
 BASE = pathlib.Path.home() / "Documents" / "hbc-dolphin-sysmenu"
 USER = BASE / "user"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import wii_paths  # noqa: E402
-DOLPHIN = str(wii_paths.dolphin())   # $DOLPHIN, ~/.wii-paths.json, PATH
-SETTINGS = ["Dolphin.Interface.ConfirmStop=False", "Dolphin.Interface.UsePanicHandlers=False",
-            "Dolphin.Analytics.PermissionAsked=True", "Dolphin.Analytics.Enabled=False",
-            "Dolphin.Core.CPUThread=True", "Logger.Options.WriteToFile=True",
-            "Logger.Options.Verbosity=" + __import__("os").environ.get("VERB", "3"), "Logger.Logs.BOOT=True", "Logger.Logs.IOS=True",
-            "Logger.Logs.IOS_ES=True", "Logger.Logs.IOS_FS=True", "Logger.Logs.OSREPORT=True",
-            "Dolphin.Input.BackgroundInput=True", "Dolphin.Core.WiiSDCard=True",
-            "Dolphin.Core.WiiSDCardAllowWrites=True",
-            "DualShockUDPClient.Server.Enabled=True",
-            "DualShockUDPClient.Server.Entries=hbcpad:127.0.0.1:26761;"]
-# RTC=YYYY-MM-DDTHH:MM runs the Wii's clock from that local time.
-_rtc = __import__("os").environ.get("RTC")
-if _rtc:
-    import calendar
-    SETTINGS += ["Dolphin.Core.EnableCustomRTC=True",
-                 f"Dolphin.Core.CustomRTCValue={calendar.timegm(time.strptime(_rtc, '%Y-%m-%dT%H:%M'))}"]
-# EXTRA="System.Section.Key=Value;..." adds settings for one run.
-SETTINGS += [x for x in __import__("os").environ.get("EXTRA", "").split(";") if x]
-# A scripted controller (dsu_pad.py) runs beside Dolphin when PAD is set: its steps.
-PAD = __import__("os").environ.get("PAD")
 
-mode, seconds = sys.argv[1], int(sys.argv[-1])
-args = [DOLPHIN, "-b", "-u", str(USER)]
-for s in SETTINGS:
-    args += ["-C", s]
-args += ["-e", sys.argv[2]] if mode == "install" else ["-n", "0000000100000002"]
-USER.mkdir(parents=True, exist_ok=True)
-# Dolphin asks before installing over a different version of a title, and in
-# a batch run nobody can answer: drop the installed HBC's contents (its data
-# folder stays) before a WAD install.
-if mode == "install" and sys.argv[2].lower().endswith(".wad"):
-    import shutil
-    for tid in ("4f484243", "4c554c5a"):   # OHBC, LULZ
-        shutil.rmtree(USER / f"Wii/title/00010001/{tid}/content", ignore_errors=True)
-proc = subprocess.Popen(args)
-pad = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).with_name("dsu_pad.py")), "26761", PAD]) if PAD else None
-time.sleep(seconds)
-if pad:
-    pad.wait(timeout=60)
-alive = proc.poll() is None
-# A normal close (as the window's X), so Dolphin saves its NAND state; kill only if it hangs.
-subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True)
-try:
-    proc.wait(timeout=20)
-    print("closed normally")
-except subprocess.TimeoutExpired:
-    proc.kill()
-    proc.wait()
-    print("had to kill it")
-print("dolphin", "ran the whole time" if alive else f"exited early ({proc.returncode})")
-nand = USER / "Wii"
-for d in ("title/00000001/00000002/content", "title/00000001/00000050/content",
-          "title/00000001/00000002/data"):
-    p = nand / d
-    files = sorted(p.iterdir()) if p.exists() else []
-    print(f"{d}: " + (", ".join(f"{f.name} ({f.stat().st_size})" for f in files) or "missing"))
-log = USER / "Logs/dolphin.log"
-if log.exists():
-    lines = log.read_text(errors="replace").splitlines()
-    print("log tail:")
-    for line in lines[-12:]:
-        print("  " + line[:200])
+
+def settings():
+    """The -C settings of the profile, from the environment: VERB (log
+    verbosity), RTC, EXTRA."""
+    s = ["Dolphin.Interface.ConfirmStop=False", "Dolphin.Interface.UsePanicHandlers=False",
+         "Dolphin.Analytics.PermissionAsked=True", "Dolphin.Analytics.Enabled=False",
+         "Dolphin.Core.CPUThread=True", "Logger.Options.WriteToFile=True",
+         "Logger.Options.Verbosity=" + os.environ.get("VERB", "3"), "Logger.Logs.BOOT=True", "Logger.Logs.IOS=True",
+         "Logger.Logs.IOS_ES=True", "Logger.Logs.IOS_FS=True", "Logger.Logs.OSREPORT=True",
+         "Dolphin.Input.BackgroundInput=True", "Dolphin.Core.WiiSDCard=True",
+         "Dolphin.Core.WiiSDCardAllowWrites=True",
+         "DualShockUDPClient.Server.Enabled=True",
+         "DualShockUDPClient.Server.Entries=hbcpad:127.0.0.1:26761;"]
+    # RTC=YYYY-MM-DDTHH:MM runs the Wii's clock from that local time.
+    rtc = os.environ.get("RTC")
+    if rtc:
+        import calendar
+        s += ["Dolphin.Core.EnableCustomRTC=True",
+              f"Dolphin.Core.CustomRTCValue={calendar.timegm(time.strptime(rtc, '%Y-%m-%dT%H:%M'))}"]
+    # EXTRA="System.Section.Key=Value;..." adds settings for one run.
+    s += [x for x in os.environ.get("EXTRA", "").split(";") if x]
+    return s
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""environment:
+  VERB   Dolphin log verbosity (default 3)
+  RTC    YYYY-MM-DDTHH:MM, runs the Wii's clock from that local time
+  EXTRA  "System.Section.Key=Value;..." adds Dolphin settings for one run
+  PAD    steps for tools/dsu_pad.py, run beside Dolphin as a scripted controller
+
+examples:
+  python tools/msgboard/dolphin_sysmenu.py install menu-v513.wad 60
+  python tools/msgboard/dolphin_sysmenu.py menu 90
+
+It starts Dolphin on the profile in ~/Documents/hbc-dolphin-sysmenu, which
+changes that profile's NAND (an install removes the installed HBC's content
+first).
+
+exit codes: 0 done (Dolphin ran, was stopped, and the NAND folders were
+listed; read the printed lines to see whether it exited early); 2 bad usage
+(argparse's own). A missing Dolphin ends with a Python traceback (exit 1).""")
+    sub = ap.add_subparsers(dest="mode", required=True, metavar="{install,menu}")
+    p = sub.add_parser("install", help="boot (and so install) a WAD")
+    p.add_argument("wad", metavar="WAD")
+    p.add_argument("seconds", metavar="SECONDS", type=int, help="how long to let Dolphin run")
+    p = sub.add_parser("menu", help="boot the installed Wii Menu")
+    p.add_argument("seconds", metavar="SECONDS", type=int, help="how long to let Dolphin run")
+    a = ap.parse_args(argv)
+
+    dolphin = str(wii_paths.dolphin())   # $DOLPHIN, ~/.wii-paths.json, PATH
+    # A scripted controller (dsu_pad.py) runs beside Dolphin when PAD is set: its steps.
+    pad_steps = os.environ.get("PAD")
+    mode, seconds = a.mode, a.seconds
+    args = [dolphin, "-b", "-u", str(USER)]
+    for s in settings():
+        args += ["-C", s]
+    args += ["-e", a.wad] if mode == "install" else ["-n", "0000000100000002"]
+    USER.mkdir(parents=True, exist_ok=True)
+    # Dolphin asks before installing over a different version of a title, and in
+    # a batch run nobody can answer: drop the installed HBC's contents (its data
+    # folder stays) before a WAD install.
+    if mode == "install" and a.wad.lower().endswith(".wad"):
+        import shutil
+        for tid in ("4f484243", "4c554c5a"):   # OHBC, LULZ
+            shutil.rmtree(USER / f"Wii/title/00010001/{tid}/content", ignore_errors=True)
+    proc = subprocess.Popen(args)
+    pad = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve().parents[1] / "dsu_pad.py"),
+                            "26761", pad_steps]) if pad_steps else None
+    time.sleep(seconds)
+    if pad:
+        pad.wait(timeout=60)
+    alive = proc.poll() is None
+    # A normal close (as the window's X), so Dolphin saves its NAND state; kill only if it hangs.
+    subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True)
+    try:
+        proc.wait(timeout=20)
+        print("closed normally")
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        print("had to kill it")
+    print("dolphin", "ran the whole time" if alive else f"exited early ({proc.returncode})")
+    nand = USER / "Wii"
+    for d in ("title/00000001/00000002/content", "title/00000001/00000050/content",
+              "title/00000001/00000002/data"):
+        p = nand / d
+        files = sorted(p.iterdir()) if p.exists() else []
+        print(f"{d}: " + (", ".join(f"{f.name} ({f.stat().st_size})" for f in files) or "missing"))
+    log = USER / "Logs/dolphin.log"
+    if log.exists():
+        lines = log.read_text(errors="replace").splitlines()
+        print("log tail:")
+        for line in lines[-12:]:
+            print("  " + line[:200])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

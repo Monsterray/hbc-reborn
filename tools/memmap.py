@@ -15,6 +15,7 @@ section's range and size instead. NM (default: devkitPPC's powerpc-eabi-nm)
 names the nm to use.
 """
 
+import argparse
 import bisect
 import csv
 import os
@@ -70,27 +71,41 @@ def read_nm(elf):
             yield int(p[0], 16), None, p[1], p[2]
 
 
-def main(argv):
-    if len(argv) < 3:
-        sys.exit(__doc__)
-    outs, ins = read_map(argv[1])
-    if "--sections" in argv:
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  tools/memmap.py channelapp.map channelapp_nopax.elf > memmap.csv
+  tools/memmap.py channelapp.map --sections
+
+exit codes: 0 done; 2 bad usage (argparse's own, also an ELF missing without
+--sections). A missing map, ELF or nm ends with a Python traceback (exit 1).""")
+    ap.add_argument("map", help="linker map written with -Wl,-Map")
+    ap.add_argument("elf", nargs="?", help="the ELF to read symbols from (not needed with --sections)")
+    ap.add_argument("--sections", action="store_true",
+                    help="print each output section's range and size instead of the CSV")
+    args = ap.parse_args(argv)
+    if not args.sections and not args.elf:
+        ap.error("the ELF is required unless --sections is given")
+    outs, ins = read_map(args.map)
+    if args.sections:
         for name, start, size in outs:
             if size:
                 print(f"{name:20} {start:08x}-{start + size:08x} {size:9d}")
-        return
+        return 0
     starts = [i[0] for i in ins]
     out_starts = sorted((s, n, z) for n, s, z in outs if z)
     w = csv.writer(sys.stdout, lineterminator="\n")
     w.writerow(["address", "size", "end", "section", "type", "symbol", "object"])
-    for addr, size, kind, name in read_nm(argv[2]):
+    for addr, size, kind, name in read_nm(args.elf):
         k = bisect.bisect_right(starts, addr) - 1
         obj = ins[k][3] if k >= 0 and addr < ins[k][0] + ins[k][1] else ""
         j = bisect.bisect_right([s for s, _, _ in out_starts], addr) - 1
         sec = out_starts[j][1] if j >= 0 and addr < out_starts[j][0] + out_starts[j][2] else ""
         w.writerow([f"{addr:08x}", "" if size is None else size,
                     "" if size is None else f"{addr + size:08x}", sec, kind, name, obj])
+    return 0
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    sys.exit(main())

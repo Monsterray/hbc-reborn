@@ -12,10 +12,8 @@ PadN/PadS/PadE/PadW. Exits after the last step (and a second of idle).
 With "-" for the steps, they come from stdin, one or more per line, and each
 line is answered with "ok" once done: a test drives the pad as it goes, from
 one server Dolphin stays connected to."""
-import socket, struct, sys, threading, time, zlib
+import argparse, socket, struct, sys, threading, time, zlib
 
-PORT = int(sys.argv[1])
-STEPS = None if sys.argv[2] == "-" else [s.strip() for s in sys.argv[2].split(";") if s.strip()]
 UID = 0x48424352  # 'HBCR'
 
 state = {"buttons": set(), "rx": 0.0, "ry": 0.0}
@@ -60,13 +58,10 @@ def pad_data():
     return message(0x100002, body)
 
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(("127.0.0.1", PORT))
-sock.settimeout(0.01)
 done = threading.Event()
 
 
-def serve():
+def serve(sock):
     next_send = 0.0
     while not done.is_set():
         try:
@@ -98,8 +93,6 @@ def serve():
                 sock.sendto(msg, a)
 
 
-t = threading.Thread(target=serve, daemon=True)
-t.start()
 def run(step):
     word = step.split()
     if word[0] == "wait":
@@ -121,14 +114,40 @@ def run(step):
     print(time.strftime("%H:%M:%S"), step, "clients", len(clients), flush=True)
 
 
-if STEPS is None:
-    for line in sys.stdin:
-        for step in (s.strip() for s in line.split(";")):
-            if step:
-                run(step)
-        print("ok", flush=True)
-else:
-    for step in STEPS:
-        run(step)
-time.sleep(1)
-done.set()
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  python tools/dsu_pad.py 26760 "wait 2; press Cross; stick 1 0; wait 1"
+  printf 'press PS\\n' | python tools/dsu_pad.py 26760 -
+
+exit codes: 0 all steps ran; 2 bad usage (argparse's own).
+A malformed step or a port that cannot be bound ends with a Python traceback
+(exit 1).""")
+    ap.add_argument("port", type=int, help="UDP port on 127.0.0.1 that Dolphin's DSU client uses")
+    ap.add_argument("steps", metavar="SCRIPT",
+                    help='steps separated by ";", or "-" to read them from stdin')
+    args = ap.parse_args(argv)
+    steps = None if args.steps == "-" else [s.strip() for s in args.steps.split(";") if s.strip()]
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", args.port))
+    sock.settimeout(0.01)
+    t = threading.Thread(target=serve, args=(sock,), daemon=True)
+    t.start()
+    if steps is None:
+        for line in sys.stdin:
+            for step in (s.strip() for s in line.split(";")):
+                if step:
+                    run(step)
+            print("ok", flush=True)
+    else:
+        for step in steps:
+            run(step)
+    time.sleep(1)
+    done.set()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
