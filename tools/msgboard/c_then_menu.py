@@ -10,7 +10,7 @@ here = pathlib.Path(__file__).parent
 sys.path.insert(0, str(here))
 import cdb_log  # noqa: E402
 
-BASE = pathlib.Path("C:/Users/Monty Perrotti/Documents/hbc-dolphin-sysmenu")
+BASE = pathlib.Path.home() / "Documents" / "hbc-dolphin-sysmenu"
 VFF = BASE / "user/Wii/title/00000001/00000002/data/cdb.vff"
 CC = os.environ.get("CC") or shutil.which("clang") or shutil.which("gcc") or shutil.which("cc")
 day = sys.argv[1]

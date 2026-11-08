@@ -658,8 +658,14 @@ has the sources.
 
 | Part | Version | History |
 | --- | --- | --- |
-| `mii.h`, `mii.c` (`MII_VERSION`) | 1.1.0, as of HBC 1.10.13 | First shipped with HBC 1.10.11 ([CHANGELOG.md](../../CHANGELOG.md)); proven on a real Wii Remote in 1.10.12; audited in 1.10.13. |
+| `mii.h`, `mii.c` (`MII_VERSION`) | 1.1.1 | First shipped with HBC 1.10.11 ([CHANGELOG.md](../../CHANGELOG.md)) and proven on a real Wii Remote in 1.10.12; `MII_VERSION` began at 1.1.0 with the 1.10.13 audit; 1.1.1 (HBC 1.11.0): after a failed MAC lookup (`MII_E_IO`) the next call asks again at once instead of keeping the failure. |
 | `miidraw.h` and the drawing files (`MIIDRAW_VERSION`) | 1.5.1 | See below. |
+
+The two parts have their own version numbers. "sdk/mii 2.0" in the
+changelog (HBC 1.11.2 and 1.11.3) is the name of the plan for the next
+drawing API, [docs/mii-sdk-2.md](../../docs/mii-sdk-2.md), not a release: its
+first steps shipped as drawing versions 1.1.0 to 1.5.1, and the 2.0 API itself
+is not started.
 
 The drawing code first shipped with HBC 1.10.21. Its history, from
 `miidraw.h`:

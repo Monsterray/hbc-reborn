@@ -33,7 +33,7 @@ CFLAGS += -I<hbc-reborn>/sdk/mboard -I<hbc-reborn>/sdk/hbc_netlog
 
 `hbc_agent.h` and `hbc_netlog.h` used to sit directly in `sdk/`. They moved into
 their folders in November 2026; forwarding headers at the old paths keep
-`-I<hbc-reborn>/sdk` builds working until a later release removes them.
+`-I<hbc-reborn>/sdk` builds working until HBC 1.16.0, which deletes them. A build that still uses them prints a note saying what to change.
 
 ## Licences
 

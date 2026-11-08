@@ -20,7 +20,7 @@ same with AHBPROT read as closed) runs one, only with someone at the Wii
 guard against a reset loop): wait that long between reset runs, or the run
 ends in the stub instead.
 
-    python C:/tools/wii-bench/wiibench.py add --wii devwii --name "way out" \\
+    python "$(python tools/wii_paths.py wii_bench)" add --wii devwii --name "way out" \\
         --cwd <this tree> -- <python> tests/wii_way_out.py
 """
 
@@ -38,7 +38,11 @@ import hbc  # noqa: E402
 from wii_agent_safety import APP  # noqa: E402
 
 PRODUCTION = {"192.168.8.200", "192.168.8.243"}
-WIICAP = pathlib.Path("C:/tools/wii-capture/wiicap.py")
+import wii_paths  # noqa: E402
+try:
+    WIICAP = wii_paths.wiicap()             # $WIICAP or ~/.wii-paths.json
+except wii_paths.NotFound:
+    WIICAP = pathlib.Path("")               # no capture card here: no video
 CASES = {
     0: ("es_launch", ["IOS closed all 32 descriptors", "HBC through ES"]),
     17: ("es_launch", ["no reply to the close of fd 3", "HBC through ES"]),

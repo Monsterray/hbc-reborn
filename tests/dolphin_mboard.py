@@ -45,7 +45,10 @@ import vffread  # noqa: E402
 DOCS = pathlib.Path(os.path.expanduser("~")) / "Documents"
 BASE = DOCS / "hbc-dolphin-sysmenu" / "user"
 PROFILE = DOCS / "mboard-dolphin" / "user"
-DOLPHIN = r"C:\tools\Dolphin-x64\Dolphin.exe"
+def find_dolphin():
+    """Dolphin as tools/wii_paths.py finds it ($DOLPHIN, ~/.wii-paths.json, PATH)."""
+    import dolphin_smoke
+    return dolphin_smoke.find_dolphin()
 APP = root / "tests" / "mboard_app" / "mboard_app_dolphin.dol"
 NANDPUT = root / "tests" / "nandput" / "nandput.dol"
 NAND = PROFILE / "Wii"
@@ -162,7 +165,7 @@ def dolphin(boot, rtc, seconds, pad=None, extra=()):
     saves its NAND), killed only if that hangs. Returns the log's new part."""
     log = PROFILE / "Logs" / "dolphin.log"
     start = log.stat().st_size if log.exists() else 0
-    args = [DOLPHIN, "-b", "-u", str(PROFILE)]
+    args = [find_dolphin(), "-b", "-u", str(PROFILE)]
     for s in SETTINGS + list(extra) + [f"Dolphin.Core.CustomRTCValue={calendar.timegm(time.strptime(rtc, '%Y-%m-%dT%H:%M'))}"]:
         args += ["-C", s]
     args += boot

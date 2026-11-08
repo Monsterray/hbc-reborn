@@ -68,7 +68,17 @@ PY = sys.executable
 HBC = str(root / "tools" / "hbc.py")
 NANDGET = root / "tests" / "nandget" / "nandget.dol"
 APP = root / "tests" / "mboard_app" / "mboard_app.dol"
-CAPTURE = "C:/tools/wii-capture/wiicap.py"
+def _wiicap():
+    """The capture card's wiicap.py ($WIICAP or ~/.wii-paths.json), or None."""
+    sys.path.insert(0, str(root / "tools"))
+    import wii_paths
+    try:
+        return str(wii_paths.wiicap())
+    except wii_paths.NotFound:
+        return None
+
+
+CAPTURE = _wiicap()
 SD_BAK = "sd:/mbbak_"  # + the folder name: nandget makes one folder level only
 WC24 = ("/shared2/wc24", "wc24", False)
 MBOX = ("/shared2/wc24/mbox", "mbox", False)
@@ -101,7 +111,9 @@ def answers():
 
 def still(out, label):
     """A picture of the TV, through the capture card (only meaningful while
-    this job holds the Wii)."""
+    this job holds the Wii). Skipped on a workstation without the card."""
+    if not CAPTURE:
+        return
     subprocess.run([PY, CAPTURE, "still", "--preset", "wii", "--out", str(out / f"{label}.png")],
                    capture_output=True)
 

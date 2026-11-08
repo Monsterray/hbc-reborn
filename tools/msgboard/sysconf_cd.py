@@ -3,7 +3,7 @@ An entry is a header byte ((type << 5) | (name length - 1)), the name, then
 the value; ByteBool (type 7) has a 1-byte value."""
 import pathlib
 
-p = pathlib.Path("C:/Users/Monty Perrotti/Documents/hbc-dolphin-sysmenu/user/Wii/shared2/sys/SYSCONF")
+p = pathlib.Path.home() / "Documents/hbc-dolphin-sysmenu/user/Wii/shared2/sys/SYSCONF"
 d = bytearray(p.read_bytes())
 assert d[:4] == b"SCv0", d[:4]
 for name in (b"IPL.CD", b"IPL.CD2"):

@@ -34,13 +34,12 @@ import time
 
 root = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tests"))
-from dolphin_mboard import test_mii  # noqa: E402
+from dolphin_mboard import find_dolphin, test_mii  # noqa: E402
 
 DOCS = pathlib.Path(os.path.expanduser("~")) / "Documents"
 HOME = DOCS / "mii-dolphin"
 PROFILE = HOME / "user"
 SYNC = HOME / "sdsync"
-DOLPHIN = r"C:\tools\Dolphin-x64\Dolphin.exe"
 APP = root / "tests" / "mii_app" / "mii_app.dol"
 DB = PROFILE / "Wii" / "shared2" / "menu" / "FaceLib" / "RFL_DB.dat"
 SIZE, CRC_AT, HDATA = 0xBE6C0, 0x1F1DE, 0x1F1E0
@@ -72,7 +71,7 @@ def run(*args, seconds=120):
     result = SYNC / "mii_test" / "result.txt"
     if result.exists():
         result.unlink()
-    cmd = [DOLPHIN, "-b", "-u", str(PROFILE)]
+    cmd = [find_dolphin(), "-b", "-u", str(PROFILE)]
     for s in SETTINGS:
         cmd += ["-C", s]
     proc = subprocess.Popen(cmd + ["-e", str(APP)])

@@ -57,7 +57,7 @@
 extern "C" {
 #endif
 
-#define MII_VERSION "1.1.0"      /* sdk/mii, as of HBC 1.10.13 */
+#define MII_VERSION "1.1.1"      /* sdk/mii's data API; 1.1.1 (HBC 1.11.0): a failed MAC lookup is asked again */
 
 enum {
 	MII_OK = 0,

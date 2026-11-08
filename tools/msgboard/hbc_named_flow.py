@@ -13,7 +13,7 @@ sys.path.insert(0, str(root / "tests"))
 import hbc  # noqa: E402
 import dolphin_smoke  # noqa: E402
 
-BASE = pathlib.Path("C:/Users/Monty Perrotti/Documents/hbc-dolphin-sysmenu")
+BASE = pathlib.Path.home() / "Documents" / "hbc-dolphin-sysmenu"
 VFF = BASE / "user/Wii/title/00000001/00000002/data/cdb.vff"
 day = sys.argv[1]
 # Another Dolphin (WiiStation's, say) on this PC answers on the same address:

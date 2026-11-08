@@ -163,7 +163,7 @@ bytes `m.face` takes.
 
 | Part | What changes | How long it lasts |
 | --- | --- | --- |
-| Posting | Writes into this Wii's WiiConnect24 receive box, as a game's message to its own Wii is delivered. The Wii Menu files it on the board the next time it starts. | For good, until the user deletes the message. |
+| Posting | Writes into this Wii's WiiConnect24 receive box, as a game's message to its own Wii is delivered. The Wii Menu files it on the board the next time it starts. | On the board like any other message; the library itself never deletes one (`mboard.c`), and a full receive box refuses the post rather than dropping old mail. |
 | Sending | Writes into the send box and asks KD (IOS's WiiConnect24 service) to upload it now. | Until KD has sent it. |
 | Play history | Writes the Wii Menu's own `cdb.vff`. IOS's NAND permission check is lifted for the write and put back. Needs AHBPROT. | For good. |
 | Address Book | Reads and edits `/shared2/wc24/nwc24fl.bin`, with KD paused around the file. | For good. |

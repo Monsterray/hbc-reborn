@@ -4,7 +4,7 @@ START_MIN_AGO END_MIN_AGO` writes a valid play_rec.dat; `diff A B` lists the
 changed byte ranges between two snapshots, with a hex dump of each."""
 import pathlib, shutil, struct, sys, time
 
-BASE = pathlib.Path("C:/Users/Monty Perrotti/Documents/hbc-dolphin-sysmenu")
+BASE = pathlib.Path.home() / "Documents" / "hbc-dolphin-sysmenu"
 DATA = BASE / "user/Wii/title/00000001/00000002/data"
 SNAPS = BASE / "snaps"
 TICKS = 60750000

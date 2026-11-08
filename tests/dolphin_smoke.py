@@ -21,7 +21,8 @@ stub with its own HBReload hook; with --devnet the run then requires the
 installed channel to come back after netlog_app exits.
 
 usage: tests/dolphin_smoke.py [--devnet] [--agent] [DOL-or-WAD] [seconds]
-Set DOLPHIN to the Dolphin executable if it is not in a standard location.
+Dolphin is found by tools/wii_paths.py: set DOLPHIN, or name it once in
+~/.wii-paths.json, if it is not on PATH or in the standard install.
 
 Each run's profile (a copy of the NAND, about 500 MB) is deleted when the
 script exits, whether the run passes or fails. HBC_KEEP_PROFILE=1 keeps it
@@ -107,18 +108,16 @@ SD_SETTINGS = [
 
 
 def find_dolphin():
-    if os.environ.get("DOLPHIN"):
-        return os.environ["DOLPHIN"]
-    candidates = {
-        "Windows": [r"C:\tools\Dolphin-x64\Dolphin.exe",
-                    r"C:\Program Files\Dolphin\Dolphin.exe"],
-        "Darwin": ["/Applications/Dolphin.app"],
-    }.get(platform.system(), [])
-    candidates += [shutil.which("dolphin-emu") or ""]
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    raise SystemExit("Dolphin not found; set DOLPHIN to its executable")
+    """Dolphin as tools/wii_paths.py finds it: $DOLPHIN, ~/.wii-paths.json, PATH, the
+    standard install. On macOS the app bundle is run through `open`."""
+    import wii_paths
+    if (platform.system() == "Darwin" and not wii_paths._env_path("DOLPHIN")
+            and os.path.exists("/Applications/Dolphin.app")):
+        return "/Applications/Dolphin.app"
+    try:
+        return str(wii_paths.dolphin())
+    except wii_paths.NotFound as e:
+        raise SystemExit(str(e))
 
 
 def host_address():

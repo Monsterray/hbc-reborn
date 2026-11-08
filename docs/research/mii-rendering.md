@@ -335,7 +335,7 @@ RFL has no body (section 1.5). What games do:
   `ImageDownloader.java`, presumably from an online renderer (not checked).
   RFL_Res.dat Editor by Atlas (Windows, mkwiiki) edits head models and
   textures. "RFL_Res Web" by Gab is listed on the same page.
-- **Dolphin** (`C:\projects\dolphin-src`): Mii code only copies `RFL_DB.dat`
+- **Dolphin** (a `dolphin-src` checkout): Mii code only copies `RFL_DB.dat`
   (`Source/Core/Core/WiiRoot.cpp`, `NetPlayClient.cpp`, `NetPlayServer.cpp`,
   `Common/NandPaths.cpp`) and checks it (`WiiUtils.cpp` `CheckNAND`). It does
   not render Miis; games do that through RFL on the emulated GPU.
@@ -535,10 +535,10 @@ Successors and renderers:
 
 Local:
 
-- `C:\projects\dolphin-src\Source\Core\Core\WiiRoot.cpp`, `WiiUtils.cpp`,
+- Dolphin's `Source/Core/Core/WiiRoot.cpp`, `WiiUtils.cpp`,
   `NetPlayClient.cpp`, `NetPlayServer.cpp`,
   `Source\Core\Common\NandPaths.cpp`.
-- `C:\projects\libogc3-src\gc\ogc\es.h` (`ES_OpenTitleContent`,
+- libogc's `gc/ogc/es.h` (`ES_OpenTitleContent`,
   `ES_ReadContent`, `ES_SeekContent`, `ES_GetTicketViews`,
   `ES_GetStoredTMD`).
 - `channel/channelapp/source/gfx.c` (the HBC's EFB pixel format).

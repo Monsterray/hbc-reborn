@@ -3,9 +3,11 @@
 Dolphin started here is stopped. Lists the Wii Menu's NAND data folder after."""
 import pathlib, subprocess, sys, time
 
-BASE = pathlib.Path("C:/Users/Monty Perrotti/Documents/hbc-dolphin-sysmenu")
+BASE = pathlib.Path.home() / "Documents" / "hbc-dolphin-sysmenu"
 USER = BASE / "user"
-DOLPHIN = r"C:\tools\Dolphin-x64\Dolphin.exe"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import wii_paths  # noqa: E402
+DOLPHIN = str(wii_paths.dolphin())   # $DOLPHIN, ~/.wii-paths.json, PATH
 SETTINGS = ["Dolphin.Interface.ConfirmStop=False", "Dolphin.Interface.UsePanicHandlers=False",
             "Dolphin.Analytics.PermissionAsked=True", "Dolphin.Analytics.Enabled=False",
             "Dolphin.Core.CPUThread=True", "Logger.Options.WriteToFile=True",
