@@ -26,14 +26,6 @@ typedef struct {
 } meta_info;
 
 typedef struct {
-	char *version;
-	u64 date;
-	char *notes;
-	char *uri;
-	char *hash;
-} update_info;
-
-typedef struct {
 	int device;
 	int sort_order;
 	int browse_mode;
@@ -50,6 +42,9 @@ typedef struct {
 	char app_sel[64];
 	// The avatar's Mii, chosen in the Mii picker: its creation ID in hex.
 	char avatar_mii[17];
+	// Whether HBC asks GitHub for a newer release once the network is up
+	// (update.c); set in Options, on unless turned off.
+	int check_updates;
 } settings_t;
 
 typedef struct {
@@ -87,9 +82,6 @@ extern theme_t theme;
 
 meta_info *meta_parse(char *fn);
 void meta_free(meta_info *info);
-
-update_info *update_parse(char *buf);
-void update_free(update_info *info);
 
 bool settings_load(void);
 bool settings_save(void);

@@ -23,6 +23,7 @@ replacing it.
 | Wii Message Board: posts, mail to another Wii, play history (HBC's play log too) | [`sdk/mboard`](sdk/mboard) |
 | Miis: the data, the Mii database, a Wii Remote's Miis | [`sdk/mii`](sdk/mii) |
 | Wii Remote speaker driver | [`sdk/wiispk`](sdk/wiispk) |
+| Updating the channel from GitHub releases: HTTPS, the signed release, the WAD install | [`sdk/wiiupdate`](sdk/wiiupdate) |
 | Banner, WAD packaging, PyWii | [`channel/banner`](channel/banner), [`channel/title`](channel/title), [`pywii`](pywii) |
 | WiiPAX executable packer, host `wiiload` | [`wiipax`](wiipax), [`channel/wiiload`](channel/wiiload) |
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
@@ -30,6 +31,13 @@ replacing it.
 | Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
 | USB keyboard as a Wii Remote | [`channel/channelapp/source/keyboard.c`](channel/channelapp/source/keyboard.c), [`keymap.c`](channel/channelapp/source/keymap.c) |
 | Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
+
+The installed channel checks this repository's GitHub releases once the
+network is up, unless **Check for updates** is turned off in Options. When
+a newer release has a WAD and a signature made with the project's key
+(built into HBC), HBC asks, then downloads the WAD, checks the signature,
+installs it over itself and starts again; see
+[`sdk/wiiupdate`](sdk/wiiupdate) for how a release must be published.
 
 This code differs from the official HBC build, which adds protection
 features, and comes with no warranty. The installer is not included.
@@ -768,6 +776,8 @@ GNU General Public License, version 2 or later; see [COPYING](COPYING).
 [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h), [`sdk/mboard`](sdk/mboard) and
 [`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
 [`sdk/wiispk`](sdk/wiispk) and [`sdk/slotled`](sdk/slotled) are under the zlib
-licence. The agent library (`sdk/hbc_agent`) is built from HBC's own sources
-and is GPL. [`sdk/README.md`](sdk/README.md) lists every SDK with its licence
-and what it changes on the Wii.
+licence. The Mbed TLS copy in
+[`sdk/wiiupdate/mbedtls`](sdk/wiiupdate/mbedtls) is under Apache-2.0 or
+GPL-2.0-or-later. The agent library (`sdk/hbc_agent`) is built from HBC's own
+sources and is GPL. [`sdk/README.md`](sdk/README.md) lists every SDK with its
+licence and what it changes on the Wii.

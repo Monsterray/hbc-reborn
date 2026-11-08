@@ -285,14 +285,22 @@ def main():
                 check(ios == ios_reloaded, f"no options: the IOS HBC reloads to ({ios})")
                 print(f"  AHBPROT without ahb_access: {ahbprot}", flush=True)
 
+        # Options as drawn, with the update check's switch.
+        pad.send(f"stick 0 {OFF}; wait 1; press Square; wait 2")
+        pad.done()
+        shot(wii, out, "options")
+        pad.send("press Circle; wait 2")
+        pad.done()
+
         # The sorts, through Options (1) with the D-pad, the pointer away:
-        # up from Back to the sort row (Date), right for Custom; A; down to
-        # Back, left to Ok, A.
+        # up from Back past the update check's switch to the sort row (Date),
+        # right for Custom; A; down to Back, left to Ok, A.
         for sort, keys, expect in (
                 ("date", "", ["000-hbctest-meta-a", "000-hbctest-meta-b"]),
                 ("custom", "; press PadE; wait 0.5",
                  ["000-hbctest-meta-b", "000-hbctest-meta-c", "000-hbctest-meta-a"])):
-            pad.send(f"stick 0 {OFF}; wait 1; press Square; wait 2; press PadN; wait 0.5" + keys +
+            pad.send(f"stick 0 {OFF}; wait 1; press Square; wait 2; press PadN; wait 0.5"
+                     "; press PadN; wait 0.5" + keys +
                      "; press Cross; wait 0.5; press PadS; wait 0.5; press PadW; wait 0.5"
                      "; press Cross; wait 3")
             pad.done()

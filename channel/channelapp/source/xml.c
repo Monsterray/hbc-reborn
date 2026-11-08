@@ -353,57 +353,6 @@ void meta_free(meta_info *info) {
 	free(info);
 }
 
-update_info *update_parse(char *buf) {
-	mxml_node_t *root, *node;
-	const char *s;
-	update_info *res;
-
-	root = mxmlLoadString(NULL, buf, MXML_OPAQUE_CALLBACK);
-
-	if (!root) {
-		gprintf("error parsing update.xml!\n");
-		return NULL;
-	}
-
-	node = mxmlFindElement(root, root, "app", NULL, NULL, MXML_DESCEND_FIRST);
-
-	if (!node) {
-		gprintf("no app node for update.xml!'\n");
-		mxmlDelete(root);
-		return NULL;
-	}
-
-	res = (update_info *) pmalloc(sizeof(update_info));
-	memset(res, 0, sizeof(update_info));
-
-	res->version = _xmldup(_get_elem_cdata(node, "version"));
-
-	s = _get_elem_cdata(node, "date");
-	if (s) {
-		if (sscanf(s, "%llu", &res->date) != 1)
-			res->date = 0;
-	}
-
-	res->notes = _xmldup(_get_elem_cdata(node, "notes"));
-	res->uri = _xmldup(_get_elem_cdata(node, "uri"));
-	res->hash = _xmldup(_get_elem_cdata(node, "hash"));
-
-	mxmlDelete(root);
-
-	return res;
-}
-
-void update_free(update_info *info) {
-	if (!info)
-		return;
-
-	free(info->version);
-	free(info->notes);
-	free(info->uri);
-
-	free(info);
-}
-
 bool settings_load(void) {
 	s32 res;
 	u8 *buf;
@@ -422,6 +371,7 @@ bool settings_load(void) {
 	settings.net_hang_reload = 0;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
 	memset(settings.avatar_mii, 0, sizeof(settings.avatar_mii));
+	settings.check_updates = 1;
 
 	memcpy(&_loaded_settings, &settings, sizeof(settings_t));
 
@@ -488,6 +438,7 @@ bool settings_load(void) {
 	s = _get_elem_cdata(node, "avatar_mii");
 	if (s && strlen(s) == sizeof(settings.avatar_mii) - 1)
 		strcpy(settings.avatar_mii, s);
+	settings.check_updates = _get_elem_int(node, "check_updates", 1) != 0;
 
 	mxmlDelete(root);
 
@@ -536,6 +487,8 @@ bool settings_save(void) {
 	node = mxmlNewElement(data, "browse_mode");
 	mxmlNewInteger(node, settings.browse_mode);
 
+	node = mxmlNewElement(data, "check_updates");
+	mxmlNewInteger(node, settings.check_updates);
 	node = mxmlNewElement(data, "progress_arc");
 	mxmlNewInteger(node, settings.progress_arc);
 	node = mxmlNewElement(data, "edge_paging");

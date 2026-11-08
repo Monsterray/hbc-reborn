@@ -764,6 +764,57 @@ Everything since 1.12.1, released with both WADs (`OHBC` and `LULZ`):
   holds port 4299; `tests/wadinstall` installs a WAD from SD through ES;
   `tests/dolphin_exit_menu.py` drives HOME > Exit > System Menu.
 
+### 1.13.1: updates from GitHub releases (sdk/wiiupdate), signed
+
+libwiiupdate, rewritten into `sdk/wiiupdate` and built into the channel,
+in place of the old update code (`http.c`, `ecdsa.c`, `sha1.c` and the
+signed XML at a fixed URL, which had been switched off). A second attempt,
+after the first (1.12.11) was declined for what an updater has to be:
+
+- **Signed.** A release carries `NAME.wad.sig` beside the WAD, ECDSA P-256
+  over SHA-256 (`tools/wadsign.py`), checked against `UPDATE_PUBLIC_KEY` in
+  `config.h` before anything is installed. TLS alone is not trusted with
+  what gets installed. The old code's SHA-1 and its 233-bit curve are not
+  kept: P-256 and SHA-256 are already in the mbedTLS this carries. The key
+  in `config.h` is all zeros until the project makes its own with
+  `wadsign.py keygen`; until then nothing installs.
+- **Title IDs.** `wad.c` refuses a WAD unless its ticket and its TMD both
+  carry the channel's title ID, and the version is newer, before ES sees
+  either.
+- **One place patches IOS.** The signature check's patch moved into
+  `nandperm.c` (`nand_sigcheck_lift()`), under the same lock and one shared
+  MEM2_PROT window as the play log's and the Mii faces' NAND permission
+  patch, which are counted together: MEM2_PROT goes back to its saved value
+  when the last patch of either kind is undone. The lift is only around the
+  install itself.
+- **Off switch and clean stop.** Options > *Check for updates* (on by
+  default, `check_updates` in `settings.xml`). A check or download is
+  cancelled and joined before an app launches and before HBC exits; an
+  install is waited for, not cut short.
+- **mbedTLS** is in its own commit, 3.6.7 unmodified (`mbedtls/VERSION`).
+
+- **Checked:** the DOL builds with `-Werror` and boots in Dolphin
+  (`tests/dolphin_smoke.py`). `tests/test_wiiupdate.py`: the release choice
+  (a release without a `.sig` is skipped), and `verify.c` built with the
+  vendored mbedTLS against signatures from `wadsign.py`: a good one is
+  taken; a changed WAD, a changed or short or long or zero signature,
+  another signer, the unset key, a point off the curve and a signature
+  without the domain prefix are refused. The Options dialog with the new
+  row was looked at in Dolphin and the switch flips with A.
+  `tests/dolphin_meta.py` goes up one more row from Back to reach the sort
+  buttons; it needs the retail WAD (the common key) and was not run here.
+- **Not checked:** an end-to-end update. The previous attempt reached
+  Dolphin's `ES_AddTicket: -2011` on a fakesigned ticket (its ES checks
+  signatures and its IOS has nothing to patch), and nothing here changes
+  that. On a real Wii: that the lift finds both sites, the install, the
+  restart into the new version, and a launch during a check. MEM1 headroom
+  was not re-measured with this build (the earlier attempt: about 60 KiB
+  free with mbedTLS in, and `-fno-asynchronous-unwind-tables`, kept here).
+
+**Trigger:** before the key is set and a release is published for HBC to
+offer, run a bench job that installs an older build as the channel and lets
+it update, then one that launches an app during the check.
+
 ### libogc 3.2.1: back to 3.1.0 until a fixed release
 
 On 2026-10-28 the shared toolchain went to libogc 3.2.1 (with devkitPPC r51).

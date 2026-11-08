@@ -40,6 +40,7 @@ static const char *caption_options;
 static const char *caption_device;
 static const char *caption_device_names[DEVICE_COUNT];
 static const char *caption_sort_by;
+static const char *caption_check_updates, *caption_on, *caption_off;
 static const char *caption_sort_name;
 static const char *caption_sort_date;
 static const char *caption_sort_custom;
@@ -85,6 +86,9 @@ void dialogs_theme_reinit (void) {
 	caption_device_names[3] = _("SDGecko B");
 	caption_device_names[4] = _("USB 2");
 	caption_sort_by = _("Sort applications by:");
+	caption_check_updates = _("Check for updates:");
+	caption_on = _("On");
+	caption_off = _("Off");
 	caption_sort_name = _("Name");
 	caption_sort_date = _("Date");
 	caption_sort_custom = _("Custom");
@@ -538,7 +542,7 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // the two SDGecko slots on the second, in the theme's tiny buttons. Widget
 // DLG_DEV_FIRST + n is the n-th button here; dlg_devices[n] is its device
 // (appentry.c's order, which settings.xml stores).
-#define DLG_DEV_FIRST 7
+#define DLG_DEV_FIRST 8
 // Below them, one row per setting as in the HOME overlay: its label on the
 // left, a small button for each value on the right, the value in use bright.
 // The sort buttons, DLG_SORT_FIRST + an app_sort.
@@ -553,12 +557,15 @@ s8 show_message_timed (const view *sub_view, dialog_message_type type,
 // App badges, DLG_BADGE_FIRST + settings.new_badges.
 #define DLG_BADGE_FIRST (DLG_EDGE_FIRST + DLG_EDGES)
 #define DLG_BADGES 2
-#define DLG_SETTING_ROWS 4
-#define DLG_OK (DLG_BADGE_FIRST + DLG_BADGES)
+// The update check, DLG_UPD_FIRST + settings.check_updates.
+#define DLG_UPD_FIRST (DLG_BADGE_FIRST + DLG_BADGES)
+#define DLG_UPDS 2
+#define DLG_SETTING_ROWS 5
+#define DLG_OK (DLG_UPD_FIRST + DLG_UPDS)
 // The row buttons are tiny buttons drawn at this size, this far apart: four
 // rows fit between the device buttons and Ok.
-#define DLG_SMALL_SCALE 0.6f
-#define DLG_SMALL_GAP 6
+#define DLG_SMALL_SCALE 0.5f
+#define DLG_SMALL_GAP 4
 #define DLG_BACK (DLG_OK + 1)
 #define DLG_WIDGETS (DLG_BACK + 1)
 
@@ -572,6 +579,7 @@ static const int dlg_rows[][3] = {
 	{ DLG_PROG_FIRST, DLG_PROG_FIRST + 1, -1 },
 	{ DLG_EDGE_FIRST, DLG_EDGE_FIRST + 1, -1 },
 	{ DLG_BADGE_FIRST, DLG_BADGE_FIRST + 1, -1 },
+	{ DLG_UPD_FIRST, DLG_UPD_FIRST + 1, -1 },
 	{ DLG_OK, DLG_BACK, -1 },
 };
 #define DLG_ROWS (int) (sizeof(dlg_rows) / sizeof(dlg_rows[0]))
@@ -656,6 +664,10 @@ static const char *dlg_focus_name(int focus) {
 		return "badges_off";
 	if (focus == DLG_BADGE_FIRST + 1)
 		return "badges_on";
+	if (focus == DLG_UPD_FIRST)
+		return "updates_off";
+	if (focus == DLG_UPD_FIRST + 1)
+		return "updates_on";
 	if (focus == DLG_OK)
 		return "ok";
 	if (focus == DLG_BACK)
@@ -698,6 +710,12 @@ static void dlg_badge_captions(view *v, int badges) {
 	dlg_choice_captions(v, DLG_BADGE_FIRST, DLG_BADGES, badges, captions);
 }
 
+static void dlg_updates_captions(view *v, int on) {
+	static const char **captions[DLG_UPDS] = { &caption_off, &caption_on };
+
+	dlg_choice_captions(v, DLG_UPD_FIRST, DLG_UPDS, on, captions);
+}
+
 dialog_options_result show_options_dialog(const view *sub_view) {
 	u32 frame = 0;
 	view *v;
@@ -713,14 +731,15 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	// The setting rows: buttons right-aligned to the device rows' edge, each
 	// label in what is left of its row.
 	u16 stw = tw * DLG_SMALL_SCALE, sth = th * DLG_SMALL_SCALE;
-	u16 step = sth + DLG_SMALL_GAP, sort_y = row2 + th + 8, right = dw - gap;
+	u16 step = sth + DLG_SMALL_GAP, sort_y = row2 + th + 4, right = dw - gap;
 	u16 label_w = right - 3 * stw - 2 * DLG_SMALL_GAP - 32 - 8;
 	static const int row_first[DLG_SETTING_ROWS] = {
-		DLG_SORT_FIRST, DLG_PROG_FIRST, DLG_EDGE_FIRST, DLG_BADGE_FIRST
+		DLG_SORT_FIRST, DLG_PROG_FIRST, DLG_EDGE_FIRST, DLG_BADGE_FIRST, DLG_UPD_FIRST
 	};
-	static const int row_count[DLG_SETTING_ROWS] = { DLG_SORTS, DLG_PROGS, DLG_EDGES, DLG_BADGES };
+	static const int row_count[DLG_SETTING_ROWS] = { DLG_SORTS, DLG_PROGS, DLG_EDGES, DLG_BADGES, DLG_UPDS };
 	const char *row_label[DLG_SETTING_ROWS] = {
-		caption_sort_by, caption_progress, caption_edges, caption_badges
+		caption_sort_by, caption_progress, caption_edges, caption_badges,
+		caption_check_updates
 	};
 	int r;
 
@@ -774,6 +793,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	ret.progress_arc = settings.progress_arc;
 	ret.edge_paging = settings.edge_paging;
 	ret.new_badges = settings.new_badges;
+	ret.check_updates = settings.check_updates;
 
 	for (i = 0; i < DEVICE_COUNT; ++i) {
 		widget_button_set_caption(&v->widgets[DLG_DEV_FIRST + i],
@@ -786,6 +806,7 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 	dlg_progress_captions(v, ret.progress_arc);
 	dlg_edge_captions(v, ret.edge_paging);
 	dlg_badge_captions(v, ret.new_badges);
+	dlg_updates_captions(v, ret.check_updates);
 
 	view_set_focus (v, DLG_BACK);
 
@@ -845,6 +866,10 @@ dialog_options_result show_options_dialog(const view *sub_view) {
 					(v->focus < DLG_BADGE_FIRST + DLG_BADGES)) {
 				ret.new_badges = v->focus - DLG_BADGE_FIRST;
 				dlg_badge_captions(v, ret.new_badges);
+			} else if ((v->focus >= DLG_UPD_FIRST) &&
+					(v->focus < DLG_UPD_FIRST + DLG_UPDS)) {
+				ret.check_updates = v->focus - DLG_UPD_FIRST;
+				dlg_updates_captions(v, ret.check_updates);
 			} else if ((v->focus == DLG_OK) || (v->focus == DLG_BACK)) {
 				break;
 			}
