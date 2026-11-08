@@ -54,6 +54,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`test_wiibench.py`](host/test_wiibench.py) | Check tools/wii-bench/wiibench.py's queue handling without a Wii. |
 | [`test_wiispk.py`](host/test_wiispk.py) | Build sdk/wiispk on the host and check its WAV reader, resampler and ADPCM encoder: a 44.1 kHz stereo WAV with a 1 kHz tone and a 4.6 kHz tone (which would fold onto 1.4 kHz at 6 kHz without the low-pass) must come out as 6 kHz mono with the 1 kHz tone kept, the 4.6 kHz one gone, and the encoder at least as good as libogc's. |
 | [`test_wiki.py`](host/test_wiki.py) | tools/wiki.py: every published doc exists, every link on every page works on the wiki (a page of its own, or a GitHub URL), and the sidebar lists every page. |
+| [`test_workstation_paths.py`](host/test_workstation_paths.py) | No paths of one workstation: no tracked text file names a project, tool or home folder of one PC (C:/projects/..., /c/tools/..., /mnt/c/..., a C:/Python3xx), so the project works on anyone's workstation. |
 | [`way_out_host/`](host/way_out_host/) | sdk/hbc_agent/way_out.c on a PC, against a model of the Wii's IPC registers and of IOS answering, or not: each scenario checks which way out the agent takes and what it notes. |
 | [`wiipax_section_bounds.c`](host/wiipax_section_bounds.c) | define main wiipax_tool_main include "../wiipax/client/main.c" undef main |
 | [`wiispk_host/`](host/wiispk_host/) | Host test for sdk/wiispk: loads a WAV, checks the resampler's low-pass, and measures the ADPCM encoder against two models of the speaker's decoder. |

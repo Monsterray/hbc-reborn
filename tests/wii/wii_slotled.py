@@ -28,7 +28,7 @@ as good as the person watching.
 
 usage: tests/wii/wii_slotled.py check | demo | ios [--first N] [--last N] | save N
                             | sysconf [--compare FILE] | install | fetch
-queue: wiibench.py add --wii devwii --name slotled-STEP --cwd REPO -- C:/Python312/python.exe tests/wii/wii_slotled.py STEP
+queue: wiibench.py add --wii devwii --name slotled-STEP --cwd REPO -- python tests/wii/wii_slotled.py STEP
 """
 
 import argparse

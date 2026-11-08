@@ -58,7 +58,7 @@
             read back and compared), then compare a new copy with it
 
 usage: tests/wii/wii_mii.py backup | check | draw [SLOT] | party [SECONDS [MAX]] | sizes [SECONDS] | add [--name NAME] | remove ID | edit ID FIELD=N... | hidden | remote-add ID | remote-remove ID | remote-rewrite | restore BACKUP_DIR
-queue: wiibench.py add --wii devwii --name mii-STEP --cwd REPO --timeout 1200 -- C:/Python312/python.exe tests/wii/wii_mii.py STEP
+queue: wiibench.py add --wii devwii --name mii-STEP --cwd REPO --timeout 1200 -- python tests/wii/wii_mii.py STEP
 """
 
 import binascii

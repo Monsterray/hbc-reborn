@@ -668,8 +668,8 @@ class ManageTest(unittest.TestCase):
 
     def test_default_names(self):
         n = self.wb.default_name
-        self.assertEqual(n(["C:/Python312/python.exe", "scripts/wii_install.py"]), "wii_install.py")
-        self.assertEqual(n(["C:/Python312/python.exe", "scripts/wii_lab.py", "fmt_hw", "x.txt"]), "wii_lab.py fmt_hw")
+        self.assertEqual(n(["C:/Program Files/Python312/python.exe", "scripts/wii_install.py"]), "wii_install.py")
+        self.assertEqual(n(["C:/Program Files/Python312/python.exe", "scripts/wii_lab.py", "fmt_hw", "x.txt"]), "wii_lab.py fmt_hw")
         self.assertEqual(n(["env", "A=1", "bash", ".dev/hardware_run.sh", "gpu"]), "hardware_run.sh gpu")
         self.assertEqual(n(["python", "-u", "tests/wii/wii_devnet.py", "--log-port", "4300"]), "wii_devnet.py")
         self.assertEqual(n(["python", "-c", "import sys;  print(1)"]), "python -c import sys; print(1)")

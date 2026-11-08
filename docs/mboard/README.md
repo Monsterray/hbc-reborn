@@ -610,7 +610,7 @@ Not yet tried on a Wii:
 To put it back:
 
     wiibench.py add --name mboard-restore --cwd REPO --timeout 2400 -- \
-      C:/Python312/python.exe tests/wii/wii_mboard.py restore BACKUP_DIR
+      python tests/wii/wii_mboard.py restore BACKUP_DIR
 
 That also undoes everything the Wii Menu has filed since. The restore ran in
 Dolphin (`--restore`); on the bench Wii it has not been needed.

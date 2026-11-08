@@ -45,7 +45,7 @@
            snapshot is compared with the backup.
 
 usage: tests/wii/wii_mboard.py backup | id | friends [--set SLOT NICK] | post | full | send WII [--board ARC] [--body TEXT] [--no-photo] [--minutes N] | board POST_RUN_DIR [--minutes N] [--full] [--already] | restore BACKUP_DIR
-queue: wiibench.py add --name mboard-STEP --cwd REPO --timeout 2400 -- C:/Python312/python.exe tests/wii/wii_mboard.py STEP
+queue: wiibench.py add --name mboard-STEP --cwd REPO --timeout 2400 -- python tests/wii/wii_mboard.py STEP
 """
 
 import base64

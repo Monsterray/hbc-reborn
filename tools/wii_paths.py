@@ -19,6 +19,12 @@ variable wins over the file.
 |             |                                        | C:/tools/wii-bench (Windows) or ~/.wii-bench, + /wiibench.py |
 | DOLPHIN     | the Dolphin executable                 | PATH (Dolphin, dolphin-emu), then the standard install       |
 | WIICAP      | the capture card's wiicap.py           | none: capture is skipped when unset                          |
+| PYTHON      | the Python for a project's scripts     | the Python running this file                                 |
+
+PYTHON is for shell scripts that need a Python with packages (Pillow, say)
+where `python` is not on PATH, as in devkitPro's MSYS2 shell. Any Python can
+ask: `PYTHON=$(py tools/wii_paths.py python)` on Windows (`py` is the Python
+launcher, on PATH even there), `python3 tools/wii_paths.py python` elsewhere.
 
 Usage from Python:
     import wii_paths
@@ -47,6 +53,23 @@ class NotFound(Exception):
     """A tool is not on this workstation; the message says how to point at it."""
 
 
+def _home():
+    """The user's home folder, or None.
+
+    devkitPro's MSYS2 login shell clears USERPROFILE, and then Path.home() fails
+    on Windows; the shell API still knows the profile folder."""
+    try:
+        return pathlib.Path.home()
+    except RuntimeError:
+        pass
+    if os.name == "nt":
+        import ctypes
+        buf = ctypes.create_unicode_buffer(1024)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x28, None, 0, buf) == 0:  # CSIDL_PROFILE
+            return pathlib.Path(buf.value)
+    return None
+
+
 def user_settings():
     """~/.wii-paths.json: this workstation's answers, for tools not on PATH.
 
@@ -54,7 +77,13 @@ def user_settings():
     It lives in the user's home, outside every project; an environment variable
     of the same name wins over it."""
     import json
-    p = pathlib.Path(os.environ.get("WII_PATHS_FILE") or pathlib.Path.home() / ".wii-paths.json")
+    p = os.environ.get("WII_PATHS_FILE")
+    if not p:
+        home = _home()
+        if home is None:
+            return {}
+        p = home / ".wii-paths.json"
+    p = pathlib.Path(p)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -93,7 +122,10 @@ def bench_home():
         return p
     if platform.system() == "Windows":
         return pathlib.Path("C:/tools/wii-bench")
-    return pathlib.Path.home() / ".wii-bench"
+    home = _home()
+    if home is None:
+        raise NotFound("no home folder for ~/.wii-bench: set WII_BENCH_HOME")
+    return home / ".wii-bench"
 
 
 def wii_bench():
@@ -140,8 +172,18 @@ def wiicap():
     return p
 
 
+def python():
+    """The Python for a project's scripts: $PYTHON, else the Python running this file."""
+    p = _env_path("PYTHON")
+    if p:
+        if not p.is_file():
+            raise NotFound(f"PYTHON={p} does not exist")
+        return p
+    return pathlib.Path(sys.executable)
+
+
 NAMES = {"hbc_reborn": hbc_reborn, "hbc_py": hbc_py, "bench_home": bench_home,
-         "wii_bench": wii_bench, "dolphin": dolphin, "wiicap": wiicap}
+         "wii_bench": wii_bench, "dolphin": dolphin, "wiicap": wiicap, "python": python}
 
 
 def main(argv=None):

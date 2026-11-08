@@ -1476,7 +1476,7 @@ def default_name(cmd):
 
 def job_command(cmd):
     """The command as the job runs it. On Windows a bare `bash` or `sh` is found on PATH as WSL's
-    /bin/bash, which cannot open C:/... paths or run C:/Python312/python.exe: 5 of 8 jobs that
+    /bin/bash, which cannot open C:/... paths or run a Windows python.exe: 5 of 8 jobs that
     failed to start between 2026-11-02 and 2026-11-05 died that way ("No such file or
     directory", exit 127). Those run Git Bash's instead."""
     import shutil
