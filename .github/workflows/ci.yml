@@ -1,7 +1,10 @@
 name: CI
 
+# Pushes run CI on master only: work in progress goes to develop, which runs
+# it on a pull request or by hand (workflow_dispatch).
 on:
   push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -54,6 +57,7 @@ jobs:
           make -C tests/launch_title EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C tests/membench EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C tests/mii_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
+          make -C tests/wpad_queue_app EXTRA_CFLAGS="$EXTRA_CFLAGS"
           make -C sdk/mii/example EXTRA_CFLAGS="$EXTRA_CFLAGS"
 
       - name: Build the banner

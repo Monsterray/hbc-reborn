@@ -27,11 +27,13 @@
 #include "avatar.h"
 #include "miipick.h"
 #include "miiplay.h"
+#include "dialogs.h"
 #include "controls.h"
 #include "tcp.h"
 #include "zmem.h"
 #include "usbmsd.h"
 #include "view.h"
+#include "xml.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../../../sdk/hbc_netlog.h"
@@ -49,6 +51,7 @@ static hbc_netlog_block kept;
 // The next Wiiload upload's name, from its sender (HBCA), and when it came.
 #define UPLOAD_NAME_TTL_S 120
 static char upload_name[64];
+static u16 upload_name_len;  // with the file after the name's NUL, if any
 static u32 upload_flags;
 static u64 upload_name_at;
 // What became of the last upload (HBCS "upload"), counted from 1.
@@ -265,6 +268,8 @@ static s32 status_json(char *buf, size_t size) {
 	n = grow(n, size, agent_overlay_cost_json(buf + n, size - n));
 	n = grow(n, size, agent_overlay_state(buf + n, size - n));
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style()));
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"net_hang\":\"%s\"",
+			settings.net_hang_reload ? "reload" : "wait"));
 	// The Wii's clock, the one file times (op L, S) come from.
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL)));
 	{
@@ -284,6 +289,7 @@ static s32 status_json(char *buf, size_t size) {
 	}
 	n = grow(n, size, miipick_status_json(buf + n, size - n));
 	n = grow(n, size, miiplay_status_json(buf + n, size - n));
+	n = grow(n, size, dialogs_options_json(buf + n, size - n));
 	_CPU_ISR_Disable(level);
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"app_list\":{%s,\"slides\":%u,\"reloads\":%u}",
 				  app_list[0] ? app_list : "\"sort\":null,\"order\":[]",
@@ -477,6 +483,19 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		return true;
 	}
 
+	// HBCR: header byte 4, 'r' or 'w': what a hung network cleanup does,
+	// reload the channel or wait for the next start (`hbc.py net-hang`).
+	// Saved with the other settings when HBC exits or launches an app.
+	if (!memcmp(hdr, "HBCR", 4)) {
+		if (hdr[4] != 'r' && hdr[4] != 'w') {
+			devfile_reply(s, -EINVAL, NULL, 0);
+			return true;
+		}
+		settings.net_hang_reload = hdr[4] == 'r';
+		devfile_reply(s, 0, NULL, 0);
+		return true;
+	}
+
 	if (!memcmp(hdr, "HBCT", 4)) {
 		char style[13];
 
@@ -510,6 +529,8 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		// The name of the Wiiload upload that follows, for the Message
 		// Board's play log: hbc.py sends the app's folder or file name.
 		// Flags (protocol 6): DEVNET_UPLOAD_YES installs a ZIP unasked.
+		// A NUL and the file may follow the name, for the receive dialog;
+		// an older HBC keeps it but reads only the name.
 		char name[sizeof(upload_name)];
 		u16 len = get_u16(hdr + 4), flags = get_u16(hdr + 6);
 		u32 level;
@@ -522,6 +543,7 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		name[len] = 0;
 		_CPU_ISR_Disable(level);
 		memcpy(upload_name, name, len + 1);
+		upload_name_len = len;
 		upload_flags = flags;
 		upload_name_at = gettime();
 		_CPU_ISR_Restore(level);
@@ -570,6 +592,10 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	}
 
 	return false;
+}
+
+const hbc_crash_block *devnet_crash_taken(void) {
+	return have_crash ? &crash : NULL;
 }
 
 void devnet_early_init(void) {
@@ -642,6 +668,23 @@ bool devnet_take_upload_name(char *out, size_t size) {
 	if (have)
 		strlcpy(out, upload_name, size);
 	upload_name[0] = 0;
+	_CPU_ISR_Restore(level);
+	return have;
+}
+
+bool devnet_upload_caption(char *out, size_t size) {
+	bool have;
+	u32 level;
+	size_t n;
+
+	_CPU_ISR_Disable(level);
+	have = upload_name[0] && upload_name_at &&
+			diff_sec(upload_name_at, gettime()) < UPLOAD_NAME_TTL_S;
+	if (have) {
+		n = strlen(upload_name);
+		strlcpy(out, n + 1 < upload_name_len ? upload_name + n + 1 : upload_name,
+				size);
+	}
 	_CPU_ISR_Restore(level);
 	return have;
 }

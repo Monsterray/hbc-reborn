@@ -251,7 +251,7 @@ static void run_with_progress(view *sub_view, void *(*func)(void *), bool downlo
 						 step_total / 1024);
 			else
 				snprintf(caption, sizeof(caption), "%s", _("Installing Update"));
-			v = dialog_progress(sub_view, caption, step_total);
+			v = dialog_progress(sub_view, caption, NULL, step_total);
 			dialog_fade(v, true);
 		}
 		if (v)

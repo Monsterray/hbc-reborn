@@ -29,6 +29,16 @@ typedef struct {
 	int device;
 	int sort_order;
 	int browse_mode;
+	// Options: Transfer progress. 0 is the percentage, 1 a circle.
+	int progress_arc;
+	// Options: at the grid's edge. 0 wraps to the next row, 1 turns the page.
+	int edge_paging;
+	int new_badges;
+	// HOME > Controller settings > Sideways remote, kept here (home.c).
+	int sideways_remotes;
+	// A hung network cleanup reloads the channel (netrecovery.h) instead of
+	// leaving the network off: developers only, `hbc.py net-hang`, no menu.
+	int net_hang_reload;
 	char app_sel[64];
 	// The avatar's Mii, chosen in the Mii picker: its creation ID in hex.
 	char avatar_mii[17];
@@ -53,8 +63,14 @@ typedef enum {
 	TLANG_ZH = 0x04,
 } theme_lang_t;
 
+// An app badge pill (widgets.c): its fill and its text, 0xRRGGBBAA.
+typedef struct {
+	u32 fill, text;
+} theme_badge_t;
+
 typedef struct {
 	theme_gradient_t progress;
+	theme_badge_t badge_new, badge_updated;
 	char *description;
 	theme_font_t default_font;
 	theme_font_t fonts[FONT_MAX];

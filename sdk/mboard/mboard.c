@@ -1878,6 +1878,12 @@ int mboard_mii(int slot, uint8_t face[MBOARD_FACE_SIZE]) {
 
 static const u8 perm_check[] = { 0x42, 0x8B, 0xD0, 0x01, 0x25, 0x66 };
 
+#define MEM2_PROT 0x0D8B420A
+// MEM2_PROT before the patch, put back with the check: left at 2 (the PPC may
+// write IOS's memory) it outlives the app until IOS reloads, and the Homebrew
+// Channel then hangs on its next run (see the channel's nandperm.c).
+static u16 mem2_prot;
+
 static int ahbprot(void) {
 	return read32(0x0d800064) == 0xffffffff;
 }
@@ -1889,7 +1895,9 @@ static int fs_permissions(int lifted) {
 
 	if (!ahbprot() || (u32) p < 0x93000000 || (u32) p >= 0x94000000)
 		return 0;
-	write16(0x0D8B420A, 2);
+	if (lifted)
+		mem2_prot = read16(MEM2_PROT);
+	write16(MEM2_PROT, 2);
 	for (; p < end - sizeof(perm_check); ++p) {
 		if (p[0] == perm_check[0] && p[1] == perm_check[1] && p[2] == from &&
 				!memcmp(p + 3, perm_check + 3, sizeof(perm_check) - 3)) {
@@ -1899,6 +1907,10 @@ static int fs_permissions(int lifted) {
 			++n;
 		}
 	}
+	// Put back with the check, or now if the lift found nothing to patch (no
+	// fs_permissions(0) follows a lift that changed nothing).
+	if (!lifted || !n)
+		write16(MEM2_PROT, mem2_prot);
 	return n;
 }
 

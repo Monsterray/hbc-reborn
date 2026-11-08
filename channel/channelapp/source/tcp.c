@@ -103,11 +103,16 @@ s32 tcp_connect (char *host, u16 port) {
 
 s32 tcp_listen (u16 port, s32 backlog) {
 	s32 s, res;
+	u32 reuse = 1;
 	struct sockaddr_in sa;
 
 	s = tcp_socket ();
 	if (s < 0)
 		return s;
+
+	// Reopen the listener after a network restart or a channel reload while
+	// old connections are still in TIME_WAIT (Dolphin's host TCP too).
+	net_setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
 	memset(&sa, 0, sizeof (struct sockaddr_in));
 	sa.sin_family = PF_INET;

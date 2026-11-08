@@ -1,8 +1,8 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#define CHANNEL_VERSION_DATE 202611011800llu
-#define CHANNEL_VERSION_STR "1.13.1"
+#define CHANNEL_VERSION_DATE 202611051310llu
+#define CHANNEL_VERSION_STR "1.15.0"
 
 //#define DEBUG_APP
 //#define DEBUG_STUB
@@ -140,7 +140,9 @@ void memstats(int reset);
 #define ARGS_MAX_LEN 1024
 
 #define LD_TCP_PORT 4299
-#define LD_THREAD_STACKSIZE (1024 * 8)
+// A 16-level rm -r (op E, the deepest devfile allows) used 6344 bytes of 8 KB
+// on the bench Wii (1.14.16): 12 KB keeps a margin for libfat.
+#define LD_THREAD_STACKSIZE (1024 * 12)
 #define LD_THREAD_PRIO 48
 #define LD_TIMEOUT 3000
 // A request header must arrive this soon after the connection is accepted.

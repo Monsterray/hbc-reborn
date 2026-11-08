@@ -85,6 +85,15 @@ KEYS
     b   bump a turn that waits for HBC: you brought the Wii back, so it probes now and
         starts after 2 s of quiet instead of 20 (no y: it changes nothing if HBC is not there)
     g   give up waiting for a frozen Wii to come back (its data is not saved)
+  The page shows the keys twice. At the top, a legend by group (SELECT, JOB, WII, FREEZE): a key is
+  bold and its colour says what it does (cyan moves, green is safe, yellow changes a setting, red
+  cancels work; red and yellow ask y first). On the last row, a bar lists only the keys that apply
+  to the selection; the others are dim (job keys for a Wii, Wii keys for a job).
+  The WIIS table at the top of the manage page is selectable the same way: select a Wii, then
+    t   pin it (only jobs added with --wii NAME run there) or unpin it (asks y first)
+    G   add it to a group (--wii GROUP then means any free Wii of the group): type the name,
+        Enter; a name with a - in front takes it out of that group; Esc leaves
+  The lease server keeps these changes (pool.json); queued jobs follow at once.
   Each asks y first. Another workstation's job is cancelled by its own
   dispatcher, through the lease server, within a few seconds.
 
@@ -349,7 +358,7 @@ monitor_prepare_header() {
 }
 
 header_line() {
-    printf -v V "${c_bold}${c_cyan}${MONITOR_HEADER_TITLE}${c_reset}  %s  %s ${c_gray}n/p cycle · q quit · %ss${c_reset}%s" \
+    printf -v V "${c_bold}${c_cyan}${MONITOR_HEADER_TITLE}${c_reset}  %s  %s ${c_bold}n/p${c_reset}${c_gray} cycle · ${c_reset}${c_bold}q${c_reset}${c_gray} quit · %ss${c_reset}%s" \
         "$MONITOR_HEADER_TS" "$MONITOR_TABS_RENDERED" "$REFRESH" "${1:-}"
     lines+=("$V")
 }
@@ -361,7 +370,7 @@ many_wiis() { (( ${KV[wiis_n]:-1} > 1 )); }
 WF_NAME=0 WF_IP=1 WF_STATE=2 WF_LINE=3 WF_RANK=4 WF_TAKES=5 WF_LOGPORT=6 WF_FOR=7 WF_JOB=8 WF_JOBID=9
 WF_WHO=10 WF_ELAPSED=11 WF_TIMEOUT=12 WF_DETAIL=13 WF_LEASE=14 WF_NEXT1=15 WF_NEXT2=16 WF_MORE=17
 WF_LASTMARK=18 WF_LASTNAME=19 WF_LASTEXIT=20 WF_LASTHBC=21 WF_LASTAGO=22 WF_WIN=23 WF_WINJOBS=24
-WF_WINFAILED=25 WF_WINBUSY=26 WF_MED=27 WF_NARROW=28 WF_PINNED=29
+WF_WINFAILED=25 WF_WINBUSY=26 WF_MED=27 WF_NARROW=28 WF_PINNED=29 WF_GROUPS=30 WF_LACKS=31
 
 # f <index> -- sets V to that field of the row in F ("-", the snapshot's empty, reads as empty)
 f() { V="${F[$1]:-}"; [ "$V" = "-" ] && V=""; :; }
@@ -858,16 +867,74 @@ SELECTED=""                                        # the selected job's id
 epoch() { printf -v EPOCH '%(%s)T' -1; }           # EPOCHSECONDS without bash 5
 declare -A MANAGE_AT                               # screen row -> job id, this frame
 CONFIRM=""; CONFIRM_ARGS=()                        # an action waiting for its y
+INPUT_WII=""; INPUT_BUF=""                         # a group name being typed for this Wii
 MSG=""; MSG_UNTIL=0                                # the last action's answer, shown a while
+
+# note COLOR TEXT -- the page's answer line(s): word-wrapped to the screen, at most 4 lines
+note() {
+    local l
+    wrap_words "$2" $(( COLS - 4 )) 4
+    for l in "${WRAP[@]}"; do lines+=("  $1${l}${c_reset}"); done
+}
+
+# The key legend. A key is bold and coloured by what it does: cyan moves, green is safe, yellow
+# changes a setting, red cancels work (every red and yellow key asks y first).
+# lk COLOR KEY TEXT -- appends "KEY TEXT" to LEG, the key lit; a dim COLOR (gray) dims both
+lk() {
+    if [ "$1" = "$c_gray" ]; then LEG+="${c_gray}$2 $3${c_reset}   "
+    else LEG+="${c_bold}$1$2${c_reset} $3   "; fi
+}
+legend_rows() {
+    local label
+    lines+=("  ${c_bold}${c_cyan}SELECT${c_reset}  click a row, or ${c_bold}${c_cyan}j${c_reset}/${c_bold}${c_cyan}k${c_reset} up and down")
+    LEG=""; lk "$c_red" c "cancel/stop it"; lk "$c_red" a "its agent's"; lk "$c_red" w "its workstation's"; lk "$c_red" X "all queued"
+    lines+=("  ${c_bold}${c_red}JOB   ${c_reset}  ${LEG}")
+    LEG=""; lk "$c_yellow" t "pin / unpin"; lk "$c_yellow" G "group (-name takes it out)"
+    lines+=("  ${c_bold}${c_yellow}WII   ${c_reset}  ${LEG}")
+    LEG=""; lk "$c_green" b "bump a wait for HBC"; lk "$c_yellow" g "give up a freeze wait"
+    lines+=("  ${c_bold}${c_green}FREEZE${c_reset}  ${LEG}")
+    lines+=("  ${c_gray}${c_bold}red${c_reset}${c_gray} cancels work · ${c_reset}${c_bold}${c_yellow}yellow${c_reset}${c_gray} changes a setting · ${c_reset}${c_bold}${c_green}green${c_reset}${c_gray} is safe · red and yellow ask y first${c_reset}")
+}
+
+# manage_footer -- the keys that apply to what is selected, lit; the others dim. Sets FOOT.
+manage_footer() {
+    local job=$c_gray wii=$c_gray freeze=$c_gray
+    LEG=""
+    if [ -n "$INPUT_WII" ]; then
+        lk "$c_green" Enter "adds it (-name takes it out)"; lk "$c_yellow" Esc "leaves"
+        FOOT="${c_bold}${c_yellow}GROUP FOR ${INPUT_WII}${c_reset}  ${LEG}"; return
+    elif [ -n "$CONFIRM" ]; then
+        lk "$c_green" y "do it"; lk "$c_yellow" "any other key" "leaves it"
+        FOOT="${c_bold}${c_yellow}ASKING${c_reset}  ${LEG}"; return
+    fi
+    if [ -z "$SELECTED" ]; then
+        lk "$c_cyan" "click a row" "or"; lk "$c_cyan" j/k "to select a job or a Wii"
+        FOOT="${c_bold}${c_cyan}NOTHING SELECTED${c_reset}  ${LEG}"; return
+    fi
+    if sel_wii; then
+        lk "$c_yellow" t "pin / unpin"; lk "$c_yellow" G "group"
+        lk "$c_gray" c "cancel"; lk "$c_gray" a "agent's"; lk "$c_gray" w "workstation's"; lk "$c_gray" b "bump"
+        FOOT="${c_bold}${c_yellow}WII ${SELECTED}${c_reset}  ${LEG}"
+    else
+        lk "$c_red" c "cancel/stop"; lk "$c_red" a "agent's"; lk "$c_red" w "workstation's"; lk "$c_red" X "all queued"
+        lk "$c_green" b "bump"
+        if [ -n "${KV[recovering_id]:-}" ]; then lk "$c_yellow" g "give up"; else lk "$c_gray" g "give up"; fi
+        lk "$c_gray" t "pin"; lk "$c_gray" G "group"
+        FOOT="${c_bold}${c_red}JOB ${SELECTED}${c_reset}  ${LEG}"
+    fi
+}
 
 render_manage() {
     local i fmt nm host color mark n="${NROWS[manage]:-0}" ids=() sel_ok=0
     MANAGE_AT=()
-    heading "$c_cyan" "MANAGE" "click a job or j/k to select; c cancel/stop it, a its agent's, w its workstation's, X all queued, b bump a wait for HBC, g give up a freeze wait" manage
-    if [ -n "$CONFIRM" ]; then
-        lines+=("  ${c_bold}${c_yellow}${CONFIRM}  y to do it, any other key to leave it${c_reset}")
+    heading "$c_cyan" "MANAGE" "" manage
+    legend_rows
+    if [ -n "$INPUT_WII" ]; then
+        note "${c_bold}${c_yellow}" "Group for ${INPUT_WII} (a name adds it, -name takes it out; Enter does it, Esc leaves): ${INPUT_BUF}_"
+    elif [ -n "$CONFIRM" ]; then
+        note "${c_bold}${c_yellow}" "${CONFIRM}  y to do it, any other key to leave it"
     elif epoch; [ -n "$MSG" ] && (( EPOCH < MSG_UNTIL )); then
-        lines+=("  ${c_green}${MSG}${c_reset}")
+        note "$c_green" "$MSG"
     else
         lines+=("")
     fi
@@ -876,9 +943,29 @@ render_manage() {
         lines+=("  ${c_red}This workstation keeps $which to save ${KV[recovering_name]}'s data after a freeze (${KV[recovering_for]}): reset or power-cycle it, or g to give up.${c_reset}")
     fi
     lines+=("")
+    local nw="${NROWS[wiis]:-0}" mode wcolor wgroups wlacks
+    if (( nw > 0 )); then                          # the Wiis: pin, unpin, groups (t, G)
+        heading "$c_cyan" "WIIS" "click one or j/k to select it" wiiset
+        printf -v fmt "%%1s %%-10s %%-15s %%-17s %%-22s %%-14s %%s"
+        table_header wiiset "$fmt" mark:' ' name:WII ip:ADDRESS mode:TAKES groups:GROUPS lacks:LACKS state:STATE
+        for (( i = 0; i < nw; i++ )); do
+            row_fields wiis "$i"; ids+=("${F[$WF_NAME]}")
+            [ "${F[$WF_NAME]}" = "$SELECTED" ] && sel_ok=1
+            mode="any job"; wcolor=""
+            [ "${F[$WF_PINNED]}" = yes ] && { mode="pinned jobs only"; wcolor="$c_yellow"; }
+            f $WF_GROUPS; wgroups="${V:--}"; f $WF_LACKS; wlacks="${V:--}"
+            mark=" "
+            if [ "${F[$WF_NAME]}" = "$SELECTED" ]; then mark=">"; wcolor=$'\e[7m'; fi
+            table_row "$fmt" "$wcolor" mark:"$mark" name:"${F[$WF_NAME]}" ip:"${F[$WF_IP]}" mode:"$mode" \
+                groups:"$wgroups" lacks:"$wlacks" state:"${F[$WF_STATE]}"
+            MANAGE_AT[$ROW_AT]="${F[$WF_NAME]}"
+        done
+        lines+=("")
+    fi
     if (( n == 0 )); then
         placeholder "nothing running or queued anywhere"
-        SELECTED=""
+        (( sel_ok )) || SELECTED=""
+        MANAGE_IDS=("${ids[@]}")
         return
     fi
     name_width $(( 2 + 1 + 8 + 1 + 4 + 1 + 16 + 1 + 22 + 1 + 12 + 1 + 14 + 1 + 8 + 2 ))
@@ -922,9 +1009,46 @@ manage_move() {                                    # j/k: the next or previous j
     [ "${MANAGE_IDS[$at]}" = "-" ] || SELECTED="${MANAGE_IDS[$at]}"
 }
 
+# sel_wii -- 0 if the selected row is a Wii (WSEL: its index among the wiis rows)
+sel_wii() {
+    local i
+    WSEL=-1
+    [ -n "$SELECTED" ] || return 1
+    for (( i = 0; i < ${NROWS[wiis]:-0}; i++ )); do
+        row_fields wiis "$i"
+        [ "${F[$WF_NAME]}" = "$SELECTED" ] && { WSEL=$i; return 0; }
+    done
+    return 1
+}
+
 # manage_key KEY -- 0 if the manage page took the key
 manage_key() {
-    local key="$1" state agent host
+    local key="$1" state agent host flag g
+    if [ -n "$INPUT_WII" ]; then                   # typing a group name: nothing else gets a key
+        case "$key" in
+            ENTER)
+                if [ -z "$INPUT_BUF" ]; then
+                    MSG="no group given"
+                else
+                    flag="--group"; g="$INPUT_BUF"
+                    if [ "${g:0:1}" = "-" ]; then flag="--ungroup"; g="${g:1}"; fi
+                    MSG="$("$PY" "$BENCH" wii "$INPUT_WII" "$flag" "$g" 2>&1 | tr '\n' ' ')"
+                fi
+                epoch; MSG_UNTIL=$(( EPOCH + 8 )); INPUT_WII=""; INPUT_BUF=""
+                collect ;;
+            ESC) MSG="left as it was"; epoch; MSG_UNTIL=$(( EPOCH + 3 )); INPUT_WII=""; INPUT_BUF="" ;;
+            $'\x7f'|$'\b') INPUT_BUF="${INPUT_BUF%?}" ;;
+            [[:alnum:]_-]) (( ${#INPUT_BUF} < 25 )) && INPUT_BUF+="$key" ;;
+        esac
+        return 0
+    fi
+    case "$key" in                                 # a Wii is selected: the job keys are not for it
+        c|a|w|b)
+            if sel_wii; then
+                MSG="$SELECTED is a Wii: t pins or unpins it, G adds it to a group"
+                epoch; MSG_UNTIL=$(( EPOCH + 5 )); return 0
+            fi ;;
+    esac
     if [ -n "$CONFIRM" ]; then                     # the answer to "...? y"
         if [ "$key" = "y" ] || [ "$key" = "Y" ]; then
             MSG="$("$PY" "$BENCH" "${CONFIRM_ARGS[@]}" 2>&1 | tr '\n' ' ')"
@@ -968,6 +1092,18 @@ manage_key() {
             fi
             epoch; MSG_UNTIL=$(( EPOCH + 6 ))
             collect ;;
+        t)
+            sel_wii || { MSG="select a Wii first (the WIIS table): click it, or j/k"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
+            row_fields wiis "$WSEL"
+            if [ "${F[$WF_PINNED]}" = yes ]; then
+                CONFIRM="Unpin ${F[$WF_NAME]}? Any job may run on it then."; CONFIRM_ARGS=(wii "${F[$WF_NAME]}" --unpin)
+            else
+                CONFIRM="Pin ${F[$WF_NAME]}? Only jobs added with --wii ${F[$WF_NAME]} will run on it."
+                CONFIRM_ARGS=(wii "${F[$WF_NAME]}" --pin)
+            fi ;;
+        G)
+            sel_wii || { MSG="select a Wii first (the WIIS table): click it, or j/k"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
+            INPUT_WII="$SELECTED"; INPUT_BUF="" ;;
         g)
             [ -n "${KV[recovering_id]:-}" ] || { MSG="no freeze being waited out here"; epoch; MSG_UNTIL=$(( EPOCH + 4 )); return 0; }
             CONFIRM="Give up waiting for the Wii to save ${KV[recovering_name]}'s data?"; CONFIRM_ARGS=(stop "${KV[recovering_id]}") ;;
@@ -983,7 +1119,7 @@ monitor_read_input() {
     MONITOR_INPUT_KEY=""; MONITOR_INPUT_COL=""; MONITOR_INPUT_ROW=""
     read -s -t "$timeout" -n 1 key || return 1
     if [ "$key" != $'\e' ]; then
-        MONITOR_INPUT_KEY="$key"
+        MONITOR_INPUT_KEY="${key:-ENTER}"          # read -n 1 gives nothing for Enter
         return 0
     fi
     read -s -t 0.05 -n 2 rest 2>/dev/null
@@ -991,6 +1127,7 @@ monitor_read_input() {
         "[A") MONITOR_INPUT_KEY="UP"; return 0 ;;
         "[B") MONITOR_INPUT_KEY="DOWN"; return 0 ;;
         "[<") ;;
+        "") MONITOR_INPUT_KEY="ESC"; return 0 ;;
         *) return 0 ;;
     esac
     while read -s -t 0.05 -n 1 c 2>/dev/null; do
@@ -1032,8 +1169,17 @@ build_frame() {
         errors)  render_errors ;;
         history) render_history ;;
         log)     render_log ;;
-        manage)  render_manage ;;
+        manage)  render_manage; add_footer ;;
     esac
+}
+
+# add_footer -- the manage page's key bar on the screen's last row (right after the page when it is printed once)
+add_footer() {
+    manage_footer
+    if (( ONCE )); then lines+=("" "  $FOOT"); return; fi
+    while (( ${#lines[@]} < ROWS_MAX - 1 )); do lines+=(""); done
+    (( ${#lines[@]} >= ROWS_MAX )) && lines=("${lines[@]:0:ROWS_MAX-1}")
+    lines+=("  $FOOT")
 }
 
 cleanup() {

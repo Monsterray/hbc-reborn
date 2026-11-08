@@ -258,6 +258,9 @@ typedef struct {
 	   controller HBC opens HOME with Z and START together, leaving START
 	   alone to the app; an app can do the same, see hbc_agent_home(). */
 	bool gc_pads;
+	/* Start with HOME's Controller settings > Sideways remote on (see
+	   hbc_agent_remote_buttons()). */
+	bool sideways_remotes;
 	/* Exit's choices, HBC_AGENT_EXIT_*. hide_exit_choices is a mask of
 	   (1 << choice) to leave out. on_exit_choice, if set, runs in the app's
 	   thread once the overlay has closed; returning true means the app took
@@ -462,6 +465,13 @@ s32 hbc_agent_home_fb(const struct _gx_rmodeobj *rmode, void *fb0, void *fb1);
  * HOME button, `if ((down & WPAD_BUTTON_HOME) || hbc_agent_home_pending())`. */
 bool hbc_agent_home_pending(void);
 
+/* Press overlay keys as `hbc.py key` does: each of "udlrabh12w" is up, down,
+ * left, right, A, B, HOME, 1, 2 and WAV, taken one every 12 frames; other
+ * characters are skipped. For another input device, such as a USB keyboard
+ * read from on_frame while the overlay is open. */
+#define HBC_AGENT_HAS_PUSH_KEYS 1
+void hbc_agent_push_keys(const char *keys);
+
 /* Show a short message at the top of the HOME overlay for a few seconds.
  * From on_save or a slot item, it replaces the overlay's own "Saved" or
  * "Couldn't save", so an app can say what happened. */
@@ -508,6 +518,20 @@ typedef struct {
 } hbc_agent_cal;
 
 bool hbc_agent_calibration(int chan, hbc_agent_cal *out);
+
+/* Controller settings > Sideways remote (off unless cfg.sideways_remotes):
+ * a Wii Remote held sideways with its D-pad at the left gets its D-pad
+ * turned to match, Up acting as Left and so on, in the overlay and in any
+ * menu of the app's that asks. Call hbc_agent_remotes_scanned() after each
+ * WPAD_ScanPads(), then pass a remote's buttons (down, held or up) through
+ * hbc_agent_remote_buttons(); the remote's data format needs the
+ * accelerometer (WPAD_FMT_BTNS_ACC or _ACC_IR). The setting lasts until the app exits; read
+ * it with hbc_agent_sideways_remotes() to keep it longer. */
+void hbc_agent_remotes_scanned(void);
+u32 hbc_agent_remote_buttons(int chan, u32 buttons);
+bool hbc_agent_sideways_remotes(void);
+/* Whether remote chan's D-pad is being turned now (HBC shows it). */
+bool hbc_agent_remote_sideways(int chan);
 
 #ifdef __cplusplus
 }

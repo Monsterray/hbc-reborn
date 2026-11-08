@@ -277,6 +277,27 @@ static const u32 exec_stub[] = {
 	0x4e800420	// bctr
 };
 
+// The classic libogc "sc" handler (what libogc 1.8 left at 0x80000C00): it
+// invalidates the instruction cache (HID0[ICFI]) and returns. libogc 3.1.0
+// leaves its generic exception stub there instead, which jumps into HBC's own
+// handler, and that is gone once the stub below clears MEM1. Loaders that use
+// "sc" as a cache sync before they install their own handler (dolxz-packed
+// DOLs, such as GodModeWii, do it in DCFlushRange) then crash on the first
+// "sc" and the screen stays black.
+static const u32 sc_handler[] = {
+	0x7d3243a6,	// mtsprg2 r9
+	0x7d5343a6,	// mtsprg3 r10
+	0x7d30faa6,	// mfspr r9, HID0
+	0x612a0008,	// ori r10, r9, 8 (ICFI)
+	0x7d50fba6,	// mtspr HID0, r10
+	0x4c00012c,	// isync
+	0x7c0004ac,	// sync
+	0x7d30fba6,	// mtspr HID0, r9
+	0x7d3242a6,	// mfsprg2 r9
+	0x7d5342a6,	// mfsprg3 r10
+	0x4c000064	// rfi
+};
+
 void loader_exec (entry_point ep) {
 	gprintf ("shutting down services and vectoring...\n");
 	SYS_ResetSystem (SYS_SHUTDOWN, 0, 0);
@@ -284,6 +305,10 @@ void loader_exec (entry_point ep) {
 	// these pokes make ninty SDK dols work, I'm told
 	*(vu32*)0x800000F8 = 0x0E7BE2C0; // Bus Clock Speed
 	*(vu32*)0x800000FC = 0x2B73A840; // CPU Clock Speed
+
+	memcpy((void *)0x80000C00, sc_handler, sizeof sc_handler);
+	DCFlushRange((void *)0x80000C00, sizeof sc_handler);
+	ICInvalidateRange((void *)0x80000C00, sizeof sc_handler);
 
 	void *target = (void *)((int)(SYS_GetArena2Hi() - sizeof exec_stub) & ~31);
 	void (*f_exec_stub) (int) = target;

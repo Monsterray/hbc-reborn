@@ -90,8 +90,7 @@ def main():
     except (AssertionError, OSError, hbc.HBCError) as exc:
         print(f"FAIL: {exc!r}")
     finally:
-        run.stop()
-    print(f"profile: {run.profile}")
+        run.close()
     sys.exit(result)
 
 

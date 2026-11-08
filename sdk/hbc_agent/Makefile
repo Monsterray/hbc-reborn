@@ -33,7 +33,7 @@ CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall $(EXTRA_CFLAGS) \
 	-I$(HBC_SRC) -I.. \
 	-I$(DEVKITPRO)/$(OGC)/include -I$(DEVKITPRO)/portlibs/ppc/include
 
-SRC = agent.c safety.c way_out.c alloc_wrap.c info.c ogc_exc.S overlay.c ov_ui.c ov_draw.c ../wiispk/wiispk.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/zmem.c
+SRC = agent.c safety.c way_out.c alloc_wrap.c info.c ogc_exc.S overlay.c ov_ui.c ov_draw.c ../wiispk/wiispk.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/discover.c $(HBC_SRC)/zmem.c
 OBJ = $(addprefix $(BUILD)/,$(notdir $(patsubst %.S,%.o,$(SRC:.c=.o))))
 HDR = ../hbc_agent.h ../hbc_netlog.h $(wildcard $(HBC_SRC)/*.h) ../../channel/channelapp/config.h
 
@@ -42,7 +42,7 @@ $(OUT): $(OBJ)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-$(BUILD)/%.o: %.c $(HDR) agent_int.h ogc_flavor.h ov_ui.h ov_draw.h ov_font.h | $(BUILD)
+$(BUILD)/%.o: %.c $(HDR) agent_int.h ogc_flavor.h ov_ui.h ov_draw.h ov_font.h sideways.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: %.S ogc_flavor.h | $(BUILD)

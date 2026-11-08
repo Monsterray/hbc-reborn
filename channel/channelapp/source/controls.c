@@ -9,6 +9,8 @@
 
 #include "controls.h"
 #include "gfx.h"
+#include "../../../sdk/hbc_agent.h"
+#include "keyboard.h"
 
 static s32 pointer_owner = -1;
 WPADData *wpads[WPAD_MAX_WIIMOTES];
@@ -22,6 +24,8 @@ static u32 queued_up;
 
 void controls_init (void) {
 	int i;
+
+	keyboard_init ();
 
 	i = WPAD_Init ();
 
@@ -38,10 +42,15 @@ void controls_init (void) {
 }
 
 void controls_deinit (void) {
+	keyboard_shutdown ();
 	WPAD_Shutdown ();
 }
 
-static u32 wpad_button_transform(WPADData *wd, u32 btns) {
+static u32 wpad_button_transform(int chan, u32 btns) {
+	WPADData *wd = wpads[chan];
+
+	// A remote held sideways, if HOME > Controller settings says to look.
+	btns = hbc_agent_remote_buttons(chan, btns);
 	btns &= ~PADW_BUTTON_NET_INIT;
 	btns &= ~PADW_BUTTON_SCREENSHOT;
 
@@ -111,9 +120,13 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 
 	PAD_ScanPads ();
 
-	bd = PAD_ButtonsDown (0);
-	bh = PAD_ButtonsHeld (0);
-	bu = PAD_ButtonsUp (0);
+	// Every GameCube port, as the HOME overlay reads them.
+	bd = bh = bu = 0;
+	for(i=0;i<PAD_CHANMAX;i++) {
+		bd |= PAD_ButtonsDown (i);
+		bh |= PAD_ButtonsHeld (i);
+		bu |= PAD_ButtonsUp (i);
+	}
 
 	WPAD_ScanPads ();
 
@@ -123,6 +136,7 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 		} else {
 			wpads[i] = NULL;
 		}
+	hbc_agent_remotes_scanned();
 
 	last_owner = pointer_owner;
 
@@ -143,19 +157,28 @@ void controls_scan (u32 *down, u32 *held, u32 *up) {
 
 	// pointer owner owns buttons
 	if(pointer_owner >= 0) {
-		bd |= wpad_button_transform(wpads[pointer_owner], wpads[pointer_owner]->btns_d);
-		bh |= wpad_button_transform(wpads[pointer_owner], wpads[pointer_owner]->btns_h);
-		bu |= wpad_button_transform(wpads[pointer_owner], wpads[pointer_owner]->btns_u);
+		bd |= wpad_button_transform(pointer_owner, wpads[pointer_owner]->btns_d);
+		bh |= wpad_button_transform(pointer_owner, wpads[pointer_owner]->btns_h);
+		bu |= wpad_button_transform(pointer_owner, wpads[pointer_owner]->btns_u);
 	} else {
 	// otherwise just mix all buttons together
 		for(i=0;i<WPAD_MAX_WIIMOTES;i++) {
 			if(wpads[i]) {
-				bd |= wpad_button_transform(wpads[i], wpads[i]->btns_d);
-				bh |= wpad_button_transform(wpads[i], wpads[i]->btns_h);
-				bu |= wpad_button_transform(wpads[i], wpads[i]->btns_u);
+				bd |= wpad_button_transform(i, wpads[i]->btns_d);
+				bh |= wpad_button_transform(i, wpads[i]->btns_h);
+				bu |= wpad_button_transform(i, wpads[i]->btns_u);
 			}
 		}
 	}
+
+	// The USB keyboard, as a Wii Remote. Print Screen is the screenshot button,
+	// which takes one (with Z held) only in an ENABLE_SCREENSHOTS build.
+	keyboard_scan ();
+	bd |= (keyboard_down () & 0xffff) << 16;
+	bh |= (keyboard_held () & 0xffff) << 16;
+	bu |= (keyboard_up () & 0xffff) << 16;
+	if(keyboard_key_down (KEYMAP_PRINT_SCREEN))
+		bd |= PADS_SCREENSHOT;
 
 	// A press from the PC: down this frame, up the next.
 	if (queued_up) {
@@ -242,7 +265,9 @@ s32 deadzone(s32 v) {
 s32 controls_sticky(void) {
 	s32 sy;
 	int i;
-	sy = deadzone(PAD_StickY(0));
+	sy = 0;
+	for(i=0;i<PAD_CHANMAX;i++)
+		sy += deadzone(PAD_StickY(i));
 	if(pointer_owner >= 0) {
 		sy += deadzone(wpad_sticky(pointer_owner));
 	} else {

@@ -20,6 +20,7 @@ sys.path.insert(0, str(root / "tools"))
 import hbc  # noqa: E402
 
 ENOENT, ENOTDIR, EISDIR, EINVAL, ENOTEMPTY = 2, 20, 21, 22, 90
+EPERM, EACCES, ELOOP = 1, 13, 92
 WII = "127.0.0.1"
 
 
@@ -44,12 +45,15 @@ class FakeHBC:
         self.uploads = []
         self.upload_names = []  # HBCA: the play log's name for the next upload
         self.upload_flags = []  # HBCA's flags (protocol 6)
+        self.upload_files = []  # HBCA: the receive dialog's file, after a NUL
         # Protocol 6: what HBC makes of each upload, for HBCS "upload"; None
         # acts as an older HBC that does not say.
         self.next_result = None
         self.upload = None
         self.requests = []  # (op, path) of every HBCF request
         self.truncate = False
+        self.tree_delete = False  # protocol 9: op E; else ENOSYS as an older HBC
+        self.rm_depth = 16        # a deeper tree is refused with ELOOP
         self.agent = False  # an agent app answers instead of HBC
         self.agent_uptime_ms = 1000
         self.crash = None
@@ -102,6 +106,52 @@ class FakeHBC:
     def children(self, path):
         return ([("d", p) for p in sorted(self.dirs) if p != path and parent(p) == path] +
                 [("f", p) for p in sorted(self.files) if parent(p) == path])
+
+    @staticmethod
+    def protected(path):
+        dev, _, rest = path.lower().partition(":")
+        parts = [p for p in rest.split("/") if p not in ("", ".")]
+        return parts in ([], ["apps"])
+
+    def subtree(self, path):
+        return ([d for d in self.dirs if d.startswith(path + "/")],
+                [f for f in self.files if f.startswith(path + "/")])
+
+    def tree_remove(self, conn, path, flags):
+        """Op E as devfile.c's file_remove() does it: flags 2 glob, 4
+        recursive. Nothing is deleted unless the whole request can be."""
+        glob, recursive = flags & 2, flags & 4
+        head, _, last = path.rpartition("/")
+        if glob and any(c in last for c in "*?"):
+            head = head + "/" if head.endswith(":") else head
+            if recursive and self.protected(head):
+                return self.reply(conn, -EPERM)
+            rx = hbc.glob_regex(last)
+            targets = [p for _, p in self.children(head) if rx.fullmatch(p.rsplit("/", 1)[1])]
+            if any(self.protected(t) for t in targets):
+                return self.reply(conn, -EPERM)
+            if not targets:
+                return self.reply(conn, -ENOENT)
+        else:
+            targets = [path]
+        entries = []
+        for t in targets:
+            if self.protected(t):
+                return self.reply(conn, -EPERM)
+            if t not in self.files and t not in self.dirs:
+                return self.reply(conn, -ENOENT)
+            dirs, files = self.subtree(t) if t in self.dirs else ([], [])
+            if t in self.dirs and not recursive and (dirs or files):
+                return self.reply(conn, -ENOTEMPTY)
+            if any(d.count("/") - t.count("/") >= self.rm_depth for d in dirs):
+                return self.reply(conn, -ELOOP)
+            entries += files + sorted(dirs, key=lambda d: -d.count("/")) + [t]
+        if any(self.attrs.get(e, 0) & 1 for e in entries):
+            return self.reply(conn, -EACCES)   # read-only: kept, as op D keeps it
+        for e in entries:
+            self.files.pop(e, None)
+            self.dirs.discard(e)
+        self.reply(conn, 0, struct.pack(">I", len(entries)))
 
     def send_log(self, text):
         addr, port = self.log.rsplit(":", 1)
@@ -159,7 +209,9 @@ class FakeHBC:
             self.reply(conn, 0)
         elif magic == b"HBCA":
             n, flags = struct.unpack(">HH", hdr[4:8])
-            self.upload_names.append(self.recv(conn, n).decode())
+            name, _, file = self.recv(conn, n).decode().partition("\0")
+            self.upload_names.append(name)
+            self.upload_files.append(file)
             self.upload_flags.append(flags)
             self.reply(conn, 0)
         elif magic == b"HAXX":
@@ -274,6 +326,8 @@ class FakeHBC:
             elif op == "M":
                 self.make_dirs(path)
                 self.reply(conn, 0)
+            elif op == "E" and self.tree_delete:
+                self.tree_remove(conn, path, hdr[5])
             elif op == "R" and not self.no_rename:
                 self.rename(conn, path, self.recv(conn, size).decode(), hdr[5])
             elif op == "R":
@@ -329,6 +383,9 @@ class HBCToolTest(unittest.TestCase):
 
     def setUp(self):
         self.fake.truncate = False
+        self.fake.tree_delete = False
+        self.fake.rm_depth = 16
+        hbc._no_tree_delete.clear()
         self.fake.agent = False
         self.fake.agent_uptime_ms = 1000
         self.fake.crash = None
@@ -490,7 +547,24 @@ class HBCToolTest(unittest.TestCase):
         # The folder of a boot.dol, else the file; --name over both. The
         # app's arguments (a ROM, an option) are never the name.
         self.assertEqual(self.fake.upload_names[-3:], ["Wii64", "netblock", "WiiStation"])
+        # The receive dialog shows the file, with a boot.dol's folder.
+        self.assertEqual(self.fake.upload_files[-3:],
+                         ["Wii64/boot.dol", "netblock.elf", "Wii64/boot.dol"])
         self.assertEqual(self.fake.uploads[-1][1], b"boot.dol\0--diag\0\0")
+
+    def test_upload_file_metadata_respects_the_63_byte_limit(self):
+        # The HBCA length counts UTF-8 bytes, including its separator NUL.
+        # A 29-byte stem plus NUL plus its 33-byte filename fits exactly;
+        # longer names retain the legacy name-only payload.
+        for stem in ("x" * 29, "x" * 30, "é" * 14, "é" * 15):
+            with self.subTest(stem=stem):
+                app = self.tmp / (stem + ".dol")
+                app.write_bytes(bytes(64))
+                self.cli("send", str(app))
+                shown = app.name if len(stem.encode()) + 1 + len(app.name.encode()) <= 63 else ""
+                self.assertEqual(self.fake.upload_names[-1], stem)
+                self.assertEqual(self.fake.upload_files[-1], shown)
+                self.assertEqual(self.fake.upload_flags[-1], 0)
 
     def test_send_reports_what_hbc_made_of_the_upload(self):
         app = self.tmp / "app.dol"
@@ -551,7 +625,7 @@ class HBCToolTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             hbc.main(["help", "sync"])
-        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] [--checksum] LOCAL PATH"))
+        self.assertTrue(out.getvalue().startswith("hbc.py sync [--delete] [--checksum] [--no-verify] LOCAL PATH"))
         for name in ("status", "run", "get", "put", "key", "screen", "crash"):
             self.assertIn(name, hbc.COMMAND_HELP)
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exc:
@@ -798,6 +872,34 @@ class HBCToolTest(unittest.TestCase):
         self.assertEqual(self.fake.files["sd:/apps/sync2/c.bin"], b"C" * 30)   # went on
         self.assertTrue(any("1 failed" in l for l in lines))
 
+    def test_put_reads_back_and_uploads_again(self):
+        src = self.tmp / "rb.bin"
+        src.write_bytes(b"r" * 40)
+        real = hbc.checksum
+        answers = []
+
+        def wrong_first(wii, remote, size=0):
+            got = real(wii, remote, size)
+            answers.append(got)
+            return (got[0], got[1] ^ 1) if len(answers) < 3 else got
+
+        lines = []
+        with mock.patch.object(hbc, "checksum", wrong_first):
+            hbc.upload(WII, str(src), "sd:/apps/rb/rb.bin", out=lines.append)
+        self.assertEqual(len(answers), 3)   # wrong, wrong, right: three uploads
+        self.assertEqual(sum("uploading again" in l for l in lines), 2)
+        self.assertIn("(40 bytes, read back)", lines[-1])
+
+        with mock.patch.object(hbc, "checksum", lambda w, r, s=0: (s, 0)):
+            with self.assertRaisesRegex(hbc.HBCError, "read back wrong after 3 uploads"):
+                hbc.upload(WII, str(src), "sd:/apps/rb/rb.bin", out=lambda _: None)
+
+        start = len(self.fake.requests)
+        out = self.cli("put", "--no-verify", str(src), "sd:/apps/rb/")
+        self.assertNotIn("read back", out)
+        self.assertEqual([op for op, _ in self.fake.requests[start:] if op == "C"], [])
+        self.assertEqual(self.fake.files["sd:/apps/rb/rb.bin"], b"r" * 40)
+
     def test_file_crc_streams(self):
         path = self.tmp / "big.bin"
         data = bytes(range(256)) * 9000   # over 1 MiB
@@ -824,6 +926,149 @@ class HBCToolTest(unittest.TestCase):
                           "sd:/apps/sync/data/b.bin"})
         self.assertNotIn("sd:/apps/sync/old", self.fake.dirs)
 
+    def deletes(self, start):
+        return [(op, p) for op, p in self.fake.requests[start:] if op in "DE"]
+
+    def test_recursive_rm_is_one_request_when_the_wii_can_walk_it(self):
+        self.fake.tree_delete = True
+        self.make_tree(self.tmp, {"a.txt": b"a", "sub/b.txt": b"b", "sub/deeper/c.txt": b"c"})
+        hbc.put_tree(WII, str(self.tmp), "sd:/apps/gone", out=lambda _: None)
+        start = len(self.fake.requests)
+        out = self.cli("rm", "-r", "sd:/apps/gone/")
+        self.assertEqual(self.deletes(start), [("E", "sd:/apps/gone")])
+        self.assertIn("rm: 6 entries deleted", out)
+        self.assertFalse(self.remote("sd:/apps/gone"))
+        self.assertNotIn("sd:/apps/gone/sub/deeper", self.fake.dirs)
+        self.assertNotIn("sd:/apps/gone", self.fake.dirs)
+
+    def test_tree_too_deep_for_the_wii_falls_back_to_one_request_per_entry(self):
+        self.fake.tree_delete = True
+        self.fake.rm_depth = 1
+        hbc.put_file(WII, "sd:/apps/deep/a/b/c.bin", b"c")
+        start = len(self.fake.requests)
+        self.cli("rm", "-r", "sd:/apps/deep")
+        ops = self.deletes(start)
+        self.assertEqual(ops[0], ("E", "sd:/apps/deep"))
+        self.assertEqual(ops[-1], ("D", "sd:/apps/deep"))
+        self.assertNotIn("sd:/apps/deep", self.fake.dirs)
+
+    def test_tree_delete_keeps_read_only_unless_force(self):
+        self.fake.tree_delete = True
+        self.fake.version = "1.10.15"
+        self.put({"sd:/tro/a.bin": b"a", "sd:/tro/sub/b.bin": b"b"})
+        self.fake.attrs["sd:/tro/sub/b.bin"] = 1
+        with self.assertRaisesRegex(SystemExit, "EACCES.*read-only.*nothing was deleted"):
+            self.cli("rm", "-r", "sd:/tro")
+        self.assertIn("sd:/tro/a.bin", self.fake.files, "the Wii counts first")
+        start = len(self.fake.requests)
+        self.cli("rm", "-r", "--force", "sd:/tro")
+        self.assertEqual(self.deletes(start)[0], ("E", "sd:/tro"))
+        self.assertIn(("A", "sd:/tro/sub/b.bin"), self.fake.requests[start:])
+        self.assertNotIn("sd:/tro", self.fake.dirs)
+
+    def test_glob_rm_sends_the_pattern_to_the_wii(self):
+        self.fake.tree_delete = True
+        for name in ("a.log", "B.LOG", "keep.txt"):
+            hbc.put_file(WII, f"sd:/logs/{name}", b"x")
+        hbc.put_file(WII, "sd:/logs/old/inner.log", b"x")
+        start = len(self.fake.requests)
+        with self.assertRaisesRegex(SystemExit, "ENOTEMPTY"):
+            self.cli("rm", "sd:/logs/*")   # a folder needs -r; nothing is deleted
+        self.assertEqual(len(self.remote("sd:/logs/")), 4)
+        out = self.cli("rm", "sd:/logs/*.log")
+        self.assertIn("rm: 2 entries deleted", out)
+        self.assertEqual(set(self.remote("sd:/logs/")),
+                         {"sd:/logs/keep.txt", "sd:/logs/old/inner.log"})
+        out = self.cli("rm", "-r", "sd:/logs/o?d")
+        self.assertIn("rm: 2 entries deleted", out)
+        with self.assertRaisesRegex(SystemExit, "ENOENT"):
+            self.cli("rm", "sd:/logs/*.nope")
+        self.assertEqual([op for op, _ in self.deletes(start)], ["E"] * 4)
+
+    def test_glob_rm_expands_here_for_an_older_hbc(self):
+        for name in ("a.log", "B.LOG", "keep.txt"):
+            hbc.put_file(WII, f"sd:/logs/{name}", b"x")
+        hbc.put_file(WII, "sd:/logs/sub/z.log", b"x")
+        with self.assertRaisesRegex(SystemExit, "use rm -r"):
+            self.cli("rm", "sd:/logs/*")
+        self.assertEqual(len(self.remote("sd:/logs/")), 4)
+        out = self.cli("rm", "sd:/logs/*.log")
+        self.assertIn("rm: 2 entries deleted", out)
+        self.assertEqual(set(self.remote("sd:/logs/")), {"sd:/logs/keep.txt", "sd:/logs/sub/z.log"})
+        self.cli("rm", "-r", "sd:/logs/s*")
+        self.assertNotIn("sd:/logs/sub", self.fake.dirs)
+        with self.assertRaisesRegex(SystemExit, "wildcards work only"):
+            self.cli("rm", "sd:/lo*/x.log")
+
+    def test_glob_rm_never_takes_the_apps_folder(self):
+        hbc.put_file(WII, "sd:/apps/x/boot.dol", b"x")
+        hbc.put_file(WII, "sd:/zzz.bin", b"x")
+        for new in (False, True):
+            self.fake.tree_delete = new
+            hbc._no_tree_delete.clear()
+            for argv in (("rm", "-r", "sd:/*"), ("rm", "-r", "sd:/a*"), ("rm", "-r", "sd:/./AP?S")):
+                with self.assertRaises(SystemExit):
+                    self.cli(*argv)
+        self.assertIn("sd:/apps/x/boot.dol", self.fake.files)
+        self.assertIn("sd:/zzz.bin", self.fake.files)
+
+    def test_glob_rm_takes_no_folders_at_a_device_top(self):
+        hbc.put_file(WII, "sd:/bootmii/armboot.bin", b"x")
+        hbc.put_file(WII, "sd:/logs/a.log", b"x")
+        start = len(self.fake.requests)
+        for argv in (("rm", "-r", "sd:/b*"), ("rm", "-r", "usb:/*")):
+            with self.assertRaises(SystemExit):
+                self.cli(*argv)
+        self.assertEqual(len(self.fake.requests), start)   # refused before asking
+        self.assertIn("sd:/bootmii/armboot.bin", self.fake.files)
+        self.cli("rm", "-r", "sd:/logs/*")                   # one level down is fine
+        self.assertNotIn("sd:/logs/a.log", self.fake.files)
+
+    def test_glob_rm_r_never_empties_apps(self):
+        # 1.14 audit: rm -r sd:/apps/* deleted every app.
+        hbc.put_file(WII, "sd:/apps/x/boot.dol", b"x")
+        hbc.put_file(WII, "sd:/apps/y/boot.dol", b"x")
+        start = len(self.fake.requests)
+        for argv in (("rm", "-r", "sd:/apps/*"), ("rm", "-r", "SD:/Apps/?"),
+                     ("rm", "-r", "sd://apps/*"), ("rm", "-r", "sd:/./apps/./*"), ("rm", "-r", "sd://*")):
+            with self.subTest(argv=argv), self.assertRaisesRegex(SystemExit, "no wildcard"):
+                self.cli(*argv)
+        self.assertEqual(len(self.fake.requests), start)   # refused before asking
+        self.assertIn("sd:/apps/x/boot.dol", self.fake.files)
+        self.cli("rm", "-r", "sd:/apps/x/*")                 # inside one app is fine
+        self.assertNotIn("sd:/apps/x/boot.dol", self.fake.files)
+        self.assertIn("sd:/apps/y/boot.dol", self.fake.files)
+
+    def test_wii_refuses_rm_r_pattern_in_apps(self):
+        # The Wii side, for a client that skips hbc.py's check.
+        self.fake.tree_delete = True
+        hbc.put_file(WII, "sd:/apps/x/boot.dol", b"x")
+        with self.assertRaises(hbc.HBCError) as cm:
+            hbc.remote_delete(WII, "sd:/apps/*", True, glob=True)
+        self.assertEqual(cm.exception.code, EPERM)
+        self.assertIn("sd:/apps/x/boot.dol", self.fake.files)
+
+    def test_sync_delete_removes_gone_folders_in_one_request(self):
+        self.fake.tree_delete = True
+        src = self.tmp / "src"
+        self.make_tree(src, {"boot.dol": b"d"})
+        for rel in ("old/a.bin", "old/sub/b.bin", "stale.txt"):
+            hbc.put_file(WII, f"sd:/apps/sy/{rel}", b"x")
+        start = len(self.fake.requests)
+        out = self.cli("sync", str(src), "sd:/apps/sy", "--delete")
+        self.assertEqual(self.deletes(start), [("E", "sd:/apps/sy/old"), ("D", "sd:/apps/sy/stale.txt")])
+        self.assertIn("5 deleted", out)
+        self.assertEqual(set(self.remote("sd:/apps/sy/")), {"sd:/apps/sy/boot.dol"})
+        self.assertNotIn("sd:/apps/sy/old/sub", self.fake.dirs)
+
+    def test_tree_delete_still_refuses_roots_here(self):
+        self.fake.tree_delete = True
+        start = len(self.fake.requests)
+        for path in ("sd:/", "SD:/apps/", "usb:/./apps"):
+            with self.assertRaisesRegex(SystemExit, "refusing"):
+                self.cli("rm", "-r", path)
+        self.assertEqual(self.fake.requests[start:], [])
+
     def test_truncated_listing_stops_recursive_ops(self):
         hbc.put_file(WII, "sd:/apps/trunc/a.bin", b"a")
         self.fake.truncate = True
@@ -833,7 +1078,8 @@ class HBCToolTest(unittest.TestCase):
                      ("sync", "--delete", str(self.tmp), "sd:/apps/trunc")):
             with self.assertRaisesRegex(SystemExit, "truncated"):
                 self.cli(*argv)
-        self.assertEqual({op for op, _ in self.fake.requests[start:]}, {"L", "S"})   # reads only
+        # Reads only (the E is the tree delete an older HBC answers with ENOSYS).
+        self.assertEqual({op for op, _ in self.fake.requests[start:]}, {"L", "S", "E"})
         self.assertIn("sd:/apps/trunc/a.bin", self.fake.files)
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):
@@ -1064,6 +1310,83 @@ class HBCToolTest(unittest.TestCase):
             self.cli("rm", "--force", "sd:/af/full")       # not empty: read-only kept
         self.assertEqual(self.fake.attrs["sd:/af/full"], 1)
 
+
+class FindGuardTest(unittest.TestCase):
+    """With no address set, only read-only commands may use the one Wii a
+    find reports; anything that writes must be told which Wii."""
+    ONE = [{"address": "10.0.0.3", "agent": False, "name": "Homebrew Channel"}]
+    NO_ADDRESS = {k: "" for k in ("HBC_WII", "WII_BENCH_IP", "WIILOAD")}
+
+    def run_main(self, argv, found):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, self.NO_ADDRESS),                 mock.patch.object(hbc, "find_wiis", return_value=found),                 mock.patch.object(hbc, "request", side_effect=AssertionError("connected")),                 contextlib.redirect_stderr(err):
+            try:
+                hbc.main(argv)
+            except SystemExit as exc:
+                return exc, err.getvalue()
+            except AssertionError:
+                return "connected", err.getvalue()
+        return None, err.getvalue()
+
+    def test_writing_commands_do_not_guess(self):
+        for argv in (["rm", "sd:/x"], ["put", "a.txt", "sd:/a.txt"], ["mkdir", "sd:/d"],
+                     ["mv", "sd:/a", "sd:/b"], ["sync", ".", "sd:/d"], ["send", "app.dol"]):
+            with self.subTest(argv=argv):
+                exc, err = self.run_main(argv, self.ONE)
+                self.assertIsInstance(exc, SystemExit)
+                self.assertIn("pass --wii 10.0.0.3", str(exc))
+
+    def test_log_does_not_guess(self):
+        # hbc.py log points the Wii's log at this PC: a write.
+        self.assertNotIn("log", hbc.READ_ONLY)
+        exc, err = self.run_main(["log"], self.ONE)
+        self.assertIsInstance(exc, SystemExit)
+        self.assertIn("pass --wii 10.0.0.3", str(exc))
+
+    def test_empty_wii_is_refused(self):
+        for argv in (["--wii=", "status"], ["status", "--wii="], ["--wii", " ", "ls", "sd:/"]):
+            with self.subTest(argv=argv):
+                exc, err = self.run_main(argv, self.ONE)
+                self.assertIsInstance(exc, SystemExit)
+                self.assertIn("--wii is empty", str(exc))
+
+    def test_read_only_commands_use_the_one_wii(self):
+        for cmd in hbc.READ_ONLY:
+            self.assertNotIn(cmd, ("rm", "put", "send", "sync", "mv"))
+        with mock.patch.dict(os.environ, self.NO_ADDRESS),                 mock.patch.object(hbc, "find_wiis", return_value=self.ONE),                 contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(hbc.wii_address(None, auto_find=True), "10.0.0.3")
+
+    def test_status_goes_to_the_found_wii(self):
+        with mock.patch.dict(os.environ, self.NO_ADDRESS),                 mock.patch.object(hbc, "find_wiis", return_value=self.ONE),                 mock.patch.object(hbc, "request", side_effect=AssertionError("connected")) as req,                 contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(AssertionError):
+                hbc.main(["status"])
+        self.assertEqual(req.call_args[0][0], "10.0.0.3")
+
+    def test_find_timeout_equals_form(self):
+        for argv in (["find", "--timeout=0.5"], ["--timeout=0.5", "find"],
+                     ["find", "--timeout", "0.5"], ["--timeout", "0.5", "find"]):
+            with self.subTest(argv=argv),                     mock.patch.object(hbc, "find_wiis", return_value=FindGuardTest.ONE) as f,                     contextlib.redirect_stdout(io.StringIO()):
+                hbc.main(argv)
+                f.assert_called_once_with(0.5, None)
+        with mock.patch.object(hbc, "find_wiis", return_value=self.ONE) as f,                 contextlib.redirect_stdout(io.StringIO()):
+            hbc.main(["find"])
+            f.assert_called_once_with(hbc.FIND_TIMEOUT, None)
+
+
+
+class NetHangTest(unittest.TestCase):
+    def test_net_hang_sends_hbcr(self):
+        # One 16-byte header: HBCR, then 'r' or 'w' (devnet.c).
+        with mock.patch.object(hbc, "request") as req:
+            hbc.set_net_hang("wii", "reload")
+            hbc.set_net_hang("wii", "wait")
+        self.assertEqual(req.call_args_list[0].args[1], b"HBCRr" + bytes(11))
+        self.assertEqual(req.call_args_list[1].args[1], b"HBCRw" + bytes(11))
+
+    def test_net_hang_refuses_other_modes(self):
+        with mock.patch.object(hbc, "request") as req, self.assertRaises(SystemExit):
+            hbc.set_net_hang("wii", "restart")
+        req.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

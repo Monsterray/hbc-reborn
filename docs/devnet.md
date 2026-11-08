@@ -5,6 +5,9 @@ uploads, it answers a few developer requests that make testing on a real
 Wii faster. `tools/hbc.py` implements the client side; this page is the wire
 format for other tools.
 
+It also answers one UDP query on port 4299, so a PC can find it without
+knowing its address: see [Discovery](#discovery-hbcu).
+
 ## Access
 
 HBC answers only hosts on its own `/16` network, as it always has for
@@ -46,7 +49,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCF` | op (1), flags (1), path length (2), size (4), 0 (4) | path, then the data for a put | see below |
 | `HBCN` | log port (2), zero | none | empty; sets the app log target |
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
-| `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
+| `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes in all with an optional NUL and file after it | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). The receive dialog shows the file (hbc.py sends `<app>/boot.dol`) with the sender's address below, else the name; an older HBC reads the name alone. Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
 | `HBCM` | zero | none | HOME > HBC > Save Mii faces: copies the Wii Menu's `RFL_Res.dat` to `sd:/mii/RFL_Res.dat`, and (1.10.26) the Mii Channel's `maleBody.brres` and `femaleBody.brres` beside it (1.12.2: and its `effect_nigaoe.breff` and `.breft`, when it has them); the reply body is the message the toast shows, with status 0 or the error (HBC 1.10.20; [mii.md](mii.md#the-face-models-rfl_resdat)) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
@@ -64,7 +67,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
          "net_ms":1881,"disk_ms":3292,"cpu_ms":164}}
 ```
 
-`proto` is 8 when the file op `A` and every FAT attribute in a listing exist, 7 when the file op `R` (rename and move) exists, 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
+`proto` is 9 when the file op `E` (tree and pattern delete) exists, 8 when the file op `A` and every FAT attribute in a listing exist, 7 when the file op `R` (rename and move) exists, 6 when `HBCA` takes flags and `upload` exists, 5 when `HBCA` exists, and 4 when `HBCL` and the crash fields
 `kind`, `code` and `reason` exist. It is 2 when the framed ops below exist, and 3 when `HBCC`, the
 `crash` field, and the in-app agent's `HBCX` exist. `device` is the mounted device
 that file requests can use; `inserted` also lists devices that were present
@@ -82,7 +85,12 @@ high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
 (HOME > HBC > Restart network adds one). `transfer_style` is how this
 start shows a file name too long for the on-screen transfer line:
 `scroll`, `bounce` or `truncate`, picked at random; `HBCT` with the name in
-header bytes 4-15 forces one until HBC restarts (`hbc.py transfer-style`). `startup` lists the startup steps as
+header bytes 4-15 forces one until HBC restarts (`hbc.py transfer-style`).
+`net_hang` is what a network cleanup that never returns inside IOS does:
+`wait` (the default: the menu carries on, the network is off until HBC
+starts again) or `reload` (HBC reloads the installed channel at once, for a
+developer's Wii); `HBCR` with `r` or `w` in header byte 4 sets it, saved
+when HBC next exits or launches an app (`hbc.py net-hang`). `startup` lists the startup steps as
 `"name":ms`, the time since `main()` at the end of each, in the order they
 finished; `playtime_cleared` (or `playtime_failed`) is the background write that
 clears the Wii Menu's play record. `zlib_mem` says where the zlib arena landed
@@ -150,6 +158,38 @@ character, and paths of 256 bytes or more.
 | `M` | create a directory and its parents | none |
 | `A` | change FAT attributes: `size` bits 0-7 the values, bits 8-15 the mask of those to change (`r` 0x01, `h` 0x02, `s` 0x04, `a` 0x20; a mask bit outside those, or a `size` of 0x10000 or more, is `EINVAL`, and value bits outside the mask are ignored); a mask of 0 only reads (protocol 8, HBC 1.10.15) | the attributes after, as letters |
 | `R` | rename or move: `path` is the source, `size` the length of the destination path, which follows it; flags bit 1 replaces a file at the destination (protocol 7, HBC 1.10.14) | the destination as it ended up |
+| `E` | delete a tree or a pattern's matches (protocol 9; flags below) | u32 entries deleted |
+
+Op `E` takes flags in header byte 5: `0x04` deletes directories with
+everything under them (without it a directory must be empty, else
+`ENOTEMPTY`), and `0x02` makes the last path component a pattern, where `*`
+is any run of characters, `?` one byte, and case is ignored, as on FAT. A
+wildcard anywhere else in the path is `EINVAL`, and a pattern that matches
+nothing is `ENOENT`. HBC walks the tree itself, so a recursive delete or a
+`sync --delete` of a removed folder is one request instead of one per entry.
+It counts every entry first, so a request that cannot succeed (`ENOTEMPTY`,
+`EACCES` for a read-only entry, `EPERM`, `ENAMETOOLONG`, or `ELOOP` for a
+tree nested more than 16 levels) deletes nothing; after that it deletes
+files and then each emptied folder, and stops at the first error. Whatever
+the client asks, HBC never deletes a device root or `<device>:/apps` itself,
+however it is spelled (`sd:/APPS/`) or matched (`sd:/*`, `sd:/AP?S`): `EPERM`
+(a `.` component is `EINVAL` in every request). The
+menu shows "Deleting" with the name that was sent (the folder or the
+pattern, not each entry) and a progress circle that turns while HBC counts
+and then fills as entries go; a single `D` shows the name with the turning
+circle. Each delete reopens the folder it came from, because removing
+entries while libfat still iterated a folder left later file creation
+hanging on a real SD card. An older HBC or app agent answers `E` with
+`ENOSYS`, and `hbc.py` then deletes entry by entry (expanding patterns
+itself); it does the same on `ELOOP`, and on `EACCES` with `rm --force`,
+which clears read-only entry by entry. `hbc.py` waits up to ten minutes for
+the reply, as nothing is sent until the delete is done.
+
+After an upload, `hbc.py put` and `sync` ask for the file's checksum (`C`)
+and compare its size and CRC-32 with what they sent; one that differs is
+uploaded again, three times in all (`--no-verify` skips the check). Protocol 2
+already checks each frame as it arrives, so this checks what the card gives
+back. It reads through the Wii's cache: the card is not remounted first.
 
 An entry line's `mtime` is the time the entry last changed, in seconds since
 1970 by the Wii's clock: FAT keeps local time with no zone, and HBCS `time`
@@ -340,6 +380,33 @@ channel again (Dolphin's `IOS.cpp` `SetupMemory` models the same clear). HBC
 therefore writes a copy of the block to MEM2 at `0x91800000`, reads it first
 thing in `main()`, and restores the target from it. An app that happens to
 use that memory costs only the copy, which its check word then rejects.
+
+## Discovery (HBCU)
+
+HBC does not answer a scan of the subnet. The menu and the in-app agent also
+listen on UDP port 4299, on every interface address, and answer one query.
+`hbc.py find` sends it to the broadcast addresses of the PC's networks and to
+any addresses it is given. A console answers only a sender on its own `/16`,
+the same rule as TCP. An agent app stops answering while it is not
+listening on TCP either (`hbc_agent_listen(false)`, or HOME's "hbc.py
+connection" switched off).
+
+The query is 16 bytes: `HBCU` and 12 zero bytes. A console ignores any other
+datagram, and anything sent from port 4299, which is another console's
+reply. The reply is unicast:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | `HBCU` |
+| 4 | 1 | Version: 1 |
+| 5 | 1 | Flags: bit 0 set when an agent app is answering. Other bits are zero |
+| 6 | 1 | Name length, 0–80 |
+| 7 | 1 | Zero |
+| 8 | 4 | The console's IPv4 address, first octet first |
+| 12 | *n* | Name, the characters `HBCS` would show: `Homebrew Channel` in the menu, otherwise the app name |
+
+The client connects to the address the reply came from. HBC from before this
+query does not answer it; reach it by address.
 
 ## In-app agent
 

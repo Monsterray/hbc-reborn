@@ -1,0 +1,203 @@
+# sdk/wc24: plan
+
+A library for everything WiiConnect24 can do, from a homebrew app. It should
+work with WiiLink's revived servers, with a server of your own, and next to
+Wiimmfi.
+
+Status: plan only (2026-11-03). Formats and ioctls below come from WiiBrew,
+Dolphin's KD code (`Source/Core/Core/IOS/Network/KD/`) and WiiLink's
+Mail-Patcher. Anything marked **(Wii)** is not confirmed and needs a real-Wii
+test.
+
+## What WiiConnect24 is, and what Wiimmfi is
+
+These are two separate services. Keep them apart in the SDK.
+
+| | WiiConnect24 | Wi-Fi Connection (WFC) |
+|---|---|---|
+| What | mail between Wiis, channel downloads (News, Forecast...), Message Board posts, standby fetching | online play in games: login (NAS), friends and matchmaking (GameSpy) |
+| Run by IOS | yes: KD, `/dev/net/kd/*`, even in standby | no: each game's own code (DWC) |
+| Revived by | WiiLink (and RiiConnect24 before it) | Wiimmfi, and WiiLink's WFC |
+| SDK part | `sdk/wc24`, phases 1 to 5 | `sdk/wc24/wfc`, phase 6 |
+
+## Where it starts: sdk/mboard
+
+`sdk/mboard` already does part of the job:
+- **Message Board:** posts to the local board (`wc24recv.ctl/.mbx`) and the
+  play log (`cdb.vff`).
+- **Mail:** sends mail between Wiis (`wc24send.*`, then KD `SendMailNow`).
+- **Address book:** reads and edits `nwc24fl.bin`.
+- **Config and KD:** reads the Wii number from `nwc24msg.cfg`, pauses and
+  resumes KD (ioctls 2 and 3), and gets UTC from `/dev/net/kd/time`.
+
+`sdk/wc24` becomes the layer underneath. The shared code moves down into
+it: KD calls, `nwc24msg.cfg`, the time, VFF, and the mailbox files. `mboard`
+keeps its API and calls `wc24` for these. Nothing in `mboard`'s public API
+changes, and its tests must keep passing.
+
+## The parts
+
+### 1. Foundations (`wc24.h`, `wc24_kd.c`, `wc24_cfg.c`)
+
+- **KD calls:** every `/dev/net/kd/request` ioctl:
+  - Suspend, try-suspend and resume.
+  - Time triggers get and set (4/5).
+  - Check, send, receive and save mail now (0xA to 0xD).
+  - Download now (0xE).
+  - Generate and register the user ID (0xF, 0x10).
+  - Scheduler status (0x1E).
+  - Next wakeup (0x21) and shutdown (0x28).
+  - `/dev/net/kd/time`: get and set UTC, the RTC counter, and the time
+    difference.
+  - Every call returns a KD result. `wc24_strerror()` covers the KD codes
+    (-1 to -72) and turns them into the 10xxxx numbers the Wii Menu shows
+    (bases 100300 to 117000).
+- **`nwc24msg.cfg`:** read and write it:
+  - Wii number, stage, domain, the five URLs and the boot flag.
+  - Write the checksum, and the backup copy `nwc24msg.cbk`.
+  - The password and `mlchkid` are secrets: never logged by default, never
+    committed.
+- **WiiConnect24 settings:** read WiiConnect24 on/off and standby
+  (SYSCONF `NET.WCFG`, `IPL.IDL`). Writing them stays opt-in, as in slotled.
+- **Pure code on a PC:** every format builds with `-DWC24_NO_OGC`, with host
+  tests, as `mboard` and `slotled` do.
+
+### 2. Download tasks (`wc24_dl.c`, `wc24_vff.c`, `wc24_file.c`)
+
+- **`nwc24dl.bin`:** list, add, change and remove the 120 entries and their 32
+  subtasks:
+  - Entry type: to the mail box, or to a title's `wc24dl.vff`.
+  - URL, file name, title and group IDs, count, margin and retry interval.
+  - Flags.
+  - Entries stay in index order, as KD needs.
+- **Run one now (0xE):** run one task and read its scheduler error.
+- **VFF:** read and write the FAT12/16 image in `wc24dl.vff`, to get what
+  a task downloaded. The VFF writer in `mboard` moves here.
+- **The `WC24` content file:**
+  - Parse the 0x140-byte header.
+  - Decrypt AES-128-OFB with a title's `wc24pubk.mod` key.
+  - Check the RSA signature against that key, once we know what it covers
+    **(Wii)**.
+  - For your own server, make plain or encrypted files with your own key.
+    That's a tool in `tools/wc24/`, not in the Wii library.
+- **Whose title.** A task's results go to a title's data folder.
+  - **The idea:** homebrew uses HBC's own title (OHBC, or LULZ), since HBC
+    can write its own folder.
+  - **The API:** `wc24_dl_add(..., WC24_TITLE_HBC)` and a reader for
+    `/title/00010001/<HBC>/data/wc24dl.vff`.
+  - **To decide:** whether every app shares HBC's VFF, with one file name
+    per app, or gets a folder of its own.
+
+### 3. Mail (`wc24_mail.c`)
+
+- **Account:** generate and register the Wii number (0xF, 0x10). The states
+  are none, generated and registered, and each KD error is reported.
+- **Receive:** check now (0xA) and receive now (0xC); the receive is
+  untested in Dolphin.
+- **Read the inbox:**
+  - List and read the mails in `wc24recv.mbx`.
+  - Parse the MIME: headers, text in UTF-16 or base64, and attachments such
+    as a Mii, a picture or board data.
+  - Delete a mail.
+- **Send:** sending moves here from `mboard`, with attachments.
+  `mboard_send_msg` calls it.
+- **Address book:** the `nwc24fl.bin` code moves here, and `mboard` keeps
+  its names for it.
+
+### 4. Scheduler and standby (`wc24_sched.c`)
+
+- **Spans:** mail-check and download spans (ioctl 4/5, each under 259200
+  minutes), and the next wakeup.
+- **Into standby:** go to standby with WiiConnect24 running (STM idle mode,
+  `STM_ShutdownToIdle`), so the tasks run while the Wii is off **(Wii)**.
+- **New mail:** pulse the slot light with `sdk/slotled`
+  (`slotled_ios_flash`), as the Wii Menu does.
+  - **Which pattern:** the bench run of `wii_slotled.py ios` shows which of
+    the 30 patterns is the mail one.
+
+### 5. Services (`wc24_service.c`)
+
+A *service* is a set of URLs and a mail domain:
+- **WiiLink:** the URLs Mail-Patcher writes: `mtw.rc24.xyz/cgi-bin/*.cgi`,
+  domain `@rc24.xyz`.
+- **Your own server:** any URLs.
+- **Nintendo's:** now offline. Used only to detect it.
+
+The calls:
+- **`wc24_service_detect()`:** says which service a Wii is set up for.
+- **`wc24_service_setup()`:** registers the account, in Mail-Patcher's
+  order:
+  1. Stage 1 and the account URL.
+  2. Register.
+  3. All five URLs.
+  4. Stage 2 and the checksum.
+  - It backs up `nwc24msg.cfg` and `.cbk` first.
+  - A duplicate registration (-110211) is reported, never retried.
+- **Talk to WiiLink first.** WiiLink's terms allow personal use only, and
+  they say nothing about third-party clients. Before the SDK can register
+  accounts or create tasks on their servers, we ask the WiiLink team,
+  following their own Mail-Patcher. The SDK never checks faster than the
+  spans the server sets, and never sends mail in bulk.
+- **A local mock server for tests:** `tools/wc24/mockserver.py`, with
+  account, check, receive, delete and send, plus a download URL. Dolphin
+  and the dev Wii can then be tested without WiiLink.
+
+### 6. Wi-Fi Connection and Wiimmfi (`wc24/wfc.c`)
+
+This part is separate from WiiConnect24, and smaller:
+- **Which WFC a game would use:** check whether its DOL in memory points at
+  Nintendo's servers, at Wiimmfi or at WiiLink's WFC. A loader can then show
+  it.
+- **Patching for Wiimmfi:** loaders patch games at boot (USB Loader GX's
+  `gamepatches.c`, Priiloader's "Wiimmfi patch v4"). Two problems:
+  - That code is GPL, and the Wiimmfi team asks that nobody change it
+    without them.
+  - So: no patcher in a zlib SDK unless the Wiimmfi team agrees. Until then,
+    document the loaders that do it.
+- **Online stats:** a small client for Wiimmfi's room list
+  (`wiimmfi.de/mkw?m=json`), for a "who's online" view.
+  - **Caveats:** the room list is undocumented and sits behind Cloudflare,
+    so it may break. Ask Wiimmfi before shipping.
+  - **The same for WiiLink:** WiiLink's WFC gets the same view if it has
+    such an endpoint.
+- **Not planned:** anything that logs into WFC for an app. That is a game's
+  own protocol.
+
+## Phases and checks
+
+Each phase is its own commit (or several) on `develop`, with a bench run.
+Everything that writes the NAND backs up first, with
+`tests/wii_mboard.py backup`, and runs on the dev Wii only. lrwii and prod
+are never touched.
+
+| Phase | Delivers | PC tests | Dolphin | Dev Wii |
+|---|---|---|---|---|
+| 1 | KD calls, errors, `nwc24msg.cfg`, time; `mboard` on top of it | formats, checksum, errors | ioctls 4, 0x1E, time | read-only check |
+| 2 | download tasks, VFF, WC24 files | `nwc24dl.bin`, VFF round trip, AES-OFB | task to the mock server (Dolphin runs 0xE) | task to the mock server, then the result in HBC's VFF |
+| 3 | account, inbox, send | MIME, inbox | check/send to the mock server | a mail dev to lrwii over WiiLink (as with `mboard`), read back |
+| 4 | spans, standby, mail light | spans | n/a | attended: standby overnight, task ran, light pulsed |
+| 5 | services, setup, mock server | profiles | against the mock server | detect only; setup only after WiiLink's answer |
+| 6 | WFC check, stats | DOL scan | n/a | n/a |
+
+Phases 2 and 3 are the large ones. 4 to 6 are small once they are done.
+
+## Questions only a real Wii answers
+
+1. Do entries that HBC writes into `nwc24dl.bin` run in standby?
+2. Does KD take an unsigned task (flag bit 2) from a server of our own?
+3. What do bits 1, 2 and 31 of ioctl 0xE's flags do? WiiBrew and Dolphin
+   disagree.
+4. Can an app write HBC's `wc24dl.vff` and `wc24pubk.mod` without AHBPROT?
+   And what does receive (0xC) do?
+5. Do check (0xA) and receive (0xC) from an app work while KD is suspended?
+6. What does WFC read from the console at login: the Wii number, the MAC?
+7. What does the `WC24` file's RSA signature cover?
+
+## Decisions for the owner
+
+- The name: `sdk/wc24`. It is separate from Yellows8's old libwc24, which is
+  only a reference, and its licence is not ours.
+- Whose title task results go to: HBC's VFF shared by all apps, or a folder
+  per app.
+- Asking the WiiLink team, and the Wiimmfi team, before anything registers
+  accounts, patches games or reads their stats.

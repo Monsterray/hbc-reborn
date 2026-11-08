@@ -289,11 +289,10 @@ SECTIONS
 }
 
 __isIPL = 0;
-__stack_addr = (__bss_start + SIZEOF(.bss) + 0x20000 + 7) & (-8);
 __stack_end = (__bss_start + SIZEOF(.bss));
-__intrstack_addr = (__stack_addr + 0x4000);
-__intrstack_end = (__stack_addr);
-__Arena1Lo = (__intrstack_addr + 31) & (-32);
+/* libogc 3 runs on its own static stacks (tuxedo default_stacks.c): nothing
+   uses __stack_addr or __intrstack, which used to reserve 0x24000 bytes here. */
+__Arena1Lo = (__bss_start + SIZEOF(.bss) + 31) & (-32);
 __Arena1Hi = (0x817FEFF0);
 __Arena2Lo = (0x90002000);
 __Arena2Hi = (0x933E0000);
@@ -306,10 +305,7 @@ __ipcbufferHi = (0x93400000);
 PROVIDE (__stack = (0x817FEFF0));
 
 PROVIDE(__isIPL = __isIPL);
-PROVIDE(__stack_addr = __stack_addr);
 PROVIDE(__stack_end = __stack_end);
-PROVIDE(__intrstack_addr = __intrstack_addr);
-PROVIDE(__intrstack_end = __intrstack_end);
 PROVIDE(__Arena1Lo = __Arena1Lo);
 PROVIDE(__Arena1Hi = __Arena1Hi);
 PROVIDE(__Arena2Lo = __Arena2Lo);

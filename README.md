@@ -9,7 +9,7 @@ LAN you can query the Wii, move files to and from its SD card, launch apps,
 and stream their `printf` output back, with checksummed and compressed
 transfers.
 
-Current release: **1.13.1**. Title ID `00010001-4F484243` (`OHBC`), so the
+Current release: **1.14.0**. Title ID `00010001-4F484243` (`OHBC`), so the
 channel installs next to the official Homebrew Channel (`LULZ`) instead of
 replacing it.
 
@@ -29,6 +29,7 @@ replacing it.
 | Protocol reference | [`docs/devnet.md`](docs/devnet.md) |
 | Message Board: the library, the board's formats | [`docs/mboard.md`](docs/mboard.md), [`docs/messageboard.md`](docs/messageboard.md), [`docs/messageboard-messages.md`](docs/messageboard-messages.md) |
 | Miis: the data, `RFL_DB.dat`, the hidden database, a Remote's Miis, the library | [`docs/mii.md`](docs/mii.md) |
+| USB keyboard as a Wii Remote | [`channel/channelapp/source/keyboard.c`](channel/channelapp/source/keyboard.c), [`keymap.c`](channel/channelapp/source/keymap.c) |
 | Review notes and hardware results | [`REVIEW.md`](REVIEW.md) |
 
 The installed channel checks this repository's GitHub releases once the
@@ -88,12 +89,13 @@ python3 tools/hbc.py [--wii ADDR] [--json] [--log-port PORT] [--timeout S] COMMA
 | `stat REMOTE` | One file or directory: size, when it last changed, its attributes. |
 | `attrib [--recursive] [+r\|-r] [+h\|-h] [+s\|-s] [+a\|-a] REMOTE...` | Show or change FAT attributes, as Windows' `attrib` does. A read-only file cannot be written over or deleted, nor a read-only folder deleted, until `-r`. HBC 1.10.15 and its agent. |
 | `get [-r] REMOTE [LOCAL]` | Download a file, or with `-r` a directory tree. |
-| `put [-r] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. |
-| `sync [--delete] [--checksum] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
-| `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. Device roots and `<device>:/apps` itself are refused, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
+| `put [-r] [--no-verify] LOCAL REMOTE` | Upload a file or, with `-r`, a directory tree; parent directories are created. A `REMOTE` ending in `/` gets the file's name appended. Each file is then read back on the Wii and its size and CRC-32 checked, uploading it again (twice at most) on a mismatch; `--no-verify` skips that. |
+| `sync [--delete] [--checksum] [--no-verify] LOCALDIR REMOTEDIR` | Make `REMOTEDIR` match `LOCALDIR`, uploading only what changed: a same-size file the Wii wrote after the local one last changed is skipped without being read; otherwise the CRC-32s decide (`--checksum` uses them for every same-size file). Uploads are read back and checked as `put` does (`--no-verify` skips it). `--delete` also removes remote extras; a file that fails is reported and the rest go on. |
+| `rm [-r] [--force] REMOTE` | Delete a file or an empty directory, or with `-r` a tree. A `*` or `?` in the last name deletes every match (`rm 'sd:/logs/*.log'`; folders only with `-r`). The Wii walks the tree or pattern itself in one request. Device roots and `<device>:/apps` itself are refused, by the Wii too, and so is a read-only entry unless `--force`, which clears read-only first (as `del /f` does). |
 | `mkdir REMOTE` | Create a directory and its parents. |
 | `mv [--replace] FROM TO` | Rename or move a file or folder (also `rename`). A `TO` ending in `/`, or a folder that is there, means "into that folder". On one device the Wii renames in place, at once; between devices (`sd:` to `usb:`) each file is copied, checked by CRC-32, and only then deleted (files up to 512 MiB; a read-only source is refused first; the copies get new times). An existing `TO` is refused unless `--replace` (a file only). HBC 1.10.14 and its agent. |
 | `mii-faces` | The same as HOME > HBC > Save Mii faces (`HBCM`): HBC copies the Wii Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's bodies (`maleBody.brres`, `femaleBody.brres`) and effects (`effect_nigaoe.breff`, `.breft`) to `sd:/mii`, for apps that draw Miis. The files are Nintendo's: keep them on your own SD card, never ship them. HBC 1.10.20 (bodies 1.10.26, effects 1.12.2). |
+| `net-hang [wait\|reload]` | What HBC does when a network cleanup hangs inside IOS: carry on without the network until it next starts (the default), or reload itself at once (for a developer's Wii); with no mode, print the current one. |
 | `transfer-style [scroll\|bounce\|truncate]` | Force how HBC shows a file name too long for its on-screen transfer line, until it restarts (for testing); with no name, print the current one. |
 | `order [--clear] APPS [FOLDER ...]` | HBC's Custom app order (see [Your own app order](#your-own-app-order)): with only `APPS` (e.g. `sd:/apps`), print the apps in that order with their `<sort_id>`; with folders, give them 10, 20, 30... in the order named, editing or making each `meta.xml`; `--clear` removes every `<sort_id>`. |
 | `exit` | Ask the running [agent](#keeping-the-tools-inside-your-app) app to exit to HBC, and wait for HBC. |
@@ -106,7 +108,10 @@ the command; for `send` and `run`, everything after the file goes to the app,
 and `--` ends option parsing. Large transfers show progress on a terminal.
 
 The Wii address comes from `--wii`, then `$HBC_WII`, `$WII_BENCH_IP`, or
-`$WIILOAD` (`tcp:ADDR`, the variable the devkitPro `wiiload` uses).
+`$WIILOAD` (`tcp:ADDR`, the variable the devkitPro `wiiload` uses). With
+none of those set, `hbc.py` asks the network (`hbc.py find`, a UDP broadcast)
+and uses the one Wii that answers. `hbc.py find` lists every Wii running HBC
+or an agent app, with its address and name.
 
 Remote paths are `<device>:/<path>` with device `sd`, `usb`, `usb2` (a
 second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslashes are refused. An app you
@@ -114,11 +119,25 @@ second USB drive), `carda`, or `cardb`; paths containing `..`, `//`, or backslas
 remove disappears. The menu reloads once the writes stop (a second of
 quiet), on the page it shows, so a whole folder's upload is one quiet reload.
 While a file moves, HBC shows it at the bottom right of the screen
-("Receiving boot.dol 42%", "Sending save.dat"). A name too long for the
+("Receiving ridgerac/boot.dol 42%", "Sending save.dat"). Files under a
+device's `apps/` directory show the app folder and any subfolders; other
+files show their parent folder and name (a file at a device's root, its name). Options (1) > Progress: **Circle** replaces the
+percentage with a progress circle in the text colour on a faded track (the
+choice is kept in `settings.xml`). The circle fills clockwise from the top,
+and turns while the transfer's size is unknown. A name too long for the
 line scrolls round, bounces from end to end, or ends in "..." (each HBC
 start picks one at random; `hbc.py transfer-style bounce` forces one for
 testing). A moving name rests a second at its start, and a bouncing one at
-each end; "Receiving" and the percentage stay put.
+each end; "Receiving" and the percentage (or circle) stay put. A delete
+shows "Deleting" with the name sent (a folder or pattern, not each entry
+inside it); the circle turns while HBC counts the entries, then fills as
+they go.
+
+When receiving a Wiiload upload from `hbc.py`, the popup heading shows the
+file name, including its app folder for `boot.dol` or `boot.elf`. The sender's
+IP address appears below the progress bar at the lower left, separate from
+the percentage on the right. A sender that supplies no name keeps the
+"Receiving from <address>" heading.
 
 Uploads and downloads use 64 KiB frames, each with a CRC-32 checked on both
 ends, compressed with zlib when that makes them smaller. A corrupted frame
@@ -179,6 +198,47 @@ To install an app permanently, `sync` or `put -r` its folder (with
 `hbc_netlog_init()` gives up within about 5 s when the PC is unreachable, and
 `run` and `log` clear HBC's log target when they exit, so a stale target
 never stalls later apps.
+
+### App picker navigation
+
+Hold a D-pad direction to repeat movement in the app picker. In Options
+(1), **Grid edges: Turn page** makes Left and Right at an edge switch
+pages, keeping the same row where possible. **Wrap rows** keeps the original
+movement between rows. Clickable page arrows remain available for pointer
+users. The choice is saved with the channel's settings.
+
+### App badges
+
+Options (1) > **App badges: On** marks apps in the list and the grid with a
+pill in the tile's top-right corner: a blue **New** on an app you have never
+run from HBC, and an amber **Updated** (with a bar along the tile's top edge)
+on one whose `boot.dol`, `boot.elf`, `meta.xml` or `icon.png` changed, in
+size or date, since you last ran it.
+
+Only a launch from HBC's own app list or app page records a run and clears
+the badge. An app sent with Wiiload, USBGecko or the developer network, or
+started some other way, does not.
+
+HBC keeps the record on the device the apps are on, one text file each:
+`sd:/hbc/apps_seen.txt` for apps on the SD card, `usb:/hbc/apps_seen.txt` for
+a USB drive (and likewise for the other devices). It has a line for each app:
+the app's folder name, a tab, then the size and modified time of the four
+files:
+
+    Wii64	boot.dol=1318128@1762104532 boot.elf=- meta.xml=412@1762104532 icon.png=9211@1762104532
+
+The file is read once when the list is scanned, and written only when
+something changed: a launch, or apps that were removed. It is never written
+to the Wii's NAND. Delete it to mark every app on that device as new again.
+If the device is read-only or fails, the badges simply do not persist. With
+badges off (the default) HBC neither reads nor writes the file, so turning
+them on for the first time shows every app as new.
+
+A theme can colour the pills with `badge_new` and `badge_updated` in its
+`theme.xml`, each with a `<fill>` and a `<text>` colour (red, green, blue and
+alpha, 0 to 255, like `font_color`). The defaults are a blue fill `#4fa3e0`
+with text `#062a44` for New, and an amber fill `#e8b04a` with text `#3a2604`
+for Updated. The text is 12 px; a font entry targeting `badge` changes it.
 
 ### Your own app order
 
@@ -331,13 +391,35 @@ female bodies with their animations (`maleBody.brres`,
 `sd:/mii` for apps that draw Miis
 ([docs/mii.md](docs/mii.md#the-face-models-rfl_resdat)).
 
+When the network fails to start, HBC tries again by itself. Each start
+has 30 seconds in all, and Restart network or launching an app cancels
+one that IOS never finishes. Shutting the network down can itself hang
+inside IOS (libogc's `net_deinit` waits for a reply that never comes); if
+it has not returned after 5 seconds, HBC says so for 10 seconds and then
+starts the installed channel again with a fresh IOS.
+
 Point a Wii Remote at the screen and HBC's hand cursor follows it, turning as you twist the remote: the
 button under it lights up and A presses it, and pointing at a bar button
 while a menu is open switches straight to that menu. The overlay turns on
 IR for every connected remote while it is open and gives each back its
 previous mode when it closes. The D-pad moves the highlight when no remote
 points at the screen, A chooses, B goes back one level, and HOME closes
-everything. Controller settings last until the app exits; nothing is
+everything.
+
+Controller settings > Sideways remote (off by default; `sideways_remotes`
+in the config turns it on to start) is for a Wii Remote held sideways with
+its D-pad at the left: tilt the buttons towards you and the D-pad turns to
+match, Up acting as Left, Right as Up, and so on. A remote pointing at the
+screen, or held upright, reads as usual; lying flat keeps the last way it
+was held. It turns after about a sixth of a second held the new way, and
+back after about half a second, so a brief twist or a glimpse of the sensor
+bar does not flip it. The overlay always follows it; an app's own menus can too, by
+calling `hbc_agent_remotes_scanned()` after `WPAD_ScanPads()` and passing a
+remote's buttons through `hbc_agent_remote_buttons(chan, buttons)`, as HBC's
+app list does, with a data format that includes the accelerometer. Classic and GameCube controllers are never turned. HBC keeps
+this one setting in its settings.xml.
+
+Controller settings last until the app exits; nothing is
 written to the Wii's own settings, except that Connect remote may save the
 new remote in the Wii's pairing list as the Sync button would, and Reconnect
 in player order saves the new order. Reconnect works like the Wii Menu's:
@@ -432,6 +514,18 @@ Docs:
   board stores a message and what sets the sender, icon and contents.
 - [`docs/messageboard.md`](docs/messageboard.md): the play history.
 - [`docs/mii.md`](docs/mii.md): Mii data.
+
+### The disc-slot light in your app
+
+[`sdk/slotled`](sdk/slotled) is two files under the zlib licence. It drives
+the blue slot light three ways:
+- **Directly:** 256 levels, blink, pulse, heartbeat, Morse and flashes for
+  activity, from a timer, with no thread.
+- **Through IOS:** its off/dim/bright level and its own flash patterns.
+- **The saved setting:** the Wii Menu's Slot illumination.
+
+[Its README](sdk/slotled/README.md) says what each way changes on the Wii,
+and [RESEARCH.md](sdk/slotled/RESEARCH.md) lists what is still to find out.
 
 ### Miis in your app
 
@@ -618,6 +712,9 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | `hbc_agent_stop()` (then an IOS reload, a re-init, a crash) and `hbc_agent_listen()` (the app's own server on 4299) on a real Wii | `make -C tests/agent_app`, then `python3 tests/wii_agent_stop.py --wii WII-IP` (`--dol` for another build) | Wii in any HBC |
 | File times and flags from HBC and an app's agent (libogc 3, libogc2), and a re-sync that reads nothing | `python3 tests/wii_file_meta.py WII-IP` | Wii in any HBC |
 | HOME > HBC > Restart network (keys checked against `overlay_ui` before each A) | `python3 tests/wii_net_restart.py WII-IP` | Wii in any HBC |
+| Network start budget and cancellation, and cleanup supervision, on the PC | `python3 tests/test_netinit.py`, `python3 tests/test_netrecovery.py` | C compiler |
+| A failed start cleaned up and retried with no input and no reload | build with `EXTRA_CFLAGS=-DHBC_TEST_INIT_FAILURE`, then `python3 tests/dolphin_network_retry.py IMAGE` | Dolphin; never on a Wii |
+| A network cleanup that hangs: HBC carries on without a reload; with `--reload` (`net-hang reload`), a fresh IOS and the installed channel again, no loop | build the WAD with `EXTRA_CFLAGS=-DHBC_TEST_STUCK_NET_CLEANUP`, then `python3 tests/dolphin_network_recovery.py [--reload] WAD` | Dolphin; never on a Wii |
 | File errors from HBC and an app's agent: a missing folder, a missing local file, a 400 MB upload to a card without room (`ENOSPC` at once) | `python3 tests/wii_file_errors.py WII-IP` (SD with under 400 MB free), or `--dolphin` | Wii in any HBC, or Dolphin |
 | The agent's safety tools on a real Wii (assert, abort, deadlock, failed malloc, frame pacing, stub guard, Reset, stack overflow) | `make -C tests/agent_app`, then `python3 tests/wii_agent_safety.py --wii WII-IP` | Wii in any HBC |
 | DEV > Info and `hbc.py hw` on a real Wii | `python3 tests/wii_info.py WII-IP` | Wii in any HBC |
@@ -678,7 +775,9 @@ Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
 [`sdk/hbc_netlog.h`](sdk/hbc_netlog.h), [`sdk/mboard`](sdk/mboard) and
 [`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
-[`sdk/wiispk`](sdk/wiispk) is under the zlib licence. The Mbed TLS copy in
+[`sdk/wiispk`](sdk/wiispk) and [`sdk/slotled`](sdk/slotled) are under the zlib
+licence. The Mbed TLS copy in
 [`sdk/wiiupdate/mbedtls`](sdk/wiiupdate/mbedtls) is under Apache-2.0 or
 GPL-2.0-or-later. The agent library (`sdk/hbc_agent`) is built from HBC's own
-sources and is GPL.
+sources and is GPL. [`sdk/README.md`](sdk/README.md) lists every SDK with its
+licence and what it changes on the Wii.

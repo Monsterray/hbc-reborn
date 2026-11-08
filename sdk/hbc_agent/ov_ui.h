@@ -71,7 +71,8 @@ typedef struct {
 	int ir_sens;          /* 1 to 5 */
 	char auto_off[12];    /* "5 min", "Never" */
 	bool rumble_all;
-	bool searching;       /* Connect remote in progress */
+	bool sideways;        /* Sideways remote: the D-pad turns with the remote */
+	bool searching;      /* Connect remote in progress */
 	bool reconnecting;    /* Reconnect: remotes take players 1-4 in the order they join */
 	bool can_reconnect;   /* libogc 3 only (WPAD_Search) */
 	bool can_leds;        /* remote handles found: LEDs, IR and sensor bar work */
@@ -122,7 +123,8 @@ enum {
 	OVA_SOUND_TEST,       /* arg: remote | 16 for PCM, | 32 for speaker.wav (else ADPCM) */
 	OVA_SYNC_CLOCK,       /* DEV: set the Wii's clock from NTP */
 	OVA_INFO,             /* DEV > Info: a page opened (arg); gather them all */
-	OVA_RECONNECT         /* arg: 1 start, 0 done */
+	OVA_RECONNECT,        /* arg: 1 start, 0 done */
+	OVA_SIDEWAYS          /* arg: 1 on, 0 off */
 };
 
 typedef void (*ov_act_fn)(int action, int arg, void *user);

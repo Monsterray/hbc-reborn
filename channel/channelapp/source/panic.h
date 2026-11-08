@@ -10,6 +10,8 @@
 
 #define S2I(s) (((s)[FOFF+0]<<24)|((s)[FOFF+1]<<16)|((s)[FOFF+2]<<8)|((s)[FOFF+3]))
 
+void panic_install_exception_screen(void);
+
 #define panic() _panic(S2I(__FILE__)^0xDEADBEEF, __LINE__)
 void _panic(u32 file, u32 line) __attribute__((noreturn));
 
