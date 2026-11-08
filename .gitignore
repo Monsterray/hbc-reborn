@@ -72,6 +72,9 @@ venv/
 Thumbs.db
 desktop.ini
 
+# Wiki pages built by tools/wiki.py
+/build/
+
 # Overlay preview renders (tests/overlay_preview/preview.py)
 /tests/overlay_preview/out/
 
