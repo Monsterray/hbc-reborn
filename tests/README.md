@@ -50,11 +50,13 @@ test's own docstring: edit the docstring, then run the script.
 | [`test_tests_index.py`](host/test_tests_index.py) | tests/README.md lists every test as its docstring says (tests/lib/make_index.py). |
 | [`test_transfer_arc.py`](host/test_transfer_arc.py) | Exercise the transfer line's progress circle renderer with the host C compiler. |
 | [`test_transfer_name.py`](host/test_transfer_name.py) | Compile the transfer label selector used by HBC and the in-app agent. |
+| [`test_usbguard.py`](host/test_usbguard.py) | The stuck-USB guard (sdk/usbguard) on a PC: the phases and their timing, a retry after a replug, the free path and the no-AHBPROT path. |
 | [`test_way_out.py`](host/test_way_out.py) | Build sdk/hbc_agent/way_out.c on the host and run it against a model of the Wii's IPC registers (tests/host/way_out_host/test.c), after Dolphin's WiiIPC: a healthy IOS leaves through the reload stub (late replies drained first); a close that never replies launches HBC through ES (the stub's title, then OHBC, then LULZ); a launch that does not go ahead resets the Wii through STM while IOS still acks, then through HW_RESETS with AHBPROT open (never on a vWii); an IOS that acks nothing resets through HW_RESETS; and with a reset in the last 10 minutes, or nothing working, it falls back on the stub. |
 | [`test_wiibench.py`](host/test_wiibench.py) | Check tools/wii-bench/wiibench.py's queue handling without a Wii. |
 | [`test_wiispk.py`](host/test_wiispk.py) | Build sdk/wiispk on the host and check its WAV reader, resampler and ADPCM encoder: a 44.1 kHz stereo WAV with a 1 kHz tone and a 4.6 kHz tone (which would fold onto 1.4 kHz at 6 kHz without the low-pass) must come out as 6 kHz mono with the 1 kHz tone kept, the 4.6 kHz one gone, and the encoder at least as good as libogc's. |
 | [`test_wiki.py`](host/test_wiki.py) | tools/wiki.py: every published doc exists, every link on every page works on the wiki (a page of its own, or a GitHub URL), and the sidebar lists every page. |
 | [`test_workstation_paths.py`](host/test_workstation_paths.py) | No paths of one workstation: no tracked text file names a project, tool or home folder of one PC (C:/projects/..., /c/tools/..., /mnt/c/..., a C:/Python3xx), so the project works on anyone's workstation. |
+| [`usbguard_host/`](host/usbguard_host/) | sdk/usbguard on a PC (tests/host/test_usbguard.py drives it): fake EHCI registers, fake calls that block, fail or return late, and scripted pulls, replugs and frees from on_wait. |
 | [`way_out_host/`](host/way_out_host/) | sdk/hbc_agent/way_out.c on a PC, against a model of the Wii's IPC registers and of IOS answering, or not: each scenario checks which way out the agent takes and what it notes. |
 | [`wiipax_section_bounds.c`](host/wiipax_section_bounds.c) | define main wiipax_tool_main include "../wiipax/client/main.c" undef main |
 | [`wiispk_host/`](host/wiispk_host/) | Host test for sdk/wiispk: loads a WAV, checks the resampler's low-pass, and measures the ADPCM encoder against two models of the speaker's decoder. |
@@ -79,6 +81,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`dolphin_slotled.py`](dolphin/dolphin_slotled.py) | tests/apps/slotled_app's `check` in Dolphin: sdk/slotled's timer, its GPIO writes and its SYSCONF read run without a fault, and the report says what a Wii's would (tests/wii/wii_slotled.py checks it the same way). |
 | [`dolphin_smoke.py`](dolphin/dolphin_smoke.py) | Boot the channel DOL in an isolated Dolphin profile and check it over TCP. |
 | [`dolphin_transfer_progress.py`](dolphin/dolphin_transfer_progress.py) | HBC's transfer line in Dolphin, with Options > Progress set to Circle: the retail WAD in a throwaway NAND and an emulated SD card. |
+| [`dolphin_usbguard.py`](dolphin/dolphin_usbguard.py) | tests/apps/usbguard_app's `check` in Dolphin: with a healthy USB (Dolphin has no drive and nothing stuck), every sdk/usbguard wrapper answers as the plain call would. |
 | [`dolphin_way_out.py`](dolphin/dolphin_way_out.py) | The agent's way out (sdk/hbc_agent/way_out.c) in Dolphin, from the retail WAD installed in a throwaway profile, with tests/apps/agent_app's wayout mode: hbc_agent_fatal_now() with the agent's test bits, then the way HBC reports and the kept log's steps. |
 | [`dolphin_wpad_queue.py`](dolphin/dolphin_wpad_queue.py) | Check that every Wii Remote slot has a command queue, in Dolphin. |
 
@@ -121,6 +124,7 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 | [`wii_transfer_progress.py`](wii/wii_transfer_progress.py) | HBC's transfer line and Options > Progress on a Wii, as a queue job: this tree's HBC (channel DOL, through the installed HBC). |
 | [`wii_upload_popups.py`](wii/wii_upload_popups.py) | Check that popups an upload raises close themselves and report back. |
 | [`wii_usb2.py`](wii/wii_usb2.py) | Both USB drives through HBC (usbmsd.c): "usb" and "usb2". |
+| [`wii_usbguard.py`](wii/wii_usbguard.py) | sdk/usbguard on a Wii with a really stuck USB drive. |
 | [`wii_way_out.py`](wii/wii_way_out.py) | The agent's way out (sdk/hbc_agent/way_out.c) on a real Wii, from a bench queue job. |
 
 ## apps/: The Wii, sent by the tests above
@@ -143,6 +147,7 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 | [`netlog_app/`](apps/netlog_app/) | Test app for the HBC network log: prints its arguments to the PC and exits. |
 | [`rtc_shift/`](apps/rtc_shift/) | Move the Wii's RTC (its battery-backed clock) by a number of seconds, then exit back to the loader. |
 | [`slotled_app/`](apps/slotled_app/) | Test app for sdk/slotled on a Wii (tests/wii/wii_slotled.py drives it). |
+| [`usbguard_app/`](apps/usbguard_app/) | Test app for sdk/usbguard on a Wii or in Dolphin (tests/dolphin/dolphin_usbguard.py drives the check; the stuck run is attended). |
 | [`wadinstall/`](apps/wadinstall/) | Install a WAD from the SD card through ES, for putting a fakesigned HBC build on the bench Wii without a WAD manager and a Wii Remote. |
 | [`wpad_queue_app/`](apps/wpad_queue_app/) | Starts WPAD and waits, for tests/dolphin/dolphin_wpad_queue.py to read the Wii Remotes' command queues from memory. |
 

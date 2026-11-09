@@ -83,6 +83,7 @@ README has a quick start, the API, and what it changes on the Wii.
 | [mboard](sdk/mboard/README.md) | Message Board posts, mail to other Wiis, the Address Book, the play history (HBC's play log is its writer) |
 | [slotled](sdk/slotled/README.md) | The disc-slot light: levels, effects, IOS patterns, the saved setting |
 | [mii](sdk/mii/README.md) | Miis: read, make, edit and draw them, the Mii database, a Remote's Miis |
+| [usbguard](sdk/usbguard/README.md) | Survive a stuck USB drive: guarded calls, mounts and IOS reloads, a warning, the software unplug (HBC's start-up uses it) |
 
 ## Installing the channel on a Wii
 
@@ -129,8 +130,8 @@ the WAD, every test and what it needs, and the rules for changes.
 
 Unless a file header says otherwise, the source code is released under the
 GNU General Public License, version 2 or later; see [COPYING](COPYING).
-[`sdk/hbc_netlog`](sdk/hbc_netlog/README.md), [`sdk/mboard`](sdk/mboard) and
-[`sdk/mii`](sdk/mii) are public domain so apps can include them freely, and
+[`sdk/hbc_netlog`](sdk/hbc_netlog/README.md), [`sdk/mboard`](sdk/mboard),
+[`sdk/mii`](sdk/mii) and [`sdk/usbguard`](sdk/usbguard) are public domain so apps can include them freely, and
 [`sdk/wiispk`](sdk/wiispk) and [`sdk/slotled`](sdk/slotled) are under the zlib
 licence. The agent library (`sdk/hbc_agent`) is built from HBC's own sources
 and is GPL. [`sdk/README.md`](sdk/README.md) lists every SDK with its licence
