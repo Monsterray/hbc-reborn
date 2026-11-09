@@ -52,6 +52,29 @@ shutdown. Either turn that into a full keyboard SDK in `sdk/` (like
 core), or send libogc a fix PR that makes libwiikeyboard as robust. Then HBC
 and other apps can use it.
 
+### The SD card is not found again after both devices were out
+
+`tests/wii/wii_replug.py` on the dev Wii, HBC 1.15.21 (job
+20261109-095750-d23029): steps 6 and 8 failed, the other six passed. Both
+times the SD card and the USB drive were out together, then the USB drive went
+back in first (it takes the app list) and the SD card after it, fully seated.
+For 3 minutes `ls sd:/` gave errno 19 (ENODEV) and status listed only `usb`,
+with nothing under `unmountable`, so HBC's mount never reached the FAT step.
+Steps 1-2 (SD out and back in while USB holds the list) worked; the
+difference is that while both were out, the scan retried `_mount` on each
+device every second. libogc 3.1's `sdio_Startup`/`sdio_Deinitialize` close
+their handle on every failed start, so a leak there is not the cause. Not
+known whether builds before 1.15.21 do the same: no earlier build ran these
+steps on a Wii. Trigger: before the next USB or SD change, rerun steps 5-6 with
+HBC's log on (`hbc.py log`) to see what `app_entry_mount_for` and `sdio_Startup`
+answer, and on 1.15.20 to tell a regression from an old bug.
+
+Seen at the same time: the call log in `hbc.py status` keeps every call made
+before the first frame, and the start-up's "sd inserted" polls fill nearly all
+96 slots, so almost nothing from later in a run is kept. Its thread names come
+from LWP ids, which a later thread can reuse ("sd inserted" was named
+`usbguard`).
+
 ### A card pulled while an app's dialog is open
 
 `app_entry_scan` takes `AE_ACT_REMOVE` and `AE_ACT_ADD` only while the app list
@@ -66,13 +89,6 @@ an app's details open, plug it back in, then close the details.
 
 The keyboard works but needs a lot more bindings to feel right (Monty,
 2026-11-02). The HOME menu inside apps does not read it yet.
-
-### At the next minor release (1.16.0)
-
-- Delete the forwarding headers `sdk/hbc_agent.h` and `sdk/hbc_netlog.h`
-  (the real ones are in `sdk/hbc_agent/` and `sdk/hbc_netlog/` since November
-  2026). First check that no project on the bench still includes them: build
-  each one and look for the forwarders' `#pragma message` note.
 
 ### Data to collect
 

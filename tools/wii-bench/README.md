@@ -167,7 +167,7 @@ what is already on the PC, or written to the SD card and flushed, survives. So a
 may freeze should:
 
 - stream what matters to the PC as it happens: the agent's network log
-  (`sdk/hbc_netlog.h`), or the job's own TCP link, as WiiStation's `lab_net.c` does;
+  (`sdk/hbc_netlog/hbc_netlog.h`), or the job's own TCP link, as WiiStation's `lab_net.c` does;
 - close or `fsync` its log files on the SD card often, not only at exit;
 - arm `__exception_setreload(10)` and the agent's hang watchdog, so a crash or a hang comes
   back to HBC on its own, and the agent keeps the log.
@@ -716,7 +716,7 @@ The state directory is `~/.wii-bench`, and other projects call `~/.wii-bench/wii
 - Put its data in `$WII_BENCH_OUT`, or name it with `add --collect`, rather than in a
   folder or SD path every run shares. See "Each job's data, kept".
 - Get its results back itself: hbc-reborn's jobs use the developer network log
-  (`tools/hbc.py`, `sdk/hbc_netlog.h`) on `$WII_BENCH_LOG_PORT` (4300 for the first Wii);
+  (`tools/hbc.py`, `sdk/hbc_netlog/hbc_netlog.h`) on `$WII_BENCH_LOG_PORT` (4300 for the first Wii);
   WiiStation's `Gamecube/lab_net.c` does the same. The "wii-bench netlog" firewall rule
   allows inbound TCP 4300-4315.
 

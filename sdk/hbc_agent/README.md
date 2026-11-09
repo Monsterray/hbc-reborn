@@ -74,8 +74,8 @@ link with:
 -L<hbc-reborn>/sdk/hbc_agent -lhbcagent -lfat -lz -logc
 ```
 
-The old `-I<hbc-reborn>/sdk` still works for now, through a forwarding header
-at `sdk/hbc_agent.h` (and `sdk/hbc_netlog.h`). HBC 1.16.0 deletes the forwarders; until then a build that uses them prints a note.
+Before HBC 1.16.0 the header was also found with `-I<hbc-reborn>/sdk`; that
+old path is gone, so use `-I<hbc-reborn>/sdk/hbc_agent`.
 
 - **Other libogcs.** The command above is for devkitPro's current libogc
   (3.x). For an app on libogc2 (Extrems' fork) or libogc 1.x, build the agent

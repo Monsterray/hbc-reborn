@@ -3,6 +3,10 @@
 One line per version, from the commit that set it. Findings, measurements and hardware
 results for each version are in [docs/history/](docs/history/).
 
+## 1.16 ([details](docs/history/1.16.md))
+
+- **1.16.0** (2026-11-09): release; a stuck USB drive no longer holds HBC on a black screen (sdk/usbguard)
+
 ## 1.15 ([details](docs/history/1.15.md))
 
 - **1.15.21** (2026-11-09): a pulled drive leaves status; a file that is not a DOL is refused instead of crashing HBC

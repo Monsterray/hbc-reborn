@@ -33,8 +33,8 @@ CFLAGS += -I<hbc-reborn>/sdk/mboard -I<hbc-reborn>/sdk/hbc_netlog
 `make -C sdk/<name>`; their READMEs give the link flags.
 
 `hbc_agent.h` and `hbc_netlog.h` used to sit directly in `sdk/`. They moved into
-their folders in November 2026; forwarding headers at the old paths keep
-`-I<hbc-reborn>/sdk` builds working until HBC 1.16.0, which deletes them. A build that still uses them prints a note saying what to change.
+their folders in November 2026, and HBC 1.16.0 removed the old paths: use
+`-I<hbc-reborn>/sdk/hbc_agent` and `-I<hbc-reborn>/sdk/hbc_netlog`.
 
 ## Licences
 
