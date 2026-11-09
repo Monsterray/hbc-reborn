@@ -177,7 +177,17 @@ python3 "$bench" wait <id>
   files kept exactly as they came are marked `-text` there and keep CRLF. A
   checkout made before 1.8.3 on Windows still has CRLF files; run
   `python tools/fix_line_endings.py` once (it keeps uncommitted changes).
-- Never commit Wii keys. Check staged file names before every commit.
+- Never commit Wii keys. Turn on the pre-push check once per clone:
+  `git config core.hooksPath tools/hooks`. For each pushed ref it runs
+  [`tools/check_secrets.py`](tools/check_secrets.py), which reads every file
+  added or changed in the pushed commits (so a key added and later deleted is
+  still caught) and stops the push on: anything under `keys/` or named like a
+  Wii key or console dump (`*.pem`, `*.key`, `nand*.bin`, `otp*.bin`,
+  `seeprom.bin`, ...), a private key header, a GitHub or other well-known
+  token, and the bytes of any file in your local `keys/` folder (raw or hex;
+  it never prints a value, only the file's name). `--staged` checks before a
+  commit, `--all` the whole tree. A public key or test vector that only looks
+  secret goes in `tools/check_secrets_allow.txt` as `path  # reason`.
 - [`AGENTS.md`](AGENTS.md) and the
   [project skill](.agents/skills/hbc-build-and-review/SKILL.md) hold the
   detailed build, Dolphin, and hardware procedures;

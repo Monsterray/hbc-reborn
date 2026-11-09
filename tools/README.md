@@ -17,6 +17,7 @@ unless its row says so.
 
 | Tool | What it does |
 | --- | --- |
+| [`check_secrets.py`](check_secrets.py) | Stops a push that carries Wii keys, signing keys, console dumps or tokens; [`hooks/pre-push`](hooks/pre-push) runs it (`git config core.hooksPath tools/hooks`). |
 | [`wiki.py`](wiki.py) | Builds the GitHub wiki from the README, the guides and the SDK READMEs. It never pushes. |
 | [`memmap.py`](memmap.py) | Where everything in an ELF lives: one CSV row per symbol, with its address, size, section and object file. |
 | [`mii_res.py`](mii_res.py) | Studies a Wii's Mii face resource, `RFL_Res.dat` ([docs/mii/rendering.md](../docs/mii/rendering.md)). |
