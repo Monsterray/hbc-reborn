@@ -21,6 +21,8 @@
 #include "../config.h"
 #include "../build_tag.h"
 #include "appentry.h"
+#include "bootlog.h"
+#include "usbstart.h"
 #include "devfile.h"
 #include "devnet.h"
 #include "loader.h"
@@ -234,6 +236,13 @@ static s32 status_json(char *buf, size_t size) {
 				"\"wire\":%u,\"ms\":%u,\"net_ms\":%u,\"disk_ms\":%u,\"cpu_ms\":%u}",
 				devfile_last.op, devfile_last.bytes, devfile_last.st.wire, MS(devfile_last.total),
 				MS(devfile_last.st.net), MS(devfile_last.st.disk), MS(devfile_last.st.cpu)));
+	// IOS's USB module did not answer at the start: HBC went on without USB.
+	// replug_needed: the drive is still in, so launches are guarded.
+	n = grow(n, size, snprintf(buf + n, size - n,
+			",\"usb_stuck\":%s,\"usb_unplugged\":%s,\"replug_needed\":%s,\"remotes_off\":%s",
+			usbstart_stuck() ? "true" : "false", usbstart_unplugged() ? "true" : "false",
+			usbstart_replug_needed() ? "true" : "false",
+			usbstart_remotes_off() ? "true" : "false"));
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"zlib_peak\":%u,\"zlib_heap\":%u,"
 			"\"tcp_last_failure\":\"%s\"", zmem_where(), zmem_peak(), zmem_heap_peak(),
 			tcp_last_failure()));
@@ -298,6 +307,9 @@ static s32 status_json(char *buf, size_t size) {
 	_CPU_ISR_Restore(level);
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"remotes\":"));
 	n = grow(n, size, agent_remote_diag(buf + n, size - n));
+	// Last: the longest, and a list cut short loses only its own end.
+	n = grow(n, size, usbstart_ehci_json(buf + n, size - n - 1));
+	n = grow(n, size, bootlog_json(buf + n, size - n - 1));
 	n = grow(n, size, snprintf(buf + n, size - n, "}"));
 
 	return n;
@@ -422,7 +434,7 @@ static void set_log_target(u32 ip, u16 port) {
 
 bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 	// Static: the loader thread, the only caller, has an 8 KB stack.
-	static char json[16384];
+	static char json[24576];
 
 	// `hbc.py key` and `screen`: HOME-overlay presses and the TV picture,
 	// answered by the agent that draws HBC's HOME menu (home.c).
@@ -730,8 +742,25 @@ void devnet_set_init_ms(u32 ms) {
 	init_ms = ms;
 }
 
+u32 devnet_boot_ms(void) {
+	return ticks_to_millisecs(diff_ticks(boot_start, gettime()));
+}
+
+const char *devnet_last_boot_mark(u32 *ms) {
+	const char *name = NULL;
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	if (boot_count) {
+		name = boot_marks[boot_count - 1].name;
+		*ms = boot_marks[boot_count - 1].ms;
+	}
+	_CPU_ISR_Restore(level);
+	return name;
+}
+
 void devnet_boot_mark(const char *name) {
-	u32 ms = ticks_to_millisecs(diff_ticks(boot_start, gettime()));
+	u32 ms = devnet_boot_ms();
 	u32 level;
 
 	_CPU_ISR_Disable(level);

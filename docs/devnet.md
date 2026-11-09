@@ -75,31 +75,34 @@ at the last device poll. `last` describes the most recent file transfer:
 bytes on the network, and time the Wii spent on Wi-Fi, SD, and zlib/CRC.
 Network and SD overlap in framed transfers, so their sum can exceed `ms`.
 `arena1_free` and `arena2_free` are the MEM1 and MEM2 that libogc's arena
-still has unclaimed (`SYS_GetArena1Size()`, `SYS_GetArena2Size()`), not
-free memory in an app's own heap: an app that built its heap from the
-arena shows little here with most of its heap free. They were
-`mem1_free` and `mem2_free` before 1.10.7. `heap_free` is newlib's free heap (its "used" figure would count the gap
-between MEM1 and MEM2), `tcp_stack_used` is the loader thread's stack
-high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
-`scan_ms` is the last full app scan. `net_starts` counts the times the network came up since HBC started
-(HOME > HBC > Restart network adds one). `transfer_style` is how this
-start shows a file name too long for the on-screen transfer line:
-`scroll`, `bounce` or `truncate`, picked at random; `HBCT` with the name in
-header bytes 4-15 forces one until HBC restarts (`hbc.py transfer-style`).
-`net_hang` is what a network cleanup that never returns inside IOS does:
-`wait` (the default: the menu carries on, the network is off until HBC
-starts again) or `reload` (HBC reloads the installed channel at once, for a
-developer's Wii); `HBCR` with `r` or `w` in header byte 4 sets it, saved
-when HBC next exits or launches an app (`hbc.py net-hang`). `startup` lists the startup steps as
-`"name":ms`, the time since `main()` at the end of each, in the order they
-finished; `playtime_cleared` (or `playtime_failed`) is the background write that
-clears the Wii Menu's play record. `zlib_mem` says where the zlib arena landed
-(see Performance), `zlib_peak` is the most of it one stream has used, and
-`zlib_heap` the largest zlib allocation that did not fit and went to the heap
-(0 if none). `tcp_last_failure` records what IOS returned
-during the last receive that failed: `r<n>` per `net_read` result,
-`p<events>/<result>` per poll, then the reason. `crash` is `null`, or the
-crash an agent app reported before it returned to this HBC (see
+still has unclaimed (`SYS_GetArena1Size()`, `SYS_GetArena2Size()`), not free
+memory in an app's own heap: an app that built its heap from the arena shows
+little here with most of its heap free. They were `mem1_free` and
+`mem2_free` before 1.10.7. `heap_free` is newlib's free heap (its "used"
+figure would count the gap between MEM1 and MEM2), `tcp_stack_used` is the
+loader thread's stack high-water mark, `init_ms` is the time from HBC's
+`main()` to its menu, and `scan_ms` is the last full app scan. `net_starts`
+counts the times the network came up since HBC started (HOME > HBC > Restart
+network adds one). `transfer_style` is how this start shows a file name too
+long for the on-screen transfer line: `scroll`, `bounce` or `truncate`,
+picked at random; `HBCT` with the name in header bytes 4-15 forces one until
+HBC restarts (`hbc.py transfer-style`). `net_hang` is what a network cleanup
+that never returns inside IOS does: `wait` (the default: the menu carries
+on, the network is off until HBC starts again) or `reload` (HBC reloads the
+installed channel at once, for a developer's Wii); `HBCR` with `r` or `w` in
+header byte 4 sets it, saved when HBC next exits or launches an app (`hbc.py
+net-hang`). `startup` lists the startup steps as `"name":ms`, the time since
+`main()` at the end of each, in the order they finished; `playtime_cleared`
+(or `playtime_failed`) is the background write that clears the Wii Menu's
+play record, and `first_frame` the menu's first frame. `calls`, `usb_stuck`,
+`usb_unplugged`, `replug_needed` and `remotes_off` are described under
+[Start-up calls](#start-up-calls) and [Stuck USB](#stuck-usb). `zlib_mem`
+says where the zlib arena landed (see Performance), `zlib_peak` is the most
+of it one stream has used, and `zlib_heap` the largest zlib allocation that
+did not fit and went to the heap (0 if none). `tcp_last_failure` records
+what IOS returned during the last receive that failed: `r<n>` per `net_read`
+result, `p<events>/<result>` per poll, then the reason. `crash` is `null`,
+or the crash an agent app reported before it returned to this HBC (see
 [Crash reports](#crash-reports)).
 
 `usb_drives` has one entry per USB slot (`usb`, then `usb2`): its drive's
@@ -133,6 +136,84 @@ update question) closes itself after 10 s, showing the count on its last
 button: OK, or No for a question. Any button press stops the count, for
 someone reading it. So a bad upload never leaves HBC waiting for a person,
 and an automated test carries on.
+
+#### Start-up calls
+
+`calls` (source/bootlog.c) times the blocking IOS calls of start-up and of
+the drive scan. `list` holds one entry per call, in the order they began:
+`call`, `thread`, `in` and `out` in ms on the same clock as `startup`, and
+the return code `rc`. `out` is `null` while IOS has not answered, so a call
+with no way out names the one start-up waits on. `thread` is `main`, `net`,
+`scan`, `kbd`, `avatar`, `play` or `usbguard` (the worker of
+[sdk/usbguard](../sdk/usbguard/README.md)), else the thread id in hex.
+
+The calls before the first frame are all kept; later ones reuse the oldest
+finished slots (`total` counts every call, `dropped` the reused).
+
+The `probe /dev/...` calls open IOS's NAND, ES, SD and network nodes right
+after the video is up, without waiting: one with no answer shows that IOS
+module is stuck before HBC asked it anything. USB gets no such probe (see
+[Stuck USB](#stuck-usb)).
+
+A call that took 50 ms or more logs a line to DEV > Log and `hbc.py log` as
+it comes back. When the menu is not up 5 s after the start, HBC draws the
+list on the TV (source/bootscreen.c) and redraws it twice a second, calls
+with no answer on red, under the last start-up step and its time.
+
+#### Stuck USB
+
+A USB drive that a reset left mid-transfer can wedge IOS58's USB module
+until it is unplugged. While USB requests wait there, every other IOS
+request waits too: ES, NAND, the network, the Wii Remotes (Bluetooth is a USB
+device) and `IOS_ReloadIOS`. So before anything else asks USB, HBC sends it
+the requests `WPAD_Init` starts with, in its order: open `/dev/usb/ven`
+(`probe /dev/usb/ven`), its version (`probe ven version`), open
+`/dev/usb/oh1/57e/305`. They run on usbguard's worker and get 1.5 s in all
+(source/usbstart.c). A USB 1.1 request alone is no test: it can answer while
+the USB 2.0 side is stuck, and `WPAD_Init` then waits for the drive.
+
+If they do not answer in time, `usb_stuck` is `true` and HBC starts without
+USB drives and keyboards (startup mark `usb_stuck`). It then tries two ways
+out, in order:
+
+1. Unplug the drive in software. With AHBPROT, HBC disables every EHCI port
+   that has a device (PORTSC, written directly, so it does not queue behind
+   IOS), and the stuck request fails as when the drive is pulled. It waits up
+   to 1 s for the request to answer. The calls list shows `ehci port N
+   <portsc> disable` for each port, with the port's new value as `rc`, and
+   HBCS `ehci` holds USBCMD, USBSTS and the async list address at each step.
+   When the request answers, `usb_unplugged` is `true` (startup mark
+   `usb_unplugged`): HBC stays on IOS58 with its Wii Remotes, and the drive
+   is not seen at USB 2.0 until it is replugged.
+2. Otherwise (no AHBPROT, no port with a device, or no answer) HBC reloads
+   IOS80, whose USB has no EHCI driver and leaves the drive alone (startup
+   mark `usb_stuck_ios`). The reload waits behind the stuck request too, until
+   the drive is pulled.
+
+`remotes_off` is `true` when neither worked: there are no Wii Remotes, only
+the GameCube controller.
+
+`replug_needed` is `true` while the stuck drive is still in. Only a pull or
+a replug clears the drive (a port reset, a console reset or a power-button
+restart do not while the Wii keeps USB powered), and an app that reloads IOS
+hangs on it (d2x rc3 gives up with -101 after about 7 s, older cIOSes and
+IOS58 do not). So while it is `true` a menu launch asks first ("Unplug it and
+plug it back in, then press A"; Cancel has the focus, and either button goes
+on once the drive is out), and a sent app is refused: the upload result is
+`error` with the code `usb_stuck`. HBC takes the drive as out when a disabled
+port shows a connect change or no device (disabling cleared the change); a
+port that IOS re-enables does not count. After the IOS80 fallback no port is
+known, so it stays `true`.
+
+#### Test builds
+
+Both build with `EXTRA_CFLAGS=-D...` and are for Dolphin or a bench Wii:
+
+- `HBC_TEST_USB_STUCK`: the USB check says `usb_stuck` whatever USB answers,
+  so HBC takes the paths above. In Dolphin no EHCI port has a device and its
+  NAND has no IOS80, so the remotes stay off.
+- `HBC_TEST_BOOT_STALL`: a start-up call named `test stall` that takes 12 s,
+  so the TV list shows.
 
 ### Files
 

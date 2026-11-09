@@ -46,6 +46,8 @@
 #include <ogc/usbstorage.h>
 
 #include "usbmsd.h"
+#include "bootlog.h"
+#include "usbstart.h"
 
 #define CBW_SIZE 31
 #define CBW_SIGNATURE 0x43425355
@@ -390,11 +392,11 @@ static s32 open_drive(drive *d, s32 device_id, u16 vid, u16 pid) {
 	d->tag = TAG_START;
 	d->timeout_s = TIMEOUT_S;
 	d->suspended = false;
-	if (USB_OpenDevice(device_id, vid, pid, &d->fd) < 0) {
+	if (BOOTLOG("msd USB_OpenDevice", USB_OpenDevice(device_id, vid, pid, &d->fd)) < 0) {
 		d->fd = -1;
 		return -1;
 	}
-	if (USB_GetDescriptors(d->fd, &udd) < 0) {
+	if (BOOTLOG("msd USB_GetDescriptors", USB_GetDescriptors(d->fd, &udd)) < 0) {
 		close_drive(d);
 		return -1;
 	}
@@ -431,19 +433,22 @@ static s32 open_drive(drive *d, s32 device_id, u16 vid, u16 pid) {
 		close_drive(d);
 		return USBSTORAGE_ENOINTERFACE;
 	}
-	USB_GetConfiguration(d->fd, &conf);   // some drives fail this; ignored
+	// some drives fail this; ignored
+	BOOTLOG("msd USB_GetConfiguration", USB_GetConfiguration(d->fd, &conf));
 	if (conf != d->configuration)
-		USB_SetConfiguration(d->fd, d->configuration);
+		BOOTLOG("msd USB_SetConfiguration", USB_SetConfiguration(d->fd, d->configuration));
 	if (d->alt_interface)
-		USB_SetAlternativeInterface(d->fd, d->interface, d->alt_interface);
+		BOOTLOG("msd USB_SetAlternativeInterface",
+				USB_SetAlternativeInterface(d->fd, d->interface, d->alt_interface));
 	if (!d->usb2) {
 		LWP_MutexLock(d->lock);
 		msd_reset(d);
 		LWP_MutexUnlock(d->lock);
 	}
 	LWP_MutexLock(d->lock);
-	retval = control(d, USB_CTRLTYPE_DIR_DEVICE2HOST | USB_CTRLTYPE_TYPE_CLASS |
-					 USB_CTRLTYPE_REC_INTERFACE, GET_MAX_LUN, 0, d->interface, 1, max_lun);
+	retval = BOOTLOG("msd GET_MAX_LUN", control(d, USB_CTRLTYPE_DIR_DEVICE2HOST |
+					 USB_CTRLTYPE_TYPE_CLASS | USB_CTRLTYPE_REC_INTERFACE, GET_MAX_LUN, 0,
+					 d->interface, 1, max_lun));
 	LWP_MutexUnlock(d->lock);
 	if (retval == USBSTORAGE_ETIMEDOUT) {
 		close_drive(d);
@@ -463,7 +468,9 @@ static bool startup(void) {
 	u32 level, i;
 	u8 *mem;
 
-	if (USB_Initialize() < 0)
+	// USB was stuck at the start (usbstart.h): asking it again would hold up
+	// every IOS call behind it.
+	if (usbstart_stuck() || BOOTLOG("msd USB_Initialize", USB_Initialize()) < 0)
 		return false;
 	_CPU_ISR_Disable(level);
 	if (!inited) {
@@ -515,7 +522,8 @@ static bool is_inserted(int slot) {
 		return false;
 	if (d->mounted)
 		return true;
-	if ((res = USB_GetDeviceList(list, DEVLIST_MAX, CLASS_MASS_STORAGE, &count)) < 0) {
+	if ((res = BOOTLOG("msd USB_GetDeviceList",
+			USB_GetDeviceList(list, DEVLIST_MAX, CLASS_MASS_STORAGE, &count))) < 0) {
 		note(d, "no device list", 0, 0, res);
 		close_drive(d);
 		return false;
@@ -545,7 +553,7 @@ static bool is_inserted(int slot) {
 			continue;
 		}
 		for (lun = 0; lun < d->max_lun; ++lun) {
-			s32 retval = mount_lun(d, lun);
+			s32 retval = BOOTLOG("msd mount_lun", mount_lun(d, lun));
 
 			if (retval == INVALID_LUN) {
 				note(d, "no 512-byte-sector LUN", list[i].vid, list[i].pid, d->sector_seen);

@@ -31,10 +31,13 @@ DIR_BUILD_CHAN = $(DIR_BUILD)/channel
 MBOARD = ../../sdk/mboard
 # The avatar (source/avatar.c) is sdk/mii and its drawing, built in whole.
 MII = ../../sdk/mii
+# The stuck-USB guard (usbstart.c's start-up check, unplug and replug check).
+USBGUARD = ../../sdk/usbguard
 
 DIR_INCLUDES = $(DIR_BUILD) \
 		$(MBOARD) \
 		$(MII) \
+		$(USBGUARD) \
 		$(DEVKITPRO)/libogc/include \
 		$(DEVKITPRO)/portlibs/ppc/include \
 		$(DEVKITPRO)/portlibs/ppc/include/freetype2
@@ -95,7 +98,7 @@ FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
 FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
 		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o $(DIR_BUILD)/miifx.o \
-		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
+		$(DIR_BUILD)/usbguard.o $(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
 FILES_CHAN = $(DIR_CHAN)/nandloader.S
@@ -259,6 +262,10 @@ $(DIR_BUILD)/miibody.o: $(MII)/miibody.c
 $(DIR_BUILD)/miifx.o: $(MII)/miifx.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
+$(DIR_BUILD)/usbguard.o: $(USBGUARD)/usbguard.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
 -include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 

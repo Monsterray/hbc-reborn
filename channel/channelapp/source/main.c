@@ -37,6 +37,10 @@
 #include "netrecovery.h"
 #include "loader.h"
 #include "devnet.h"
+#include "bootlog.h"
+#include "bootscreen.h"
+#include "usbstart.h"
+#include "usbguard.h"
 #include "zmem.h"
 #ifdef ENABLE_UPDATES
 #include "http.h"
@@ -65,6 +69,13 @@
 #endif
 
 #define WARN_SPLIT 360
+
+// How long IOS's USB module gets to answer at the start, and the IOS HBC
+// goes on with when it does not (see main_pre).
+#define USB_CHECK_MS 1500
+#define USB_STUCK_IOS 80
+// How long the stuck request gets to answer after its ports are unplugged.
+#define USB_UNPLUG_MS 1000
 
 extern const u8 stub_bin[];
 extern const u8 stub_bin_end;
@@ -229,9 +240,42 @@ static void main_pre(void) {
 	gfx_init_video();
 	PAD_Init();
 	mark("video");
+	// Before any other IOS call that could be stuck: the probes of the modules
+	// start-up asks, and the TV list, which needs the framebuffer.
+	bootlog_start();
+	bootscreen_start();
+
+	// A USB drive a reset left mid-transfer can wedge IOS58's USB module
+	// (USB 2.0, EHCI) until it is unplugged, and then the remotes, ES and
+	// NAND all wait behind it: a black screen (usbstart.h). HBC first
+	// disables the drive's EHCI ports in software, which fails the stuck
+	// request as a pull does. Without AHBPROT, with no port to disable, or if
+	// the request still does not answer, it reloads IOS80 (the Wii Menu's),
+	// which has no EHCI driver and leaves the drive alone. Either way HBC
+	// carries on without USB drives and keyboards. The reload keeps HBC's
+	// hardware access (AHBPROT) because ES is patched first.
+	if (!usbstart_check(USB_CHECK_MS)) {
+		mark("usb_stuck");
+		hlog("Start-up: USB did not answer in %u ms: unplugging its ports, no USB drives\n",
+			 USB_CHECK_MS);
+		if (usbstart_unplug(USB_UNPLUG_MS)) {
+			mark("usb_unplugged");
+		} else {
+			// A reload waits behind the stuck request too, but ends once the
+			// drive is pulled.
+			hlog("Start-up: USB still stuck: IOS%d\n", USB_STUCK_IOS);
+			BOOTLOG("patch_ahbprot_reset", patch_ahbprot_reset());
+			// On usbguard's worker, so the stuck reload is seen as such.
+			if (BOOTLOG("IOS_ReloadIOS", usbguard_reload_ios(USB_STUCK_IOS, NULL)) >= 0)
+				usbstart_ios_reloaded();
+			else
+				hlog("Start-up: IOS%d did not load: no Wii Remotes\n", USB_STUCK_IOS);
+			mark("usb_stuck_ios");
+		}
+	}
 
 	SYS_SetResetCallback(reset_cb);
-	title_init();
+	BOOTLOG_VOID("title_init (ES)", title_init());
 	SYS_SetPowerCallback(power_cb);
 	mark("title");
 
@@ -257,7 +301,7 @@ static void main_pre(void) {
 	gprintf("IOS Version: IOS%d %d.%d\n",
 			IOS_GetVersion(), IOS_GetRevisionMajor(), IOS_GetRevisionMinor());
 
-	ISFS_Initialize();
+	BOOTLOG("ISFS_Initialize", ISFS_Initialize());
 	mark("isfs");
 
 	WiiDVD_StopMotorAsync();
@@ -267,11 +311,15 @@ static void main_pre(void) {
 	app_entry_init();
 	mark("apps_thread");
 	theme_xml_init();
-	theme_init(NULL, 0);
+	BOOTLOG_VOID("theme_init", theme_init(NULL, 0));
 	mark("theme");
 	config_language();
-	loader_init();
+	BOOTLOG_VOID("loader_init", loader_init());
 	mark("language_loader");
+#ifdef HBC_TEST_BOOT_STALL
+	// Test builds only: a start-up call that takes 12 s, for the TV list.
+	BOOTLOG_VOID("test stall", usleep(12 * 1000 * 1000));
+#endif
 	controls_init();
 	cursors_init();
 	mark("controls_cursors");
@@ -364,7 +412,7 @@ void main_real(void) {
 
 	load_text();
 
-	if (settings_load()) {
+	if (BOOTLOG("settings_load", settings_load())) {
 		app_entry_set_prefered(settings.device);
 		app_entry_set_sort(settings.sort_order);
 
@@ -372,7 +420,7 @@ void main_real(void) {
 			browser_switch_mode();
 	}
 	// After the settings: they name the avatar's Mii.
-	avatar_init(settings.avatar_mii);
+	BOOTLOG_VOID("avatar_init", avatar_init(settings.avatar_mii));
 
 #ifdef ENABLE_UPDATES
 	update_check = 60;
@@ -382,7 +430,7 @@ void main_real(void) {
 	mark("settings");
 	v_browser = browser_init();
 	mark("browser");
-	home_init ();
+	BOOTLOG_VOID("home_init (ES)", home_init ());
 	mark("home");
 	// After the last startup IOS call: IOS serves one request at a time, so
 	// the play record's NAND write (about 120 ms) would hold up any IOS call
@@ -417,6 +465,8 @@ void main_real(void) {
 	v_detail = NULL;
 	v_about = NULL;
 
+	bootscreen_stop();
+	bootlog_menu_up();
 	view_fade(v_current, TEX_LAYER_CURSOR + 1, 0xff, 0xff, 0xff, 0xff, 31, -8);
 
 	view_enable_cursor (true);

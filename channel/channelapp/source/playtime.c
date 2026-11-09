@@ -24,6 +24,7 @@
 #include "../config.h"
 #include "mboard.h"
 #include "devnet.h"
+#include "bootlog.h"
 #include "isfs.h"
 #include "nandperm.h"
 #include "playtime.h"
@@ -223,7 +224,9 @@ static void *playtime_func(void *arg) {
 	state st;
 
 	(void) arg;
-	devnet_boot_mark(playtime_clear(&from_menu, &menu_start) ? "playtime_cleared" : "playtime_failed");
+	bootlog_thread("play");
+	devnet_boot_mark(BOOTLOG("playtime_clear (NAND)", playtime_clear(&from_menu, &menu_start)) ?
+					 "playtime_cleared" : "playtime_failed");
 	session_start = from_menu ? menu_start : hbc_boot;
 
 	// An app HBC launched: back through HBC's reload stub, it ran until this

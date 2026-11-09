@@ -5,6 +5,8 @@ results for each version are in [docs/history/](docs/history/).
 
 ## 1.15 ([details](docs/history/1.15.md))
 
+- **1.15.20** (2026-11-09): a stuck USB drive no longer holds HBC on a black screen (sdk/usbguard)
+- **1.15.16** (2026-11-05): hbc.py send --no-wait for apps that take over the Wii
 - **1.15.15** (2026-11-05): slotled audit fixes; its open questions left to contributors
 - **1.15.14** (2026-11-05): slotled works without AHBPROT; Wii Settings agrees with its save
 - **1.15.13** (2026-11-05): slotled: a flash no longer leaves the light stuck on

@@ -11,6 +11,8 @@
 #include "gfx.h"
 #include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "keyboard.h"
+#include "bootlog.h"
+#include "usbstart.h"
 
 static s32 pointer_owner = -1;
 WPADData *wpads[WPAD_MAX_WIIMOTES];
@@ -25,12 +27,16 @@ static u32 queued_up;
 void controls_init (void) {
 	int i;
 
-	// The remotes (Bluetooth, /dev/usb/oh1) before the keyboard: a USB drive
-	// a reset left stuck holds IOS's USB stack, and WPAD_Init behind the
-	// keyboard worker's first USB call waited until the drive was pulled
-	// (22 s on the bench Wii, 2026-11-06). Opened first, it takes the usual
-	// few milliseconds and the remotes keep working.
-	i = WPAD_Init ();
+	// The remotes (Bluetooth, /dev/usb/oh1) before the keyboard: a stuck USB
+	// drive holds IOS's USB stack, and a WPAD_Init queued behind the keyboard
+	// worker's first USB call would wait until the drive is pulled. Opened
+	// first, it takes the usual few milliseconds. When USB is stuck on this
+	// IOS (usbstart.h) it is not called at all: it would wait for the drive
+	// and hold up ES and NAND meanwhile.
+	if(usbstart_remotes_off ())
+		i = -1;
+	else
+		i = BOOTLOG("WPAD_Init", WPAD_Init ());
 
 	if(i < 0)
 		gprintf("WPAD_Init failed: %d\n",i);
@@ -47,7 +53,8 @@ void controls_init (void) {
 
 void controls_deinit (void) {
 	keyboard_shutdown ();
-	WPAD_Shutdown ();
+	if(!usbstart_remotes_off ())	// never started: its BTE shutdown asks USB
+		WPAD_Shutdown ();
 }
 
 static u32 wpad_button_transform(int chan, u32 btns) {
