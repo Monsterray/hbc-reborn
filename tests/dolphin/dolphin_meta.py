@@ -285,16 +285,41 @@ def main():
                 check(ios == ios_reloaded, f"no options: the IOS HBC reloads to ({ios})")
                 print(f"  AHBPROT without ahb_access: {ahbprot}", flush=True)
 
-        # The sorts, through Options (1) with the D-pad, the pointer away:
-        # up from Back to the sort row (Date), right for Custom; A; down to
-        # Back, left to Ok, A.
+        # The sorts, through Options (1) with the D-pad, the pointer away: up from
+        # Back to the sort row (it lands on Custom, the rightmost), left for Date;
+        # A; down to the last row, Ok, A.
         for sort, keys, expect in (
-                ("date", "", ["000-hbctest-meta-a", "000-hbctest-meta-b"]),
-                ("custom", "; press PadE; wait 0.5",
+                ("date", "; press PadW; wait 0.5", ["000-hbctest-meta-a", "000-hbctest-meta-b"]),
+                ("custom", "",
                  ["000-hbctest-meta-b", "000-hbctest-meta-c", "000-hbctest-meta-a"])):
-            pad.send(f"stick 0 {OFF}; wait 1; press Square; wait 2; press PadN; wait 0.5" + keys +
-                     "; press Cross; wait 0.5; press PadS; wait 0.5; press PadW; wait 0.5"
-                     "; press Cross; wait 3")
+            pad.send(f"stick 0 {OFF}; wait 1; press Square; wait 2")
+            pad.done()
+            opened = hbc.status(wii)["options"]
+            check(opened["open"] and opened["focus"] == "back", f"Options opened on Back ({opened})")
+            # Up from Back climbs the rows (badges, edges, progress, sort); the
+            # focus is read back so a new row cannot leave this script stale.
+            for _ in range(8):
+                if hbc.status(wii)["options"]["focus"] == "sort":
+                    break
+                pad.send("press PadN; wait 0.7")
+                pad.done()
+            focus = hbc.status(wii)["options"]["focus"]
+            check(focus == "sort", f"up from Back reaches the sort row ({focus})")
+            pad.send((keys.lstrip("; ") + "; " if keys else "") + "press Cross; wait 0.5")
+            pad.done()
+            shot(wii, out, f"options-{sort}")
+            # Ok is the left button of the last row: down to it, left if it is Back.
+            for _ in range(8):
+                if hbc.status(wii)["options"]["focus"] in ("ok", "back"):
+                    break
+                pad.send("press PadS; wait 0.7")
+                pad.done()
+            if hbc.status(wii)["options"]["focus"] == "back":
+                pad.send("press PadW; wait 0.7")
+                pad.done()
+            focus = hbc.status(wii)["options"]["focus"]
+            check(focus == "ok", f"the sort chosen, down to Ok ({focus})")
+            pad.send("press Cross; wait 3")
             pad.done()
             listed = hbc.status(wii)["app_list"]
             print(f"list ({listed['sort']}): {listed['order'][:5]}", flush=True)
