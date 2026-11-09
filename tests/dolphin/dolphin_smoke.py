@@ -154,6 +154,12 @@ def wad_title(image):
     return tid[:4].hex(), tid[4:].hex()
 
 
+NO_HOST_INPUT = {
+    "Config/WiimoteNew.ini": "[Wiimote1]\nDevice = DSUClient/0/none\n",
+    "Config/GCPadNew.ini": "[GCPad1]\nDevice = DSUClient/0/none\n",
+}
+
+
 class Dolphin:
     def __init__(self, image, sd=False, mmu=False, extra=(), files=None, net=True):
         """extra: more -C settings; files: {path in the profile: text or
@@ -173,7 +179,13 @@ class Dolphin:
         self.proc = None
         # whatever way the script ends: stop Dolphin, delete the profile
         atexit.register(self.close)
-        for rel, text in (files or {}).items():
+        # Dolphin's default Wii Remote 1 and GameCube pad 1 are this PC's
+        # keyboard and mouse, and the pad tests turn on background input: a
+        # click anywhere on the desktop was A in HBC, and once launched an app
+        # mid-test. Both go to a device that does not exist unless a test
+        # maps them (dolphin_meta.PAD_MAP).
+        files = {**NO_HOST_INPUT, **(files or {})}
+        for rel, text in files.items():
             (self.profile / rel).parent.mkdir(parents=True, exist_ok=True)
             if isinstance(text, bytes):
                 (self.profile / rel).write_bytes(text)
@@ -416,10 +428,18 @@ def check_devnet(run, log_port=0):
     listing = hbc.file_request(wii, "L", "sd:/hbctest/rm").decode()
     assert "keep.txt" in listing and "dir" in listing and "many" not in listing, listing
     assert not hbc._no_tree_delete, "the Wii refused op E"
-    # EPERM, before anything went; a "." component is EINVAL in any request.
-    for refused, code in (("sd:/*", 1), ("sd:/AP?S", 1), ("sd:/./AP?S", 22)):
+    # rm -r with a pattern at a device's top: hbc.py refuses it before it
+    # asks the Wii (no errno), and the Wii refuses it too, with EPERM before
+    # anything went; a "." component is EINVAL in any request.
+    for refused in ("sd:/*", "sd:/AP?S", "sd:/./AP?S"):
         try:
             hbc.remove_glob(wii, refused, recursive=True, out=quiet)
+            raise AssertionError(f"{refused} was deleted")
+        except hbc.HBCError as exc:
+            assert exc.code is None and "takes no wildcard" in str(exc), (refused, exc)
+    for refused, code in (("sd:/*", 1), ("sd:/AP?S", 1), ("sd:/./AP?S", 22)):
+        try:
+            hbc.remote_delete(wii, refused, True, glob=True)   # the Wii itself
             raise AssertionError(f"{refused} was deleted")
         except hbc.HBCError as exc:
             assert exc.code == code, (refused, exc)
