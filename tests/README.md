@@ -25,12 +25,13 @@ test's own docstring: edit the docstring, then run the script.
 | [`test_apprun.py`](host/test_apprun.py) | New/updated app badges: the per-device apps_seen.txt (apprun.c) on the host. |
 | [`test_browser_nav.py`](host/test_browser_nav.py) | Page boundaries and held-key timing for the app picker. |
 | [`test_cdblog.py`](host/test_cdblog.py) | HBC's Message Board play log writer, sdk/mboard's mboard_play_vff() (HBC builds it into playtime.c since 1.10.9), against the reference the Wii Menu accepted in Dolphin (tools/msgboard/cdb_log.py): the same sessions, on the same image, must give the same bytes. |
+| [`test_check_secrets.py`](host/test_check_secrets.py) | tools/check_secrets.py and the pre-push hook: keys, key-looking names, private key headers, tokens and local key bytes are caught in any pushed commit, the allow list and clean pushes pass, and the repository itself is clean. |
 | [`test_devfile_rm.py`](host/test_devfile_rm.py) | Compile the pattern matcher and protected-path check of HBCF op E. |
 | [`test_discover.py`](host/test_discover.py) | Compile discover_is_query (channel/channelapp/source/discover.h) on the host: HBC and the agent answer only a 16-byte HBCU query with byte 4 zero, and never a datagram from port 4299, which is another console's reply. |
 | [`test_dolphin_profile.py`](host/test_dolphin_profile.py) | The Dolphin runs' profile cleanup (tests/dolphin/dolphin_smoke.py), without Dolphin: each run's profile (a NAND copy, about 500 MB) goes when the script ends, pass or fail, unless HBC_KEEP_PROFILE=1; profiles left by killed runs go once they are a day old. |
 | [`test_hbc_find.py`](host/test_hbc_find.py) | hbc.py find and the HBCU discovery query, against fake Wiis on localhost. |
 | [`test_hbc_tool.py`](host/test_hbc_tool.py) | Check tools/hbc.py against a fake HBC that follows docs/devnet.md. |
-| [`test_keyboard.py`](host/test_keyboard.py) | Build channel/channelapp/source/keyboard.c on the host against a fake USB (tests/host/keyboard_host) and run its checks: a rollover report keeps the keys held and is not replayed, a keyboard whose open failed is tried again, a device that is not a keyboard is opened once, an unplugged device's ID is forgotten, and a read IOS never gave back after shutdown is reported. |
+| [`test_keyboard.py`](host/test_keyboard.py) | Build channel/channelapp/source/keyboard.c on the host against a fake USB (tests/host/keyboard_host) and run its checks: a rollover report keeps the keys held and is not replayed, a keyboard whose open failed is tried again, a device that is not a keyboard is opened once, an unplugged device's ID is forgotten, a read IOS never gave back after shutdown is reported, and a shutdown during a device's set-up leaves no slot filled and no handle open. |
 | [`test_keymap.py`](host/test_keymap.py) | Build channel/channelapp/source/keymap.c on the host and check how a USB keyboard's keys (by HID usage code) read as a Wii Remote's buttons: each key of the table in keymap.h gives its button alone, a chord gives the union, and every other key gives nothing. |
 | [`test_line_endings.py`](host/test_line_endings.py) | Line endings: text is LF in the repository and in the checkout, on every platform (.gitattributes, whatever core.autocrlf says). |
 | [`test_mboard.py`](host/test_mboard.py) | The Message Board library (sdk/mboard) on PC images. |
@@ -44,6 +45,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`test_overlay_ui.py`](host/test_overlay_ui.py) | Build tests/host/overlay_preview/preview.c with the host compiler and check that the overlay's scripted walk through every menu reaches each page and closes. |
 | [`test_panic_host.py`](host/test_panic_host.py) | Build tests/host/panic_host/test.c on the host: the crash screen's plain logic (channel/channelapp/source/panic_core.h: where a stack walk may read, the backtrace, the cause text, the crash block `hbc.py crash` reads) and the stub's IPC wait (channel/channelapp/stub/ipc_wait.h: a limit, late replies taken). |
 | [`test_pywii.py`](host/test_pywii.py) | Python 3 checks for PyWii that need no Wii keys. |
+| [`test_replug_checks.py`](host/test_replug_checks.py) | Host checks of the replug tests' own logic (tests/lib/replug_checks.py, tests/wii/wii_replug.py): what counts as a device being gone or present, and that the attended Wii test runs only as a bench job and never on a production Wii. |
 | [`test_sideways_remote.py`](host/test_sideways_remote.py) | The agent's Sideways remote (sdk/hbc_agent/sideways.h) on synthetic accelerometer reports: when a remote counts as sideways, and its D-pad turned. |
 | [`test_slotled.py`](host/test_slotled.py) | The slot light library (sdk/slotled) on a PC: brightness, the effect builders and the step engine, and the SYSCONF patcher. |
 | [`test_stationery.py`](host/test_stationery.py) | tools/msgboard/stationery.py: the board data that gives a Message Board letter its own stationery, icon and sound (docs/mboard/storage.md). |
@@ -78,6 +80,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`dolphin_network_retry.py`](dolphin/dolphin_network_retry.py) | A failed network start is cleaned up, then retried without a reload. |
 | [`dolphin_ogc_crash.py`](dolphin/dolphin_ogc_crash.py) | Crash an agent app in Dolphin, and check the agent recorded it and handed the crash on to libogc's crash screen. |
 | [`dolphin_options_edges.py`](dolphin/dolphin_options_edges.py) | Options > Grid edges in Dolphin (PR 7): the retail WAD in a throwaway NAND. |
+| [`dolphin_replug.py`](dolphin/dolphin_replug.py) | Unplug and replug the emulated SD card while HBC runs, in Dolphin. |
 | [`dolphin_slotled.py`](dolphin/dolphin_slotled.py) | tests/apps/slotled_app's `check` in Dolphin: sdk/slotled's timer, its GPIO writes and its SYSCONF read run without a fault, and the report says what a Wii's would (tests/wii/wii_slotled.py checks it the same way). |
 | [`dolphin_smoke.py`](dolphin/dolphin_smoke.py) | Boot the channel DOL in an isolated Dolphin profile and check it over TCP. |
 | [`dolphin_transfer_progress.py`](dolphin/dolphin_transfer_progress.py) | HBC's transfer line in Dolphin, with Options > Progress set to Circle: the retail WAD in a throwaway NAND and an emulated SD card. |
@@ -120,6 +123,7 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 | [`wii_overlay_speed.py`](wii/wii_overlay_speed.py) | How fast HBC's HOME overlay draws: the first opening after HBC starts, then later ones (HBCS "overlay": frames drawn, average and worst time each). |
 | [`wii_put_readback.py`](wii/wii_put_readback.py) | hbc.py put and sync reading each upload back (PR 2), on a Wii, as a queue job, against the HBC that is running (nothing is sent to it): |
 | [`wii_receive_caption.py`](wii/wii_receive_caption.py) | The Wiiload receive dialog's heading (PR 8), on a Wii, as a queue job: this tree's HBC (channel DOL, through the installed HBC) is sent the agent app as hbctest-recv/boot.dol, padded with 8 MiB so the dialog stays up. |
+| [`wii_replug.py`](wii/wii_replug.py) | ATTENDED test on the dev Wii: pull and replug the SD card and the USB drive while HBC runs. |
 | [`wii_slotled.py`](wii/wii_slotled.py) | The slot light library (sdk/slotled) on the bench Wii, as queue jobs. |
 | [`wii_transfer_progress.py`](wii/wii_transfer_progress.py) | HBC's transfer line and Options > Progress on a Wii, as a queue job: this tree's HBC (channel DOL, through the installed HBC). |
 | [`wii_upload_popups.py`](wii/wii_upload_popups.py) | Check that popups an upload raises close themselves and report back. |
@@ -159,5 +163,6 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 | --- | --- |
 | [`agent_checks.py`](lib/agent_checks.py) | Checks for sdk/hbc_agent, shared by tests/wii/wii_agent.py and tests/dolphin/dolphin_smoke.py --agent. |
 | [`make_index.py`](lib/make_index.py) | Write tests/README.md: every test, one line each, from its own docstring. |
+| [`replug_checks.py`](lib/replug_checks.py) | Checks shared by tests/dolphin/dolphin_replug.py and tests/wii/wii_replug.py: what HBC must show after a storage device is unplugged and plugged back in. |
 | [`testenv.py`](lib/testenv.py) | Put tools/ and every test layer on sys.path, so tests and tools import each other by name (`import hbc`, `import dolphin_smoke`, `import agent_checks`). |
 | [`vffread.py`](lib/vffread.py) | Read a Wii VFF (cdb.vff, wc24recv.mbx): a FAT16 volume in a NAND file, geometry from its header. |

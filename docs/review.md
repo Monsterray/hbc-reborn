@@ -52,6 +52,16 @@ shutdown. Either turn that into a full keyboard SDK in `sdk/` (like
 core), or send libogc a fix PR that makes libwiikeyboard as robust. Then HBC
 and other apps can use it.
 
+### A card pulled while an app's dialog is open
+
+`app_entry_scan` takes `AE_ACT_REMOVE` and `AE_ACT_ADD` only while the app list
+is the view. If the SD card is pulled with an app's details open, the removal
+waits. When the card comes back, `app_entry_load_all` frees the entries on the
+scan thread, while the dialog may still hold one. Found while reading the code
+for the replug tests (1.15.21); not seen on a Wii. Test: pull the SD card with
+an app's details open, plug it back in, then close the details.
+`tests/wii/wii_replug.py` starts on the app list, so it does not cover this.
+
 ### More keyboard keys
 
 The keyboard works but needs a lot more bindings to feel right (Monty,

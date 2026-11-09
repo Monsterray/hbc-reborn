@@ -521,6 +521,9 @@ const char *app_entry_mount_why(int device) {
 	return device >= 0 && device < DEVICE_COUNT && mount_failed[device] ? mount_why[device] :
 		NULL;
 }
+// extra_mounted, mount_failed and mount_why: the scan thread and the threads
+// that make file requests (network, avatar, Mii resources) both change them.
+// Made by app_entry_init, before any of those threads starts.
 static mutex_t extra_lock = LWP_MUTEX_NULL;
 
 // libogc's FAT finds partitions only in an MBR. A GPT disk (its MBR holds just
@@ -568,14 +571,49 @@ static bool mount_device(int i) {
 				   fatMountSimple(devices[i].name, devices[i].device) || mount_gpt(i));
 }
 
+// A drive that file requests mounted, or found unmountable, and that has
+// since been unplugged: forget it, so status stops listing it. Before, it
+// stayed "inserted" until the next file request to that drive.
+static void drop_removed_extras(bool *status) {
+	int i;
+
+	LWP_MutexLock(extra_lock);
+	for (i = 0; i < DEVICE_COUNT; ++i) {
+		if (i == device_active)
+			continue;
+		if (extra_mounted[i] && !dev_inserted(i)) {
+			hlog("Device lost: %s (mounted for file requests)\n", devices[i].name);
+			fatUnmount(devices[i].name);
+			dev_shutdown(i);
+			extra_mounted[i] = false;
+			status[i] = false;
+		}
+		if (mount_failed[i] && !dev_inserted(i)) {
+			mount_failed[i] = false;
+			mount_why[i][0] = 0;
+		}
+	}
+	LWP_MutexUnlock(extra_lock);
+}
+
 static bool _mount(int index) {
+	bool was_extra;
+
 	// Already mounted for file requests: it becomes the active one as is.
-	if (extra_mounted[index]) {
-		extra_mounted[index] = false;
+	LWP_MutexLock(extra_lock);
+	was_extra = extra_mounted[index];
+	extra_mounted[index] = false;
+	LWP_MutexUnlock(extra_lock);
+	if (was_extra) {
 		devices[index].last_status = true;
 		return true;
 	}
 	devices[index].last_status = mount_device(index);
+	if (devices[index].last_status) {
+		LWP_MutexLock(extra_lock);
+		mount_failed[index] = false;   // an "unmountable" note from before is stale
+		LWP_MutexUnlock(extra_lock);
+	}
 
 	if (!devices[index].last_status) {
 		dev_shutdown(index);
@@ -632,7 +670,8 @@ static void *ae_func (void *arg) {
 
 		switch (ta->cmd) {
 		case AE_CMD_SCAN:
-			
+			drop_removed_extras(ta->status);
+
 			if (device_active >= 0) {
 				if (!ta->umount && dev_inserted(device_active))
 					continue;
@@ -644,6 +683,7 @@ static void *ae_func (void *arg) {
 				fatUnmount(devices[device_active].name);
 				dev_shutdown(device_active);
 				devices[device_active].last_status = false;
+				ta->status[device_active] = false;   // else status keeps saying inserted
 				device_active = -1;
 
 				ta->action = AE_ACT_REMOVE;
@@ -758,6 +798,12 @@ void app_entry_init(void) {
 	ta_ae.mount = -1;
 	ta_ae.loading = false;
 
+	res = LWP_MutexInit(&extra_lock, false);
+	if (res) {
+		gprintf("error creating extra_lock: %d\n", res);
+		return;
+	}
+
 	res = LWP_MutexInit (&ta_ae.cmutex, false);
 
 	if (res) {
@@ -811,12 +857,14 @@ void app_entry_deinit (void) {
 			fatUnmount(devices[device_active].name);
 			dev_shutdown(device_active);
 		}
+		LWP_MutexLock(extra_lock);
 		for (i = 0; i < DEVICE_COUNT; ++i)
 			if (extra_mounted[i]) {
 				fatUnmount(devices[i].name);
 				dev_shutdown(i);
 				extra_mounted[i] = false;
 			}
+		LWP_MutexUnlock(extra_lock);
 
 		USB_Deinitialize();
 	}
@@ -915,8 +963,6 @@ void app_entry_mount_for(const char *path) {
 	// only from Options.
 	if (i == DEVICE_COUNT || i == device_active || !strncmp(devices[i].name, "card", 4))
 		return;
-	if (extra_lock == LWP_MUTEX_NULL)
-		LWP_MutexInit(&extra_lock, false);
 	LWP_MutexLock(extra_lock);
 	if (extra_mounted[i] && !dev_inserted(i)) {
 		fatUnmount(devices[i].name);
