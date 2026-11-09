@@ -20,6 +20,7 @@
 #include "panic.h"
 
 #include "appentry.h"
+#include "bootlog.h"
 #include "apprun.h"
 
 typedef struct {
@@ -55,6 +56,31 @@ static device_t devices[DEVICE_COUNT] = {
 
 static int device_active = -1;
 static int device_prefered = -1;
+
+// The devices' calls, timed for the start-up log (bootlog.h): "usb inserted".
+enum { DEV_STARTUP, DEV_INSERTED, DEV_MOUNT, DEV_SHUTDOWN, DEV_CALLS };
+static char dev_call_names[DEVICE_COUNT][DEV_CALLS][16];
+
+static const char *dev_call(int i, int what) {
+	static const char *const what_names[DEV_CALLS] = { "startup", "inserted", "mount", "shutdown" };
+
+	if (!dev_call_names[i][what][0])
+		snprintf(dev_call_names[i][what], sizeof(dev_call_names[i][what]), "%s %s",
+				 devices[i].name, what_names[what]);
+	return dev_call_names[i][what];
+}
+
+static bool dev_startup(int i) {
+	return BOOTLOG(dev_call(i, DEV_STARTUP), devices[i].device->startup());
+}
+
+static bool dev_inserted(int i) {
+	return BOOTLOG(dev_call(i, DEV_INSERTED), devices[i].device->isInserted());
+}
+
+static void dev_shutdown(int i) {
+	BOOTLOG_VOID(dev_call(i, DEV_SHUTDOWN), devices[i].device->shutdown());
+}
 static app_filter current_filter = APP_FILTER_ALL;
 static app_sort current_sort = APP_SORT_NAME;
 static bool cmp_descending = false;
@@ -229,10 +255,16 @@ static app_entry *app_entry_load_single (const char *dirname, bool in_scan) {
 	entry->size = st.st_size;
 	entry->run_state = APP_RUN_UNCHANGED;
 	// Options > App badges: only then read the device's apps_seen.txt.
-	if (type != AET_THEME && settings.new_badges && device_active >= 0) {
+	if (type != AET_THEME && device_active >= 0) {
 		if (in_scan) {
-			entry->run_state = app_run_status(dirname);
-		} else {
+			// Always mark the app seen while the scan runs: with badges
+			// turned off midway, the apps after that point would be missed
+			// and pruned. The badge shows only while the setting is on.
+			app_run_state state = app_run_status(dirname);
+
+			if (settings.new_badges)
+				entry->run_state = state;
+		} else if (settings.new_badges) {
 			char root[16];
 
 			snprintf(root, sizeof(root), "%s:", devices[device_active].name);
@@ -324,7 +356,7 @@ static void app_entry_load_all (void) {
 	// Forget the badge records of apps that are gone, but only after a scan
 	// that saw every folder (no readdir error) and a card that is still there.
 	if (badge_scan) {
-		app_run_end(!de && !errno && devices[device_active].device->isInserted());
+		app_run_end(!de && !errno && dev_inserted(device_active));
 	}
 
 	closedir(d);
@@ -489,6 +521,9 @@ const char *app_entry_mount_why(int device) {
 	return device >= 0 && device < DEVICE_COUNT && mount_failed[device] ? mount_why[device] :
 		NULL;
 }
+// extra_mounted, mount_failed and mount_why: the scan thread and the threads
+// that make file requests (network, avatar, Mii resources) both change them.
+// Made by app_entry_init, before any of those threads starts.
 static mutex_t extra_lock = LWP_MUTEX_NULL;
 
 // libogc's FAT finds partitions only in an MBR. A GPT disk (its MBR holds just
@@ -532,20 +567,56 @@ static bool mount_gpt(int i) {
 }
 
 static bool mount_device(int i) {
-	return fatMountSimple(devices[i].name, devices[i].device) || mount_gpt(i);
+	return BOOTLOG(dev_call(i, DEV_MOUNT),
+				   fatMountSimple(devices[i].name, devices[i].device) || mount_gpt(i));
+}
+
+// A drive that file requests mounted, or found unmountable, and that has
+// since been unplugged: forget it, so status stops listing it. Before, it
+// stayed "inserted" until the next file request to that drive.
+static void drop_removed_extras(bool *status) {
+	int i;
+
+	LWP_MutexLock(extra_lock);
+	for (i = 0; i < DEVICE_COUNT; ++i) {
+		if (i == device_active)
+			continue;
+		if (extra_mounted[i] && !dev_inserted(i)) {
+			hlog("Device lost: %s (mounted for file requests)\n", devices[i].name);
+			fatUnmount(devices[i].name);
+			dev_shutdown(i);
+			extra_mounted[i] = false;
+			status[i] = false;
+		}
+		if (mount_failed[i] && !dev_inserted(i)) {
+			mount_failed[i] = false;
+			mount_why[i][0] = 0;
+		}
+	}
+	LWP_MutexUnlock(extra_lock);
 }
 
 static bool _mount(int index) {
+	bool was_extra;
+
 	// Already mounted for file requests: it becomes the active one as is.
-	if (extra_mounted[index]) {
-		extra_mounted[index] = false;
+	LWP_MutexLock(extra_lock);
+	was_extra = extra_mounted[index];
+	extra_mounted[index] = false;
+	LWP_MutexUnlock(extra_lock);
+	if (was_extra) {
 		devices[index].last_status = true;
 		return true;
 	}
 	devices[index].last_status = mount_device(index);
+	if (devices[index].last_status) {
+		LWP_MutexLock(extra_lock);
+		mount_failed[index] = false;   // an "unmountable" note from before is stale
+		LWP_MutexUnlock(extra_lock);
+	}
 
 	if (!devices[index].last_status) {
-		devices[index].device->shutdown();
+		dev_shutdown(index);
 
 		return false;
 	}
@@ -582,6 +653,7 @@ static void *ae_func (void *arg) {
 	char cwd[16];
 
 	ta->running = true;
+	bootlog_thread("scan");
 
 	for (i = 0; i < DEVICE_COUNT; ++i)
 		ta_ae.status[i] = false;
@@ -598,9 +670,10 @@ static void *ae_func (void *arg) {
 
 		switch (ta->cmd) {
 		case AE_CMD_SCAN:
-			
+			drop_removed_extras(ta->status);
+
 			if (device_active >= 0) {
-				if (!ta->umount && devices[device_active].device->isInserted())
+				if (!ta->umount && dev_inserted(device_active))
 					continue;
 
 				gprintf("device lost: %s\n", devices[device_active].name);
@@ -608,8 +681,9 @@ static void *ae_func (void *arg) {
 				ta->umount = false;
 
 				fatUnmount(devices[device_active].name);
-				devices[device_active].device->shutdown();
+				dev_shutdown(device_active);
 				devices[device_active].last_status = false;
+				ta->status[device_active] = false;   // else status keeps saying inserted
 				device_active = -1;
 
 				ta->action = AE_ACT_REMOVE;
@@ -665,7 +739,7 @@ static void *ae_func (void *arg) {
 			for (i = 0; i < DEVICE_COUNT; ++i) {
 				if (i == device_active) {
 					ta->status[i] = devices[i].last_status =
-						devices[i].device->isInserted();
+						dev_inserted(i);
 
 					if (!ta->umount && !devices[i].last_status)
 						ta->umount = true;
@@ -674,24 +748,24 @@ static void *ae_func (void *arg) {
 				}
 
 				if (devices[i].last_status) {
-					if (!devices[i].device->isInserted()) {
+					if (!dev_inserted(i)) {
 						ta->status[i] = devices[i].last_status = false;
-						devices[i].device->shutdown();
+						dev_shutdown(i);
 					}
 
 					continue;
 				}
 
-				if (!devices[i].device->startup()) {
+				if (!dev_startup(i)) {
 					ta->status[i] = devices[i].last_status = false;
 					continue;
 				}
 
 				ta->status[i] = devices[i].last_status =
-					devices[i].device->isInserted();
+					dev_inserted(i);
 
 				if (!devices[i].last_status)
-					devices[i].device->shutdown();
+					dev_shutdown(i);
 			}
 
 			continue;
@@ -723,6 +797,12 @@ void app_entry_init(void) {
 	ta_ae.umount = false;
 	ta_ae.mount = -1;
 	ta_ae.loading = false;
+
+	res = LWP_MutexInit(&extra_lock, false);
+	if (res) {
+		gprintf("error creating extra_lock: %d\n", res);
+		return;
+	}
 
 	res = LWP_MutexInit (&ta_ae.cmutex, false);
 
@@ -775,14 +855,16 @@ void app_entry_deinit (void) {
 
 		if (device_active >= 0) {
 			fatUnmount(devices[device_active].name);
-			devices[device_active].device->shutdown();
+			dev_shutdown(device_active);
 		}
+		LWP_MutexLock(extra_lock);
 		for (i = 0; i < DEVICE_COUNT; ++i)
 			if (extra_mounted[i]) {
 				fatUnmount(devices[i].name);
-				devices[i].device->shutdown();
+				dev_shutdown(i);
 				extra_mounted[i] = false;
 			}
+		LWP_MutexUnlock(extra_lock);
 
 		USB_Deinitialize();
 	}
@@ -881,16 +963,14 @@ void app_entry_mount_for(const char *path) {
 	// only from Options.
 	if (i == DEVICE_COUNT || i == device_active || !strncmp(devices[i].name, "card", 4))
 		return;
-	if (extra_lock == LWP_MUTEX_NULL)
-		LWP_MutexInit(&extra_lock, false);
 	LWP_MutexLock(extra_lock);
-	if (extra_mounted[i] && !devices[i].device->isInserted()) {
+	if (extra_mounted[i] && !dev_inserted(i)) {
 		fatUnmount(devices[i].name);
-		devices[i].device->shutdown();
+		dev_shutdown(i);
 		extra_mounted[i] = false;
 	}
-	if (!extra_mounted[i] && i != device_active && devices[i].device->startup() &&
-			devices[i].device->isInserted()) {
+	if (!extra_mounted[i] && i != device_active && dev_startup(i) &&
+			dev_inserted(i)) {
 		extra_mounted[i] = mount_device(i);
 		if (extra_mounted[i])
 			hlog("Mounted %s: for file requests\n", devices[i].name);

@@ -2,10 +2,10 @@
 does: the title list from Dolphin's NetUpdateSOAP stand-in, the files from the
 CDN it names. Contents stay encrypted; each title is packed into a WAD that
 Dolphin installs (and decrypts) itself."""
-import pathlib, re, struct, sys, urllib.request
+import argparse, pathlib, re, struct, sys, urllib.request
 
-OUT = pathlib.Path(sys.argv[1])
-OUT.mkdir(parents=True, exist_ok=True)
+OUT = None      # the output folder, set by main()
+prefix = None   # the CDN prefix the title list names, set by main()
 SOAP = """<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
   xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -35,16 +35,36 @@ def get(url, data=None, headers=None):
     return body
 
 
-reply = get("https://fakenus.dolphin-emu.org/nus/services/NetUpdateSOAP", SOAP.encode(), {
-    "SOAPAction": "urn:nus.wsapi.broadon.com/GetSystemUpdate",
-    "User-Agent": "wii libnup/1.0", "Content-Type": "text/xml; charset=utf-8"}).decode()
-code = re.search(r"<ErrorCode>(-?\d+)</ErrorCode>", reply)
-assert code and code[1] == "0", reply[:500]
-prefix = re.search(r"<ContentPrefixURL>([^<]+)</ContentPrefixURL>", reply)[1].replace("https://", "http://")
-titles = {int(t, 16): int(v) for t, v in re.findall(
-    r"<TitleId>([0-9A-Fa-f]+)</TitleId>\s*<Version>(\d+)</Version>", reply)}
-print("content prefix", prefix)
-print(len(titles), "titles; System Menu version", titles.get(0x0000000100000002))
+def main(argv=None):
+    global OUT, prefix
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""example:
+  python tools/msgboard/nus_sysmenu.py nus-download
+
+It downloads the Wii Menu and its IOS into OUTDIR (raw replies are cached in
+OUTDIR/raw, so a second run reuses them) and writes one WAD per title.
+
+exit codes: 0 both WADs written; 2 bad usage (argparse's own). A network
+failure or an error reply from the update server ends with a Python
+traceback (exit 1).""")
+    ap.add_argument("outdir", metavar="OUTDIR", help="folder for the WADs (created)")
+    args = ap.parse_args(argv)
+    OUT = pathlib.Path(args.outdir)
+    OUT.mkdir(parents=True, exist_ok=True)
+    reply = get("https://fakenus.dolphin-emu.org/nus/services/NetUpdateSOAP", SOAP.encode(), {
+        "SOAPAction": "urn:nus.wsapi.broadon.com/GetSystemUpdate",
+        "User-Agent": "wii libnup/1.0", "Content-Type": "text/xml; charset=utf-8"}).decode()
+    code = re.search(r"<ErrorCode>(-?\d+)</ErrorCode>", reply)
+    assert code and code[1] == "0", reply[:500]
+    prefix = re.search(r"<ContentPrefixURL>([^<]+)</ContentPrefixURL>", reply)[1].replace("https://", "http://")
+    titles = {int(t, 16): int(v) for t, v in re.findall(
+        r"<TitleId>([0-9A-Fa-f]+)</TitleId>\s*<Version>(\d+)</Version>", reply)}
+    print("content prefix", prefix)
+    print(len(titles), "titles; System Menu version", titles.get(0x0000000100000002))
+    ios = wad(0x0000000100000002, titles[0x0000000100000002])
+    wad(ios, titles.get(ios, 0))
+    return 0
 
 
 def wad(tid, ver):
@@ -89,5 +109,5 @@ def wad(tid, ver):
     return ios
 
 
-ios = wad(0x0000000100000002, titles[0x0000000100000002])
-wad(ios, titles.get(ios, 0))
+if __name__ == "__main__":
+    sys.exit(main())

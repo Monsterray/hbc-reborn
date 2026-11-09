@@ -1,4 +1,4 @@
-// The agent's safety tools (../hbc_agent.h, "Safety tools"): what turns a
+// The agent's safety tools (hbc_agent.h, "Safety tools"): what turns a
 // silent failure into a report, and what keeps an app's last moments from
 // doing damage.
 //

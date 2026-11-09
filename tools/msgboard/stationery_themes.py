@@ -17,6 +17,7 @@ name in a light one (as WiiLink's letters do). Sound is mono DSP-ADPCM at 8 kHz,
 WiiLink's letters have it. See tools/msgboard/stationery.py for the format.
 """
 
+import argparse
 import math
 import pathlib
 import random
@@ -370,8 +371,19 @@ def arcade():
 THEMES = {"ocean": ocean, "sunset": sunset, "forest": forest, "nightsky": nightsky, "arcade": arcade}
 
 
-def main():
-    out = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "stationery")
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  python tools/msgboard/stationery_themes.py
+  python tools/msgboard/stationery_themes.py out/stationery
+
+exit codes: 0 all five themes written (one line each); 1 a theme is over the
+board size limit (message on stderr); 2 bad usage (argparse's own).""")
+    ap.add_argument("outdir", metavar="OUTDIR", nargs="?", default="stationery",
+                    help="folder for <theme>.arc and <theme>.png (default: stationery)")
+    args = ap.parse_args(argv)
+    out = pathlib.Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
     for name, make in THEMES.items():
         letter, thumb, music = make()
@@ -385,7 +397,8 @@ def main():
         prev.save(out / f"{name}.png")
         secs = f", {len(music) / RATE:.1f} s of music" if music else ""
         print(f"{name}: {len(arc)} bytes{secs}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -294,6 +294,7 @@ static slotled_step own[SLOTLED_MAX_STEPS];
 static slotled_effect cur;          /* what plays */
 static u32 periods;                 /* periods since it started */
 static int start_level, shown, ended;
+static int under;                   /* the effect's level, beneath a flash */
 static int flash_level;
 static u32 flash_left;              /* periods of flash still to show */
 
@@ -324,7 +325,7 @@ static void stop_ticking(void)
 /* At the start of each period, with interrupts off. */
 static void period_start(syswd_t alarm, void *arg)
 {
-	int level, done = 0;
+	int level, done = 0, flashing = 0;
 	u32 us;
 
 	(void)alarm;
@@ -336,9 +337,11 @@ static void period_start(syswd_t alarm, void *arg)
 		cur.count = 0;          /* held from here on */
 		start_level = level;
 	}
+	under = level;
 	if (flash_left) {
 		flash_left--;
 		level = flash_level;
+		flashing = 1;
 	}
 	shown = level;
 	us = slotled_duty_us(level);
@@ -346,8 +349,14 @@ static void period_start(syswd_t alarm, void *arg)
 	if (us && us < SLOTLED_PERIOD_US) {
 		struct timespec t = { 0, (long)us * 1000 };
 		SYS_SetAlarm(off_alarm, &t, off_edge, NULL);
+	} else {
+		/* A late period run back to back may leave the last one's off
+		 * edge pending: it must not cut a full level. */
+		SYS_CancelAlarm(off_alarm);
 	}
-	if (ended && !flash_left && (us == 0 || us == SLOTLED_PERIOD_US)) {
+	/* Stop only on the held level itself: a flash's last period may be
+	 * 0 or full while the level beneath it is not. */
+	if (ended && !flashing && (us == 0 || us == SLOTLED_PERIOD_US)) {
 		SYS_CancelAlarm(period_alarm);
 		ticking = 0;
 	}
@@ -390,6 +399,7 @@ int slotled_init(void)
 	was_on = (gpio[0] & PIN) != 0;
 	shown = was_on ? SLOTLED_MAX : 0;
 	start_level = shown;
+	under = shown;
 	cur.count = 0;
 	ended = 1;
 	flash_left = 0;
@@ -414,8 +424,8 @@ void slotled_shutdown(void)
 	gpio = NULL;
 }
 
-/* Starts `n` steps already in own[] (or the caller's), from the level
- * shown now. */
+/* Starts `n` steps already in own[] (or the caller's), from the effect's
+ * level now (beneath any flash). */
 static int run(const slotled_step *steps, u32 n, u32 repeat)
 {
 	u32 isr;
@@ -427,7 +437,7 @@ static int run(const slotled_step *steps, u32 n, u32 repeat)
 	cur.count = n;
 	cur.repeat = repeat;
 	periods = 0;
-	start_level = shown;
+	start_level = under;
 	ended = 0;
 	start_ticking();
 	_CPU_ISR_Restore(isr);
@@ -458,43 +468,49 @@ int slotled_get(void)
 	return shown;
 }
 
-/* Builds into own[] with interrupts held off the old steps first. */
-#define BUILD(call, repeat) do { int n_; u32 isr_; \
+/* The builders fill next[]; only a good build replaces own[], so a bad
+ * argument leaves the running effect alone. */
+static slotled_step next[SLOTLED_MAX_STEPS];
+
+static int take(int n, u32 repeat)
+{
+	u32 isr;
+
+	if (n < 0)
+		return n;
+	_CPU_ISR_Disable(isr);
+	stop_ticking();
+	memcpy(own, next, (size_t)n * sizeof own[0]);
+	_CPU_ISR_Restore(isr);
+	return run(own, (u32)n, repeat);
+}
+
+#define BUILD(call, repeat) do { \
 	if (!gpio) return SLOTLED_E_NOT_INIT; \
-	_CPU_ISR_Disable(isr_); stop_ticking(); cur.count = 0; _CPU_ISR_Restore(isr_); \
-	n_ = call; if (n_ < 0) return n_; \
-	return run(own, (u32)n_, repeat); } while (0)
+	return take(call, repeat); } while (0)
 
 int slotled_blink(int level, uint32_t on_ms, uint32_t off_ms, uint32_t count)
 {
-	BUILD(slotled_build_blink(own, SLOTLED_MAX_STEPS, level, on_ms, off_ms), count);
+	BUILD(slotled_build_blink(next, SLOTLED_MAX_STEPS, level, on_ms, off_ms), count);
 }
 
 int slotled_pulse(int lo, int hi, uint32_t period_ms, uint32_t count)
 {
-	BUILD(slotled_build_pulse(own, SLOTLED_MAX_STEPS, lo, hi, period_ms), count);
+	BUILD(slotled_build_pulse(next, SLOTLED_MAX_STEPS, lo, hi, period_ms), count);
 }
 
 int slotled_heartbeat(int level, uint32_t period_ms, uint32_t count)
 {
-	BUILD(slotled_build_heartbeat(own, SLOTLED_MAX_STEPS, level, period_ms), count);
+	BUILD(slotled_build_heartbeat(next, SLOTLED_MAX_STEPS, level, period_ms), count);
 }
 
 int slotled_morse(const char *text, int level, uint32_t unit_ms, uint32_t count)
 {
-	int chars, n, r;
-	u32 isr;
+	int chars, r;
 
 	if (!gpio)
 		return SLOTLED_E_NOT_INIT;
-	_CPU_ISR_Disable(isr);
-	stop_ticking();
-	cur.count = 0;
-	_CPU_ISR_Restore(isr);
-	n = slotled_build_morse(own, SLOTLED_MAX_STEPS, text, level, unit_ms, &chars);
-	if (n < 0)
-		return n;
-	r = run(own, (u32)n, count);
+	r = take(slotled_build_morse(next, SLOTLED_MAX_STEPS, text, level, unit_ms, &chars), count);
 	return r < 0 ? r : chars;
 }
 
@@ -504,6 +520,9 @@ int slotled_play(const slotled_effect *e)
 
 	if (!e || (e->count && !e->steps))
 		return SLOTLED_E_ARG;
+	/* The timer walks the steps every period, with interrupts off. */
+	if (e->count > SLOTLED_MAX_PLAY)
+		return SLOTLED_E_TOO_LONG;
 	for (i = 0; i < e->count; i++)
 		if (e->steps[i].fade > 1)
 			return SLOTLED_E_ARG;
@@ -518,7 +537,7 @@ int slotled_flash(int level, uint32_t ms)
 		return SLOTLED_E_ARG;
 	if (!gpio)
 		return SLOTLED_E_NOT_INIT;
-	n = (ms * 1000 + SLOTLED_PERIOD_US - 1) / SLOTLED_PERIOD_US;
+	n = (u32)(((u64)ms * 1000 + SLOTLED_PERIOD_US - 1) / SLOTLED_PERIOD_US);
 	_CPU_ISR_Disable(isr);
 	flash_level = level;
 	if (n > flash_left)

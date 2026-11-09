@@ -71,6 +71,23 @@ static void set_argv (entry_point *ep, const char *args, u16 arg_len) {
 	DCFlushRange ((void *) LD_ARGS_ADDR, arg_len);
 }
 
+// The entry point lies in one of the DOL's sections. A file that is not a
+// DOL (all zeros, a truncated download) has no sections and entry point 0,
+// and starting it would crash HBC.
+static bool dol_entry_ok (const dolheader *dolfile) {
+	u32 e = dolfile->entry_point, i;
+
+	for (i = 0; i < 7; i++)
+		if (dolfile->text_size[i] && e >= dolfile->text_start[i] &&
+				e - dolfile->text_start[i] < dolfile->text_size[i])
+			return true;
+	for (i = 0; i < 11; i++)
+		if (dolfile->data_size[i] && e >= dolfile->data_start[i] &&
+				e - dolfile->data_start[i] < dolfile->data_size[i])
+			return true;
+	return false;
+}
+
 static bool reloc_dol (entry_point *ep, const u8 *addr, u32 size,
 					   bool check_overlap) {
 	u32 i;
@@ -80,6 +97,11 @@ static bool reloc_dol (entry_point *ep, const u8 *addr, u32 size,
 		return false;
 
 	dolfile = (dolheader *) addr;
+	if (!dol_entry_ok(dolfile)) {
+		gprintf ("not a DOL: entry point 0x%08x is in no section\n",
+					dolfile->entry_point);
+		return false;
+	}
 	for (i = 0; i < 7; i++) {
 		if (!dolfile->text_size[i])
 			continue;

@@ -10,7 +10,7 @@
  *
  * It reads tuxedo's own use of SPRG2 and SPRG3, so it is for 3.1 only:
  * look again, and at whether KThreadExit now clears the owner, before
- * moving past it (REVIEW.md). */
+ * moving past it (docs/history/1.12.md, 1.12.2). */
 
 #ifndef _FPURELEASE_H_
 #define _FPURELEASE_H_

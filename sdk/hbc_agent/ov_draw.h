@@ -1,6 +1,6 @@
 /* Software drawing for the overlay, straight into a Wii external framebuffer
  * (YUYV: each 4 bytes hold Y0 Cb Y1 Cr for two pixels). Portable C, so the
- * host preview (tests/overlay_preview) draws exactly what the Wii shows. */
+ * host preview (tests/host/overlay_preview) draws exactly what the Wii shows. */
 
 #ifndef OV_DRAW_H
 #define OV_DRAW_H

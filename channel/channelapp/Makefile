@@ -31,10 +31,13 @@ DIR_BUILD_CHAN = $(DIR_BUILD)/channel
 MBOARD = ../../sdk/mboard
 # The avatar (source/avatar.c) is sdk/mii and its drawing, built in whole.
 MII = ../../sdk/mii
+# The stuck-USB guard (usbstart.c's start-up check, unplug and replug check).
+USBGUARD = ../../sdk/usbguard
 
 DIR_INCLUDES = $(DIR_BUILD) \
 		$(MBOARD) \
 		$(MII) \
+		$(USBGUARD) \
 		$(DEVKITPRO)/libogc/include \
 		$(DEVKITPRO)/portlibs/ppc/include \
 		$(DEVKITPRO)/portlibs/ppc/include/freetype2
@@ -95,7 +98,7 @@ FILES_PO_MRG = $(FILES_PO:$(DIR_I18N)/%.po=$(DIR_I18N)/merge/%.po)
 FILES_SRC = $(wildcard $(DIR_SRC)/*.c)
 FILES_SRC_OBJ = $(FILES_SRC:$(DIR_SRC)/%.c=$(DIR_BUILD)/%.o) $(DIR_BUILD)/mboard.o \
 		$(DIR_BUILD)/mii.o $(DIR_BUILD)/miidraw.o $(DIR_BUILD)/miibody.o $(DIR_BUILD)/miifx.o \
-		$(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
+		$(DIR_BUILD)/usbguard.o $(DIR_BUILD)/$(TARGET_STUB)_bin.o $(BANNER_OBJ) \
 		$(FILES_PNG_OBJ) $(FILES_MO_OBJ) $(FILES_TTF_OBJ)
 
 FILES_CHAN = $(DIR_CHAN)/nandloader.S
@@ -105,7 +108,7 @@ FILES_CHAN_OBJ = $(DIR_BUILD)/nandloader.o $(FILES_SRC_OBJ)
 
 all:
 	@[ -d $(DIR_BUILD) ] || mkdir $(DIR_BUILD)
-	@$(MAKE) --no-print-directory title_id.h
+	@$(MAKE) --no-print-directory title_id.h build_tag.h
 	@$(MAKE) --no-print-directory data
 	@$(MAKE) --no-print-directory $(TARGET_APP).elf
 
@@ -160,6 +163,23 @@ title_id.h: FORCE
 	@rm -f $@.tmp
 
 $(FILES_SRC_OBJ) $(FILES_STUB_OBJ): title_id.h
+
+# The version HBC reports (CHANNEL_BUILD_STR): the release in config.h, and
+# between releases "+<commits since the release's bump>.g<hash>", ".dirty"
+# for uncommitted changes, so every test build names itself. Rewritten only
+# when it changes; only the files that include it rebuild.
+build_tag.h: FORCE
+	@rel=$$(sed -n 's/^#define CHANNEL_VERSION_STR "\(.*\)"$$/\1/p' config.h); \
+	bump=$$(git log -1 --format=%H -G'CHANNEL_VERSION_STR' -- config.h 2>/dev/null); \
+	n=$$(git rev-list --count $$bump..HEAD 2>/dev/null); \
+	hash=$$(git rev-parse --short HEAD 2>/dev/null); \
+	git diff --quiet HEAD -- . ../../sdk 2>/dev/null; dirty=$$?; \
+	tag=$$rel; \
+	if [ -n "$$hash" ] && [ "$$n" != 0 -o $$dirty != 0 ]; then tag="$$rel+$${n:-0}.g$$hash"; fi; \
+	if [ -n "$$hash" ] && [ $$dirty != 0 ]; then tag="$$tag.dirty"; fi; \
+	echo "#define CHANNEL_BUILD_STR \"$$tag\"" > $@.tmp; \
+	cmp -s $@.tmp $@ || { mv $@.tmp $@; echo "build $$tag"; }; \
+	rm -f $@.tmp
 
 $(TARGET_APP).elf: $(TARGET_APP)_nopax.elf
 	@$(WIIPAX) -s devkitppc $< $@
@@ -243,10 +263,14 @@ $(DIR_BUILD)/miifx.o: $(MII)/miifx.c
 	@echo $(@F)
 	@$(CC) $(CFLAGS) -O2 -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
 
+$(DIR_BUILD)/usbguard.o: $(USBGUARD)/usbguard.c
+	@echo $(@F)
+	@$(CC) $(CFLAGS) -MMD -MP -MF $(@:%.o=%.d) -c $< -o $@
+
 -include $(FILES_SRC_OBJ:%.o=%.d) $(FILES_STUB_OBJ:%.o=%.d)
 
 clean:
-	rm -f title_id.h
+	rm -f title_id.h build_tag.h
 	rm -rf $(DIR_BUILD) \
 		*.elf *.dol *.bin *.map *_memmap.csv i18n/merge/* $(POTPL).gen
 	@$(MAKE) -C banner clean

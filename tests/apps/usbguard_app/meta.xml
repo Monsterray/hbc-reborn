@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+	<name>usbguard test</name>
+	<coder>hbc-reborn</coder>
+	<version>1.0.0</version>
+	<short_description>sdk/usbguard with a stuck USB drive</short_description>
+	<long_description>The attended stuck-drive run of tests/apps/usbguard_app (tests/wii/wii_usbguard.py). Launch it from the menu after a stuck start, with the drive still in.</long_description>
+	<arguments>
+		<arg>stuck</arg>
+	</arguments>
+	<ahb_access/>
+</app>

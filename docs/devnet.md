@@ -51,7 +51,7 @@ Error numbers are newlib's, not the host's: for example `EBADMSG` is 77 and
 | `HBCC` | zero | none | empty; forgets the reported crash (protocol 3) |
 | `HBCA` | name length (u16 at 4), flags (u16 at 6) | the name, UTF-8, up to 63 bytes in all with an optional NUL and file after it | empty; the play log's name for the next Wiiload upload, kept 2 minutes (protocol 5). The receive dialog shows the file (hbc.py sends `<app>/boot.dol`) with the sender's address below, else the name; an older HBC reads the name alone. Flag 1 installs a ZIP upload without asking (protocol 6); the length may then be 0 |
 | `HBCL` | zero | none | the kept log: `HBCL 1 <why> <uptime_ms> <app>\n` then the text; `ENOENT` when there is none (protocol 4) |
-| `HBCM` | zero | none | HOME > HBC > Save Mii faces: copies the Wii Menu's `RFL_Res.dat` to `sd:/mii/RFL_Res.dat`, and (1.10.26) the Mii Channel's `maleBody.brres` and `femaleBody.brres` beside it (1.12.2: and its `effect_nigaoe.breff` and `.breft`, when it has them); the reply body is the message the toast shows, with status 0 or the error (HBC 1.10.20; [mii.md](mii.md#the-face-models-rfl_resdat)) |
+| `HBCM` | zero | none | HOME > HBC > Save Mii faces: copies the Wii Menu's `RFL_Res.dat` to `sd:/mii/RFL_Res.dat`, and (1.10.26) the Mii Channel's `maleBody.brres` and `femaleBody.brres` beside it (1.12.2: and its `effect_nigaoe.breff` and `.breft`, when it has them); the reply body is the message the toast shows, with status 0 or the error (HBC 1.10.20; [mii/README.md](mii/README.md#the-face-models-rfl_resdat)) |
 | `HBCX` | zero | none | empty; an [agent](#in-app-agent) app then exits to HBC (protocol 3) |
 | `HBCH` | pages (u16 at 4: bit 0 System, 1 Video, 2 Storage, 3 USB, 4 Network; 0 for all) | none | JSON: the hardware and settings DEV > Info shows, `{"System":{"Console":"...",...},"Video":{...},"Storage":{...},"USB":{...},"Network":{...}}` (HBC 1.9.6 and its agent). In an app that never started libogc's USB, the USB page starts it and leaves it running. |
 
@@ -75,31 +75,34 @@ at the last device poll. `last` describes the most recent file transfer:
 bytes on the network, and time the Wii spent on Wi-Fi, SD, and zlib/CRC.
 Network and SD overlap in framed transfers, so their sum can exceed `ms`.
 `arena1_free` and `arena2_free` are the MEM1 and MEM2 that libogc's arena
-still has unclaimed (`SYS_GetArena1Size()`, `SYS_GetArena2Size()`), not
-free memory in an app's own heap: an app that built its heap from the
-arena shows little here with most of its heap free. They were
-`mem1_free` and `mem2_free` before 1.10.7. `heap_free` is newlib's free heap (its "used" figure would count the gap
-between MEM1 and MEM2), `tcp_stack_used` is the loader thread's stack
-high-water mark, `init_ms` is the time from HBC's `main()` to its menu, and
-`scan_ms` is the last full app scan. `net_starts` counts the times the network came up since HBC started
-(HOME > HBC > Restart network adds one). `transfer_style` is how this
-start shows a file name too long for the on-screen transfer line:
-`scroll`, `bounce` or `truncate`, picked at random; `HBCT` with the name in
-header bytes 4-15 forces one until HBC restarts (`hbc.py transfer-style`).
-`net_hang` is what a network cleanup that never returns inside IOS does:
-`wait` (the default: the menu carries on, the network is off until HBC
-starts again) or `reload` (HBC reloads the installed channel at once, for a
-developer's Wii); `HBCR` with `r` or `w` in header byte 4 sets it, saved
-when HBC next exits or launches an app (`hbc.py net-hang`). `startup` lists the startup steps as
-`"name":ms`, the time since `main()` at the end of each, in the order they
-finished; `playtime_cleared` (or `playtime_failed`) is the background write that
-clears the Wii Menu's play record. `zlib_mem` says where the zlib arena landed
-(see Performance), `zlib_peak` is the most of it one stream has used, and
-`zlib_heap` the largest zlib allocation that did not fit and went to the heap
-(0 if none). `tcp_last_failure` records what IOS returned
-during the last receive that failed: `r<n>` per `net_read` result,
-`p<events>/<result>` per poll, then the reason. `crash` is `null`, or the
-crash an agent app reported before it returned to this HBC (see
+still has unclaimed (`SYS_GetArena1Size()`, `SYS_GetArena2Size()`), not free
+memory in an app's own heap: an app that built its heap from the arena shows
+little here with most of its heap free. They were `mem1_free` and
+`mem2_free` before 1.10.7. `heap_free` is newlib's free heap (its "used"
+figure would count the gap between MEM1 and MEM2), `tcp_stack_used` is the
+loader thread's stack high-water mark, `init_ms` is the time from HBC's
+`main()` to its menu, and `scan_ms` is the last full app scan. `net_starts`
+counts the times the network came up since HBC started (HOME > HBC > Restart
+network adds one). `transfer_style` is how this start shows a file name too
+long for the on-screen transfer line: `scroll`, `bounce` or `truncate`,
+picked at random; `HBCT` with the name in header bytes 4-15 forces one until
+HBC restarts (`hbc.py transfer-style`). `net_hang` is what a network cleanup
+that never returns inside IOS does: `wait` (the default: the menu carries
+on, the network is off until HBC starts again) or `reload` (HBC reloads the
+installed channel at once, for a developer's Wii); `HBCR` with `r` or `w` in
+header byte 4 sets it, saved when HBC next exits or launches an app (`hbc.py
+net-hang`). `startup` lists the startup steps as `"name":ms`, the time since
+`main()` at the end of each, in the order they finished; `playtime_cleared`
+(or `playtime_failed`) is the background write that clears the Wii Menu's
+play record, and `first_frame` the menu's first frame. `calls`, `usb_stuck`,
+`usb_unplugged`, `replug_needed` and `remotes_off` are described under
+[Start-up calls](#start-up-calls) and [Stuck USB](#stuck-usb). `zlib_mem`
+says where the zlib arena landed (see Performance), `zlib_peak` is the most
+of it one stream has used, and `zlib_heap` the largest zlib allocation that
+did not fit and went to the heap (0 if none). `tcp_last_failure` records
+what IOS returned during the last receive that failed: `r<n>` per `net_read`
+result, `p<events>/<result>` per poll, then the reason. `crash` is `null`,
+or the crash an agent app reported before it returned to this HBC (see
 [Crash reports](#crash-reports)).
 
 `usb_drives` has one entry per USB slot (`usb`, then `usb2`): its drive's
@@ -134,6 +137,84 @@ button: OK, or No for a question. Any button press stops the count, for
 someone reading it. So a bad upload never leaves HBC waiting for a person,
 and an automated test carries on.
 
+#### Start-up calls
+
+`calls` (source/bootlog.c) times the blocking IOS calls of start-up and of
+the drive scan. `list` holds one entry per call, in the order they began:
+`call`, `thread`, `in` and `out` in ms on the same clock as `startup`, and
+the return code `rc`. `out` is `null` while IOS has not answered, so a call
+with no way out names the one start-up waits on. `thread` is `main`, `net`,
+`scan`, `kbd`, `avatar`, `play` or `usbguard` (the worker of
+[sdk/usbguard](../sdk/usbguard/README.md)), else the thread id in hex.
+
+The calls before the first frame are all kept; later ones reuse the oldest
+finished slots (`total` counts every call, `dropped` the reused).
+
+The `probe /dev/...` calls open IOS's NAND, ES, SD and network nodes right
+after the video is up, without waiting: one with no answer shows that IOS
+module is stuck before HBC asked it anything. USB gets no such probe (see
+[Stuck USB](#stuck-usb)).
+
+A call that took 50 ms or more logs a line to DEV > Log and `hbc.py log` as
+it comes back. When the menu is not up 5 s after the start, HBC draws the
+list on the TV (source/bootscreen.c) and redraws it twice a second, calls
+with no answer on red, under the last start-up step and its time.
+
+#### Stuck USB
+
+A USB drive that a reset left mid-transfer can wedge IOS58's USB module
+until it is unplugged. While USB requests wait there, every other IOS
+request waits too: ES, NAND, the network, the Wii Remotes (Bluetooth is a USB
+device) and `IOS_ReloadIOS`. So before anything else asks USB, HBC sends it
+the requests `WPAD_Init` starts with, in its order: open `/dev/usb/ven`
+(`probe /dev/usb/ven`), its version (`probe ven version`), open
+`/dev/usb/oh1/57e/305`. They run on usbguard's worker and get 1.5 s in all
+(source/usbstart.c). A USB 1.1 request alone is no test: it can answer while
+the USB 2.0 side is stuck, and `WPAD_Init` then waits for the drive.
+
+If they do not answer in time, `usb_stuck` is `true` and HBC starts without
+USB drives and keyboards (startup mark `usb_stuck`). It then tries two ways
+out, in order:
+
+1. Unplug the drive in software. With AHBPROT, HBC disables every EHCI port
+   that has a device (PORTSC, written directly, so it does not queue behind
+   IOS), and the stuck request fails as when the drive is pulled. It waits up
+   to 1 s for the request to answer. The calls list shows `ehci port N
+   <portsc> disable` for each port, with the port's new value as `rc`, and
+   HBCS `ehci` holds USBCMD, USBSTS and the async list address at each step.
+   When the request answers, `usb_unplugged` is `true` (startup mark
+   `usb_unplugged`): HBC stays on IOS58 with its Wii Remotes, and the drive
+   is not seen at USB 2.0 until it is replugged.
+2. Otherwise (no AHBPROT, no port with a device, or no answer) HBC reloads
+   IOS80, whose USB has no EHCI driver and leaves the drive alone (startup
+   mark `usb_stuck_ios`). The reload waits behind the stuck request too, until
+   the drive is pulled.
+
+`remotes_off` is `true` when neither worked: there are no Wii Remotes, only
+the GameCube controller.
+
+`replug_needed` is `true` while the stuck drive is still in. Only a pull or
+a replug clears the drive (a port reset, a console reset or a power-button
+restart do not while the Wii keeps USB powered), and an app that reloads IOS
+hangs on it (d2x rc3 gives up with -101 after about 7 s, older cIOSes and
+IOS58 do not). So while it is `true` a menu launch asks first ("Unplug it and
+plug it back in, then press A"; Cancel has the focus, and either button goes
+on once the drive is out), and a sent app is refused: the upload result is
+`error` with the code `usb_stuck`. HBC takes the drive as out when a disabled
+port shows a connect change or no device (disabling cleared the change); a
+port that IOS re-enables does not count. After the IOS80 fallback no port is
+known, so it stays `true`.
+
+#### Test builds
+
+Both build with `EXTRA_CFLAGS=-D...` and are for Dolphin or a bench Wii:
+
+- `HBC_TEST_USB_STUCK`: the USB check says `usb_stuck` whatever USB answers,
+  so HBC takes the paths above. In Dolphin no EHCI port has a device and its
+  NAND has no IOS80, so the remotes stay off.
+- `HBC_TEST_BOOT_STALL`: a start-up call named `test stall` that takes 12 s,
+  so the TV list shows.
+
 ### Files
 
 Paths are `<device>:/<path>` with device `sd`, `usb`, `usb2`, `carda` or
@@ -158,7 +239,7 @@ character, and paths of 256 bytes or more.
 | `M` | create a directory and its parents | none |
 | `A` | change FAT attributes: `size` bits 0-7 the values, bits 8-15 the mask of those to change (`r` 0x01, `h` 0x02, `s` 0x04, `a` 0x20; a mask bit outside those, or a `size` of 0x10000 or more, is `EINVAL`, and value bits outside the mask are ignored); a mask of 0 only reads (protocol 8, HBC 1.10.15) | the attributes after, as letters |
 | `R` | rename or move: `path` is the source, `size` the length of the destination path, which follows it; flags bit 1 replaces a file at the destination (protocol 7, HBC 1.10.14) | the destination as it ended up |
-| `E` | delete a tree or a pattern's matches (protocol 9; flags below) | u32 entries deleted |
+| `E` | delete a tree or a pattern's matches (protocol 9; flags below) | u32 entries deleted; on a failure after deleting began, the status is the error and the payload is u32 deleted, u32 total (HBC 1.15.9) |
 
 Op `E` takes flags in header byte 5: `0x04` deletes directories with
 everything under them (without it a directory must be empty, else
@@ -170,7 +251,13 @@ nothing is `ENOENT`. HBC walks the tree itself, so a recursive delete or a
 It counts every entry first, so a request that cannot succeed (`ENOTEMPTY`,
 `EACCES` for a read-only entry, `EPERM`, `ENAMETOOLONG`, or `ELOOP` for a
 tree nested more than 16 levels) deletes nothing; after that it deletes
-files and then each emptied folder, and stops at the first error. Whatever
+files and then each emptied folder, and stops at the first error. A failure
+after the deleting began (an I/O error, say) is sent with a payload of two
+u32: the entries deleted so far and the total counted, and `hbc.py` says
+"removed N of M before: <error>" and does not fall back to entry-by-entry
+deletes. A failure before any delete (the checks above) has no payload, as
+before; an older `hbc.py` ignores the payload of an error reply, and an older
+HBC sends none, so either pairing works. Whatever
 the client asks, HBC never deletes a device root or `<device>:/apps` itself,
 however it is spelled (`sd:/APPS/`) or matched (`sd:/*`, `sd:/AP?S`): `EPERM`
 (a `.` component is `EINVAL` in every request). The
@@ -318,7 +405,7 @@ drawing.
 
 ### Performance
 
-Measured on the bench Wii (802.11g, IOS58) with `tests/wii_netbench.py`:
+Measured on the bench Wii (802.11g, IOS58) with `tests/wii/wii_netbench.py`:
 
 | Data | Protocol 1 up / down | Framed up / down |
 | --- | --- | --- |
@@ -333,7 +420,7 @@ conditions, so compare interleaved runs.
 
 zlib's state lives in a 320 KiB MEM1 arena reserved at startup, because by
 the time a transfer runs the menu has filled MEM1 and the heap returns MEM2.
-`tests/membench` measured, on the Wii:
+`tests/apps/membench` measured, on the Wii:
 
 | | MEM1 | MEM2 | Locked cache, DMA from MEM2 |
 | --- | --- | --- | --- |
@@ -370,7 +457,7 @@ slept 20 ms whenever IOS had no data ready and uploads ran at 0.62 MB/s.
 | 20 | 12 | reserved, 0 |
 
 Port 0 clears the block. The block survives the jump to the next app. An app
-that includes [`sdk/hbc_netlog.h`](../sdk/hbc_netlog.h) and calls
+that includes [`sdk/hbc_netlog`](../sdk/hbc_netlog/README.md) and calls
 `hbc_netlog_init()` connects to that address and copies `stdout` and `stderr`
 to it, still writing to any console it set up first.
 
@@ -410,7 +497,7 @@ query does not answer it; reach it by address.
 
 ## In-app agent
 
-An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent.h) answers on port
+An app linked with [`sdk/hbc_agent`](../sdk/hbc_agent/README.md) answers on port
 4299 while it runs, with the same framing:
 
 | Request | Agent's answer |
@@ -456,7 +543,7 @@ with `guard_reload_stub`: 22 KiB) comes from the top of the MEM2 arena at
 `hbc_agent_init()`, as libogc takes WPAD's and the network's buffers, and
 the agent's `HBCS` says where: `"agent_mem":{"addr","bytes","from"}`, from
 `arena2_top`, or `heap` when the app had already taken the whole arena.
-`tests/wii_agent_mem2.py` checks both on a Wii.
+`tests/wii/wii_agent_mem2.py` checks both on a Wii.
 
 ### Stopping the agent, and lending the port
 
@@ -488,7 +575,7 @@ in progress (its client gets an error), and starts no network until
 `hbc_agent_listen(true)`. It returns once the port is free to bind. It is
 the same switch as the overlay's DEV "hbc.py connection", which shows it.
 
-`tests/wii_agent_stop.py` checks both on a Wii (agent_app's `stop`,
+`tests/wii/wii_agent_stop.py` checks both on a Wii (agent_app's `stop`,
 `restart`, `listen` and `stopcrash` modes).
 
 ### HOME overlay
@@ -504,8 +591,8 @@ showing, then draws its own frames in two framebuffers: the copy, dimmed,
 with the strip and menus drawn by `ov_ui.c` and `ov_draw.c` in software
 (YUYV, HBC's Droid fonts pre-rendered by `mkfont.py`). It never touches the
 app's GX state, and hands the VI the app's framebuffer back when it closes.
-Those two files are portable C, so `tests/overlay_preview` renders every
-page on the PC and `tests/test_overlay_ui.py` walks them in CI.
+Those two files are portable C, so `tests/host/overlay_preview` renders every
+page on the PC and `tests/host/test_overlay_ui.py` walks them in CI.
 
 LEDs, IR sensitivity and the sensor bar position need wiiuse's per-remote
 handle, which libogc keeps in a static array. The agent finds it from
@@ -525,7 +612,7 @@ and the format is unknown).
 
 The overlay drives the remote's speaker through
 [`sdk/wiispk`](../sdk/wiispk/README.md), which follows Nintendo's SDK
-(REVIEW.md 1.7.6 and 1.8.0):
+(docs/history/1.7.md, 1.7.6, and 1.8.md, 1.8.0):
 - It puts the remote's link in sniff mode (5 ms) and runs the SDK's start-up
   sequence.
 - It encodes each 20-byte report just before sending it, every 6.67 ms:
@@ -577,7 +664,7 @@ goes straight to libogc's own crash screen, which shows that fault; the
 block keeps the app's crash, without the note.
 `frames` are return addresses found by walking the stack's back chain; a
 leaf function's caller is in `lr`. The block layout is `hbc_crash_block` in
-`sdk/hbc_agent.h`: magic `HBCC`, version 2, the exception number
+`sdk/hbc_agent/hbc_agent.h`: magic `HBCC`, version 2, the exception number
 (`PPC_EXCPT_*`), `pc`, `msr`, `lr`, `cr`, `ctr`, `dar`, `dsisr`, `sp`,
 `uptime_ms`, twelve frames, the app name (20 bytes), `kind`, `code`, the
 reason (64 bytes), and a rotate-and-XOR check word over the rest. From
@@ -690,12 +777,12 @@ Sources for the hardware behaviour, and what is not proven:
   the reset, which the kept log next to it did on the bench Wii.
 - Dolphin models none of this: AHBPROT always reads open, `HW_RESETS` bit 0
   and STM's hot reset do nothing, and its IPC always answers.
-  `tests/dolphin_way_out.py` shows the decisions with the agent's test bits.
-  `tests/test_way_out.py` runs `way_out.c` against a model of the IPC
+  `tests/dolphin/dolphin_way_out.py` shows the decisions with the agent's test bits.
+  `tests/host/test_way_out.py` runs `way_out.c` against a model of the IPC
   registers, which also raises the IPC interrupt on a Y write, as Dolphin's
   `WiiIPC` does. Neither shows how a real IOS wedges.
 
-On the bench Wii (2026-10-24, `tests/wii_way_out.py`, HBC 1.10.9 installed,
+On the bench Wii (2026-10-24, `tests/wii/wii_way_out.py`, HBC 1.10.9 installed,
 the agent's test bits, with the first draft's order and its `Abra` word):
 
 - Healthy closes took 25 ms and left through the stub.

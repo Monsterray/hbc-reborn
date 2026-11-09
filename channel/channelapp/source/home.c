@@ -1,4 +1,4 @@
-// HBC's HOME button, built on the in-app agent's overlay (sdk/hbc_agent.h).
+// HBC's HOME button, built on the in-app agent's overlay (sdk/hbc_agent/hbc_agent.h).
 //
 // This file doubles as the worked example for apps that want the overlay:
 // everything HBC does to use it is here, and each step says why. In short:
@@ -21,7 +21,8 @@
 #include <network.h>
 
 #include "../config.h"
-#include "../../../sdk/hbc_agent.h"
+#include "../build_tag.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "controls.h"
 #include "gfx.h"
 #include "keyboard.h"
@@ -184,7 +185,7 @@ void home_init(void) {
 	hbc_agent_config cfg = { 0 };
 
 	cfg.name = "The Homebrew Channel";
-	cfg.version = CHANNEL_VERSION_STR;
+	cfg.version = CHANNEL_BUILD_STR;
 
 	// HBC answers port 4299 itself (loader.c, devnet.c), so the agent must
 	// not start a second server or bring up the network on its own. It
@@ -257,7 +258,7 @@ home_action home_show(void) {
 	u32 ip = net_gethostip();
 
 	// Refresh the info rows; the overlay copies them each frame.
-	snprintf(version_text, sizeof(version_text), "%s", CHANNEL_VERSION_STR);
+	snprintf(version_text, sizeof(version_text), "%s", CHANNEL_BUILD_STR);
 	snprintf(ios_text, sizeof(ios_text), "IOS%d v%d.%d", IOS_GetVersion(),
 			 IOS_GetRevisionMajor(), IOS_GetRevisionMinor());
 	if (loader_tcp_initialized() && ip)

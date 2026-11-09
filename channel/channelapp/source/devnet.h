@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 #include <gctypes.h>
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 
 // Developer protocol version reported by HBCS; 2 adds framed transfers, 3
 // crash reports (HBCC) and the in-app agent's exit request (HBCX), 4 the
@@ -50,6 +50,9 @@ void devnet_upload_result(const char *result, const char *error, const char *tex
 // Startup steps for HBCS "startup": name and ms since devnet_early_init()
 // (the start of main), in the order they happen. Any thread may call it.
 void devnet_boot_mark(const char *name);
+// ms on that clock, now; the latest mark (NULL before the first).
+u32 devnet_boot_ms(void);
+const char *devnet_last_boot_mark(u32 *ms);
 // The menu drew the app list (browser.c): its order for HBCS "app_list",
 // and whether it was rebuilt in place (else it slid to a page).
 void devnet_note_app_list(bool reload);

@@ -1,9 +1,9 @@
-# libhbcagent.a: the in-app agent (../hbc_agent.h). It shares HBC's file
+# libhbcagent.a: the in-app agent (hbc_agent.h). It shares HBC's file
 # request, framed transfer and TCP code from channel/channelapp/source, built
 # with two transfer slots and a smaller worker stack.
 #
 #   make -C sdk/hbc_agent
-#   app: -I<hbc-reborn>/sdk ... -L<hbc-reborn>/sdk/hbc_agent -lhbcagent -lfat -lz -logc
+#   app: -I<hbc-reborn>/sdk/hbc_agent -I<hbc-reborn>/sdk/hbc_netlog ... -L<hbc-reborn>/sdk/hbc_agent -lhbcagent -lfat -lz -logc
 #
 # For an app on libogc2 or libogc 1.x, name the libogc under $(DEVKITPRO):
 #   make -C sdk/hbc_agent OGC=libogc2        ->  sdk/hbc_agent/libogc2/libhbcagent.a
@@ -35,7 +35,7 @@ CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall $(EXTRA_CFLAGS) \
 
 SRC = agent.c safety.c way_out.c alloc_wrap.c info.c ogc_exc.S overlay.c ov_ui.c ov_draw.c ../wiispk/wiispk.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/discover.c $(HBC_SRC)/zmem.c
 OBJ = $(addprefix $(BUILD)/,$(notdir $(patsubst %.S,%.o,$(SRC:.c=.o))))
-HDR = ../hbc_agent.h ../hbc_netlog.h $(wildcard $(HBC_SRC)/*.h) ../../channel/channelapp/config.h
+HDR = hbc_agent.h ../hbc_netlog/hbc_netlog.h $(wildcard $(HBC_SRC)/*.h) ../../channel/channelapp/config.h
 
 $(OUT): $(OBJ)
 	mkdir -p $(dir $@)

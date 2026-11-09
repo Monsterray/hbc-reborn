@@ -3,7 +3,7 @@
 
 // A Wii Remote held sideways, D-pad at the left (PR 6, Matt Sephton): which
 // way it is held, from its accelerometer, and its D-pad turned to match.
-// Kept apart from overlay.c so tests/test_sideways_remote.py can run it.
+// Kept apart from overlay.c so tests/host/test_sideways_remote.py can run it.
 
 #include <math.h>
 #include <stdbool.h>

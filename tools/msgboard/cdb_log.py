@@ -1,4 +1,4 @@
-"""Reference implementation of HBC's play log writer (docs/messageboard.md):
+"""Reference implementation of HBC's play log writer (docs/mboard/play-log.md):
 add one record to the Message Board's play log in a cdb.vff image, creating
 the day's message when there is none. HBC's C version follows this.
 
@@ -6,7 +6,7 @@ the day's message when there is none. HBC's C version follows this.
 
 Times are local, YYYY-MM-DDTHH:MM[:SS]; NOW (the clock at writing, default
 END) goes into the FAT and message timestamps."""
-import calendar, struct, sys, time, zlib
+import argparse, calendar, struct, sys, time, zlib
 
 FAT1, FAT2, ROOT, ROOT_LEN, DATA, CL = 0x20, 0x14020, 0x28020, 0x1000, 0x29020, 0x200
 TICKS = 60750000
@@ -300,10 +300,31 @@ def wiiid_of(img):
     return None
 
 
-if __name__ == "__main__":
-    path = sys.argv[1]
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""example:
+  python tools/msgboard/cdb_log.py cdb.vff "HBC" LULZ 2026-11-07T10:00 2026-11-07T10:30
+
+exit codes: 0 the record was written (the image is rewritten in place, and
+the outcome is printed); 1 it could not be (message on stderr, e.g. the day's
+log is full); 2 bad usage (argparse's own).""")
+    ap.add_argument("vff", metavar="CDB.VFF", help="the Message Board image, rewritten in place")
+    ap.add_argument("name", metavar="NAME", help="title name")
+    ap.add_argument("titleid", metavar="TITLEID", help="four-character title ID")
+    ap.add_argument("start", metavar="START", help="local time, YYYY-MM-DDTHH:MM[:SS]")
+    ap.add_argument("end", metavar="END", help="local time, YYYY-MM-DDTHH:MM[:SS]")
+    ap.add_argument("now", metavar="NOW", nargs="?",
+                    help="the clock at writing (default END)")
+    args = ap.parse_args(argv)
+    path = args.vff
     img = bytearray(open(path, "rb").read())
-    start, end = parse(sys.argv[4]), parse(sys.argv[5])
-    now = parse(sys.argv[6]) if len(sys.argv) > 6 else end
-    print(log(img, sys.argv[2], sys.argv[3], start, end, now, wiiid_of(img)))
+    start, end = parse(args.start), parse(args.end)
+    now = parse(args.now) if args.now else end
+    print(log(img, args.name, args.titleid, start, end, now, wiiid_of(img)))
     open(path, "wb").write(img)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

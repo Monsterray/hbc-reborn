@@ -61,6 +61,7 @@ import json
 import re
 import os
 import pathlib
+import shutil
 import signal
 import socket
 import struct
@@ -1473,6 +1474,21 @@ def default_name(cmd):
     return name[:80]
 
 
+def job_command(cmd):
+    """The command as the job runs it. On Windows a bare `bash` or `sh` is found on PATH as WSL's
+    /bin/bash, which cannot open C:/... paths or run a Windows python.exe: 5 of 8 jobs that
+    failed to start between 2026-11-02 and 2026-11-05 died that way ("No such file or
+    directory", exit 127). Those run Git Bash's instead."""
+    import shutil
+    if WINDOWS and cmd and cmd[0].lower() in ("bash", "sh", "bash.exe", "sh.exe"):
+        git = shutil.which("git")
+        for base in ([pathlib.Path(git).parent.parent] if git else []) + [pathlib.Path(r"C:\Program Files\Git")]:
+            for exe in ("bin/bash.exe", "usr/bin/bash.exe"):
+                if (base / exe).exists():
+                    return [str(base / exe)] + list(cmd[1:])
+    return list(cmd)
+
+
 def command_missing(cmd, cwd):
     """Why the command cannot start, or None. Its program is looked up as the job would: a path
     relative to the job's folder, else on PATH (with PATHEXT on Windows). In 2026-10-12..19 three
@@ -1630,6 +1646,7 @@ def cmd_add(a):
         job["want_wii"] = a.wii
     if a.needs:
         job["needs"] = sorted(set(a.needs))
+    names = None
     if job.get("want_wii") or job.get("needs"):
         names = pool_names(timeout=3)
         groups = sorted(set().union(*GROUPS.values())) if GROUPS else []
@@ -1640,15 +1657,32 @@ def cmd_add(a):
             sys.exit(f"add: no Wii can take this job: it needs {', '.join(job['needs'])}, and "
                      + "; ".join(f"{n} lacks {', '.join(sorted(LACKS[n]))}" for n in names if LACKS.get(n))
                      + (f" ({job['want_wii']} asked for)" if job.get("want_wii") else ""))
+    each = [None]
+    if a.each:                                     # one copy per Wii of the group
+        if not a.wii or a.wii == "any":
+            sys.exit("add: --each needs --wii GROUP: every Wii of that group gets its own copy of the job")
+        if names is None:
+            sys.exit("add: --each needs the pool from the lease server, which did not answer")
+        each = [n for n in names if (a.wii == n or a.wii in GROUPS.get(n, ())) and may_use(dict(job, want_wii=n), n)]
+        if not each:
+            sys.exit(f"add: no Wii of {a.wii} can take this job")
+        print(f"add: --each queues {len(each)} jobs, one per Wii ({', '.join(each)}). Use it sparingly: "
+              "for a major update or a release, when the same test on each Wii is worth the extra Wii time.",
+              file=sys.stderr, flush=True)
     if not a.no_check:
         missing = command_missing(a.cmd, job["cwd"])
         if missing:
             sys.exit(f"add: {missing}; the job would fail at once (exit 127, or 9009 on Windows). "
                      "Fix the command, or --no-check if it only exists by the time the job runs")
-    tmp = PENDING / f"{job_id}.tmp"
-    tmp.write_text(json.dumps(job, indent=1))
-    fs_retry(tmp.rename, PENDING / f"{job_id}.json")
-    print(job_id, flush=True)
+    for wii in each:
+        one = dict(job)
+        if wii:
+            one["id"] = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+            one["want_wii"], one["name"], one["each"] = wii, f"{job['name']} @{wii}", a.wii
+        tmp = PENDING / f"{one['id']}.tmp"
+        tmp.write_text(json.dumps(one, indent=1))
+        fs_retry(tmp.rename, PENDING / f"{one['id']}.json")
+        print(one["id"] + (f" {wii}" if wii else ""), flush=True)
     start_dispatcher()
     send_queue()
 
@@ -1671,6 +1705,23 @@ def pool_names(timeout=10):
     GROUPS.clear()
     GROUPS.update({w["name"]: set(w.get("groups") or ()) for w in pool if w.get("groups")})
     return [w["name"] for w in pool]
+
+
+def requeue_running():
+    """At a dispatcher's start: a job left in RUNNING by a dispatcher that died mid-job goes back
+    to the queue. One that has a record in DONE finished and only its clean-up failed: it must
+    never run again (an attended hang test did, 2026-11-06). Logs already copied to DONE go."""
+    for p in jobs(RUNNING):
+        if (DONE / p.name).exists():
+            fs_retry(p.unlink)
+            continue
+        fs_retry(p.rename, PENDING / p.name)
+    for p in RUNNING.glob("*.log"):
+        if (DONE / p.name).exists() and not (RUNNING / f"{p.stem}.json").exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
 def job_window():
@@ -1707,7 +1758,7 @@ def run_job(p, started=None, wii=None):
                WII_BENCH_JOB=job["id"], WII_BENCH_OUT=str(out_dir), WII_BENCH_JOB_START=f"{time.time():.3f}")
     with open(log, "w") as out:
         try:
-            proc = subprocess.Popen(job["cmd"], cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(job_command(job["cmd"]), cwd=job["cwd"], stdout=out, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, env=env,
                                     **(job_window() if WINDOWS else {"start_new_session": True}))
             limit, stop = time.monotonic() + (job.get("timeout") or TIMEOUT), RUNNING / f"{job['id']}.stop"
@@ -1731,8 +1782,17 @@ def run_job(p, started=None, wii=None):
     job["secs"] = int(time.monotonic() - t0)
     job["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
     (DONE / f"{job['id']}.json").write_text(json.dumps(job, indent=1))
-    fs_retry(log.rename, DONE / log.name)
+    # The record leaves RUNNING first: a job left there is requeued when a dispatcher starts.
     fs_retry(r.unlink)
+    try:
+        fs_retry(log.rename, DONE / log.name)
+    except PermissionError:
+        # A process the job started can outlive it with the log as its stdout (wiicap's video
+        # from d2xdiag.py and install_cios.py), and Windows will not move an open file. On
+        # 2026-11-05 that crashed the turn with the job still in RUNNING, and the next
+        # dispatcher ran that attended hang test again on its own. Copy it; the stale one in
+        # RUNNING has no record, so nothing requeues it, and a later start removes it.
+        shutil.copyfile(log, DONE / log.name)
     (RUNNING / f"{job['id']}.stop").unlink(missing_ok=True)
     say(f"done {job['id']} {job['name']}: exit {job['exit']} in {job['secs']} s")
     return job
@@ -2500,8 +2560,7 @@ def cmd_run(a):
             if not dispatcher_pid():
                 LOCK.unlink(missing_ok=True)
     try:
-        for p in jobs(RUNNING):                    # a dispatcher that died mid-job: requeue it
-            fs_retry(p.rename, PENDING / p.name)
+        requeue_running()
         clear_stale_recoveries()
         # One turn per Wii at a time: each waits for a Wii with a job of its own, and runs it and
         # the jobs that follow on that Wii. Without a lease server, the same lease logic runs here.
@@ -2785,10 +2844,21 @@ def _when(t, now):
     return time.strftime("%H:%M:%S" if lt[:3] == ln[:3] else "%m-%d %H:%M", lt)
 
 
+_MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
 def _parse_local(s):
+    """A log line's "YYYY-MM-DD HH:MM:SS" as epoch seconds, local time; None if it is not one.
+    By hand: time.strptime took 10 us a line, and the log tail is 5000 lines a refresh."""
     try:
-        return time.mktime(time.strptime(s, "%Y-%m-%d %H:%M:%S"))
-    except (TypeError, ValueError):
+        if len(s) != 19 or s[4] != "-" or s[7] != "-" or s[10] != " " or s[13] != ":" or s[16] != ":":
+            return None
+        y, mo, d, h, mi, sec = int(s[:4]), int(s[5:7]), int(s[8:10]), int(s[11:13]), int(s[14:16]), int(s[17:19])
+        if not (1 <= mo <= 12 and 1 <= d <= _MONTH_DAYS[mo - 1] + (mo == 2 and y % 4 == 0 and (y % 100 != 0 or y % 400 == 0))
+                and h < 24 and mi < 60 and sec < 62):
+            return None                                # mktime would carry it over instead of refusing
+        return time.mktime((y, mo, d, h, mi, sec, 0, 0, -1))
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -2836,6 +2906,7 @@ class SnapCache:
 
     def __init__(self):
         self.jobs, self.hist, self.local, self.log = {}, None, None, None
+        self.problems = None                           # (the log lines, their problems): until the log changes
         self.down_until, self.down_error = 0.0, None   # the lease server failed: ask again later
 
 
@@ -2979,11 +3050,17 @@ def queue_order_turns(status, queues, my_qid=None, my_jobs=None):
     return out
 
 
-def dispatcher_log_problems(since, lines=None):
+def dispatcher_log_problems(since, lines=None, cache=None):
     """Problems this workstation's dispatcher logged since `since`: (t, severity, kind, detail).
-    A traceback is one problem, its last line the detail, at the time of the line before it."""
+    A traceback is one problem, its last line the detail, at the time of the line before it.
+    With a cache, the log is read through once per change (it was every refresh: 60 ms)."""
+    if lines is None:
+        lines = _log_lines()
+    if cache is not None and cache.problems and cache.problems[0] is lines:
+        return [p for p in cache.problems[1] if p[0] >= since]
     out, ts, tb = [], None, None
-    for line in (_log_lines() if lines is None else lines):
+    since_all, since = since, 0
+    for line in lines:
         t = _parse_local(line[:19]) if len(line) >= 19 else None
         if t is not None:
             if tb:
@@ -3001,7 +3078,9 @@ def dispatcher_log_problems(since, lines=None):
             tb[1] = line.strip()[:160]
     if tb:
         out.append((tb[0], "err", "dispatcher crashed", tb[1]))
-    return [p for p in out if p[0] >= since]
+    if cache is not None:
+        cache.problems = (lines, out)
+    return [p for p in out if p[0] >= since_all]
 
 
 def job_problem(j):
@@ -3032,7 +3111,7 @@ def job_problem(j):
     return None
 
 
-LANE_PREFIX = 13      # columns before a lane's cells: "  dev   .213 "
+LANE_PREFIX = 14      # columns before a lane's cells: "  devwii .213 "
 LANE_STATS = 26       # columns after them: jobs, failed, busy, longest wait
 
 
@@ -3437,7 +3516,7 @@ def snapshot(hours=24, sorts=(), filters=(), done_rows=12, log_lines=200, cache=
                 problems.append(dict(t=t, severity="warn", kind="left the line", host=host, job=e.get("name"), id="-",
                                      detail=f"stopped asking after {e.get('waited_s')} s: its dispatcher went away"))
     log = _log_lines(cache)
-    for t, sev, kind, detail in dispatcher_log_problems(since, log):
+    for t, sev, kind, detail in dispatcher_log_problems(since, log, cache):
         problems.append(dict(t=t, severity=sev, kind=kind, host=socket.gethostname(), job="-", id="-", detail=detail))
     if pending and not pid:
         problems.append(dict(t=now, severity="warn", kind="no dispatcher", host=socket.gethostname(), job="-", id="-",
@@ -3734,6 +3813,9 @@ def main():
     s.add_argument("--no-check", action="store_true", help="queue it even if its program is not found now")
     s.add_argument("--wii", metavar="NAME", help="run it on this Wii, or on any free Wii of this group "
                    "(default, or `any`: whichever unpinned Wii is free)")
+    s.add_argument("--each", action="store_true",
+                   help="with --wii GROUP: queue one copy of the job for EVERY Wii of the group, not one job for "
+                        "whichever is free. Use it sparingly: a major update or a release, for more data")
     s.add_argument("--needs", action="append", metavar="PART",
                    help="a part the job needs, e.g. disc: never on a Wii whose pool entry says lacks:PART")
     s.add_argument("--collect", action="append", metavar="PATH",

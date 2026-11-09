@@ -112,7 +112,7 @@ if [ -z "${BASH_VERSINFO:-}" ] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] =
     exit 2
 fi
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd)"; [ -n "$HERE" ] || HERE="$(cd . && pwd)"
 BENCH="$HERE/wiibench.py"
 # shellcheck source=lib/monitor_lib.sh
 source "$HERE/lib/monitor_lib.sh"
@@ -126,7 +126,8 @@ done
 unset _l _t
 
 PY=""
-for p in ${WII_BENCH_PYTHON:-} python3 python; do
+PYS="python3 python"; case "$OSTYPE" in msys*|cygwin*) PYS="python python3" ;; esac   # python3 is the Store stub there: 230 ms to fail
+for p in ${WII_BENCH_PYTHON:-} $PYS; do
     # The Windows Store's python3 stub exists but runs nothing; ask each one for a version.
     if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then
         PY="$p"; break
@@ -457,7 +458,7 @@ wrap_words() {
 
 # card <row> -- the card of one Wii, IW characters inside, into CL
 card() {
-    local name ip state lab right left_ pad d bw fill el tm bar
+    local name ip state lab right left_ pad d bw fill el tm bar col
     row_fields wiis "$1"
     name="${F[$WF_NAME]}"; ip="${F[$WF_IP]}"; state="${F[$WF_STATE]}"
     wii_look "$state"
@@ -495,7 +496,8 @@ card() {
     f $WF_LEASE; card_line "" "$V" "$c_gray"
     printf -v d '%*s' "$IW" ''
     CL+=("${c_gray}│ ${d// /┄} │${c_reset}")
-    f $WF_NEXT1; card_line "next" "${V:-nothing queued}" "$([ -n "$V" ] || echo "$c_gray")"
+    f $WF_NEXT1; col=""; [ -n "$V" ] || col="$c_gray"        # (no command substitution here: it forks, 14-200 ms on Git Bash)
+    card_line "next" "${V:-nothing queued}" "$col"
     f $WF_NEXT2; lab="$V"; f $WF_MORE; [ -n "$V" ] && lab+=" (+$V more)"
     card_line " " "$lab"
     f $WF_LASTNAME
@@ -509,7 +511,8 @@ card() {
         card_line "last" "no job in the window" "$c_gray"; card_line "" ""
     fi
     f $WF_WINJOBS; lab="$V job"; [ "$V" = 1 ] || lab+="s"; lab+=" · "; f $WF_WINFAILED; lab+="$V failed · "; f $WF_WINBUSY; lab+="$V busy"
-    f $WF_WIN; card_line "$V" "$lab" "$([ "${F[$WF_WINFAILED]}" != 0 ] && echo "$c_yellow")"
+    f $WF_WIN; col=""; [ "${F[$WF_WINFAILED]}" != 0 ] && col="$c_yellow"
+    card_line "$V" "$lab" "$col"
     f $WF_TAKES; lab="$V"; f $WF_LOGPORT; [ -n "$V" ] && lab+=" · log port $V"
     card_line "" "$lab" "$c_gray"
     printf -v d '%*s' $(( IW + 2 )) ''
@@ -576,22 +579,23 @@ lane_cells() {
 
 # render_lanes -- the history page's WIIS, HOUR BY HOUR: the window in cells, one lane per Wii
 render_lanes() {
-    local i stats
+    local i stats pad
     (( ${NROWS[lanes]:-0} == 0 )) && return
     heading "$c_cyan" "WIIS, HOUR BY HOUR" "last ${HOURS} h, ${KV[lane_step]:-?} a cell, oldest on the left" lanes
     printf -v stats ' │%5s%5s%6s%8s' JOBS FAIL BUSY "LONGEST"
-    lines+=("${c_gray}  $(printf '%-11s' '')${KV[lane_ticks]:-}${stats}${c_reset}")
+    printf -v pad '%-12s' ''
+    lines+=("${c_gray}  ${pad}${KV[lane_ticks]:-}${stats}${c_reset}")
     for (( i = 0; i < ${NROWS[lanes]}; i++ )); do
         row_fields lanes "$i"
         lane_cells "${F[2]}"
         printf -v stats ' │%5s%5s%6s%8s' "${F[4]}" "${F[5]}" "${F[6]}" "${F[7]}"
-        local head; printf -v head '  %-5s %-4s ' "${F[0]:0:5}" "${F[1]:0:4}"
+        local head; printf -v head '  %-6s %-4s ' "${F[0]:0:6}" "${F[1]:0:4}"
         lines+=("${c_bold}${head}${c_reset}${V}${c_gray}${stats}${c_reset}")
         if [[ "${F[3]}" =~ [^\ ] ]] && [ "${F[3]}" != "-" ]; then
-            lines+=("${c_gray}             ${F[3]}${c_reset}")
+            lines+=("${c_gray}              ${F[3]}${c_reset}")
         fi
     done
-    lines+=("             ${c_green}█ ok${c_reset}  ${c_red}█ failed or froze${c_reset}  ${c_cyan}█ running${c_reset}  ${c_yellow}░ waiting for HBC${c_reset}  ${c_bold}${c_magenta}⚑${c_reset} ${c_gray}used outside the queue  · idle${c_reset}")
+    lines+=("              ${c_green}█ ok${c_reset}  ${c_red}█ failed or froze${c_reset}  ${c_cyan}█ running${c_reset}  ${c_yellow}░ waiting for HBC${c_reset}  ${c_bold}${c_magenta}⚑${c_reset} ${c_gray}used outside the queue  · idle${c_reset}")
     lines+=("")
 }
 
@@ -1018,6 +1022,25 @@ sel_wii() {
         row_fields wiis "$i"
         [ "${F[$WF_NAME]}" = "$SELECTED" ] && { WSEL=$i; return 0; }
     done
+    return 1
+}
+
+# The library's n/p keys look the current page up with "$(monitor_page_index)": two forks a key,
+# and a fork can stall for most of a second on a busy Windows PC. The same keys, fork-free.
+monitor_page_key() {
+    local key="$1" n="${#MONITOR_PAGES[@]}" i=0 at=0 pg
+    case "$key" in
+        [1-9])
+            (( key - 1 < n )) && MONITOR_PAGE="${MONITOR_PAGES[$(( key - 1 ))]}"
+            return 0 ;;
+        n|N|$'\t'|p|P)
+            for pg in "${MONITOR_PAGES[@]}"; do [ "$pg" = "$MONITOR_PAGE" ] && at=$i; (( i++ )); done
+            case "$key" in
+                p|P) MONITOR_PAGE="${MONITOR_PAGES[$(( ( at + n - 1 ) % n ))]}" ;;
+                *)   MONITOR_PAGE="${MONITOR_PAGES[$(( ( at + 1 ) % n ))]}" ;;
+            esac
+            return 0 ;;
+    esac
     return 1
 }
 

@@ -24,7 +24,7 @@
  * faces drawn by the GPU (opts.gpu_faces, then mii_model_make_faces between
  * frames). sdk/mii/README.md, "Many Miis", has the numbers.
  *
- * How it draws (docs/research/mii-rendering.md has the sources):
+ * How it draws (docs/mii/rendering.md has the sources):
  *   - The head is RFL's (the Wii's face library): each part's shape from
  *     RFL_Res.dat, placed by the faceline's nose, beard and hair anchors and
  *     the Mii's sizes and positions, coloured from RFL's tables.
@@ -269,7 +269,7 @@ int mii_body_make_lods(mii_body *body, const float *tolerances, int n);
 /* The level for a Mii this many pixels tall on screen (mii_pixels_tall):
  * 0 (the whole body) from 90, then one level more under each of 90, 39,
  * 30.5 and 25, as far as made. Chosen by eye on a real Wii, Miis walking
- * through the levels (tests/mii_app parade). */
+ * through the levels (tests/apps/mii_app parade). */
 int mii_body_lod_for(const mii_body *body, float pixels_tall);
 
 /* ---- A Mii, built -------------------------------------------------------- */
@@ -423,7 +423,7 @@ typedef struct {
 	 * pixel at a Mii 150, 90, 50 and 25 pixels tall (drawn smaller: from
 	 * 90, 39, 30.5 and 25), the hair by a quarter.
 	 * A head is about 480 triangles, more than a far body: in a crowd the
-	 * GPU's time is mostly heads (REVIEW.md, 1.11.8). Some ms to build;
+	 * GPU's time is mostly heads (docs/history/1.11.md, 1.11.8). Some ms to build;
 	 * Miis sharing a part through a cache share its levels. */
 	int lods;
 	/* 1: the faces drawn by the GPU, as RFL does (RFLiMakeTexture): about

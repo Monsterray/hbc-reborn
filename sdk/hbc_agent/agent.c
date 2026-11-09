@@ -1,5 +1,5 @@
 // The in-app agent: HBC's developer protocol (docs/devnet.md) inside a
-// running app, plus a crash recorder. See ../hbc_agent.h for the API.
+// running app, plus a crash recorder. See hbc_agent.h for the API.
 //
 // One thread, below the app's, accepts connections on the Wiiload port and
 // answers HBCV, HBCS, HBCF (the same file requests as HBC, from
@@ -46,8 +46,8 @@
 #include "agent_int.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
-#include "../hbc_netlog.h"
-#include "../hbc_agent.h"
+#include "../hbc_netlog/hbc_netlog.h"
+#include "hbc_agent.h"
 
 #define AGENT_STACK (12 * 1024)
 #define AGENT_PROTO 4
@@ -337,6 +337,17 @@ int agent_key_pop(void) {
 	}
 	_CPU_ISR_Restore(level);
 	return k;
+}
+
+// Drop every queued key. The overlay takes one key per 12 frames, so keys
+// typed faster than that are still queued when it closes, and a queued 'h'
+// would open HOME again.
+void agent_key_clear(void) {
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	key_head = key_count = 0;
+	_CPU_ISR_Restore(level);
 }
 
 bool hbc_agent_home_pending(void) {

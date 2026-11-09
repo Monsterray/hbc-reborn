@@ -2,7 +2,7 @@
 PATH` dumps one file (hex and UTF-16 text). Layout from the first experiment:
 FAT copies at 0x20 and 0x14020, root directory at 0x28020 (0x1000 bytes),
 512-byte clusters from 0x29020 (cluster 2)."""
-import struct, sys
+import argparse, contextlib, io, struct, sys
 
 FAT, ROOT, ROOT_LEN, DATA, CL = 0x20, 0x28020, 0x1000, 0x29020, 0x200
 
@@ -53,17 +53,42 @@ def walk(img, raw, path=""):
             yield p, start, size
 
 
-img = open(sys.argv[2], "rb").read()
-files = list(walk(img, img[ROOT:ROOT + ROOT_LEN])) if sys.argv[1] == "tree" else None
-if sys.argv[1] == "cat":
-    import io, contextlib
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  python tools/msgboard/vff.py tree cdb.vff
+  python tools/msgboard/vff.py cat cdb.vff /cdb.conf [OUT]
+
+exit codes: 0 done; 1 cat found no file at PATH (message on stderr);
+2 bad usage (argparse's own).""")
+    sub = ap.add_subparsers(dest="command", required=True, metavar="{tree,cat}")
+    p = sub.add_parser("tree", help="list the volume")
+    p.add_argument("file", metavar="FILE")
+    p = sub.add_parser("cat", help="dump one file (hex and text)")
+    p.add_argument("file", metavar="FILE")
+    p.add_argument("path", metavar="PATH", help="as tree prints it, e.g. /cdb.conf")
+    p.add_argument("out", metavar="OUT", nargs="?", help="also write the file's bytes here")
+    args = ap.parse_args(argv)
+
+    img = open(args.file, "rb").read()
+    if args.command == "tree":
+        list(walk(img, img[ROOT:ROOT + ROOT_LEN]))
+        return 0
     with contextlib.redirect_stdout(io.StringIO()):
         files = list(walk(img, img[ROOT:ROOT + ROOT_LEN]))
     for p, start, size in files:
-        if p == sys.argv[3]:
+        if p == args.path:
             data = read_chain(img, start, size)
             for off in range(0, len(data), 16):
                 chunk = data[off:off + 16]
                 print(f"{off:04x}  {chunk.hex(' '):47}  {''.join(chr(c) if 32 <= c < 127 else '.' for c in chunk)}")
-            if len(sys.argv) > 4:
-                open(sys.argv[4], "wb").write(data)
+            if args.out:
+                open(args.out, "wb").write(data)
+            return 0
+    print(f"{args.file}: no file {args.path}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
