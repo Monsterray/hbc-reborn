@@ -1390,10 +1390,21 @@ def upload_seq(wii):
     return (st.get("upload") or {}).get("seq", 0)
 
 
-def upload_outcome(wii, before, seconds=60):
+NO_WAIT_SECONDS = 8   # send --no-wait: the longest it looks for HBC's verdict
+
+
+def upload_outcome(wii, before, seconds=60, quick=False):
     """What became of the upload after `before` (upload_seq): HBC's result,
     {"result": "launched"} once an app answers or HBC stops answering.
-    HBC's own popups close after 10 s, so an error comes back in time."""
+    HBC's own popups close after 10 s, so an error comes back in time.
+    `quick` (send --no-wait) calls it launched at the first poll HBC does not
+    answer, and gives up quietly, with {"result": "unknown"}, after `seconds`.
+
+    Where the 60 s goes: HBC sets "launched" and then hands the Wii to the
+    app, so a poll rarely sees it. Without an agent the app is silent and
+    this waits 10 s for HBC to stay gone. An app that finishes inside those
+    10 s (nandget) brings HBC back with its counter at 0, never above
+    `before`, so the loop runs out its whole `seconds`."""
     deadline, silent = time.monotonic() + seconds, None
     while time.monotonic() < deadline:
         try:
@@ -1403,7 +1414,7 @@ def upload_outcome(wii, before, seconds=60):
             # HBC answers throughout, popups included; a launched app
             # without an agent does not answer at all.
             silent = silent or time.monotonic()
-            if time.monotonic() - silent >= 10:
+            if quick or time.monotonic() - silent >= 10:
                 return {"result": "launched"}
             time.sleep(0.5)
             continue
@@ -1413,6 +1424,8 @@ def upload_outcome(wii, before, seconds=60):
         if up and up.get("seq", 0) > before:
             return up
         time.sleep(0.2)
+    if quick:
+        return {"result": "unknown"}
     raise HBCError(f"HBC gave no result for the upload within {seconds} s")
 
 
@@ -1648,7 +1661,7 @@ report and exits with status 3.
     hbc.py run build/myapp.dol level2
     hbc.py run build/myapp.dol -- --verbose""",
     "send": """\
-hbc.py send [--name NAME] [--yes] FILE [ARGS...]
+hbc.py send [--name NAME] [--yes] [--no-wait] FILE [ARGS...]
 
 Sends FILE to the Wii and starts it, without waiting for output: Wiiload,
 like the devkitPro wiiload tool. A .zip is installed to the SD card after
@@ -1657,7 +1670,14 @@ name for it (see run).
 
 send waits for HBC's verdict: if the Wii cannot load it (not a Wii app, a
 broken transfer, a ZIP declined or not answered within HBC's 10 s), send
-says why and exits with status 1. HBC 1.9.5 on; older ones are not asked.""",
+says why and exits with status 1. HBC 1.9.5 on; older ones are not asked.
+
+--no-wait does not wait for that verdict beyond a few seconds: send returns
+as soon as HBC shows one, or stops answering (the app took over), and never
+takes longer than 8 s. Use it when the app replaces HBC and the next step is
+`hbc.py wait` (a bench test). Without it, an app that ends within 10 s of
+starting leaves send waiting the full 60 s for a verdict HBC lost on its
+restart. An error HBC reports within that time is still reported.""",
     "log": """\
 hbc.py log
 
@@ -1900,7 +1920,8 @@ COMMAND_FLAGS = {"-r": ("recursive", ("get", "put", "rm")),
                  "--clear": ("clear", ("crash", "order")),
                  "--replace": ("replace", ("mv", "rename")),
                  "--force": ("force", ("rm",)),
-                 "--yes": ("yes", ("send", "run"))}
+                 "--yes": ("yes", ("send", "run")),
+                 "--no-wait": ("no_wait", ("send",))}
 VALUE_FLAGS = {"--elf": ("elf", ("crash",)),
                "--name": ("name", ("send", "run"))}
 
@@ -2019,8 +2040,9 @@ def main(argv=None):
             before = upload_seq(wii)
             send(wii, args[0], args[1:], flags.get("name"), flags.get("yes", False))
             if before is not None:
-                result = check_outcome(upload_outcome(wii, before))
-                if result != "launched":
+                quick = flags.get("no_wait", False)
+                result = check_outcome(upload_outcome(wii, before, NO_WAIT_SECONDS if quick else 60, quick))
+                if result not in ("launched", "unknown"):
                     print(f"hbc.py: {result}", file=sys.stderr)
         elif cmd == "exit":
             if not exit_app(wii):
