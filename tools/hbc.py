@@ -256,7 +256,7 @@ def hbc_wait(wii, seconds=90):
 
 
 def foreign_app_check(wii):
-    """In a bench-queue job (tools/wii-bench sets WII_BENCH_JOB_START), refuse to exit an
+    """In a bench-queue job (the wii-bench queue sets WII_BENCH_JOB_START), refuse to exit an
     agent app that was already running when the job started: it is someone else's test,
     maybe from another workstation. An app this job started is younger than the job."""
     start = os.environ.get("WII_BENCH_JOB_START")

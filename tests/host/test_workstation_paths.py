@@ -26,7 +26,6 @@ import unittest
 EXEMPT = (
     "docs/history/*",
     "docs/plans/2026-11-reorg.md",  # the record of the path work, naming what it fixed
-    "tools/wii-bench/*",            # the old copy of the bench; it goes at the cutover
 )
 
 _FOLDER = r"(?:projects|tools|users|ai)[\\/]+(?!wii-bench\b)[\w-]"
