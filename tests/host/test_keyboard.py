@@ -2,7 +2,9 @@
 (tests/host/keyboard_host) and run its checks: a rollover report keeps the keys
 held and is not replayed, a keyboard whose open failed is tried again, a
 device that is not a keyboard is opened once, an unplugged device's ID is
-forgotten, and a read IOS never gave back after shutdown is reported."""
+forgotten, a read IOS never gave back after shutdown is reported, and a
+shutdown during a device's set-up leaves no slot filled and no handle open.
+The USB worker thread (kbd_worker) runs on a host thread."""
 
 import os
 import pathlib

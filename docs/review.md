@@ -52,16 +52,6 @@ shutdown. Either turn that into a full keyboard SDK in `sdk/` (like
 core), or send libogc a fix PR that makes libwiikeyboard as robust. Then HBC
 and other apps can use it.
 
-### The keyboard host test fails since the USB worker thread
-
-`tests/host/test_keyboard.py` stopped compiling at d37bbd5 (2026-11-06), which
-moved USB setup and the device list onto a thread: its stub headers have no
-`lwp_t`, `LWP_CreateThread` or `LWP_JoinThread`, and its checks expect
-`keyboard_scan()` to look for devices itself, which the worker does now. Give
-the stub a real thread (or run `kbd_worker`'s look from a stub hook) and wait
-for the look in the test. Found 2026-11-07 while moving the tests; the move
-did not cause it.
-
 ### More keyboard keys
 
 The keyboard works but needs a lot more bindings to feel right (Monty,
