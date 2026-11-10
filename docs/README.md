@@ -47,4 +47,5 @@ are not instructions.
 | [mii/bodies.md](mii/bodies.md) | The Mii Channel's bodies |
 | [mii/rendering.md](mii/rendering.md) | How the Wii draws Miis |
 | [research/return-path.md](research/return-path.md) | HBC's reload stub and the return path to an installed channel |
+| [research/ios-tcp.md](research/ios-tcp.md) | IOS's TCP stack on real Wiis: the 2.5-minute outage, send/close/poll quirks, ideas for a networking cIOS |
 | [design/wii-remote-icons.svg](design/wii-remote-icons.svg) | Wii Remote icon designs |
