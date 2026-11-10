@@ -30,7 +30,10 @@ DEVICES = ("sd", "usb", "carda", "cardb", "usb2")
 PROGRESS_MIN = 256 * 1024
 # Waits poll with short connects: while the Wii reboots, a connection attempt
 # can go unanswered, and one full TIMEOUT per attempt made each wait 15 s.
-POLL_TIMEOUT = 2
+# Not shorter than HBC's own slowest answer: while a popup is up and the PC
+# polls fast, each request takes a second, and a poll that gives up mid-reply
+# only adds a dead connection for HBC to serve.
+POLL_TIMEOUT = 5
 # The Wii reads and CRCs a whole file before it answers a checksum request
 # (op C): allow for this rate on top of TIMEOUT, below a slow SD card's.
 CHECKSUM_BYTES_PER_S = 1 << 20
@@ -1390,6 +1393,7 @@ def upload_seq(wii):
     return (st.get("upload") or {}).get("seq", 0)
 
 
+UPLOAD_POLL_S = 0.5    # upload_outcome: the least time between two HBCS polls
 NO_WAIT_SECONDS = 8   # send --no-wait: the longest it looks for HBC's verdict
 
 
@@ -1431,7 +1435,10 @@ def upload_outcome(wii, before, seconds=60, quick=False):
         up = st.get("upload")
         if up and up.get("seq", 0) > before:
             return up
-        time.sleep(0.2)
+        # HBC serves one request at a time and each costs it about a second
+        # of its network thread while a popup is up: polling faster only
+        # queues requests behind each other (and fills its listen backlog).
+        time.sleep(UPLOAD_POLL_S)
     if quick:
         return {"result": "unknown"}
     raise HBCError(f"HBC gave no result for the upload within {seconds} s")
