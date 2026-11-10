@@ -407,17 +407,19 @@ While open, the overlay borrows three framebuffers, about 1.8 MB at 640x480
 
 ## What it costs
 
-Measured on a real Wii with `tests/wii/agent_cost.py` (HBC 1.7.1, 640x480):
+Measured on a real Wii with `tests/wii/agent_cost.py` (HBC 1.16.0+3, 640x480,
+2026-11-09; the 1.7.1 figures are in [history/1.7.md](../../docs/history/1.7.md)):
 
 | | Cost |
 | --- | --- |
-| Code | 25.6 KB for the agent (network, files, crash reports), 77 KB more for the overlay (of which about 30 KB are its fonts and pointer) |
-| Static data | 17 KB for the agent (half of it the Log page's 8 KB of recent output), 21 KB for the overlay (its threads' stacks and state) |
-| Start-up | `hbc_agent_init()`: 13 KB of heap and 16 KB of MEM1 arena (its thread's 12 KB stack, of which it uses 3 to 4.5 KB) |
-| Idle | 5 wake-ups a second to check for a connection, 140 µs each: 0.07% of the CPU |
-| File transfers | about 28 KB of heap kept after the first (the rest is freed after each); zlib and CRC work of 9 to 130 ms per upload and 50 to 620 ms per download of 2 to 5 MB, on the agent's thread |
-| HOME overlay, while open | 1.8 MB: a copy of the frame and two framebuffers (HBC lends the framebuffers from low MEM1); 7.9 ms average and 14 ms at most to draw a frame that changed, nothing for frames that did not, so it keeps 60 fps |
-| HOME overlay, closed | nothing: no thread, no memory |
+| Code | 46 KB for the agent (network, files, crash reports); 40 KB more for the safety tools, the way out, DEV > Info and the speaker; 116 KB for the overlay (62 KB of it drawing, with its fonts and pointer) |
+| Static data | 30 KB for the agent (28.5 KB of it in agent.o), 45 KB for the overlay (its threads' stacks and state: linked in, so held even while it is closed) |
+| Start-up | `hbc_agent_init()`: 1.2 KB of heap and 22 KB from the top of the MEM2 arena (its thread's 12 KB stack, of which it uses 1.6 KB idle and 3.4 KB in a transfer) |
+| Idle | 5 wake-ups a second to check for a connection, 143 µs each: 0.07% of the CPU |
+| File transfers | 28 KB of heap kept after the first (the rest is freed after each). The Wi-Fi sets the speed (0.3 to 0.6 MB/s on the bench Wii); the agent's zlib and CRC work is 9 to 170 ms per upload and 52 to 820 ms per download of 2 to 7 MB, on its own thread |
+| HOME overlay, while open | 1.8 MB in an app (a copy of the frame and two framebuffers), 1.2 MB in HBC, which lends the framebuffers; 6.6 ms average and 13 ms at most to draw a frame that changed (7.9 and 9.8 ms in HBC), nothing for frames that did not, so it keeps 60 fps |
+| HOME overlay, closed | no thread and no heap; its static data above stays |
+| Safety tools | the defaults: 0.2 µs a second and 0.06 µs a frame, nothing held; with the opt-ins (`optin` in `tests/apps/agent_app`): 5.75 µs a second and 10 KB held |
 
 `hbc.py status` shows the live figures: `agent_idle_wakes`, `agent_idle_us`,
 `agent_request_ms`, `agent_stack_used`, `heap_arena`, and `overlay` (frames

@@ -90,17 +90,6 @@ an app's details open, plug it back in, then close the details.
 The keyboard works but needs a lot more bindings to feel right (Monty,
 2026-11-02). The HOME menu inside apps does not read it yet.
 
-### Data to collect
-
-Measurements a doc quotes that are out of date. Each needs a run, not a guess.
-
-- **The agent's cost.** "What it costs" in
-  [sdk/hbc_agent/README.md](../sdk/hbc_agent/README.md#what-it-costs) was
-  measured on HBC 1.7.1. The HOME overlay has gained pages and features since.
-  Re-run `tests/wii/agent_cost.py` on the bench Wii (queued) and in the build, and
-  update the README's figures and the 1.8 MB overlay figure for
-  `hbc_agent_home()` against `hbc_agent_home_fb()`.
-
 ### From the first review (1.1.x)
 
 Carried over from the 1.1.x review and not re-checked since; some may be done.
