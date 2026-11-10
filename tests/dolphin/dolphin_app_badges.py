@@ -33,10 +33,11 @@ from dolphin_meta import PAD_MAP, PAD_SETTINGS, Pad, launch, shot  # noqa: E402
 APPS = ("1 Already run", "2 Never run", "3 Updated app")
 
 
-def meta_xml(name, description):
+def meta_xml(name, description, *more):
+    args = "".join(f"<arg>{a}</arg>" for a in ("meta",) + more)
     return (f'<?xml version="1.0"?><app><name>{name}</name>'
             f'<short_description>{description}</short_description>'
-            '<arguments><arg>meta</arg></arguments></app>').encode()
+            f'<arguments>{args}</arguments></app>').encode()
 
 
 TAB = chr(9)
@@ -140,7 +141,7 @@ def main():
             check(True, "no marker file in the app folder")
 
         before = hbc.get_file(wii, seen)
-        hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml", meta_xml("3 Updated app", "After update"))
+        hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml", meta_xml("3 Updated app", "After update", "updated"))
         time.sleep(3)
         for layout in ("list", "grid"):
             blue, amber = picture(f"badges-{layout}")
@@ -149,10 +150,9 @@ def main():
             pad.send("press Triangle; wait 2")   # 2: the other layout
             pad.done()
 
-        # Its kept log is the same as the first run's, which launch() takes
-        # for no run at all: the file and HBC's answer say it ran.
-        launch(wii, pad, out, "3 Updated app", 3, False)
-        check(bool(hbc.hbc_wait(wii, 60)), "HBC came back")
+        # The new argument makes this run's kept log differ from the first
+        # run's, so launch() sees it at once instead of waiting out 60 s.
+        check(launch(wii, pad, out, "3 Updated app", 3, False), "the updated app ran and HBC came back")
         check(hbc.get_file(wii, seen) != before, "apps_seen.txt took the new file stamps")
         pad.send("stick 0 -1; wait 2")
         pad.done()
