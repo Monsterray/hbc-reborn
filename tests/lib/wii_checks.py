@@ -20,14 +20,20 @@ ROOT = testenv.ROOT
 CHANNEL_DOL = ROOT / "channel/channelapp/channelapp-channel.dol"
 
 # Real data: the queue names the consoles (WII_BENCH_WII); the addresses cover a
-# run outside the queue.
-PRODUCTION_NAMES = ("lrwii", "prod", "devprod")
-PRODUCTION_IPS = ("192.168.8.200", "192.168.8.243")
+# run outside the queue. Only prod is protected: lrwii is a dev-group bench Wii
+# (2026-11-10). $WII_PROTECTED adds names or addresses (comma-separated). The
+# NAND-writing tests (wii_mboard, wii_slotled, wii_way_out, wii_replug) keep
+# their own, stricter lists.
+PRODUCTION_NAMES = ("prod",)
+PRODUCTION_IPS = ("192.168.8.200",)
 
 
 def is_production(wii):
     name = os.environ.get("WII_BENCH_WII", "").strip().lower()
-    return name in PRODUCTION_NAMES or str(wii).strip() in PRODUCTION_IPS
+    extra = {s.strip().lower() for s in os.environ.get("WII_PROTECTED", "").split(",") if s.strip()}
+    addr = str(wii).strip()
+    return (name in PRODUCTION_NAMES or addr in PRODUCTION_IPS
+            or (name and name in extra) or addr.lower() in extra)
 
 
 def refuse_production(wii, why="it writes the Wii's NAND or SD card"):

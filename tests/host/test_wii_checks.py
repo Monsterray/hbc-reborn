@@ -69,8 +69,8 @@ class SendApp(unittest.TestCase):
 
 class Production(unittest.TestCase):
     def test_refused_by_name_and_address(self):
-        for env, wii in (({"WII_BENCH_WII": "lrwii"}, "10.0.0.1"), ({}, "192.168.8.243"),
-                         ({"WII_BENCH_WII": "prod"}, "x")):
+        for env, wii in (({"WII_BENCH_WII": "prod"}, "10.0.0.1"), ({}, "192.168.8.200"),
+                         ({"WII_BENCH_WII": "lrwii", "WII_PROTECTED": "lrwii"}, "x"), ({"WII_PROTECTED": "10.0.0.9"}, "10.0.0.9")):
             with mock.patch.dict(os.environ, env, clear=False):
                 if "WII_BENCH_WII" not in env:
                     os.environ.pop("WII_BENCH_WII", None)
@@ -78,8 +78,10 @@ class Production(unittest.TestCase):
                     wii_checks.refuse_production(wii)
 
     def test_bench_wii_passes(self):
-        with mock.patch.dict(os.environ, {"WII_BENCH_WII": "devwii"}):
-            wii_checks.refuse_production("192.168.8.213")
+        for name, ip in (("devwii", "192.168.8.213"), ("lrwii", "192.168.8.243")):
+            with mock.patch.dict(os.environ, {"WII_BENCH_WII": name}):
+                os.environ.pop("WII_PROTECTED", None)
+                wii_checks.refuse_production(ip)
 
 
 if __name__ == "__main__":
