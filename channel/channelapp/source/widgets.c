@@ -487,7 +487,7 @@ static void widget_new_badge(widget *w, const app_entry *entry, badge_glow *glow
 		n += glyphs;
 	}
 	if (glow)
-		gfx_qe_entity(&l->gfx_entries[n++], &glow->entity, 0, 0, GLOW_Z, colors->fill);
+		gfx_qe_entity(&l->gfx_entries[n++], (gfx_entity *) &glow->entity, 0, 0, GLOW_Z, colors->fill);
 }
 
 void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
