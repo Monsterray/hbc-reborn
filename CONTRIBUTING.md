@@ -81,7 +81,7 @@ lists every one with what it covers.
 
 | Folder | Runs on | Run it with |
 | --- | --- | --- |
-| `tests/host/` | this PC, no Wii | `python3 -m unittest discover -s tests/host -p 'test_*.py'` (CI runs this) |
+| `tests/host/` | this PC, no Wii | `python3 -m unittest discover -s tests/host -p 'test_*.py'` (CI runs this), or `python3 tests/host/run_parallel.py`: the same, all at once, about 20 s |
 | `tests/dolphin/` | Dolphin | `python3 tests/dolphin/<test>.py` |
 | `tests/wii/` | a real Wii, through the bench queue | queue `python tests/wii/<test>.py` |
 | `tests/apps/` | the test DOLs the others send | `make -C tests/apps/<app>` |

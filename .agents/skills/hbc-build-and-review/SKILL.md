@@ -21,7 +21,7 @@ tests/host/host_bounds.sh
 
 On Windows, run these from the devkitPro MSYS2 shell (`C:/devkitPro/msys2/usr/bin/bash.exe -lc '...'`) and use `.venv/Scripts/python`. Git Bash sets `DEVKITPRO=/opt/devkitpro`, which only exists inside that MSYS2. The tree has no symlinks; keep it that way, because Windows checkouts store them as text files.
 
-Tests sit by where they run: `tests/host/` (run all with `.venv/Scripts/python -m unittest discover -s tests/host -p 'test_*.py'`, `CC=clang`), `tests/dolphin/`, `tests/wii/` (bench queue), `tests/apps/` (the DOLs) and `tests/lib/` (shared; a test starts with `sys.path.insert(0, str(root / "tests" / "lib")); import testenv`). Find one in `tests/README.md`; after adding or changing a test's docstring run `python tests/lib/make_index.py`.
+Tests sit by where they run: `tests/host/` (run all with `.venv/Scripts/python tests/host/run_parallel.py`, about 20 s, or the slower `-m unittest discover -s tests/host -p 'test_*.py'` CI uses; `CC=clang`), `tests/dolphin/`, `tests/wii/` (bench queue), `tests/apps/` (the DOLs) and `tests/lib/` (shared; a test starts with `sys.path.insert(0, str(root / "tests" / "lib")); import testenv`). Find one in `tests/README.md`; after adding or changing a test's docstring run `python tests/lib/make_index.py`.
 
 The full build needs `pycryptodomex` in `.venv`, SoX, `msgfmt`, host libpng, and a private 16-byte `~/.wii/common-key`. Use `make -C channel clean` when testing a clean build. The retail WAD is `channel/title/channel_retail.wad`. The optional DPKI target needs separate private signing keys.
 

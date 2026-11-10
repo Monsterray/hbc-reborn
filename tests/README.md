@@ -6,7 +6,7 @@ test's own docstring: edit the docstring, then run the script.
 
 ## host/: This PC, no Wii
 
-`python -m unittest discover -s tests/host -p 'test_*.py'` runs every `test_*.py`; CI runs the same. Each also runs alone: `python tests/host/test_mii.py`.
+`python -m unittest discover -s tests/host -p 'test_*.py'` runs every `test_*.py`; CI runs the same. `python tests/host/run_parallel.py` runs them all at once (about 20 s instead of 2 minutes). Each also runs alone: `python tests/host/test_mii.py`.
 
 | Test | What it covers |
 | --- | --- |
@@ -21,6 +21,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`overlay_preview/`](host/overlay_preview/) | Build and run the overlay preview, then write PNG files and a contact sheet. |
 | [`panic_host/`](host/panic_host/) | Host test of the crash screen's logic: channel/channelapp/source/panic_core.h and the stub's channel/channelapp/stub/ipc_wait.h. |
 | [`release_version.py`](host/release_version.py) | Check that the channel and retail WAD use the same release SemVer. |
+| [`run_parallel.py`](host/run_parallel.py) | Run every tests/host/test_*.py at once, one process per file: the same tests as `python -m unittest discover -s tests/host`, in about the time of the slowest file (about 25 s against 2 minutes one after another). |
 | [`slotled_host/`](host/slotled_host/) | sdk/slotled's pure parts on a PC, for tests/host/test_slotled.py. |
 | [`stub_layout.sh`](host/stub_layout.sh) | The reload stub is linked at 0x80001800, its BSS stays clear of the low-memory state and its image ends before the return-title words at 0x80002f00. |
 | [`test_apprun.py`](host/test_apprun.py) | New/updated app badges: the per-device apps_seen.txt (apprun.c) on the host. |

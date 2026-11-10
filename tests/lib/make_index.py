@@ -22,7 +22,8 @@ OUT = TESTS / "README.md"
 LAYERS = [
     ("host", "This PC, no Wii",
      "`python -m unittest discover -s tests/host -p 'test_*.py'` runs every `test_*.py`; "
-     "CI runs the same. Each also runs alone: `python tests/host/test_mii.py`."),
+     "CI runs the same. `python tests/host/run_parallel.py` runs them all at once (about 20 s "
+     "instead of 2 minutes). Each also runs alone: `python tests/host/test_mii.py`."),
     ("dolphin", "Dolphin, in a throwaway profile",
      "`python tests/dolphin/<test>.py`. One Dolphin at a time: a second cannot bind port 4299."),
     ("wii", "A real Wii",
