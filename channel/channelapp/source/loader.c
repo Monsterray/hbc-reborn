@@ -1286,18 +1286,29 @@ static bool usb_guard(const loader_result *result, view *sub_view) {
 bool loader_load_executable(entry_point *ep, loader_result *result,
 							view *sub_view) {
 	bool res;
+	char caption[64], installed[PATH_MAX];
+	bool installed_run = false;
 
 	if (!usb_guard(result, sub_view)) {
 		blob_free(result->data);
 		return false;
 	}
+
+	// A network launch of an installed app's own file (hbc.py send/run of
+	// apps/X/boot.dol): its run counts. Checked before the loader touches the data.
+	if (result->remote && settings.new_badges && devnet_upload_caption(caption, sizeof(caption)))
+		installed_run = app_run_match_upload("sd:", caption, result->data,
+				result->data_len, installed, sizeof(installed));
 	res = loader_reloc(ep, result->data, result->data_len,
 					   result->args, result->args_len, true);
 
 	if (!res)
 		ld_error (result, sub_view, "not_wii_app", text_err_invalid_bin);
-	else if (result->remote)
+	else if (result->remote) {
 		devnet_upload_result("launched", NULL, NULL);
+		if (installed_run && !app_run_record(installed))
+			gprintf("could not save app launch marker\n");
+	}
 	// args starts with the boot file's path. Note the run so its app badge
 	// clears (Options > App badges).
 	else if (settings.new_badges && !app_run_record(result->args))

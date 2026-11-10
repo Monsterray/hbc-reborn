@@ -18,17 +18,24 @@ run from HBC, and an amber **Updated** (with a bar along the tile's top edge)
 on one whose `boot.dol`, `boot.elf`, `meta.xml` or `icon.png` changed, in
 size or date, since you last ran it.
 
-Only a launch from HBC's own app list or app page records a run and clears
-the badge. An app sent with Wiiload, USBGecko or the developer network, or
-started some other way, does not.
+A launch from HBC's own app list or app page records a run and clears the
+badge, and so does `hbc.py send` or `run` of an installed app's own
+`apps/NAME/boot.dol` (or `boot.elf`) on the SD card when the bytes sent are
+exactly the file in that folder. Any other upload, or an app started some
+other way, does not. A change of `meta.xml` that only sets or removes its
+`<sort_id>` (the Custom order, `hbc.py order`) is not an update.
 
 HBC keeps the record on the device the apps are on, one text file each:
 `sd:/hbc/apps_seen.txt` for apps on the SD card, `usb:/hbc/apps_seen.txt` for
 a USB drive (and likewise for the other devices). It has a line for each app:
 the app's folder name, a tab, then the size and modified time of the four
-files:
+files (for `meta.xml`, a hash of its text without `<sort_id>` and without the white
+space around tags, `h:` and 8 hex digits):
 
-    Wii64	boot.dol=1318128@1762104532 boot.elf=- meta.xml=412@1762104532 icon.png=9211@1762104532
+    Wii64	boot.dol=1318128@1762104532 boot.elf=- meta.xml=h:3b38b081 icon.png=9211@1762104532
+
+A line from before 1.16.1 has `meta.xml=412@1762104532` (size and time): that
+file is judged by size and time until the app's next run rewrites the line.
 
 The file is read once when the list is scanned, and written only when
 something changed: a launch, or apps that were removed. It is never written

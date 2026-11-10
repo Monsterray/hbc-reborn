@@ -10,6 +10,8 @@
   list, grid    a blue New pill and an amber Updated pill in each
   launch        the changed app again: its Updated pill is gone, New stays,
                 and apps_seen.txt has its new stamp
+  sort_id       its meta.xml gets only a <sort_id> (hbc.py order): still no
+                Updated pill
 
 HBCS says where the focus is before every A. Pictures go to OUTDIR (default:
 a temporary folder). Needs the retail WAD (make -C channel) and
@@ -168,6 +170,16 @@ def main():
         pad.done()
         blue, amber = picture("badges-after-launch")
         check(blue >= 8 and amber == 0, f"after the launch: New stays, Updated gone ({blue} blue, {amber} amber)")
+
+        # hbc.py order rewrites meta.xml with a <sort_id>: not an update.
+        meta = meta_xml("3 Updated app", "After update", "updated")
+        hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml",
+                     meta.replace(b"</app>", b"<sort_id>10</sort_id></app>"))
+        time.sleep(3)
+        pad.send("stick 0 -1; wait 2")
+        pad.done()
+        blue, amber = picture("badges-after-sort-id")
+        check(blue >= 8 and amber == 0, f"a new <sort_id> alone: no Updated pill ({blue} blue, {amber} amber)")
     finally:
         pad.close()
         faults = dolphin.faults()
