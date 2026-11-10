@@ -592,7 +592,8 @@ static int volume[4] = { 10, 10, 10, 10 };
 
 static const char *const wav_paths[] = { "sd:/speaker.wav", "usb:/speaker.wav" };
 static lwp_t wav_thread = LWP_THREAD_NULL;
-static u8 wav_stack[16384] ATTRIBUTE_ALIGN(32);
+#define WAV_STACK 16384
+static u8 *wav_stack;                        // taken for a load, given back at the join
 static volatile int wav_state;               // 0 idle, 1 loading, 2 loaded, 3 failed
 static int wav_chan, wav_err;
 static const char *wav_from;
@@ -638,7 +639,8 @@ static void *wav_load(void *arg) {
 
 static const char *const ntp_hosts[] = { "pool.ntp.org", "time.google.com", "time.cloudflare.com" };
 static lwp_t ntp_thread = LWP_THREAD_NULL;
-static u8 ntp_stack[16384] ATTRIBUTE_ALIGN(32);
+#define NTP_STACK 16384
+static u8 *ntp_stack;                        // taken for a sync, given back at the join
 static volatile int ntp_state;               // 0 idle, 1 asking, 2 done
 static char ntp_msg[64];
 
@@ -785,18 +787,28 @@ static void ntp_start(void) {
 		return;
 	ntp_state = 1;
 	toast("Asking a time server...");
-	if (LWP_CreateThread(&ntp_thread, ntp_sync, NULL, ntp_stack, sizeof(ntp_stack), 30) < 0) {
+	ntp_stack = memalign(32, NTP_STACK);
+	if (!ntp_stack || LWP_CreateThread(&ntp_thread, ntp_sync, NULL, ntp_stack, NTP_STACK, 30) < 0) {
+		free(ntp_stack);
+		ntp_stack = NULL;
+		ntp_thread = LWP_THREAD_NULL;
 		ntp_state = 0;
 		toast("Couldn't start the clock sync");
 	}
 }
 
+static void ntp_join(void) {
+	LWP_JoinThread(ntp_thread, NULL);
+	ntp_thread = LWP_THREAD_NULL;
+	free(ntp_stack);
+	ntp_stack = NULL;
+	ntp_state = 0;
+}
+
 static void ntp_poll(void) {
 	if (ntp_state != 2)
 		return;
-	LWP_JoinThread(ntp_thread, NULL);
-	ntp_thread = LWP_THREAD_NULL;
-	ntp_state = 0;
+	ntp_join();
 	toast(ntp_msg);
 	printf("Sync clock: %s\n", ntp_msg);        // kept in DEV > Log
 }
@@ -844,8 +856,23 @@ static void wav_play(int chan) {
 	wav_chan = chan;
 	wav_state = 1;
 	toast("Loading speaker.wav...");
-	if (LWP_CreateThread(&wav_thread, wav_load, NULL, wav_stack, sizeof(wav_stack), 30) < 0)
+	wav_stack = memalign(32, WAV_STACK);
+	if (!wav_stack || LWP_CreateThread(&wav_thread, wav_load, NULL, wav_stack, WAV_STACK, 30) < 0) {
+		wav_err = wav_stack ? EINVAL : ENOMEM;
+		free(wav_stack);
+		wav_stack = NULL;
+		wav_thread = LWP_THREAD_NULL;
 		wav_state = 3;
+	}
+}
+
+static void wav_join(void) {
+	if (wav_thread != LWP_THREAD_NULL)
+		LWP_JoinThread(wav_thread, NULL);
+	wav_thread = LWP_THREAD_NULL;
+	free(wav_stack);
+	wav_stack = NULL;
+	wav_state = 0;
 }
 
 static void wav_poll(void) {
@@ -863,9 +890,7 @@ static void wav_poll(void) {
 	} else {
 		return;
 	}
-	LWP_JoinThread(wav_thread, NULL);
-	wav_thread = LWP_THREAD_NULL;
-	wav_state = 0;
+	wav_join();
 }
 
 static void find_start(int chan) {
@@ -1060,6 +1085,7 @@ typedef struct {
 	ov_page *info;            // DEV > Info's pages, gathered by info_thread
 	volatile bool info_done;
 	lwp_t info_thread;
+	char *log;                // the Log page's text, taken while open
 } ov_run;
 
 static ov_run *run;
@@ -1249,7 +1275,8 @@ static void poll(ov_run *r) {
 	e->show_net = e->show_log_pc = !cfg->no_network;
 	e->show_crash = !cfg->no_crash_handler;
 	e->exit_mask = 15 & ~cfg->hide_exit_choices;
-	e->log_text = agent_log_text();
+	agent_log_text(r->log, AGENT_LOG_SIZE + 1);
+	e->log_text = r->log;
 
 	if (r->test_chan >= 0) {
 		WPADData *d = WPAD_Data(r->test_chan);
@@ -1585,7 +1612,7 @@ static bool same_ram(const void *a, const void *b) {
 // fb0 and fb1 are the app's (lent) or NULL (allocate our own).
 static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	static bool inside;
-	static ov_ui ui;
+	ov_ui *ui;   // 8 KB, taken while open
 	void *app_fb = VIDEO_GetCurrentFramebuffer();
 	u8 *fb[2] = { fb0, fb1 };
 	bool own = !fb0;
@@ -1605,6 +1632,17 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	r.test_chan = -1;
 	r.rmode = rmode;
 	r.info_thread = LWP_THREAD_NULL;
+	// What the overlay needs only while open: its state and the Log page's
+	// text. Nothing else is taken yet, so a failure here leaks nothing.
+	ui = memalign(32, sizeof(*ui));
+	r.log = malloc(AGENT_LOG_SIZE + 1);
+	if (!ui || !r.log) {
+		free(ui);
+		free(r.log);
+		printf("HOME overlay: out of memory, not opened\n");
+		return -ENOMEM;
+	}
+	memset(ui, 0, sizeof(*ui));
 	size = r.w * r.h * 2;
 	agent_set_screen_size(r.w, r.h);
 	app_fb = agent_uncached(app_fb);
@@ -1642,6 +1680,8 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 			free(fb[0]);
 			free(fb[1]);
 		}
+		free(ui);
+		free(r.log);
 		return -ENOMEM;
 	}
 	if (!fb[0])
@@ -1658,8 +1698,8 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	// A 16:9 TV stretches the 640-pixel picture: use condensed text and
 	// pointer so they look right.
 	ov_set_widescreen(CONF_GetAspectRatio() == CONF_ASPECT_16_9);
-	ov_init(&ui, r.w, r.h);
-	open_ui = &ui;
+	ov_init(ui, r.w, r.h);
+	open_ui = ui;
 	last_chan = -1;
 	memset(&cost, 0, sizeof(cost));
 	cost.buffers = !own ? "lent" : fb[0] == (u8 *) ((u32) app_fb & ~0x40000000) ? "app's" : "own";
@@ -1679,11 +1719,11 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 
 		// Time since the last step, in sixtieths: animations follow it.
 		us = ticks_to_microsecs(diff_ticks(last_step, t0));
-		ui.ticks = (us + 8333) / 16667;
-		if (ui.ticks < 1)
-			ui.ticks = 1;
-		if (ui.ticks > 8)
-			ui.ticks = 8;   // a long stall jumps ahead, not to the end
+		ui->ticks = (us + 8333) / 16667;
+		if (ui->ticks < 1)
+			ui->ticks = 1;
+		if (ui->ticks > 8)
+			ui->ticks = 8;   // a long stall jumps ahead, not to the end
 		cost.loops++;
 		if (us > cost.loop_max_us)
 			cost.loop_max_us = us;
@@ -1697,21 +1737,21 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		ir_update(r.w, r.h);
 		pressed = read_input();
 		pointing = ir_read(px, py, pa);
-		ov_point(&ui, px, py, pa, pointing, last_chan);
+		ov_point(ui, px, py, pa, pointing, last_chan);
 		us = ticks_to_microsecs(diff_ticks(t0, gettime()));
 		if (us > cost.input_max_us)
 			cost.input_max_us = us;
 		cal_sample();
 		fx_tick();
 		// An Exit choice the app handles: close everything first.
-		if (r.exit_choice && !ui.closing)
+		if (r.exit_choice && !ui->closing)
 			pressed = OV_HOME;
-		ui_ticks = ui.ticks;
-		running = ov_step(&ui, &r.ext, pressed, act, NULL);
+		ui_ticks = ui->ticks;
+		running = ov_step(ui, &r.ext, pressed, act, NULL);
 
 		// Nothing on screen changed (a menu just sitting there): keep the
 		// picture the VI already shows, and spend no time drawing.
-		if (!ov_changed(&ui, &r.ext)) {
+		if (!ov_changed(ui, &r.ext)) {
 			VIDEO_WaitVSync();
 			continue;
 		}
@@ -1721,14 +1761,14 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 		c.stride = r.w * 2;
 		ov_noclip(&c);
 		t1 = gettime();
-		if (ui.paused) {
+		if (ui->paused) {
 			memcpy(back, r.frozen, size);
 		} else {
-			ov_dim_copy(&c, r.frozen, 96 + (ui.menu ? 0 : 60) + (256 - ui.open_t) * 100 / 256);
+			ov_dim_copy(&c, r.frozen, 96 + (ui->menu ? 0 : 60) + (256 - ui->open_t) * 100 / 256);
 			us = ticks_to_microsecs(diff_ticks(t1, gettime()));
 			cost.dim_us = (cost.dim_us * cost.frames + us) / (cost.frames + 1);
 			t1 = gettime();
-			ov_draw(&ui, &r.ext, &c);
+			ov_draw(ui, &r.ext, &c);
 			us = ticks_to_microsecs(diff_ticks(t1, gettime()));
 			cost.draw_us = (cost.draw_us * cost.frames + us) / (cost.frames + 1);
 		}
@@ -1776,19 +1816,21 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	run = NULL;
 	open_ui = NULL;
 	inside = false;
+	free(r.log);
 
-	if (ui.after == OVA_RESTART_APP && agent_cfg()->on_restart)
+	if (ui->after == OVA_RESTART_APP && agent_cfg()->on_restart)
 		agent_cfg()->on_restart(agent_cfg()->user);
-	else if (ui.after == OVA_SLOT)
-		agent_slot_press(ui.after_arg);
-	else if (ui.after == OVA_SLOT_ITEM) {
+	else if (ui->after == OVA_SLOT)
+		agent_slot_press(ui->after_arg);
+	else if (ui->after == OVA_SLOT_ITEM) {
 		const char *title;
 		int count;
-		const hbc_agent_item *items = agent_slot_menu(ui.after_arg / 16, &title, &count);
+		const hbc_agent_item *items = agent_slot_menu(ui->after_arg / 16, &title, &count);
 
-		if (ui.after_arg % 16 < count && items[ui.after_arg % 16].press)
-			items[ui.after_arg % 16].press(items[ui.after_arg % 16].user);
+		if (ui->after_arg % 16 < count && items[ui->after_arg % 16].press)
+			items[ui->after_arg % 16].press(items[ui->after_arg % 16].user);
 	}
+	free(ui);
 	if (r.exit_choice) {
 		const hbc_agent_config *cfg = agent_cfg();
 
@@ -1826,15 +1868,10 @@ void agent_overlay_stop(void) {
 	// ponytail: a speaker.wav load or clock sync still running is left to
 	// end by itself (it only reads the card or asks a time server).
 	if (wav_thread != LWP_THREAD_NULL && wav_state != 1) {
-		LWP_JoinThread(wav_thread, NULL);
-		wav_thread = LWP_THREAD_NULL;
-		wav_state = 0;
+		wav_join();
 	}
-	if (ntp_thread != LWP_THREAD_NULL && ntp_state == 2) {
-		LWP_JoinThread(ntp_thread, NULL);
-		ntp_thread = LWP_THREAD_NULL;
-		ntp_state = 0;
-	}
+	if (ntp_thread != LWP_THREAD_NULL && ntp_state == 2)
+		ntp_join();
 	for (i = 0; i < sizeof(sounds) / sizeof(sounds[0]); ++i) {
 		if (wav_state == 1 && sounds[i] == &wav)
 			continue;
