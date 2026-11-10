@@ -41,8 +41,10 @@ import dolphin_smoke  # noqa: E402
 
 CRASH_ADDR = 0x91800020
 CRASH_WORDS = 3 + 5 + 2 + 2 + 12   # magic .. uptime_ms, frames
-# Version 3 (sdk/hbc_agent/hbc_agent.h): then app[20], kind, code, reason[64], way_out, check.
-CRASH_SIZE = CRASH_WORDS * 4 + 20 + 4 + 4 + 64 + 4 + 4
+# hbc_crash_block (sdk/hbc_agent/hbc_agent.h): then app[20], kind, code,
+# reason[64], check (over the words before it), and the way out's 4 words.
+CRASH_CHECK_WORDS = CRASH_WORDS + 5 + 2 + 16   # HBC_CRASH_V2_WORDS
+CRASH_SIZE = (CRASH_CHECK_WORDS + 1 + 4) * 4
 NAMES = {2: "machine check", 3: "DSI", 4: "ISI", 6: "alignment", 7: "program"}
 REASON_AT = CRASH_WORDS * 4 + 20 + 4 + 4
 
@@ -124,10 +126,11 @@ def crash_dict(raw):
 
 def check_block(raw):
     words = struct.unpack(f">{len(raw) // 4}I", raw)
+    n = CRASH_CHECK_WORDS
     x = 0x5a17c0de
-    for v in words[:-1]:
+    for v in words[:n]:
         x = (((x << 5) | (x >> 27)) & 0xffffffff) ^ v
-    assert x == words[-1], f"crash block check {x:08x} != {words[-1]:08x}"
+    assert x == words[n], f"crash block check {x:08x} != {words[n]:08x}"
 
 
 def symbols(elf):
