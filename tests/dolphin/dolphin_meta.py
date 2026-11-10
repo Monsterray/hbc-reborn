@@ -42,6 +42,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+from waits import wait_until  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 
@@ -254,7 +255,7 @@ def main():
             hbc.put_file(wii, f"sd:/apps/{folder}/boot.dol", dol)
             hbc.put_file(wii, f"sd:/apps/{folder}/meta.xml", meta)
         hbc.put_file(wii, "sd:/apps/000-hbctest-meta-a/icon.png", icon)
-        time.sleep(3)
+        wait_until(lambda: hbc.status(wii)["app_list"]["order"][:3] == list(APPS), 15)
         listed = hbc.status(wii)["app_list"]
         print(f"list ({listed['sort']}): {listed['order'][:5]}", flush=True)
         check(listed["order"][:3] == list(APPS), "the three test apps first, A B C")

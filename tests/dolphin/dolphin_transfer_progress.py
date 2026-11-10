@@ -28,6 +28,8 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import agent_checks  # noqa: E402
+from waits import wait_until  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 from dolphin_meta import PAD_MAP, PAD_SETTINGS, Pad, shot  # noqa: E402
@@ -63,7 +65,7 @@ def main():
         pad.send("stick 0 -1; wait 1")   # the pointer off the screen
         pad.done()
         hbc.send_buttons(wii, "1")
-        time.sleep(3)
+        wait_until(lambda: hbc.status(wii)["options"]["open"], 10)
         shot(wii, out, "options-percent")
         pad.send("press PadN; wait 2; press PadN; wait 2; press PadN; wait 2; press Cross; wait 2")
         pad.done()
@@ -102,7 +104,8 @@ def main():
         # 3. Through an app's launch and back: the choice is in settings.xml.
         before = hbc.lastlog(wii)
         hbc.send(wii, str(root / "tests/apps/agent_app/agent_app.dol"), [], "progress")
-        time.sleep(10)
+        # exit_app does nothing while HBC still answers: wait for the app itself
+        agent_checks.wait_agent(wii, 120)
         hbc.exit_app(wii, 240)
         hbc.hbc_wait(wii, 240)
         check(hbc.lastlog(wii) != before, "an app ran in between")

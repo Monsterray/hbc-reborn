@@ -20,6 +20,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+from waits import wait_until  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 from dolphin_meta import PAD_MAP, PAD_SETTINGS, Pad, shot  # noqa: E402
@@ -56,7 +57,7 @@ def main():
         pad.done()
         check(options()["edges"] == "wrap", "Wrap rows is the default")
         hbc.send_buttons(wii, "1")
-        time.sleep(3)
+        wait_until(lambda: options()["open"], 10)
         shot(wii, out, "options")
         check(options()["focus"] == "back", f"Options opens on Back ({options()})")
         if step("press PadN; wait 2; press PadN; wait 2", {"focus": "page"},
@@ -71,7 +72,7 @@ def main():
             pad.send("press Circle; wait 2")   # B: never leave it open
             pad.done()
         hbc.send_buttons(wii, "1")
-        time.sleep(3)
+        wait_until(lambda: options()["open"], 10)
         check(options()["edge_choice"] == "page", f"Options again shows Turn page ({options()})")
         shot(wii, out, "options-again")
         pad.send("press Circle; wait 2")

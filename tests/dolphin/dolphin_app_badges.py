@@ -28,6 +28,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+from waits import wait_until  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 from dolphin_meta import PAD_MAP, PAD_SETTINGS, Pad, launch, shot  # noqa: E402
@@ -96,14 +97,14 @@ def main():
         while hbc.status(wii)["device"] != "sd":
             if time.monotonic() > deadline:
                 raise SystemExit("the SD card did not mount")
-            time.sleep(1)
-        time.sleep(2)
+            time.sleep(0.5)
+        time.sleep(1)
         pad.send("stick 0 -1; wait 1")   # the pointer off the screen
         pad.done()
         check(options()["badges"] == "off", "App badges are off by default")
 
         hbc.send_buttons(wii, "1")
-        time.sleep(3)
+        wait_until(lambda: options()["open"], 10)
         check(options()["focus"] == "back", f"Options opens on Back ({options()})")
         if step("press PadN; wait 2", {"focus": "badges_on"}, "up from Back: App badges On") and \
                 step("press Cross; wait 2", {"badge_choice": "on"}, "A picks On"):

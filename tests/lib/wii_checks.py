@@ -8,6 +8,7 @@ build's HBC already running, and send an app even when the send times out.
 import os
 import pathlib
 import shutil
+import socket
 import sys
 import tempfile
 import time
@@ -67,14 +68,14 @@ def ensure_hbc(wii, dol=None, expected=None, fresh=False, say=print):
 
 def send_app(wii, path, args, retries=2, say=print):
     """hbc.send, tolerant of the known "send times out but loads": after a
-    socket error look at who answers. Nothing, or an agent, means the app
+    timeout or a reset (not a missing file) look at who answers. Nothing, or an agent, means the app
     loaded; HBC still answering means the upload never started, so send again
     (up to `retries` more times). The caller still waits for the app."""
     for attempt in range(retries + 1):
         try:
             hbc.send(wii, path, args)
             return
-        except OSError as exc:
+        except (TimeoutError, ConnectionError, socket.timeout) as exc:
             say(f"send {os.path.basename(path)}: {exc!r}; looking at who answers")
             time.sleep(3)
             try:
