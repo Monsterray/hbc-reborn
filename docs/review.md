@@ -85,6 +85,17 @@ for the replug tests (1.15.21); not seen on a Wii. Test: pull the SD card with
 an app's details open, plug it back in, then close the details.
 `tests/wii/wii_replug.py` starts on the app list, so it does not cover this.
 
+### Port 4299 goes dark for about 2.5 minutes (IOS)
+
+On real Wiis (devwii and lrwii, every HBC build including 1.16.0), IOS's TCP
+stack sometimes stops answering SYNs and FINs on port 4299 for 108-190 s while
+ping works and HBC keeps running and calling `net_accept`. Rapid HBCS/HBCV
+requests trigger it with or without a popup; slower polling (`hbc.py` since
+1.16.1) makes it rare, not gone. Parked 2026-11-10 (Monty). Evidence and
+ideas for a networking cIOS: [research/ios-tcp.md](research/ios-tcp.md);
+reproduce with `tests/wii/wii_port_outage.py`. Next step: an elevated
+`pktmon` capture during an outage.
+
 ### More keyboard keys
 
 The keyboard works but needs a lot more bindings to feel right (Monty,
