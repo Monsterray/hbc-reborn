@@ -8,6 +8,26 @@ shows up there; every finding below is from real hardware.
 Status: the port-4299 outage (section 1) is under investigation (2026-11-10).
 Update this note as results come in.
 
+Interim results (2026-11-10, second session; to be folded into section 1):
+- A hammer of `HBCV` requests every 50 ms with no popup reproduces an outage
+  (devwii: after 56 requests; later runs 1-6 outages per 360-400 s on both
+  Wiis), so the popup is not needed. At 2 requests a second it still happened
+  (devwii 1 outage in 780 requests, lrwii 4 in 558).
+- Letting the PC close first (`tcp_close` waits 250 ms for the peer's FIN
+  before `shutdown`) did not help; the PC's netstat showed hundreds of its own
+  TIME_WAIT sockets even with the old close, so the Wii was not the active
+  closer. The TIME_WAIT-on-the-Wii idea is not supported. A backlog of 8 did
+  not help either.
+- A connection from another source port (WSL) is silent too during an outage:
+  the whole port is dark.
+- In the ZIP loop, every outage (11 of 11 in the logs) came right after a
+  cycle whose result was "launched" instead of "declined": HBC treated the
+  upload as a launchable app. HBC's process survives (uptime keeps counting,
+  net_starts stays 1). Whether the launch path, not IOS, darkens the port in
+  that loop is the next thing to check; the hammer outages are a separate
+  case with no launch.
+- Script: [tests/wii/wii_port_outage.py](../../tests/wii/wii_port_outage.py).
+
 ## 1. The TCP stack stops answering for about 2.5 minutes
 
 **Symptom.** HBC's listener on TCP port 4299 stops answering for 108-162 s

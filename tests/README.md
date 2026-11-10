@@ -127,6 +127,7 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 | [`wii_netbench.py`](wii/wii_netbench.py) | Measure developer-network throughput on a real Wii (or Dolphin). |
 | [`wii_overlay_return.py`](wii/wii_overlay_return.py) | HBC's HOME overlay right after an app returns to HBC, against later. |
 | [`wii_overlay_speed.py`](wii/wii_overlay_speed.py) | How fast HBC's HOME overlay draws: the first opening after HBC starts, then later ones (HBCS "overlay": frames drawn, average and worst time each). |
+| [`wii_port_outage.py`](wii/wii_port_outage.py) | Does HBC's port 4299 stop answering for minutes? |
 | [`wii_put_readback.py`](wii/wii_put_readback.py) | hbc.py put and sync reading each upload back (PR 2), on a Wii, as a queue job, against the HBC that is running (nothing is sent to it): |
 | [`wii_receive_caption.py`](wii/wii_receive_caption.py) | The Wiiload receive dialog's heading (PR 8), on a Wii, as a queue job: this tree's HBC (channel DOL, through the installed HBC) is sent the agent app as hbctest-recv/boot.dol, padded with 8 MiB so the dialog stays up. |
 | [`wii_replug.py`](wii/wii_replug.py) | ATTENDED test on the dev Wii: pull and replug the SD card and the USB drive while HBC runs. |
