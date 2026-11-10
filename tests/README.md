@@ -105,6 +105,7 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 | [`wii_agent_mem2.py`](wii/wii_agent_mem2.py) | The agent and the app's MEM2, on a Wii. |
 | [`wii_agent_safety.py`](wii/wii_agent_safety.py) | The agent's safety tools on a real Wii (sdk/hbc_agent/safety.c). |
 | [`wii_agent_stop.py`](wii/wii_agent_stop.py) | hbc_agent_stop() and hbc_agent_listen() on a real Wii. |
+| [`wii_app_badges.py`](wii/wii_app_badges.py) | Options > App badges on the bench Wii: the amber Updated pill and light. |
 | [`wii_app_list.py`](wii/wii_app_list.py) | HBC's app list while files arrive over the network, and the Custom order. |
 | [`wii_avatar.py`](wii/wii_avatar.py) | HBC's avatar on a Wii, as a queue job: this tree's HBC (channel DOL, through the installed HBC), with the Wii's own Mii database and the faces on its SD card (sd:/mii/RFL_Res.dat: HOME > HBC > Save Mii faces, or `hbc.py mii-faces`, which this runs first when they are missing). |
 | [`wii_avatar_anims.py`](wii/wii_avatar_anims.py) | Every animation of the Mii Channel body, played by HBC's avatar on a Wii, as a queue job: to choose which the avatar should use. |
