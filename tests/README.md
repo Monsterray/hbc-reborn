@@ -73,6 +73,7 @@ test's own docstring: edit the docstring, then run the script.
 | --- | --- |
 | [`dolphin_app_badges.py`](dolphin/dolphin_app_badges.py) | Options > App badges in Dolphin: the retail WAD in a throwaway NAND. |
 | [`dolphin_exit_menu.py`](dolphin/dolphin_exit_menu.py) | HBC's HOME > Exit > System Menu in Dolphin: the installed WAD, a throwaway NAND with no System Menu. |
+| [`dolphin_glow.py`](dolphin/dolphin_glow.py) | The focus glow on an app in the list and the grid, in Dolphin. |
 | [`dolphin_mboard.py`](dolphin/dolphin_mboard.py) | sdk/mboard end to end in Dolphin, with the real Wii Menu (4.3U). |
 | [`dolphin_meta.py`](dolphin/dolphin_meta.py) | Every meta.xml option, through HBC's menu in Dolphin. |
 | [`dolphin_mii.py`](dolphin/dolphin_mii.py) | sdk/mii end to end in Dolphin: the database on its NAND and an emulated Wii Remote's Miis, with nobody at a Wii. |

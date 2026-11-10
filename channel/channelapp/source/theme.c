@@ -399,6 +399,9 @@ void theme_init(u8 *data, u32 data_len) {
 		}
 	}
 
+	if (!theme.glow)
+		theme.glow = theme.progress.ul;
+
 	gprintf("theme.description=%s\n", theme.description);
 	gprintf("theme.progress ul=0x%08x\n", theme.progress.ul);
 	gprintf("theme.progress ur=0x%08x\n", theme.progress.ur);

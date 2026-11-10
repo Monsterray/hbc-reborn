@@ -141,6 +141,7 @@ static void view_push_view (const view *v, u32 subview_alpha) {
 		w = &v->widgets[i];
 
 		if (w->flags & WF_VISIBLE) {
+			widget_glow_step (w);
 			gfx_frame_push (&w->qe_coords_push, 1);
 			for (j = 0; j < w->layer_count; ++j) {
 				l = &w->layers[j];
@@ -161,6 +162,18 @@ static void view_push_view (const view *v, u32 subview_alpha) {
 								w->layers[j].gfx_entry_count);
 			}
 
+			gfx_frame_push (&w->qe_coords_pop, 1);
+		}
+	}
+
+	// The focus glows last, so they lie over the neighbouring widgets.
+	for (i = 0; i < v->widget_count; ++i) {
+		w = &v->widgets[i];
+
+		if (w->glow.on && w->glow.alpha && (w->flags & WF_VISIBLE) &&
+				(w->flags & WF_ENABLED)) {
+			gfx_frame_push (&w->qe_coords_push, 1);
+			gfx_frame_push (&w->glow.qe, 1);
 			gfx_frame_push (&w->qe_coords_pop, 1);
 		}
 	}

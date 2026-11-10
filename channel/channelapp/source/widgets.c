@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <ogc/lwp_watchdog.h>
 
 #include "../config.h"
 #include "theme.h"
@@ -96,9 +97,170 @@ static void badge_theme_reinit(void) {
 	badge_gen_bar(&badge_bar_list, badge_bar_list_pixels, theme_gfx[THEME_APP_ENTRY]->w);
 }
 
+// The focus glow of an app entry: a halo that follows the outline of the
+// theme's own button picture. At theme load, the button's alpha is spread
+// by a blur (three box passes, close to a Gaussian), boosted so the halo is
+// strong at the edge, and cleared where the button itself is solid; the
+// result is an alpha-only GX I8 texture (1 byte a texel, GLOW_MARGIN larger
+// each side than the button) that is tinted with theme.glow when drawn.
+// Nothing is computed per frame: widget_glow_step() only changes colours.
+#define GLOW_MARGIN 12
+#define GLOW_RADIUS 4        // each box pass is 2 * 4 + 1 wide
+#define GLOW_GAIN 2.6f       // 0.5 at the edge of the button becomes 1.3
+#define GLOW_PEAK 0.95f      // the strongest the tint's alpha goes
+// The fade closes the gap to its target by 1 - e^(-ms / tau) each step: an
+// ease-out in both directions that reverses smoothly and is the same at 50 and
+// 60 Hz. About 4 tau to settle: 180 ms in, 240 ms out.
+#define GLOW_IN_TAU 45.0f
+#define GLOW_OUT_TAU 60.0f
+#define GLOW_FRAME_CAP_MS 100   // a stalled frame doesn't skip the fade
+
+typedef struct {
+	gfx_entity entity;
+	u8 *pixels;
+	int size;
+	s16 x, y;      // where it draws, from the button's corner
+} app_glow;
+
+static app_glow glow_list, glow_grid;
+
+static void glow_blur(const float *src, float *dst, int w, int h, bool horiz) {
+	int x, y, k;
+	float inv = 1.0f / (2 * GLOW_RADIUS + 1);
+
+	for (y = 0; y < h; ++y)
+		for (x = 0; x < w; ++x) {
+			float sum = 0;
+
+			for (k = -GLOW_RADIUS; k <= GLOW_RADIUS; ++k) {
+				int xx = horiz ? x + k : x, yy = horiz ? y : y + k;
+
+				if (xx >= 0 && xx < w && yy >= 0 && yy < h)
+					sum += src[yy * w + xx];
+			}
+			dst[y * w + x] = sum * inv;
+		}
+}
+
+// The alpha of texel (x, y) of an RGBA8 GX texture (see badge_pixel).
+static u8 glow_src_alpha(const gfx_entity *e, int x, int y) {
+	return e->texture.pixels[((y / 4) * (e->w / 4) + x / 4) * 64 + ((y % 4) * 4 + x % 4) * 2];
+}
+
+static void glow_make(app_glow *g, const gfx_entity *btn) {
+	int gw, gh, ox, oy, x, y, pass, size;
+	float *a, *b;
+
+	if (!btn || btn->type != GFXE_TEXTURE)
+		return;
+
+	// I8 tiles are 8 wide and 4 high.
+	gw = (btn->w + 2 * GLOW_MARGIN + 7) & ~7;
+	gh = (btn->h + 2 * GLOW_MARGIN + 3) & ~3;
+	ox = (gw - btn->w) / 2;
+	oy = (gh - btn->h) / 2;
+	size = gw * gh;
+
+	if (g->pixels && g->size != size) {
+		free(g->pixels);
+		g->pixels = NULL;
+	}
+	if (!g->pixels)
+		g->pixels = (u8 *) pmemalign(32, size);
+	g->size = size;
+
+	a = (float *) pmalloc(size * sizeof(float));
+	b = (float *) pmalloc(size * sizeof(float));
+	memset(a, 0, size * sizeof(float));
+	for (y = 0; y < btn->h; ++y)
+		for (x = 0; x < btn->w; ++x)
+			a[(y + oy) * gw + x + ox] = glow_src_alpha(btn, x, y) / 255.0f;
+
+	for (pass = 0; pass < 3; ++pass) {
+		glow_blur(a, b, gw, gh, true);
+		glow_blur(b, a, gw, gh, false);
+	}
+
+	for (y = 0; y < gh; ++y)
+		for (x = 0; x < gw; ++x) {
+			float v = a[y * gw + x] * GLOW_GAIN, in = 0;
+			int bx = x - ox, by = y - oy;
+
+			if (bx >= 0 && bx < btn->w && by >= 0 && by < btn->h)
+				in = glow_src_alpha(btn, bx, by) / 200.0f;
+			if (v > 1.0f)
+				v = 1.0f;
+			if (in > 1.0f)
+				in = 1.0f;
+			g->pixels[((y / 4) * (gw / 8) + x / 8) * 32 + (y % 4) * 8 + x % 8] =
+					(u8) (v * (1.0f - in) * 255.0f + 0.5f);
+		}
+
+	free(a);
+	free(b);
+	gfx_gen_tex(&g->entity, gw, gh, g->pixels, GFXT_I8);   // flushes it
+	g->x = -ox;
+	g->y = -oy;
+}
+
 void widgets_theme_reinit (void) {
 	app_entry_default_description = _("<no description>");
 	badge_theme_reinit();
+	glow_make(&glow_list, theme_gfx[THEME_APP_ENTRY]);
+	glow_make(&glow_grid, theme_gfx[THEME_GRID_APP_ENTRY]);
+}
+
+// The focus fade (see widget_glow_step): the normal picture stays solid until
+// the fade is half done, then gives way to the theme's focus picture, which
+// fades in over it; the halo follows e.
+static void glow_attach(widget *w, const app_glow *g) {
+	if (!g->pixels)
+		return;
+	w->glow.on = true;
+	gfx_qe_entity(&w->glow.qe, (gfx_entity *) &g->entity, g->x, g->y, 1, 0);
+}
+
+void widget_glow_step (widget *w) {
+	u64 now;
+	u32 ms = 0, rgb;
+	float e, n;   // e: how far in the focus is, 0 to 1
+	u8 focus_a, norm_a, glow_a;
+	bool focused = (w->flags & WF_FOCUSED) != 0;
+
+	if (!w->glow.on)
+		return;
+
+	now = gettime();
+	if (w->glow.last) {
+		ms = ticks_to_millisecs(diff_ticks(w->glow.last, now));
+		if (ms > GLOW_FRAME_CAP_MS)
+			ms = GLOW_FRAME_CAP_MS;
+	}
+	w->glow.last = now;
+
+	if (focused) {
+		w->glow.p += (1.0f - w->glow.p) * (1.0f - expf(-(float) ms / GLOW_IN_TAU));
+		if (w->glow.p > 0.995f)
+			w->glow.p = 1.0f;
+	} else {
+		w->glow.p -= w->glow.p * (1.0f - expf(-(float) ms / GLOW_OUT_TAU));
+		if (w->glow.p < 0.005f)
+			w->glow.p = 0.0f;
+	}
+
+	e = w->glow.p;
+	focus_a = (u8) (e * 255.0f + 0.5f);
+	n = 2.0f * (1.0f - e);
+	norm_a = (u8) ((n > 1.0f ? 1.0f : n) * 255.0f + 0.5f);
+	glow_a = (u8) (e * GLOW_PEAK * 255.0f + 0.5f);
+
+	w->layers[0].gfx_entries[0].entity.color = 0xffffff00 | norm_a;
+	w->layers[2].gfx_entries[0].entity.color = 0xffffff00 | focus_a;
+	w->layers[2].gfx_entry_count = focus_a ? 1 : 0;
+
+	rgb = theme.glow & 0xffffff00;
+	w->glow.alpha = glow_a;
+	w->glow.qe.entity.color = rgb | (u8) ((theme.glow & 0xff) * glow_a / 255);
 }
 
 void widgets_init (void) {
@@ -480,9 +642,11 @@ void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 	// Enable rumbling for this widget
 	w->flags |= WF_RUMBLE;
 
+	// Layers 0 and 2 are both drawn while enabled; widget_glow_step() fades
+	// the focus picture in over the normal one.
 	l = &w->layers[0];
-	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
-	l->flags_invert = WF_FOCUSED;
+	l->flags = WF_ENABLED;
+	l->flags_invert = 0;
 	l->gfx_entry_count = 1;
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
@@ -500,13 +664,14 @@ void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 					0, 0, 0, WIDGET_DISABLED_COLOR);
 
 	l = &w->layers[2];
-	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
+	l->flags = WF_ENABLED;
 	l->flags_invert = 0;
 	l->gfx_entry_count = 1;
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
 	gfx_qe_entity (&l->gfx_entries[0], theme_gfx[THEME_GRID_APP_ENTRY_FOCUS],
-					0, 0, 0, COL_DEFAULT);
+					0, 0, 0, 0xffffff00);
+	glow_attach(w, &glow_grid);
 
 	if (entry->icon) {
 		l = &w->layers[3];
@@ -560,9 +725,10 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 
 	w->flags |= WF_RUMBLE;
 
+	// As in widget_grid_app_entry: both pictures, the focus one fading in.
 	l = &w->layers[0];
-	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
-	l->flags_invert = WF_FOCUSED;
+	l->flags = WF_ENABLED;
+	l->flags_invert = 0;
 	l->gfx_entry_count = 1;
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
@@ -580,13 +746,14 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 					0, 0, 0, WIDGET_DISABLED_COLOR);
 
 	l = &w->layers[2];
-	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
+	l->flags = WF_ENABLED;
 	l->flags_invert = 0;
 	l->gfx_entry_count = 1;
 	l->gfx_entries = (gfx_queue_entry *)
 						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
 	gfx_qe_entity (&l->gfx_entries[0], theme_gfx[THEME_APP_ENTRY_FOCUS],
-					0, 0, 0, COL_DEFAULT);
+					0, 0, 0, 0xffffff00);
+	glow_attach(w, &glow_list);
 
 	line1 = NULL;
 	line2 = NULL;

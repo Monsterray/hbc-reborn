@@ -50,6 +50,16 @@ typedef struct {
 	int layer_count;
 	widget_layer *layers;
 
+	// An app entry's focus glow (widgets.c): drawn by view_push_view after
+	// all the widgets, so it lies over its neighbours. p is the fade, 0 to 1.
+	struct {
+		bool on;
+		u8 alpha;
+		f32 p;
+		u64 last;     // gettime() at the last step; 0 before the first
+		gfx_queue_entry qe;
+	} glow;
+
 	union {
 		struct {
 			gfx_entity *mask;
@@ -106,6 +116,10 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z,
 						const app_entry *entry);
 void widget_grid_app_entry (widget *w, s16 x, s16 y, s16 z,
 						const app_entry *entry);
+
+// Advance an app entry's focus fade by the time since the last call and set
+// its layers' and glow's colours; view_push_view calls it every frame.
+void widget_glow_step (widget *w);
 
 void widget_mii_coin (widget *w, s16 x, s16 y, s16 z, gfx_entity *coin,
 						gfx_entity *ring);

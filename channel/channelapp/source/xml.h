@@ -76,6 +76,9 @@ typedef struct {
 typedef struct {
 	theme_gradient_t progress;
 	theme_badge_t badge_new, badge_updated;
+	// The glow around the focused app (widgets.c), 0xRRGGBBAA; theme.xml's
+	// <glow_color>, else the progress gradient's top colour.
+	u32 glow;
 	char *description;
 	theme_font_t default_font;
 	theme_font_t fonts[FONT_MAX];

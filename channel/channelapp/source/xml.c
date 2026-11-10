@@ -659,6 +659,7 @@ bool load_theme_xml(char *buf) {
 
 	_get_color(node, "font_color", &theme.default_font.color);
 	_get_gradient(node, "progress_gradient", &theme.progress);
+	_get_color(node, "glow_color", &theme.glow);
 	_get_badge(node, "badge_new", &theme.badge_new);
 	_get_badge(node, "badge_updated", &theme.badge_updated);
 
