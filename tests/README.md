@@ -57,6 +57,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`test_transfer_name.py`](host/test_transfer_name.py) | Compile the transfer label selector used by HBC and the in-app agent. |
 | [`test_usbguard.py`](host/test_usbguard.py) | The stuck-USB guard (sdk/usbguard) on a PC: the phases and their timing, a retry after a replug, the free path and the no-AHBPROT path. |
 | [`test_way_out.py`](host/test_way_out.py) | Build sdk/hbc_agent/way_out.c on the host and run it against a model of the Wii's IPC registers (tests/host/way_out_host/test.c), after Dolphin's WiiIPC: a healthy IOS leaves through the reload stub (late replies drained first); a close that never replies launches HBC through ES (the stub's title, then OHBC, then LULZ); a launch that does not go ahead resets the Wii through STM while IOS still acks, then through HW_RESETS with AHBPROT open (never on a vWii); an IOS that acks nothing resets through HW_RESETS; and with a reset in the last 10 minutes, or nothing working, it falls back on the stub. |
+| [`test_wii_checks.py`](host/test_wii_checks.py) | tests/lib/wii_checks.py: ensure_hbc skips the send for the running build, send_app survives a send that times out, production Wiis are refused. |
 | [`test_wiispk.py`](host/test_wiispk.py) | Build sdk/wiispk on the host and check its WAV reader, resampler and ADPCM encoder: a 44.1 kHz stereo WAV with a 1 kHz tone and a 4.6 kHz tone (which would fold onto 1.4 kHz at 6 kHz without the low-pass) must come out as 6 kHz mono with the 1 kHz tone kept, the 4.6 kHz one gone, and the encoder at least as good as libogc's. |
 | [`test_wiki.py`](host/test_wiki.py) | tools/wiki.py: every published doc exists, every link on every page works on the wiki (a page of its own, or a GitHub URL), and the sidebar lists every page. |
 | [`test_workstation_paths.py`](host/test_workstation_paths.py) | No paths of one workstation: no tracked text file names a project, tool or home folder of one PC (C:/projects/..., /c/tools/..., /mnt/c/..., a C:/Python3xx), so the project works on anyone's workstation. |
@@ -67,7 +68,7 @@ test's own docstring: edit the docstring, then run the script.
 
 ## dolphin/: Dolphin, in a throwaway profile
 
-`python tests/dolphin/<test>.py`. One Dolphin at a time: a second cannot bind port 4299.
+`python tests/dolphin/<test>.py`. One Dolphin at a time: a second cannot bind port 4299. `python tests/dolphin/run_all.py [--special]` runs every one in a row, builds what is missing, reruns a failure once and prints a table with seconds. A profile starts empty (Dolphin makes its 128 MB SD image on the first boot), so a test's cost is the boot, about 9 s, plus its waits: poll HBCS with `waits.wait_until` rather than `time.sleep`.
 
 | Test | What it covers |
 | --- | --- |
@@ -89,10 +90,11 @@ test's own docstring: edit the docstring, then run the script.
 | [`dolphin_usbguard.py`](dolphin/dolphin_usbguard.py) | tests/apps/usbguard_app's `check` in Dolphin: with a healthy USB (Dolphin has no drive and nothing stuck), every sdk/usbguard wrapper answers as the plain call would. |
 | [`dolphin_way_out.py`](dolphin/dolphin_way_out.py) | The agent's way out (sdk/hbc_agent/way_out.c) in Dolphin, from the retail WAD installed in a throwaway profile, with tests/apps/agent_app's wayout mode: hbc_agent_fatal_now() with the agent's test bits, then the way HBC reports and the kept log's steps. |
 | [`dolphin_wpad_queue.py`](dolphin/dolphin_wpad_queue.py) | Check that every Wii Remote slot has a command queue, in Dolphin. |
+| [`run_all.py`](dolphin/run_all.py) | Run every Dolphin test one at a time and print a table of results and seconds. |
 
 ## wii/: A real Wii
 
-Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tests that can hang IOS are never run unattended.
+Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tests that can hang IOS are never run unattended. `wii_checks.ensure_hbc` skips the DOL send when this build's HBC already runs (`fresh=True` for a test that needs HBC just started); `wii_netbench.py` and `netblock_run.py` are on-demand benches, not part of a routine run.
 
 | Test | What it covers |
 | --- | --- |
@@ -135,7 +137,7 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 
 ## apps/: The Wii, sent by the tests above
 
-`make -C tests/apps/<app>`; each shows a text console on the TV.
+`make -C tests/apps/<app>`; each shows a text console on the TV. `OGC=libogc2` builds need devkitPPC r41-2 (`$DEVKITPRO/devkitPPC-r41-2` or `DEVKITPPC_R41`).
 
 | Test | What it covers |
 | --- | --- |
@@ -168,3 +170,5 @@ Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). Tes
 | [`replug_checks.py`](lib/replug_checks.py) | Checks shared by tests/dolphin/dolphin_replug.py and tests/wii/wii_replug.py: what HBC must show after a storage device is unplugged and plugged back in. |
 | [`testenv.py`](lib/testenv.py) | Put tools/ and every test layer on sys.path, so tests and tools import each other by name (`import hbc`, `import dolphin_smoke`, `import agent_checks`). |
 | [`vffread.py`](lib/vffread.py) | Read a Wii VFF (cdb.vff, wc24recv.mbx): a FAT16 volume in a NAND file, geometry from its header. |
+| [`waits.py`](lib/waits.py) | Polling instead of fixed sleeps: wait for a state HBCS shows, with a deadline. |
+| [`wii_checks.py`](lib/wii_checks.py) | Shared steps of the real-Wii tests (tests/wii): is this a bench Wii, is this build's HBC already running, and send an app even when the send times out. |
