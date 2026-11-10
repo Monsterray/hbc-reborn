@@ -222,14 +222,33 @@ static struct {
 // the focus is before they press A, instead of guessing.
 static ov_ui *open_ui;
 
-int agent_overlay_state(char *buf, int size) {
-	ov_ui *ui = open_ui;
+// home() frees the ui after clearing open_ui; both the clear and the copy
+// below run with interrupts off, so the agent thread never reads freed memory.
+static void open_ui_set(ov_ui *ui) {
+	u32 level;
 
-	if (!ui)
+	_CPU_ISR_Disable(level);
+	open_ui = ui;
+	_CPU_ISR_Restore(level);
+}
+
+int agent_overlay_state(char *buf, int size) {
+	int menu, focus, tab, page, info;
+	u32 level;
+
+	_CPU_ISR_Disable(level);
+	if (!open_ui) {
+		_CPU_ISR_Restore(level);
 		return 0;
+	}
+	menu = open_ui->menu;
+	focus = open_ui->focus;
+	tab = open_ui->dev_tab;
+	page = open_ui->dev_page;
+	info = open_ui->info_page;
+	_CPU_ISR_Restore(level);
 	return snprintf(buf, size, ",\"overlay_ui\":{\"menu\":%d,\"focus\":%d,\"tab\":%d,"
-					"\"page\":%d,\"info_page\":%d}", ui->menu, ui->focus, ui->dev_tab,
-					ui->dev_page, ui->info_page);
+					"\"page\":%d,\"info_page\":%d}", menu, focus, tab, page, info);
 }
 
 // HBCS: ,"overlay":{...} after the overlay was open, else nothing.
@@ -1699,7 +1718,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	// pointer so they look right.
 	ov_set_widescreen(CONF_GetAspectRatio() == CONF_ASPECT_16_9);
 	ov_init(ui, r.w, r.h);
-	open_ui = ui;
+	open_ui_set(ui);
 	last_chan = -1;
 	memset(&cost, 0, sizeof(cost));
 	cost.buffers = !own ? "lent" : fb[0] == (u8 *) ((u32) app_fb & ~0x40000000) ? "app's" : "own";
@@ -1814,7 +1833,7 @@ static s32 home(const GXRModeObj *rmode, void *fb0, void *fb1) {
 	if (!frozen_in_place)
 		free(r.frozen);
 	run = NULL;
-	open_ui = NULL;
+	open_ui_set(NULL);
 	inside = false;
 	free(r.log);
 
