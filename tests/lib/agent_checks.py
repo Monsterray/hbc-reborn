@@ -201,6 +201,7 @@ class LogCollector:
         self.server = hbc.LogServer(port)
         self.lock = threading.Lock()
         self.text = ""
+        self.since = 0   # wait_for ignores text before this offset (mark)
         self.closed = 0
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -231,14 +232,23 @@ class LogCollector:
         with self.lock:
             self.closed += 1
 
+    def mark(self):
+        """From here on wait_for looks only at text that arrives after this
+        call: take it just before sending the next app, so an earlier app's
+        line cannot answer for the new one."""
+        with self.lock:
+            self.since = len(self.text)
+
     def wait_for(self, needle, seconds):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             with self.lock:
-                if needle in self.text:
+                if needle in self.text[self.since:]:
                     return
             time.sleep(0.2)
-        raise AssertionError(f"no {needle!r} in the app log; got {self.text!r}")
+        with self.lock:
+            fresh = self.text[self.since:]
+        raise AssertionError(f"no {needle!r} in the app log since the last mark; got {fresh!r}")
 
     def close(self):
         self.server.close()
@@ -281,6 +291,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         log.server.register(wii)
 
         # 1. Status, files and logging inside a running app.
+        log.mark()
         hbc.send(wii, str(APP), ["stay", "180"])
         text = wait_agent(wii)
         log.wait_for("agent_app: network 0", 30)
@@ -350,6 +361,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         # 4. A crash: libogc's screen, then back to HBC with a report.
         # The app lives about a second, too short to poll for reliably; its
         # log line shows it ran.
+        log.mark()
         hbc.send(wii, str(APP), [crash_mode])
         log.wait_for(f"agent_app: crashing ({crash_mode})", 30)
         hbc.hbc_wait(wii, 60)
@@ -372,6 +384,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         for mode, line in (("fatal", "agent_app: stopping (fatal)"),
                            ("hang", "agent_app: hanging"),
                            ("exit", "mode 'exit'")):
+            log.mark()
             hbc.send(wii, str(APP), [mode])
             log.wait_for(line, 30)
             hbc.hbc_wait(wii, 90)
