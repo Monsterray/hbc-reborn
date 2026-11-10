@@ -147,6 +147,16 @@ def main():
             blue, amber = picture(f"badges-{layout}")
             check(blue >= 8 and amber >= 8,
                   f"{layout}: a New and an Updated pill ({blue} blue, {amber} amber)")
+            # The light is part of the picture without the focus too.
+            way = "0 1" if layout == "list" else "-1 0"
+            back = "0 -1" if layout == "list" else "1 0"
+            pad.send(f"stick {way}; wait 2")
+            pad.done()
+            blue, amber = picture(f"badges-{layout}-unfocused")
+            check(blue >= 8 and amber >= 8,
+                  f"{layout}, focus elsewhere: a New and an Updated pill ({blue} blue, {amber} amber)")
+            pad.send(f"stick {back}; wait 2")
+            pad.done()
             pad.send("press Triangle; wait 2")   # 2: the other layout
             pad.done()
 
