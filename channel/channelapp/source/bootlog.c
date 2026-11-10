@@ -134,14 +134,15 @@ static void finish(int slot, s32 rc, bool say) {
 	in_ms = calls[slot].in_ms;
 	out_ms = calls[slot].out_ms;
 	name = thread_name(slot, buf, sizeof(buf));
-	// A fast call that ends like the last of its name on this thread: one row.
-	for (i = 0; i < CALLS; ++i)
-		if (i != slot && calls[i].state != FREE && calls[i].call == call &&
-				calls[i].thread == calls[slot].thread && calls[i].seq < calls[slot].seq &&
+	// A fast call that ends like the latest fast one of its name on this
+	// thread: one row. Slow ones keep rows of their own, between.
+	for (i = 0; out_ms - in_ms < SLOW_MS && i < CALLS; ++i)
+		if (i != slot && calls[i].state == OUT && calls[i].call == call &&
+				calls[i].thread == calls[slot].thread && calls[i].rc == rc &&
+				calls[i].out_ms - calls[i].in_ms < SLOW_MS &&
 				(last < 0 || calls[i].seq > calls[last].seq))
 			last = i;
-	if (last >= 0 && out_ms - in_ms < SLOW_MS && calls[last].state == OUT &&
-			calls[last].rc == rc && calls[last].out_ms - calls[last].in_ms < SLOW_MS) {
+	if (last >= 0) {
 		calls[last].repeats++;
 		calls[last].last_out_ms = out_ms;
 		calls[slot].state = FREE;

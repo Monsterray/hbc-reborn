@@ -41,7 +41,7 @@ class BootlogTest(unittest.TestCase):
                            check=True, env=dict(os.environ, TMP=tmp, TEMP=tmp, TMPDIR=tmp))
             run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertEqual(run.stdout.count("  PASS:"), 9, run.stdout)
+        self.assertEqual(run.stdout.count("  PASS:"), 10, run.stdout)
         self.assertIn("all bootlog checks passed", run.stdout)
 
 

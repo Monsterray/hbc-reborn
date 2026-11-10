@@ -69,6 +69,20 @@ int main(void) {
 	timed("sd inserted", 2, -1);
 	CHECK(rows("sd inserted", NULL) == 3, "slow and different answers stay apart (%d rows)",
 		  rows("sd inserted", NULL));
+	// Fast polls after them still go on the first row (seen on a Wii: a slow
+	// poll during the network's start split one poll into five rows).
+	for (i = 0; i < 10; ++i)
+		timed("sd inserted", 2, 0);
+	{
+		bootlog_row first;
+		u32 after = 0;
+
+		while (bootlog_next(after, &first) && strcmp(first.call, "sd inserted"))
+			after = first.seq;
+		CHECK(rows("sd inserted", NULL) == 3 && first.repeats == 209,
+			  "later fast polls join the first row past a slow one (%d rows, %u repeats)",
+			  rows("sd inserted", NULL), (unsigned) first.repeats);
+	}
 
 	// A thread names itself, ends, and a new unnamed thread gets its id.
 	self = 0x20001;
@@ -109,7 +123,7 @@ int main(void) {
 	}
 
 	i = bootlog_json(json, sizeof(json));
-	CHECK(i > 0 && json[i - 1] == '}' && strstr(json, "\"repeats\":199"),
+	CHECK(i > 0 && json[i - 1] == '}' && strstr(json, "\"repeats\":209"),
 		  "status JSON ends whole and carries the repeats (%d bytes)", i);
 
 	if (fails)
