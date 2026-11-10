@@ -251,6 +251,7 @@ static void * ld_tcp_func (void *arg) {
 
 	ta->running = true;
 	bootlog_thread("net");
+	tcp_measure_this_thread();
 	LWP_MutexLock (ta->cmutex);
 
 	ta->cmd = LDTCPCMD_INIT;
@@ -397,7 +398,7 @@ static void * ld_tcp_func (void *arg) {
 
 			len_sa = sizeof (struct sockaddr_in);
 
-			sn = net_accept (s, (struct sockaddr *) &sa, &len_sa);
+			sn = tcp_accept (s, (struct sockaddr *) &sa, &len_sa);
 			if (sn == -EAGAIN)
 				continue;
 

@@ -246,6 +246,7 @@ static s32 status_json(char *buf, size_t size) {
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"zlib_peak\":%u,\"zlib_heap\":%u,"
 			"\"tcp_last_failure\":\"%s\"", zmem_where(), zmem_peak(), zmem_heap_peak(),
 			tcp_last_failure()));
+	n = grow(n, size, tcp_longest_json(buf + n, size - n));
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"startup\":{"));
 	for (i = 0; i < (int) boot_count; ++i)
 		n = grow(n, size, snprintf(buf + n, size - n, "%s\"%s\":%u", i ? "," : "",

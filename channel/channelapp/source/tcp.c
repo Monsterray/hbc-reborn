@@ -14,6 +14,48 @@
 #include "../config.h"
 #include "tcp.h"
 
+// The longest single call into IOS's network on the measured thread (the
+// loader's net thread), for HBCS "net_longest": a call that sits for minutes
+// is what keeps the listener from accepting. Racy by design: one writer.
+static lwp_t net_thread = LWP_THREAD_NULL;
+static const char *longest_op = "";
+static u32 longest_ms;
+static u32 accepts;
+
+void tcp_measure_this_thread (void) {
+	net_thread = LWP_GetSelf ();
+}
+
+static void net_note (const char *op, s64 t0) {
+	u32 ms;
+
+	if (LWP_GetSelf () != net_thread)
+		return;
+
+	ms = ticks_to_millisecs (diff_ticks (t0, gettime ()));
+	if (ms > longest_ms) {
+		longest_op = op;
+		longest_ms = ms;
+	}
+	if (ms > 5000)
+		hlog ("Network: %s took %u ms\n", op, (unsigned) ms);
+}
+
+int tcp_longest_json (char *buf, int size) {
+	return snprintf (buf, size, ",\"net_longest\":{\"op\":\"%s\",\"ms\":%u},\"accepts\":%u",
+					 longest_op, (unsigned) longest_ms, (unsigned) accepts);
+}
+
+s32 tcp_accept (s32 s, struct sockaddr *sa, u32 *len) {
+	s64 t = gettime ();
+	s32 res = net_accept (s, sa, len);
+
+	net_note ("accept", t);
+	if (res >= 0 && LWP_GetSelf () == net_thread)
+		accepts++;
+	return res;
+}
+
 s32 tcp_socket (void) {
 	s32 s, res;
 	u32 val;
@@ -167,12 +209,15 @@ const char *tcp_last_failure (void) {
 // Returns the events IOS reported, or 0 on a timeout or poll error.
 static u32 tcp_wait (s32 s, u32 events, s32 ms) {
 	struct pollsd sd;
+	s64 t0;
 	s32 res;
 
 	sd.socket = s;
 	sd.events = events;
 	sd.revents = 0;
+	t0 = gettime ();
 	res = net_poll (&sd, 1, ms > 0 ? ms : 0);
+	net_note ("poll", t0);
 	trace_add ("p%x/%d ", sd.revents, res);
 	if (res < 0) {
 		usleep (1000);
@@ -190,7 +235,7 @@ static u32 tcp_wait (s32 s, u32 events, s32 ms) {
 bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
 					   u32 *progress, s32 timeout_ms) {
 	u32 step, left, block, received;
-	s64 t;
+	s64 t, t0;
 	s32 res;
 
 	step = 0;
@@ -214,7 +259,9 @@ bool tcp_read_timeout (s32 s, u8 *buffer, u32 length, const mutex_t *mutex,
 		if (block > TCP_IO_BLOCK)
 			block = TCP_IO_BLOCK;
 
+		t0 = gettime ();
 		res = net_read (s, buffer, block);
+		net_note ("read", t0);
 		if (res <= 0)
 			trace_add ("r%d ", res, 0);
 
@@ -270,7 +317,7 @@ bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 	const u8 *p;
 	u32 step, left, block, sent;
 	bool hangup = false;
-	s64 t;
+	s64 t, t0;
 	s32 res;
 
 	step = 0;
@@ -292,7 +339,9 @@ bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 		if (block > TCP_IO_BLOCK)
 			block = TCP_IO_BLOCK;
 
+		t0 = gettime ();
 		res = net_write (s, p, block);
+		net_note ("write", t0);
 
 		if (res == 0 && hangup) {
 			gprintf ("tcp_write: peer closed\n");
@@ -360,5 +409,7 @@ void tcp_close (s32 s) {
 			break;
 	}
 
+	t = gettime ();
 	net_close (s);
+	net_note ("close", t);
 }

@@ -103,7 +103,13 @@ says where the zlib arena landed (see Performance), `zlib_peak` is the most
 of it one stream has used, and `zlib_heap` the largest zlib allocation that
 did not fit and went to the heap (0 if none). `tcp_last_failure` records
 what IOS returned during the last receive that failed: `r<n>` per `net_read`
-result, `p<events>/<result>` per poll, then the reason. `crash` is `null`,
+result, `p<events>/<result>` per poll, then the reason. `net_longest`
+(1.16.1) is the longest single call HBC's network thread has made into IOS
+since it started, `{"op":"accept"|"read"|"write"|"poll"|"close","ms":N}`,
+and `accepts` how many connections that thread has accepted; a call over 5 s
+is also written to the log (`Network: write took 190000 ms`). A call that
+sits for minutes keeps HBC from accepting, and the port goes quiet while
+ping still answers. `crash` is `null`,
 or the crash an agent app reported before it returned to this HBC (see
 [Crash reports](#crash-reports)).
 
