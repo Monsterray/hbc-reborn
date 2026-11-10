@@ -94,7 +94,9 @@ header byte 4 sets it, saved when HBC next exits or launches an app (`hbc.py
 net-hang`). `startup` lists the startup steps as `"name":ms`, the time since
 `main()` at the end of each, in the order they finished; `playtime_cleared`
 (or `playtime_failed`) is the background write that clears the Wii Menu's
-play record, and `first_frame` the menu's first frame. `calls`, `usb_stuck`,
+play record, and `first_frame` the menu's first frame. `uptime_ms` (1.16.1) is the
+time since then, as an agent's: `hbc.py send` takes a smaller one than its own
+wait for a new HBC, an app that ran and came back. `calls`, `usb_stuck`,
 `usb_unplugged`, `replug_needed` and `remotes_off` are described under
 [Start-up calls](#start-up-calls) and [Stuck USB](#stuck-usb). `zlib_mem`
 says where the zlib arena landed (see Performance), `zlib_peak` is the most

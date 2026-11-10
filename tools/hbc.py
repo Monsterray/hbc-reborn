@@ -1403,9 +1403,12 @@ def upload_outcome(wii, before, seconds=60, quick=False):
     Where the 60 s goes: HBC sets "launched" and then hands the Wii to the
     app, so a poll rarely sees it. Without an agent the app is silent and
     this waits 10 s for HBC to stay gone. An app that finishes inside those
-    10 s (nandget) brings HBC back with its counter at 0, never above
-    `before`, so the loop runs out its whole `seconds`."""
-    deadline, silent = time.monotonic() + seconds, None
+    10 s (nandget), or an upload of HBC itself, brings HBC back with its
+    counter at 0, never above `before`: an HBC that says `uptime_ms` (1.16.1)
+    shows it started since, and that is "launched"; an older one runs out
+    the whole `seconds`."""
+    start = time.monotonic()
+    deadline, silent = start + seconds, None
     while time.monotonic() < deadline:
         try:
             st = json.loads(request(wii, b"HBCS", timeout=POLL_TIMEOUT))
@@ -1419,6 +1422,11 @@ def upload_outcome(wii, before, seconds=60, quick=False):
             time.sleep(0.5)
             continue
         if st.get("agent"):
+            return {"result": "launched"}
+        # An HBC that started after this began (1.16.1 says uptime_ms): the
+        # app ran and came back, or the upload was HBC itself. Its counter
+        # starts again at 0, so it would never pass `before`.
+        if "uptime_ms" in st and st["uptime_ms"] < (time.monotonic() - start) * 1000 - 500:
             return {"result": "launched"}
         up = st.get("upload")
         if up and up.get("seq", 0) > before:
