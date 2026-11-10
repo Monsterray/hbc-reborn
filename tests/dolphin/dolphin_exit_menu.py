@@ -18,6 +18,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+from waits import wait_until  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 
@@ -49,7 +50,8 @@ def main():
         dolphin_smoke.wait_version(run, 90)
         wii = run.address
         print(f"HBC {dolphin_smoke.expected} up; letting the avatar start", flush=True)
-        time.sleep(15)
+        wait_until(lambda: (hbc.status(wii).get("avatar") or {}).get("state") not in (None, "loading"), 20)
+        time.sleep(10)   # HBC takes HOME only once its menu is up; HBCS has no sign of that
         print("avatar:", hbc.status(wii).get("avatar"), flush=True)
         if os.environ.get("SD_WRITES"):   # as before the bench Wii's crash: WADs onto the card
             blob = (image.read_bytes() * 2)[:2_055_040]
@@ -58,15 +60,16 @@ def main():
             hbc.file_request(wii, "D", "sd:/wad/a.wad")
             print("wrote three WADs to sd:/wad and removed one", flush=True)
         hbc.send_keys(wii, "h")
-        time.sleep(2)
+        wait_until(lambda: focus(wii) == BAR_EXIT, 6)
         assert focus(wii) == BAR_EXIT, f"HOME bar focus {focus(wii)}, wanted Exit"
+        time.sleep(2)   # the bar is still opening: an A now is ignored (HBCS shows Exit at once)
         hbc.send_keys(wii, "a")
-        time.sleep(1.5)
+        wait_until(lambda: focus(wii) == EX_SYS, 3)
         f = focus(wii)
         print("after Exit, focus", f, flush=True)
         if f != EX_SYS:
             hbc.send_keys(wii, "d")
-            time.sleep(1)
+            wait_until(lambda: focus(wii) == EX_SYS, 3)
             f = focus(wii)
         assert f == EX_SYS, f"Exit row focus {f}, wanted System Menu ({EX_SYS})"
         hbc.send_keys(wii, "a")

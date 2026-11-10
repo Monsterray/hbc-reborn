@@ -21,6 +21,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import wii_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 
@@ -42,8 +43,7 @@ def main():
     if "--dolphin" not in sys.argv:
         work = pathlib.Path(tempfile.mkdtemp(prefix="hbc-net-"))
         shutil.copy(root / "channel/channelapp/channelapp-channel.dol", work / "hbc.dol")
-        hbc.send(wii, str(work / "hbc.dol"), [])
-        hbc.relaunch_wait(wii, dolphin_smoke.expected)
+        wii_checks.ensure_hbc(wii, str(work / "hbc.dol"), fresh=True)
         shutil.rmtree(work, ignore_errors=True)
     time.sleep(3)
     if "net_starts" not in hbc.status(wii):

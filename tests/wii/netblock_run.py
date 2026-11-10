@@ -1,5 +1,8 @@
 """Run tests/apps/netblock on a Wii and print TCP throughput by IOS call size.
 
+ON-DEMAND BENCH (about 7 minutes), not part of a routine run: queue it when a
+change touches the network stack or IOS call sizes.
+
     python tests/wii/netblock_run.py [WII] [--port PORT]
 
 Sends netblock.dol through HBC with this PC's address, serves the app's

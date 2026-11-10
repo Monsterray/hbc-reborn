@@ -16,5 +16,12 @@ bool tcp_write (s32 s, const u8 *buffer, u32 length, const mutex_t *mutex,
 void tcp_close (s32 s);
 const char *tcp_last_failure (void);
 
+// The calling thread's longest call into IOS's network, and the accepts it
+// made, as HBCS fields (tcp_longest_json); tcp_accept is net_accept, timed.
+struct sockaddr;
+void tcp_measure_this_thread (void);
+int tcp_longest_json (char *buf, int size);
+s32 tcp_accept (s32 s, struct sockaddr *sa, u32 *len);
+
 #endif
 

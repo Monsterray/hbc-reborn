@@ -94,14 +94,22 @@ header byte 4 sets it, saved when HBC next exits or launches an app (`hbc.py
 net-hang`). `startup` lists the startup steps as `"name":ms`, the time since
 `main()` at the end of each, in the order they finished; `playtime_cleared`
 (or `playtime_failed`) is the background write that clears the Wii Menu's
-play record, and `first_frame` the menu's first frame. `calls`, `usb_stuck`,
+play record, and `first_frame` the menu's first frame. `uptime_ms` (1.16.1) is the
+time since then, as an agent's: `hbc.py send` takes a smaller one than its own
+wait for a new HBC, an app that ran and came back. `calls`, `usb_stuck`,
 `usb_unplugged`, `replug_needed` and `remotes_off` are described under
 [Start-up calls](#start-up-calls) and [Stuck USB](#stuck-usb). `zlib_mem`
 says where the zlib arena landed (see Performance), `zlib_peak` is the most
 of it one stream has used, and `zlib_heap` the largest zlib allocation that
 did not fit and went to the heap (0 if none). `tcp_last_failure` records
 what IOS returned during the last receive that failed: `r<n>` per `net_read`
-result, `p<events>/<result>` per poll, then the reason. `crash` is `null`,
+result, `p<events>/<result>` per poll, then the reason. `net_longest`
+(1.16.1) is the longest single call HBC's network thread has made into IOS
+since it started, `{"op":"accept"|"read"|"write"|"poll"|"close","ms":N}`,
+and `accepts` how many connections that thread has accepted; a call over 5 s
+is also written to the log (`Network: write took 190000 ms`). A call that
+sits for minutes keeps HBC from accepting, and the port goes quiet while
+ping still answers. `crash` is `null`,
 or the crash an agent app reported before it returned to this HBC (see
 [Crash reports](#crash-reports)).
 

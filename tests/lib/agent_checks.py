@@ -107,77 +107,90 @@ def check_move(wii, base, apps=False):
     def names(path):
         return {e["name"] for e in hbc.list_entries(wii, path)[0]}
 
-    hbc.put_file(wii, f"{base}/a.bin", b"A" * 1000)
-    hbc.put_file(wii, f"{base}/dir/x.bin", b"X")
-    hbc.put_file(wii, f"{base}/dir/sub/y.bin", b"Y" * 70_000)
-    assert hbc.move(wii, f"{base}/a.bin", f"{base}/b.bin", out=quiet) == f"{base}/b.bin"
-    assert hbc.get_file(wii, f"{base}/b.bin") == b"A" * 1000
-    assert "a.bin" not in names(base)
-    # Into a folder: a trailing "/" (made if missing), or a folder that is there.
-    assert hbc.move(wii, f"{base}/b.bin", f"{base}/new/", out=quiet) == f"{base}/new/b.bin"
-    assert hbc.move(wii, f"{base}/new/b.bin", f"{base}/dir", out=quiet) == f"{base}/dir/b.bin"
-    # A folder with its contents, in place, whatever their size.
-    assert hbc.move(wii, f"{base}/dir", f"{base}/moved", out=quiet) == f"{base}/moved"
-    assert names(f"{base}/moved") == {"b.bin", "x.bin", "sub"}
-    assert hbc.get_file(wii, f"{base}/moved/sub/y.bin") == b"Y" * 70_000
-    assert "dir" not in names(base)
-    # A case-only rename: FAT finds the source itself under the new name.
-    assert hbc.move(wii, f"{base}/moved/x.bin", f"{base}/moved/X.BIN", out=quiet) == \
-        f"{base}/moved/X.BIN"
-    assert "X.BIN" in names(f"{base}/moved"), names(f"{base}/moved")
-    # Refusals, each leaving everything as it was.
-    hbc.put_file(wii, f"{base}/c.bin", b"C")
-    for src, dst, flags, want in (
-            (f"{base}/c.bin", f"{base}/moved/b.bin", 0, "EEXIST"),
-            (f"{base}/moved", f"{base}/c.bin", 2, "ENOTDIR"),
-            (f"{base}/moved", f"{base}/moved/sub/in", 0, "EINVAL"),
-            (f"{base}/nosuch", f"{base}/n", 0, "ENOENT"),
-            ("sd:/", f"{base}/root", 0, "EINVAL"),
-            (f"{base}/c.bin", "sd:/../x", 0, "EINVAL"),
-            (f"{base}/c.bin", "usb:/c.bin", 0, "EXDEV")):
-        got = raw_move(wii, src, dst, flags)[0]
-        assert got == want, (src, dst, flags, got, want)
-    assert hbc.get_file(wii, f"{base}/c.bin") == b"C"
-    assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"A" * 1000
-    # --replace replaces a file.
-    assert raw_move(wii, f"{base}/c.bin", f"{base}/moved/b.bin", 2) == ("ok", f"{base}/moved/b.bin")
-    assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"C"
-    # Names FAT reads as another one, and names that are the source itself
-    # (the 2026-10-24 audit): never a lost file, never a folder inside itself.
-    hbc.put_file(wii, f"{base}/keep.bin", b"K")
-    for dst in (f"{base}/keep.bin.", f"{base}/keep.bin ", f"{base}/./x"):
-        got = raw_move(wii, f"{base}/keep.bin", dst, 2)[0]
-        assert got == "EINVAL", (dst, got)
-    assert hbc.get_file(wii, f"{base}/keep.bin") == b"K"
-    hbc.put_file(wii, f"{base}/\u00c9t\u00e9.bin", b"E")
-    got = raw_move(wii, f"{base}/\u00c9t\u00e9.bin", f"{base}/\u00e9t\u00e9.bin", 2)
-    survivors = [e["name"] for e in hbc.list_entries(wii, base)[0] if e["name"].lower().endswith("t\u00e9.bin")]
-    assert len(survivors) == 1, (got, survivors)   # renamed, or refused: never deleted
-    assert hbc.get_file(wii, f"{base}/{survivors[0]}") == b"E"
-    assert raw_move(wii, f"{base}/moved", f"{base}/MOVED/sub/in", 0)[0] == "EINVAL"
-    hbc.put_file(wii, f"{base}/ro.bin", b"R")
-    hbc.set_attrs(wii, f"{base}/ro.bin", add="r")
-    assert raw_move(wii, f"{base}/keep.bin", f"{base}/ro.bin", 2)[0] == "EACCES"   # read-only kept
-    assert hbc.get_file(wii, f"{base}/ro.bin") == b"R"
-    assert raw_move(wii, "sd:/APPS", "sd:/apps-moved", 0)[0] == "EINVAL"   # never the apps folder
-    hbc.remove_tree(wii, base, out=quiet, force=True)
+    def clean():
+        # A failed run must not leave its folders for the next one (a leftover
+        # base made the next run fail on its first move).
+        for path in (base, "sd:/apps/hbcmvone", "sd:/apps/hbcmvtwo"):
+            try:
+                hbc.remove_tree(wii, path, out=quiet, force=True)
+            except (OSError, hbc.HBCError):
+                pass
 
-    if apps:
-        app = (root / "tests/apps/netlog_app/netlog_app.dol").read_bytes()
-        hbc.put_file(wii, "sd:/apps/hbcmvone/boot.dol", app)
+    clean()
+    try:
+        hbc.put_file(wii, f"{base}/a.bin", b"A" * 1000)
+        hbc.put_file(wii, f"{base}/dir/x.bin", b"X")
+        hbc.put_file(wii, f"{base}/dir/sub/y.bin", b"Y" * 70_000)
+        assert hbc.move(wii, f"{base}/a.bin", f"{base}/b.bin", out=quiet) == f"{base}/b.bin"
+        assert hbc.get_file(wii, f"{base}/b.bin") == b"A" * 1000
+        assert "a.bin" not in names(base)
+        # Into a folder: a trailing "/" (made if missing), or a folder that is there.
+        assert hbc.move(wii, f"{base}/b.bin", f"{base}/new/", out=quiet) == f"{base}/new/b.bin"
+        assert hbc.move(wii, f"{base}/new/b.bin", f"{base}/dir", out=quiet) == f"{base}/dir/b.bin"
+        # A folder with its contents, in place, whatever their size.
+        assert hbc.move(wii, f"{base}/dir", f"{base}/moved", out=quiet) == f"{base}/moved"
+        assert names(f"{base}/moved") == {"b.bin", "x.bin", "sub"}
+        assert hbc.get_file(wii, f"{base}/moved/sub/y.bin") == b"Y" * 70_000
+        assert "dir" not in names(base)
+        # A case-only rename: FAT finds the source itself under the new name.
+        assert hbc.move(wii, f"{base}/moved/x.bin", f"{base}/moved/X.BIN", out=quiet) == \
+            f"{base}/moved/X.BIN"
+        assert "X.BIN" in names(f"{base}/moved"), names(f"{base}/moved")
+        # Refusals, each leaving everything as it was.
+        hbc.put_file(wii, f"{base}/c.bin", b"C")
+        for src, dst, flags, want in (
+                (f"{base}/c.bin", f"{base}/moved/b.bin", 0, "EEXIST"),
+                (f"{base}/moved", f"{base}/c.bin", 2, "ENOTDIR"),
+                (f"{base}/moved", f"{base}/moved/sub/in", 0, "EINVAL"),
+                (f"{base}/nosuch", f"{base}/n", 0, "ENOENT"),
+                ("sd:/", f"{base}/root", 0, "EINVAL"),
+                (f"{base}/c.bin", "sd:/../x", 0, "EINVAL"),
+                (f"{base}/c.bin", "usb:/c.bin", 0, "EXDEV")):
+            got = raw_move(wii, src, dst, flags)[0]
+            assert got == want, (src, dst, flags, got, want)
+        assert hbc.get_file(wii, f"{base}/c.bin") == b"C"
+        assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"A" * 1000
+        # --replace replaces a file.
+        assert raw_move(wii, f"{base}/c.bin", f"{base}/moved/b.bin", 2) == ("ok", f"{base}/moved/b.bin")
+        assert hbc.get_file(wii, f"{base}/moved/b.bin") == b"C"
+        # Names FAT reads as another one, and names that are the source itself
+        # (the 2026-10-24 audit): never a lost file, never a folder inside itself.
+        hbc.put_file(wii, f"{base}/keep.bin", b"K")
+        for dst in (f"{base}/keep.bin.", f"{base}/keep.bin ", f"{base}/./x"):
+            got = raw_move(wii, f"{base}/keep.bin", dst, 2)[0]
+            assert got == "EINVAL", (dst, got)
+        assert hbc.get_file(wii, f"{base}/keep.bin") == b"K"
+        hbc.put_file(wii, f"{base}/\u00c9t\u00e9.bin", b"E")
+        got = raw_move(wii, f"{base}/\u00c9t\u00e9.bin", f"{base}/\u00e9t\u00e9.bin", 2)
+        survivors = [e["name"] for e in hbc.list_entries(wii, base)[0] if e["name"].lower().endswith("t\u00e9.bin")]
+        assert len(survivors) == 1, (got, survivors)   # renamed, or refused: never deleted
+        assert hbc.get_file(wii, f"{base}/{survivors[0]}") == b"E"
+        assert raw_move(wii, f"{base}/moved", f"{base}/MOVED/sub/in", 0)[0] == "EINVAL"
+        hbc.put_file(wii, f"{base}/ro.bin", b"R")
+        hbc.set_attrs(wii, f"{base}/ro.bin", add="r")
+        assert raw_move(wii, f"{base}/keep.bin", f"{base}/ro.bin", 2)[0] == "EACCES"   # read-only kept
+        assert hbc.get_file(wii, f"{base}/ro.bin") == b"R"
+        assert raw_move(wii, "sd:/APPS", "sd:/apps-moved", 0)[0] == "EINVAL"   # never the apps folder
+        hbc.remove_tree(wii, base, out=quiet, force=True)
 
-        def listed(name):
-            return name in hbc.status(wii).get("app_list", {}).get("order", [])
-        deadline = time.monotonic() + 8
-        while not listed("hbcmvone"):
-            assert time.monotonic() < deadline, "the uploaded app did not appear"
-            time.sleep(0.2)
-        hbc.move(wii, "sd:/apps/hbcmvone", "sd:/apps/hbcmvtwo", out=quiet)
-        deadline = time.monotonic() + 8
-        while listed("hbcmvone") or not listed("hbcmvtwo"):
-            assert time.monotonic() < deadline, "the app list did not follow the rename"
-            time.sleep(0.2)
-        hbc.remove_tree(wii, "sd:/apps/hbcmvtwo", out=quiet)
+        if apps:
+            app = (root / "tests/apps/netlog_app/netlog_app.dol").read_bytes()
+            hbc.put_file(wii, "sd:/apps/hbcmvone/boot.dol", app)
+
+            def listed(name):
+                return name in hbc.status(wii).get("app_list", {}).get("order", [])
+            deadline = time.monotonic() + 8
+            while not listed("hbcmvone"):
+                assert time.monotonic() < deadline, "the uploaded app did not appear"
+                time.sleep(0.2)
+            hbc.move(wii, "sd:/apps/hbcmvone", "sd:/apps/hbcmvtwo", out=quiet)
+            deadline = time.monotonic() + 8
+            while listed("hbcmvone") or not listed("hbcmvtwo"):
+                assert time.monotonic() < deadline, "the app list did not follow the rename"
+                time.sleep(0.2)
+            hbc.remove_tree(wii, "sd:/apps/hbcmvtwo", out=quiet)
+    finally:
+        clean()
     print("devnet rename and move: PASS")
 
 
@@ -188,6 +201,7 @@ class LogCollector:
         self.server = hbc.LogServer(port)
         self.lock = threading.Lock()
         self.text = ""
+        self.since = 0   # wait_for ignores text before this offset (mark)
         self.closed = 0
         threading.Thread(target=self.serve, daemon=True).start()
 
@@ -218,14 +232,23 @@ class LogCollector:
         with self.lock:
             self.closed += 1
 
+    def mark(self):
+        """From here on wait_for looks only at text that arrives after this
+        call: take it just before sending the next app, so an earlier app's
+        line cannot answer for the new one."""
+        with self.lock:
+            self.since = len(self.text)
+
     def wait_for(self, needle, seconds):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             with self.lock:
-                if needle in self.text:
+                if needle in self.text[self.since:]:
                     return
             time.sleep(0.2)
-        raise AssertionError(f"no {needle!r} in the app log; got {self.text!r}")
+        with self.lock:
+            fresh = self.text[self.since:]
+        raise AssertionError(f"no {needle!r} in the app log since the last mark; got {fresh!r}")
 
     def close(self):
         self.server.close()
@@ -268,6 +291,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         log.server.register(wii)
 
         # 1. Status, files and logging inside a running app.
+        log.mark()
         hbc.send(wii, str(APP), ["stay", "180"])
         text = wait_agent(wii)
         log.wait_for("agent_app: network 0", 30)
@@ -337,6 +361,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         # 4. A crash: libogc's screen, then back to HBC with a report.
         # The app lives about a second, too short to poll for reliably; its
         # log line shows it ran.
+        log.mark()
         hbc.send(wii, str(APP), [crash_mode])
         log.wait_for(f"agent_app: crashing ({crash_mode})", 30)
         hbc.hbc_wait(wii, 60)
@@ -359,6 +384,7 @@ def check_agent(wii, log_port=0, crash_mode="crash", back_in_hbc=None):
         for mode, line in (("fatal", "agent_app: stopping (fatal)"),
                            ("hang", "agent_app: hanging"),
                            ("exit", "mode 'exit'")):
+            log.mark()
             hbc.send(wii, str(APP), [mode])
             log.wait_for(line, 30)
             hbc.hbc_wait(wii, 90)

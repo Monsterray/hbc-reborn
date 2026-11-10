@@ -22,8 +22,11 @@ extern volatile int hbc_agent_log_muted;
 extern volatile bool agent_crash_stay;
 extern volatile bool agent_listen_enabled;
 
-/* The app's recent stdout and stderr, oldest first. */
-const char *agent_log_text(void);
+/* The app's recent stdout and stderr, oldest first, copied into dst (size
+ * bytes, NUL-terminated; the newest text if it does not fit). Returns the
+ * length. The overlay's buffer is taken while it is open, not kept. */
+#define AGENT_LOG_SIZE 8192
+u32 agent_log_text(char *dst, u32 size);
 
 /* App slots beside Exit: 0 left, 1 right ("Shot" unless the app set it). */
 const char *agent_slot_label(int slot);

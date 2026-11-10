@@ -252,6 +252,11 @@ void gfx_gen_tex (gfx_entity *entity, u16 w, u16 h, u8 *pixels, gfx_tex_type typ
 			GX_InitTexObjFilterMode(&entity->texture.obj, GX_NEAR, GX_NEAR);
 #endif
 			break;
+		case GFXT_I8:
+			DCFlushRange (pixels, w * h);
+			GX_InitTexObj (&entity->texture.obj, pixels, w, h, GX_TF_I8, GX_CLAMP,
+							GX_CLAMP, GX_FALSE);
+			break;
 	}
 }
 
@@ -444,6 +449,7 @@ static void plot_texture (const gfx_queue_entry *entry, Mtx v) {
 			GX_SetTevOp (GX_TEVSTAGE0, GX_MODULATE);
 			break;
 		case GFXT_A8:
+		case GFXT_I8:
 			GX_SetNumTevStages(1);
 			GX_SetTevColorIn(GX_TEVSTAGE0,GX_CC_ZERO,GX_CC_ZERO,GX_CC_ZERO,GX_CC_RASC);
 			GX_SetTevAlphaIn(GX_TEVSTAGE0,GX_CA_ZERO,GX_CA_TEXA,GX_CA_RASA,GX_CA_ZERO);

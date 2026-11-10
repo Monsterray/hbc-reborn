@@ -10,6 +10,8 @@
   list, grid    a blue New pill and an amber Updated pill in each
   launch        the changed app again: its Updated pill is gone, New stays,
                 and apps_seen.txt has its new stamp
+  sort_id       its meta.xml gets only a <sort_id> (hbc.py order): still no
+                Updated pill
 
 HBCS says where the focus is before every A. Pictures go to OUTDIR (default:
 a temporary folder). Needs the retail WAD (make -C channel) and
@@ -26,6 +28,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+from waits import wait_until  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 from dolphin_meta import PAD_MAP, PAD_SETTINGS, Pad, launch, shot  # noqa: E402
@@ -33,10 +36,11 @@ from dolphin_meta import PAD_MAP, PAD_SETTINGS, Pad, launch, shot  # noqa: E402
 APPS = ("1 Already run", "2 Never run", "3 Updated app")
 
 
-def meta_xml(name, description):
+def meta_xml(name, description, *more):
+    args = "".join(f"<arg>{a}</arg>" for a in ("meta",) + more)
     return (f'<?xml version="1.0"?><app><name>{name}</name>'
             f'<short_description>{description}</short_description>'
-            '<arguments><arg>meta</arg></arguments></app>').encode()
+            f'<arguments>{args}</arguments></app>').encode()
 
 
 TAB = chr(9)
@@ -93,14 +97,14 @@ def main():
         while hbc.status(wii)["device"] != "sd":
             if time.monotonic() > deadline:
                 raise SystemExit("the SD card did not mount")
-            time.sleep(1)
-        time.sleep(2)
+            time.sleep(0.5)
+        time.sleep(1)
         pad.send("stick 0 -1; wait 1")   # the pointer off the screen
         pad.done()
         check(options()["badges"] == "off", "App badges are off by default")
 
         hbc.send_buttons(wii, "1")
-        time.sleep(3)
+        wait_until(lambda: options()["open"], 10)
         check(options()["focus"] == "back", f"Options opens on Back ({options()})")
         if step("press PadN; wait 2", {"focus": "badges_on"}, "up from Back: App badges On") and \
                 step("press Cross; wait 2", {"badge_choice": "on"}, "A picks On"):
@@ -140,24 +144,43 @@ def main():
             check(True, "no marker file in the app folder")
 
         before = hbc.get_file(wii, seen)
-        hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml", meta_xml("3 Updated app", "After update"))
+        hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml", meta_xml("3 Updated app", "After update", "updated"))
         time.sleep(3)
         for layout in ("list", "grid"):
             blue, amber = picture(f"badges-{layout}")
             check(blue >= 8 and amber >= 8,
                   f"{layout}: a New and an Updated pill ({blue} blue, {amber} amber)")
+            # The light is part of the picture without the focus too.
+            way = "0 1" if layout == "list" else "-1 0"
+            back = "0 -1" if layout == "list" else "1 0"
+            pad.send(f"stick {way}; wait 2")
+            pad.done()
+            blue, amber = picture(f"badges-{layout}-unfocused")
+            check(blue >= 8 and amber >= 8,
+                  f"{layout}, focus elsewhere: a New and an Updated pill ({blue} blue, {amber} amber)")
+            pad.send(f"stick {back}; wait 2")
+            pad.done()
             pad.send("press Triangle; wait 2")   # 2: the other layout
             pad.done()
 
-        # Its kept log is the same as the first run's, which launch() takes
-        # for no run at all: the file and HBC's answer say it ran.
-        launch(wii, pad, out, "3 Updated app", 3, False)
-        check(bool(hbc.hbc_wait(wii, 60)), "HBC came back")
+        # The new argument makes this run's kept log differ from the first
+        # run's, so launch() sees it at once instead of waiting out 60 s.
+        check(launch(wii, pad, out, "3 Updated app", 3, False), "the updated app ran and HBC came back")
         check(hbc.get_file(wii, seen) != before, "apps_seen.txt took the new file stamps")
         pad.send("stick 0 -1; wait 2")
         pad.done()
         blue, amber = picture("badges-after-launch")
         check(blue >= 8 and amber == 0, f"after the launch: New stays, Updated gone ({blue} blue, {amber} amber)")
+
+        # hbc.py order rewrites meta.xml with a <sort_id>: not an update.
+        meta = meta_xml("3 Updated app", "After update", "updated")
+        hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml",
+                     meta.replace(b"</app>", b"<sort_id>10</sort_id></app>"))
+        time.sleep(3)
+        pad.send("stick 0 -1; wait 2")
+        pad.done()
+        blue, amber = picture("badges-after-sort-id")
+        check(blue >= 8 and amber == 0, f"a new <sort_id> alone: no Updated pill ({blue} blue, {amber} amber)")
     finally:
         pad.close()
         faults = dolphin.faults()

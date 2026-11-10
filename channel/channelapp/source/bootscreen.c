@@ -53,6 +53,10 @@ static void call_row(char *row, size_t size, const bootlog_row *c, u32 now) {
 	if (!c->done)
 		snprintf(row, size, "%7u %-6.6s %-38.38s NO ANSWER %u ms", (unsigned) c->in_ms, c->thread,
 				 c->call, (unsigned) (now - c->in_ms));
+	else if (c->repeats)
+		snprintf(row, size, "%7u %-6.6s %-38.38s %6u ms rc %d x%u", (unsigned) c->in_ms,
+				 c->thread, c->call, (unsigned) (c->out_ms - c->in_ms), (int) c->rc,
+				 (unsigned) (c->repeats + 1));
 	else
 		snprintf(row, size, "%7u %-6.6s %-38.38s %6u ms rc %d", (unsigned) c->in_ms, c->thread,
 				 c->call, (unsigned) (c->out_ms - c->in_ms), (int) c->rc);

@@ -118,9 +118,11 @@ volatile bool agent_listen_enabled = true;
 
 // ---- The app's recent output, for the overlay's Log page ----------------
 
-#define LOG_SIZE 8192
+#define LOG_SIZE AGENT_LOG_SIZE
 
-static char log_ring[LOG_SIZE], log_line[LOG_SIZE + 1];
+// Kept static: log_write runs at any time and the crash path reads it, so
+// neither may malloc.
+static char log_ring[LOG_SIZE];
 static u32 log_head, log_len;
 static const devoptab_t *log_prev_out, *log_prev_err;
 
@@ -260,16 +262,19 @@ static void lastlog_at_exit(void) {
 		lastlog_write(HBC_LASTLOG_EXIT);
 }
 
-const char *agent_log_text(void) {
-	u32 level, start, i;
+u32 agent_log_text(char *dst, u32 size) {
+	u32 level, start, n, i;
 
+	if (!dst || !size)
+		return 0;
 	_CPU_ISR_Disable(level);
-	start = (log_head + LOG_SIZE - log_len) % LOG_SIZE;
-	for (i = 0; i < log_len; ++i)
-		log_line[i] = log_ring[(start + i) % LOG_SIZE];
-	log_line[log_len] = 0;
+	n = log_len < size - 1 ? log_len : size - 1;
+	start = (log_head + LOG_SIZE - n) % LOG_SIZE;
+	for (i = 0; i < n; ++i)
+		dst[i] = log_ring[(start + i) % LOG_SIZE];
+	dst[n] = 0;
 	_CPU_ISR_Restore(level);
-	return log_line;
+	return n;
 }
 
 // ---- App slots beside Exit ------------------------------------------------
@@ -642,14 +647,19 @@ void agent_power_off(void) {
 }
 
 static void handle(s32 s, const u8 *hdr, u32 client_ip) {
-	static char json[4096];
-
 	if (!memcmp(hdr, "HBCV", 4)) {
 		static const char version[] = CHANNEL_VERSION_STR " agent";
 
 		tcp_write(s, (const u8 *) version, sizeof(version), NULL, NULL);
 	} else if (!memcmp(hdr, "HBCS", 4)) {
-		devfile_reply(s, 0, json, status_json(json, sizeof(json)));
+		// Taken for this reply only (4 KB), not kept static.
+		char *json = malloc(4096);
+
+		if (json)
+			devfile_reply(s, 0, json, status_json(json, 4096));
+		else
+			devfile_reply(s, -ENOMEM, NULL, 0);
+		free(json);
 	} else if (!memcmp(hdr, "HBCF", 4)) {
 		devfile_handle(s, hdr, cfg.priority + AGENT_TRANSFER_BOOST, cfg.priority, NULL);
 		devstream_release();
@@ -658,17 +668,18 @@ static void handle(s32 s, const u8 *hdr, u32 client_ip) {
 		devfile_reply(s, 0, NULL, 0);
 	} else if (!memcmp(hdr, "HBCL", 4)) {
 		// The log so far: the same header line as HBC's kept log, "live".
-		static char reply[64 + LOG_SIZE];
-		const char *text = agent_log_text();
-		int n = snprintf(reply, 64, "HBCL 1 live %u %s\n", (unsigned) uptime_ms(), cfg.name);
-		size_t len = strlen(text);
+		char *reply = malloc(64 + HBC_LASTLOG_SIZE + 1);
 
-		if (len > HBC_LASTLOG_SIZE) {
-			text += len - HBC_LASTLOG_SIZE;
-			len = HBC_LASTLOG_SIZE;
+		if (reply) {
+			int n = snprintf(reply, 64, "HBCL 1 live %u %s\n", (unsigned) uptime_ms(), cfg.name);
+
+			// the newest HBC_LASTLOG_SIZE bytes
+			n += agent_log_text(reply + n, HBC_LASTLOG_SIZE + 1);
+			devfile_reply(s, 0, reply, n);
+		} else {
+			devfile_reply(s, -ENOMEM, NULL, 0);
 		}
-		memcpy(reply + n, text, len);
-		devfile_reply(s, 0, reply, n + len);
+		free(reply);
 	} else if (hbc_agent_handle(s, hdr)) {
 	} else if (!memcmp(hdr, "HBCX", 4)) {
 		devfile_reply(s, 0, NULL, 0);

@@ -22,14 +22,22 @@ OUT = TESTS / "README.md"
 LAYERS = [
     ("host", "This PC, no Wii",
      "`python -m unittest discover -s tests/host -p 'test_*.py'` runs every `test_*.py`; "
-     "CI runs the same. Each also runs alone: `python tests/host/test_mii.py`."),
+     "CI runs the same. `python tests/host/run_parallel.py` runs them all at once (about 20 s "
+     "instead of 2 minutes). Each also runs alone: `python tests/host/test_mii.py`."),
     ("dolphin", "Dolphin, in a throwaway profile",
-     "`python tests/dolphin/<test>.py`. One Dolphin at a time: a second cannot bind port 4299."),
+     "`python tests/dolphin/<test>.py`. One Dolphin at a time: a second cannot bind port 4299. "
+     "`python tests/dolphin/run_all.py [--special]` runs every one in a row, builds what is "
+     "missing, reruns a failure once and prints a table with seconds. A profile starts empty "
+     "(Dolphin makes its 128 MB SD image on the first boot), so a test's cost is the boot, "
+     "about 9 s, plus its waits: poll HBCS with `waits.wait_until` rather than `time.sleep`."),
     ("wii", "A real Wii",
      "Through the bench queue (see [CONTRIBUTING.md](../CONTRIBUTING.md#testing)). "
-     "Tests that can hang IOS are never run unattended."),
+     "Tests that can hang IOS are never run unattended. `wii_checks.ensure_hbc` skips the DOL send "
+     "when this build's HBC already runs (`fresh=True` for a test that needs HBC just started); "
+     "`wii_netbench.py` and `netblock_run.py` are on-demand benches, not part of a routine run."),
     ("apps", "The Wii, sent by the tests above",
-     "`make -C tests/apps/<app>`; each shows a text console on the TV."),
+     "`make -C tests/apps/<app>`; each shows a text console on the TV. "
+     "`OGC=libogc2` builds need devkitPPC r41-2 (`$DEVKITPRO/devkitPPC-r41-2` or `DEVKITPPC_R41`)."),
     ("lib", "Imported by the tests",
      "`sys.path.insert(0, str(root / \"tests\" / \"lib\")); import testenv` puts `tools/` "
      "and every folder here on the path."),

@@ -37,6 +37,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import agent_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 import test_mii  # noqa: E402
@@ -198,7 +199,8 @@ def main():
         # 6. Through an app's launch and back: the same Mii.
         before = hbc.lastlog(wii)
         hbc.send(wii, str(root / "tests/apps/agent_app/agent_app.dol"), [], "miipick")
-        time.sleep(5)
+        # exit_app does nothing while HBC still answers: wait for the app itself
+        agent_checks.wait_agent(wii, 120)
         hbc.exit_app(wii, 90)
         hbc.hbc_wait(wii, 90)
         av = avatar(wii)

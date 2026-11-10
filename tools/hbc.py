@@ -30,7 +30,10 @@ DEVICES = ("sd", "usb", "carda", "cardb", "usb2")
 PROGRESS_MIN = 256 * 1024
 # Waits poll with short connects: while the Wii reboots, a connection attempt
 # can go unanswered, and one full TIMEOUT per attempt made each wait 15 s.
-POLL_TIMEOUT = 2
+# Not shorter than HBC's own slowest answer: while a popup is up and the PC
+# polls fast, each request takes a second, and a poll that gives up mid-reply
+# only adds a dead connection for HBC to serve.
+POLL_TIMEOUT = 5
 # The Wii reads and CRCs a whole file before it answers a checksum request
 # (op C): allow for this rate on top of TIMEOUT, below a slow SD card's.
 CHECKSUM_BYTES_PER_S = 1 << 20
@@ -256,7 +259,7 @@ def hbc_wait(wii, seconds=90):
 
 
 def foreign_app_check(wii):
-    """In a bench-queue job (tools/wii-bench sets WII_BENCH_JOB_START), refuse to exit an
+    """In a bench-queue job (the wii-bench queue sets WII_BENCH_JOB_START), refuse to exit an
     agent app that was already running when the job started: it is someone else's test,
     maybe from another workstation. An app this job started is younger than the job."""
     start = os.environ.get("WII_BENCH_JOB_START")
@@ -1390,6 +1393,7 @@ def upload_seq(wii):
     return (st.get("upload") or {}).get("seq", 0)
 
 
+UPLOAD_POLL_S = 0.5    # upload_outcome: the least time between two HBCS polls
 NO_WAIT_SECONDS = 8   # send --no-wait: the longest it looks for HBC's verdict
 
 
@@ -1403,9 +1407,12 @@ def upload_outcome(wii, before, seconds=60, quick=False):
     Where the 60 s goes: HBC sets "launched" and then hands the Wii to the
     app, so a poll rarely sees it. Without an agent the app is silent and
     this waits 10 s for HBC to stay gone. An app that finishes inside those
-    10 s (nandget) brings HBC back with its counter at 0, never above
-    `before`, so the loop runs out its whole `seconds`."""
-    deadline, silent = time.monotonic() + seconds, None
+    10 s (nandget), or an upload of HBC itself, brings HBC back with its
+    counter at 0, never above `before`: an HBC that says `uptime_ms` (1.16.1)
+    shows it started since, and that is "launched"; an older one runs out
+    the whole `seconds`."""
+    start = time.monotonic()
+    deadline, silent = start + seconds, None
     while time.monotonic() < deadline:
         try:
             st = json.loads(request(wii, b"HBCS", timeout=POLL_TIMEOUT))
@@ -1420,10 +1427,18 @@ def upload_outcome(wii, before, seconds=60, quick=False):
             continue
         if st.get("agent"):
             return {"result": "launched"}
+        # An HBC that started after this began (1.16.1 says uptime_ms): the
+        # app ran and came back, or the upload was HBC itself. Its counter
+        # starts again at 0, so it would never pass `before`.
+        if "uptime_ms" in st and st["uptime_ms"] < (time.monotonic() - start) * 1000 - 500:
+            return {"result": "launched"}
         up = st.get("upload")
         if up and up.get("seq", 0) > before:
             return up
-        time.sleep(0.2)
+        # HBC serves one request at a time and each costs it about a second
+        # of its network thread while a popup is up: polling faster only
+        # queues requests behind each other (and fills its listen backlog).
+        time.sleep(UPLOAD_POLL_S)
     if quick:
         return {"result": "unknown"}
     raise HBCError(f"HBC gave no result for the upload within {seconds} s")

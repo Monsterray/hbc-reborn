@@ -81,10 +81,10 @@ lists every one with what it covers.
 
 | Folder | Runs on | Run it with |
 | --- | --- | --- |
-| `tests/host/` | this PC, no Wii | `python3 -m unittest discover -s tests/host -p 'test_*.py'` (CI runs this) |
-| `tests/dolphin/` | Dolphin | `python3 tests/dolphin/<test>.py` |
-| `tests/wii/` | a real Wii, through the bench queue | queue `python tests/wii/<test>.py` |
-| `tests/apps/` | the test DOLs the others send | `make -C tests/apps/<app>` |
+| `tests/host/` | this PC, no Wii | `python3 -m unittest discover -s tests/host -p 'test_*.py'` (CI runs this), or `python3 tests/host/run_parallel.py`: the same, all at once, about 20 s |
+| `tests/dolphin/` | Dolphin | `python3 tests/dolphin/<test>.py`, or every one in a row (one Dolphin at a time, builds what is missing, reruns a failure once, prints a table with seconds): `python3 tests/dolphin/run_all.py [--special]` |
+| `tests/wii/` | a real Wii, through the bench queue | queue `python tests/wii/<test>.py`. A test that only needs this build's HBC running calls `wii_checks.ensure_hbc`, which skips the 36 s DOL send when HBC already reports the build tag (`fresh=True` where a test needs HBC just started). Tests that write NAND or SD refuse `lrwii` and `prod` before any send. `wii_netbench.py` and `netblock_run.py` are on-demand benches, not part of a routine run |
+| `tests/apps/` | the test DOLs the others send | `make -C tests/apps/<app>`; `OGC=libogc2` builds (agent_app) need devkitPPC r41-2 as `$DEVKITPRO/devkitPPC-r41-2` or `DEVKITPPC_R41=<folder>`, and the Makefile stops with that message when it is missing |
 | `tests/lib/` | shared helpers | imported: `sys.path.insert(0, str(root / "tests" / "lib")); import testenv` puts `tools/` and every folder on the path |
 
 | Check | Command | Needs |

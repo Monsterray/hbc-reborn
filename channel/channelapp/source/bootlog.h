@@ -57,6 +57,8 @@ typedef struct {
 	s32 rc;
 	u32 seq;
 	bool done;		// false: IOS has not answered; out_ms and rc mean nothing
+	u32 repeats;		// fast calls after it with the same name, thread and rc
+	u32 last_out_ms;	// when the latest of them came back (out_ms when none)
 } bootlog_row;
 
 // The call that began right after the one numbered `after` (0: the first),

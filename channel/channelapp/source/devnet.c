@@ -246,6 +246,7 @@ static s32 status_json(char *buf, size_t size) {
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"zlib_mem\":\"%s\",\"zlib_peak\":%u,\"zlib_heap\":%u,"
 			"\"tcp_last_failure\":\"%s\"", zmem_where(), zmem_peak(), zmem_heap_peak(),
 			tcp_last_failure()));
+	n = grow(n, size, tcp_longest_json(buf + n, size - n));
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"startup\":{"));
 	for (i = 0; i < (int) boot_count; ++i)
 		n = grow(n, size, snprintf(buf + n, size - n, "%s\"%s\":%u", i ? "," : "",
@@ -282,6 +283,9 @@ static s32 status_json(char *buf, size_t size) {
 			settings.net_hang_reload ? "reload" : "wait"));
 	// The Wii's clock, the one file times (op L, S) come from.
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL)));
+	// Since HBC started, as an agent's HBCS says: hbc.py send tells a new
+	// HBC (an app ran and came back, or HBC was sent) from the one it sent to.
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"uptime_ms\":%u", (unsigned) devnet_boot_ms()));
 	{
 		// The Mii beside the app list (avatar.c).
 		avatar_info av;

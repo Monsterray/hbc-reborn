@@ -36,6 +36,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import wii_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 import wii_mboard as wm  # noqa: E402
@@ -71,8 +72,7 @@ def main():
         return playground(wii)
 
     try:
-        hbc.send(wii, str(snap), [])
-        hbc.relaunch_wait(wii, dolphin_smoke.expected)
+        wii_checks.ensure_hbc(wii, str(snap), fresh=True)
         # Save Mii faces: the bodies and (1.12.2) the effects on the SD card;
         # the avatar loads again with them.
         ok, text = hbc.mii_faces(wii)

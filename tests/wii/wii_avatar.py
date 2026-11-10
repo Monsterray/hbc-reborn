@@ -31,6 +31,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import wii_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 import wii_mboard as wm  # noqa: E402
@@ -72,8 +73,7 @@ def main():
                 print(f"{body}: not set aside ({exc})", flush=True)
                 moved.pop(body, None)
     try:
-        hbc.send(wii, str(snap), [])
-        hbc.relaunch_wait(wii, dolphin_smoke.expected)
+        wii_checks.ensure_hbc(wii, str(snap), fresh=True)
         av = avatar(wii)
         if av.get("state") == "none":
             ok, text = hbc.mii_faces(wii)

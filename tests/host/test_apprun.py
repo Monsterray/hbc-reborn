@@ -18,7 +18,7 @@ def px(path):
     return str(path).replace("\\", "/").encode()
 
 LINE = re.compile(r"^[^\t]+\tboot\.dol=(-|\d+@\d+) boot\.elf=(-|\d+@\d+) "
-                  r"meta\.xml=(-|\d+@\d+) icon\.png=(-|\d+@\d+)$")
+                  r"meta\.xml=(-|\d+@\d+|h:[0-9a-f]{8}) icon\.png=(-|\d+@\d+)$")
 
 # The host has no libfat and no MSVC-style <limits.h>: stand in for both.
 COMPAT = """#include <limits.h>
@@ -78,6 +78,9 @@ EXPORT int t_status(const char *name) { return app_run_status(name); }
 EXPORT void t_end(int complete) { app_run_end(complete); }
 EXPORT int t_status_one(const char *root, const char *name) { return app_run_status_one(root, name); }
 EXPORT int t_record(const char *path) { return app_run_record(path); }
+EXPORT int t_match(const char *root, const char *caption, const void *data, size_t len, char *out, size_t size) {
+    return app_run_match_upload(root, caption, data, len, out, size);
+}
 """
 
 
@@ -107,6 +110,8 @@ class AppRunTest(unittest.TestCase):
         api.t_end.argtypes = [ctypes.c_int]
         api.t_status_one.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
         api.t_record.argtypes = [ctypes.c_char_p]
+        api.t_match.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
+                                ctypes.c_char_p, ctypes.c_size_t]
 
     @classmethod
     def tearDownClass(cls):
@@ -164,6 +169,81 @@ class AppRunTest(unittest.TestCase):
         self.assertIn("boot.elf=- meta.xml=- icon.png=-", lines[0])
         self.assertFalse(list((self.dev / "hbc").glob("*.part")))
         self.assertFalse(list((self.dev / "hbc").glob("*.bak")))
+
+    META = (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<app version="1">\n'
+            b'  <name>Foo</name>\n%s</app>\n')
+
+    def set_meta(self, name, body):
+        path = self.boot(name).parent / "meta.xml"
+        path.write_bytes(body)
+        return path
+
+    def test_sort_id_alone_is_not_an_update(self):
+        self.set_meta("Foo", self.META % b"")
+        self.assertTrue(self.record("Foo"))
+        self.assertIn("meta.xml=h:", self.lines()[0])
+        commits = self.api.t_commits()
+        for tag in (b"  <sort_id>10</sort_id>\n", b"  <sort_id>2000</sort_id>\n", b""):
+            path = self.set_meta("Foo", self.META % tag)
+            os.utime(path, (1, 1_000_000_000))  # a new size and date
+            self.assertEqual(self.state("Foo"), UNCHANGED, tag)
+        # CRLF and indentation around the element are the same too
+        self.set_meta("Foo", (self.META % b"\t<sort_id>7</sort_id>\r\n").replace(b"\n", b"\r\n"))
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+        self.assertEqual(self.api.t_commits(), commits)
+        # a real edit next to it is an update, and a launch clears it
+        self.set_meta("Foo", (self.META % b"  <sort_id>10</sort_id>\n").replace(b"Foo", b"Fob"))
+        self.assertEqual(self.state("Foo"), UPDATED)
+        self.assertTrue(self.record("Foo"))
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+        self.set_meta("Foo", self.META % b"  <sort_id>1</sort_id>\n  <version>2</version>\n")
+        self.assertEqual(self.state("Foo"), UPDATED)
+
+    def test_old_format_meta_line_still_reads(self):
+        path = self.set_meta("Foo", self.META % b"")
+        st = path.stat()
+        dol = self.boot("Foo").stat()
+        (self.dev / "hbc").mkdir()
+        old = (f"Foo\tboot.dol={dol.st_size}@{int(dol.st_mtime)} boot.elf=- "
+               f"meta.xml={st.st_size}@{int(st.st_mtime)} icon.png=-\n")
+        self.seen.write_bytes(old.encode())
+        self.assertEqual(self.state("Foo"), UNCHANGED)  # not every app Updated after the upgrade
+        self.assertEqual(self.seen.read_bytes(), old.encode())  # looking writes nothing
+        self.set_meta("Foo", self.META % b"  <sort_id>5</sort_id>\n")
+        self.assertEqual(self.state("Foo"), UPDATED)  # an old stamp is judged by size and date
+        self.assertTrue(self.record("Foo"))  # the run rewrites it in the new form
+        self.assertIn("meta.xml=h:", self.lines()[0])
+        self.set_meta("Foo", self.META % b"  <sort_id>6</sort_id>\n")
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+        # an old line whose meta did not change is upgraded by the next run
+        self.seen.write_bytes(old.encode())
+        self.set_meta("Foo", self.META % b"")
+        os.utime(path, (st.st_atime, st.st_mtime))
+        self.assertTrue(self.record("Foo"))
+        self.assertIn("meta.xml=h:", self.lines()[0])
+
+    def match(self, caption, data, dev=None):
+        out = ctypes.create_string_buffer(4096)
+        ok = self.api.t_match(px(dev or self.dev), caption.encode(), data, len(data), out, len(out))
+        return out.value.decode() if ok else None
+
+    def test_network_launch_matches_only_the_installed_file(self):
+        data = self.boot("Foo").read_bytes()
+        got = self.match("Foo/boot.dol", data)
+        self.assertEqual(got, px(self.boot("Foo")).decode())
+        self.assertTrue(self.api.t_record(got.encode()))
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+        self.assertIsNotNone(self.match("foo/BOOT.DOL", data))
+        same_size = bytes(b ^ 1 for b in data[:1]) + data[1:]
+        for caption, payload in (("Foo/boot.dol", same_size),  # same size, other bytes
+                                 ("Foo/boot.dol", data + b"x"),
+                                 ("Foo/boot.elf", data),  # no such file
+                                 ("Nope/boot.dol", data),
+                                 ("boot.dol", data), ("Foo", data), ("Foo/other.dol", data),
+                                 ("../Foo/boot.dol", data), ("a/Foo/boot.dol", data),
+                                 ("../boot.dol", data), ("/boot.dol", data), ("", data)):
+            with self.subTest(caption=caption, n=len(payload)):
+                self.assertIsNone(self.match(caption, payload))
 
     def test_record_without_a_change_writes_nothing(self):
         self.assertTrue(self.record("Foo"))

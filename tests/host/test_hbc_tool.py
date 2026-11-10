@@ -174,6 +174,8 @@ class FakeHBC:
                   "time": int(time.time()) + self.clock}
             if self.next_result is not None:
                 st.update(proto=6, upload=self.upload)
+            if getattr(self, "uptime_ms", None) is not None:
+                st["uptime_ms"] = self.uptime_ms
             if self.agent:
                 st = {"agent": True, "version": "1.5.0", "proto": 3, "log": self.log,
                       "app": "otherapp", "uptime_ms": self.agent_uptime_ms}
@@ -611,6 +613,21 @@ class HBCToolTest(unittest.TestCase):
         self.cli("send", "--no-wait", str(app), "arg1")
         self.assertLess(time.monotonic() - start, hbc.NO_WAIT_SECONDS + 4)
         self.assertEqual(self.fake.uploads[-1][1], b"app.dol\0arg1\0\0")
+
+    def test_send_sees_a_new_hbc_by_its_uptime(self):
+        app = self.tmp / "hbc.dol"
+        app.write_bytes(bytes(64))
+        # HBC sent itself (or an app came back): the new HBC's counter is at
+        # 0 again, but its uptime is shorter than the wait: launched at once.
+        self.fake.next_result = {"result": "launched", "error": None, "text": ""}
+        self.fake.keep_result = True
+        self.fake.uptime_ms = 0
+        try:
+            start = time.monotonic()
+            self.cli("send", str(app))
+            self.assertLess(time.monotonic() - start, 5)
+        finally:
+            self.fake.uptime_ms = None
 
     def test_send_no_wait_still_reports_an_error_hbc_gives_at_once(self):
         app = self.tmp / "app.dol"
