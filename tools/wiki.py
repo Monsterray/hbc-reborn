@@ -37,6 +37,7 @@ PAGES = [
     ("SDK-hbc_agent", "sdk/hbc_agent/README.md", "SDKs"),
     ("SDK-wiispk", "sdk/wiispk/README.md", "SDKs"),
     ("SDK-slotled", "sdk/slotled/README.md", "SDKs"),
+    ("SDK-usbguard", "sdk/usbguard/README.md", "SDKs"),
     ("SDK-mboard", "sdk/mboard/README.md", "SDKs"),
     ("SDK-mii", "sdk/mii/README.md", "SDKs"),
     ("Message-Board", "docs/mboard/README.md", "Guides"),
