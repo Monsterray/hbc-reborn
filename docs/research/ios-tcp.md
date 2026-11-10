@@ -21,11 +21,19 @@ Interim results (2026-11-10, second session; to be folded into section 1):
 - A connection from another source port (WSL) is silent too during an outage:
   the whole port is dark.
 - In the ZIP loop, every outage (11 of 11 in the logs) came right after a
-  cycle whose result was "launched" instead of "declined": HBC treated the
-  upload as a launchable app. HBC's process survives (uptime keeps counting,
-  net_starts stays 1). Whether the launch path, not IOS, darkens the port in
-  that loop is the next thing to check; the hammer outages are a separate
-  case with no launch.
+  cycle whose result was "launched" instead of "declined". That is not a
+  launch: `tools/hbc.py upload_outcome` calls 10 s of silence "launched", and
+  HBC's uptime keeps counting through it (net_starts stays 1). That cycle is
+  the outage's start as the PC sees it, not its cause.
+- The PC also held 1-6 sockets in FIN_WAIT_2: the Wii acknowledged the PC's
+  FIN but never sent its own. A connection IOS never finishes closing is a
+  candidate leak.
+- In the hammer, single connects often time out and recover at once every
+  6-7 s before an outage starts.
+- Polling slower (every 0.5 s, 5 s timeout; `hbc.py` since f90b522) made the
+  ZIP loop's outages rare (1 in 49-59 cycles) but not gone, and the hammer
+  shows a lower rate does not prevent them. Cause still open; next step is a
+  packet capture (`pktmon`, elevated) during an outage.
 - Script: [tests/wii/wii_port_outage.py](../../tests/wii/wii_port_outage.py).
 
 ## 1. The TCP stack stops answering for about 2.5 minutes
