@@ -401,8 +401,10 @@ void tcp_close (s32 s) {
 
 		res = net_read (s, drain, sizeof (drain));
 		if (res == -EAGAIN) {
-			if (!tcp_wait (s, TCP_POLLIN, 1000 - idle))
-				break;
+			// IOS's poll can report the peer's close only when its timeout
+			// ends (a 1 s wait per request), but a read sees it at once: poll
+			// in short slices and read in between.
+			tcp_wait (s, TCP_POLLIN, 10);
 			continue;
 		}
 		if (res <= 0)
