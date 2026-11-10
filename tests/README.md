@@ -10,6 +10,7 @@ test's own docstring: edit the docstring, then run the script.
 
 | Test | What it covers |
 | --- | --- |
+| [`bootlog_host/`](host/bootlog_host/) | HBC's start-up call log (channel/channelapp/source/bootlog.c) on the host: a poll repeated before the first frame takes one row, the kept calls leave room for later ones, and a thread id that a new thread reuses names each call by the thread that made it. |
 | [`host_bounds.sh`](host/host_bounds.sh) | WiiPAX and wiiload refuse malformed input: a section name outside .shstrtab, and arguments that leave no room for the terminator. |
 | [`keyboard_host/`](host/keyboard_host/) | Host test for channel/channelapp/source/keyboard.c against a fake USB: prints one line per check, "ok NAME" or "FAIL NAME: why". |
 | [`keymap_host/`](host/keymap_host/) | Host test for channel/channelapp/source/keymap.c: prints the buttons for the keys given as USB usage codes (hex) on the command line, as hex. |
@@ -23,6 +24,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`slotled_host/`](host/slotled_host/) | sdk/slotled's pure parts on a PC, for tests/host/test_slotled.py. |
 | [`stub_layout.sh`](host/stub_layout.sh) | The reload stub is linked at 0x80001800, its BSS stays clear of the low-memory state and its image ends before the return-title words at 0x80002f00. |
 | [`test_apprun.py`](host/test_apprun.py) | New/updated app badges: the per-device apps_seen.txt (apprun.c) on the host. |
+| [`test_bootlog.py`](host/test_bootlog.py) | Build HBC's start-up call log (channel/channelapp/source/bootlog.c) on the host and run tests/host/bootlog_host/test.c against it: a poll repeated before the first frame takes one row with a repeat count, the calls kept from before the first frame leave room for later ones, a thread id reused by a new thread names each call by the thread that made it, and the status JSON ends whole. |
 | [`test_browser_nav.py`](host/test_browser_nav.py) | Page boundaries and held-key timing for the app picker. |
 | [`test_cdblog.py`](host/test_cdblog.py) | HBC's Message Board play log writer, sdk/mboard's mboard_play_vff() (HBC builds it into playtime.c since 1.10.9), against the reference the Wii Menu accepted in Dolphin (tools/msgboard/cdb_log.py): the same sessions, on the same image, must give the same bytes. |
 | [`test_check_secrets.py`](host/test_check_secrets.py) | tools/check_secrets.py and the pre-push hook: keys, key-looking names, private key headers, tokens and local key bytes are caught in any pushed commit, the allow list and clean pushes pass, and the repository itself is clean. |
