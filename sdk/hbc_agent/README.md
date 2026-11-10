@@ -407,19 +407,19 @@ While open, the overlay borrows three framebuffers, about 1.8 MB at 640x480
 
 ## What it costs
 
-Measured on a real Wii with `tests/wii/agent_cost.py` (HBC 1.16.0+3, 640x480,
+Measured on a real Wii with `tests/wii/agent_cost.py` (HBC 1.16.0+16, 640x480,
 2026-11-09; the 1.7.1 figures are in [history/1.7.md](../../docs/history/1.7.md)):
 
 | | Cost |
 | --- | --- |
 | Code | 46 KB for the agent (network, files, crash reports); 40 KB more for the safety tools, the way out, DEV > Info and the speaker; 116 KB for the overlay (62 KB of it drawing, with its fonts and pointer) |
-| Static data | 9 KB for the agent (8.4 KB of it in agent.o: the 8 KB ring of recent output, which the crash path reads and so cannot be allocated), 5 KB for the overlay (a 4 KB stack for the thread that keeps remote settings, and small flags: linked in, so held even while it is closed). Before the change these were 30 KB and 45 KB; the new figures are from the build (`powerpc-eabi-size` on the objects), Wii figures pending |
+| Static data | 9 KB for the agent (8.4 KB of it in agent.o: the 8 KB ring of recent output, which the crash path reads and so cannot be allocated), 5 KB for the overlay (a 4 KB stack for the thread that keeps remote settings, and small flags: linked in, so held even while it is closed). Before the change these were 30 KB and 45 KB; the figures are from the build (`powerpc-eabi-size` on the objects: agent.o 8.9 KB, overlay.o 4.9 KB), and the start-up cost below was measured on the Wii with these builds |
 | Start-up | `hbc_agent_init()`: 1.2 KB of heap and 22 KB from the top of the MEM2 arena (its thread's 12 KB stack, of which it uses 1.6 KB idle and 3.4 KB in a transfer) |
-| Idle | 5 wake-ups a second to check for a connection, 143 µs each: 0.07% of the CPU |
+| Idle | 5 wake-ups a second to check for a connection, 149 µs each: 0.07% of the CPU |
 | File transfers | 28 KB of heap kept after the first (the rest is freed after each). The Wi-Fi sets the speed (0.3 to 0.6 MB/s on the bench Wii); the agent's zlib and CRC work is 9 to 170 ms per upload and 52 to 820 ms per download of 2 to 7 MB, on its own thread |
-| HOME overlay, while open | 1.8 MB in an app (a copy of the frame and two framebuffers), 1.2 MB in HBC, which lends the framebuffers, plus 16 KB for its state and the Log page's text (taken at open, given back at close; if either is refused the overlay does not open, `hbc_agent_home()` returns `-ENOMEM` and the log says so); a speaker.wav load or a clock sync takes a 16 KB thread stack for as long as it runs; 6.6 ms average and 13 ms at most to draw a frame that changed (7.9 and 9.8 ms in HBC), nothing for frames that did not, so it keeps 60 fps |
+| HOME overlay, while open | 1.8 MB in an app (a copy of the frame and two framebuffers), 1.2 MB in HBC, which lends the framebuffers, plus 16 KB for its state and the Log page's text (taken at open, given back at close; if either is refused the overlay does not open, `hbc_agent_home()` returns `-ENOMEM` and the log says so); a speaker.wav load or a clock sync takes a 16 KB thread stack for as long as it runs; 6.6 ms average and 13 ms at most to draw a frame that changed (7.8 and 9.5 ms in HBC), nothing for frames that did not, so it keeps 60 fps |
 | HOME overlay, closed | no thread and no heap; its static data above stays (the 4 KB stack of the remote-settings thread is the largest part) |
-| Safety tools | the defaults: 0.2 µs a second and 0.06 µs a frame, nothing held; with the opt-ins (`optin` in `tests/apps/agent_app`): 5.75 µs a second and 10 KB held |
+| Safety tools | the defaults: 0.2 µs a second and 0.06 µs a frame, nothing held; with the opt-ins (`optin` in `tests/apps/agent_app`): 5.85 µs a second and 10 KB held |
 
 `hbc.py status` shows the live figures: `agent_idle_wakes`, `agent_idle_us`,
 `agent_request_ms`, `agent_stack_used`, `heap_arena`, and `overlay` (frames
