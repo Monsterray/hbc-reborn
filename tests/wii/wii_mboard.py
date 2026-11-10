@@ -62,6 +62,7 @@ root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
 import vffread  # noqa: E402
+import wii_checks  # noqa: E402
 import dolphin_mboard  # noqa: E402  (test_photo, chjump_arc)
 
 PROTECTED = ("192.168.8.200", "192.168.8.243")  # real data: never written by this script
@@ -94,6 +95,7 @@ def bench_wii():
     wii = os.environ.get("WII_BENCH_IP")
     if not wii or not os.environ.get("WII_BENCH_JOB_START"):
         sys.exit("run this as a wii-bench queue job (it writes the Wii's NAND or SD card)")
+    wii_checks.refuse_production(wii)  # by the queue's Wii name too, not only the address
     if wii.strip() in PROTECTED:
         sys.exit(f"refusing {wii}: a production Wii")
     return wii

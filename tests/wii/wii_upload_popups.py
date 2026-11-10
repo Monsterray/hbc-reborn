@@ -28,6 +28,7 @@ import zipfile
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import wii_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 
@@ -58,8 +59,7 @@ def main():
     if not opts.installed:
         snap = work / "channelapp-channel.dol"
         shutil.copy(root / "channel/channelapp/channelapp-channel.dol", snap)
-        hbc.send(wii, str(snap), [])
-        hbc.relaunch_wait(wii, dolphin_smoke.expected)
+        wii_checks.ensure_hbc(wii, str(snap))
     print(f"HBC {hbc.version(wii)} is running")
 
     bogus = work / "notanapp.dol"

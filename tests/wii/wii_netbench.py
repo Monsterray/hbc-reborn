@@ -5,6 +5,10 @@ Sends the channel DOL through the installed HBC with Wiiload, then times
 status round trips and verified uploads and downloads of random and zero
 data under sd:/hbcbench, which it removes afterwards.
 
+ON-DEMAND BENCH, not part of a routine run: it owns the transfer-speed
+measurement (wii_agent compares agent against HBC, agent_cost counts heap and
+CPU). Run it when a change touches the network or file path.
+
 usage: tests/wii/wii_netbench.py [--no-send] [--mib N] [WII-IP]
 """
 

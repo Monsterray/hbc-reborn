@@ -3,11 +3,12 @@
 
 Runs tests/apps/agent_app for a few seconds from the HBC the Wii runs, and as soon
 as HBC is back opens and closes the overlay (HOME only: nothing in HBC's
-menus is chosen), then again once HBC has settled. Prints each opening's
-HBCS "overlay" cost and HBC's startup steps (the play log's NAND write is
-one of them).
+menus is chosen). Prints the opening's HBCS "overlay" cost and HBC's startup
+steps (the play log's NAND write is one of them). This test owns the opening
+right after a return; wii_overlay_speed owns the first and later openings
+(timing), so a later opening here is only taken with --later.
 
-usage: tests/wii/wii_overlay_return.py [WII-IP]
+usage: tests/wii/wii_overlay_return.py [--later] [WII-IP]
 """
 
 import pathlib
@@ -32,7 +33,8 @@ def open_close(wii, label, seconds=4):
 
 
 def main():
-    wii = hbc.wii_address(sys.argv[1] if len(sys.argv) > 1 else None)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    wii = hbc.wii_address(args[0] if args else None)
     print(f"HBC {hbc.hbc_wait(wii, 90)}", flush=True)
     hbc.send(wii, str(root / "tests/apps/agent_app/agent_app.dol"), ["stay", "8"])
     agent_checks.wait_agent(wii)
@@ -42,8 +44,9 @@ def main():
     time.sleep(1)
     st = open_close(wii, f"opening {time.monotonic() - t0:.0f} s after the return")
     print(f"  startup: {st.get('startup')}", flush=True)
-    time.sleep(25)
-    open_close(wii, f"opening {time.monotonic() - t0:.0f} s after the return")
+    if "--later" in sys.argv:
+        time.sleep(25)
+        open_close(wii, f"opening {time.monotonic() - t0:.0f} s after the return")
 
 
 if __name__ == "__main__":

@@ -5,9 +5,10 @@ Runs tests/apps/agent_app (the agent in a small app) and reads back:
   start-up    heap and arena hbc_agent_init() takes (the app prints it)
   idle        the agent thread's wake-ups and time awake, over 20 s
   transfers   heap growth and agent time for framed uploads and downloads
-  overlay     the HOME overlay's frame time and borrowed memory, in the app
-              and in this tree's HBC (sent over Wiiload if the Wii runs
-              another version)
+  overlay     the HOME overlay's frame time and borrowed memory, in the app;
+              with --overlay-hbc also in this tree's HBC (ensure_hbc sends
+              it if the Wii runs another build). Overlay timing in HBC is
+              wii_overlay_speed's measurement, so it is off by default
   safety      the safety tools (safety.c) over 20 s at 60 frames a second,
               the defaults alone and with the opt-ins: CPU per second of the
               once-a-second checks and the per-frame callback, and the
@@ -15,7 +16,10 @@ Runs tests/apps/agent_app (the agent in a small app) and reads back:
 and prints them with the agent's code and static data sizes from the build.
 Leaves the Wii in HBC.
 
-usage: tests/wii/agent_cost.py [--log-port PORT] [WII-IP]
+Transfers here count heap growth and agent CPU time (the cost); the speed of
+a transfer is wii_agent's (agent against HBC) and wii_netbench's measurement.
+
+usage: tests/wii/agent_cost.py [--log-port PORT] [--overlay-hbc] [WII-IP]
 """
 
 import argparse
@@ -34,6 +38,7 @@ sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
 import agent_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
+import wii_checks  # noqa: E402
 import hbc  # noqa: E402
 
 
@@ -60,6 +65,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("wii", nargs="?")
     parser.add_argument("--log-port", type=int, default=hbc.LOG_PORT)
+    parser.add_argument("--overlay-hbc", action="store_true",
+                        help="also time the overlay as HBC's HOME menu (wii_overlay_speed's job)")
     opts = parser.parse_args()
     wii = hbc.wii_address(opts.wii)
     expected = dolphin_smoke.expected
@@ -73,7 +80,7 @@ def main():
     log = agent_checks.LogCollector(opts.log_port)
     try:
         log.server.register(wii)
-        hbc.send(wii, str(tmp / "agent_app.dol"), ["stay", "240"])
+        wii_checks.send_app(wii, str(tmp / "agent_app.dol"), ["stay", "240"])
         agent_checks.wait_agent(wii)
         log.wait_for("agent_app: network 0", 30)
         m = re.search(r"init cost heap (-?\d+) bytes \(in use\), arena1 (-?\d+), arena2 (-?\d+)",
@@ -100,17 +107,12 @@ def main():
         rows = []
         for name, blob in blobs.items():
             path = f"sd:/hbcbench/cost-{name}.bin"
-            t = time.monotonic()
             hbc.put_file(wii, path, blob)
             up = hbc.status(wii)
-            t_up = time.monotonic() - t
-            t = time.monotonic()
             assert hbc.get_file(wii, path) == blob, name
-            t_down = time.monotonic() - t
             down = hbc.status(wii)
             hbc.file_request(wii, "D", path)
             rows.append({"name": name, "bytes": len(blob),
-                         "up_mb_s": len(blob) / t_up / 1e6, "down_mb_s": len(blob) / t_down / 1e6,
                          "up_cpu_ms": up["last"]["cpu_ms"], "down_cpu_ms": down["last"]["cpu_ms"]})
         after = hbc.status(wii)
         hbc.file_request(wii, "D", "sd:/hbcbench")
@@ -127,7 +129,7 @@ def main():
         # The safety tools: defaults, then with the opt-in checks.
         report["safety"] = {}
         for label, args in (("defaults", ["flip", "1"]), ("optin", ["flip", "1", "optin"])):
-            hbc.send(wii, str(tmp / "agent_app.dol"), args)
+            wii_checks.send_app(wii, str(tmp / "agent_app.dol"), args)
             agent_checks.wait_agent(wii)
             time.sleep(3)
             s0 = hbc.status(wii)
@@ -149,13 +151,12 @@ def main():
                 "mem_low": s1["safety"]["mem_low"]}
         hbc.hbc_wait(wii, 90)
 
-        # The overlay as HBC's HOME menu, in this tree's HBC.
-        if hbc.hbc_wait(wii, 90) != expected:
-            hbc.send(wii, str(dol), [])
-            hbc.relaunch_wait(wii, expected)
-        time.sleep(10)  # HBC takes HOME only once its app list is up
-        run_overlay(wii, [("h", 2), ("la", 2), ("b", 1), ("h", 3)])
-        report["overlay_hbc"] = hbc.status(wii).get("overlay")
+        if opts.overlay_hbc:
+            # The overlay as HBC's HOME menu, in this tree's HBC.
+            wii_checks.ensure_hbc(wii, str(dol), expected)
+            time.sleep(10)  # HBC takes HOME only once its app list is up
+            run_overlay(wii, [("h", 2), ("la", 2), ("b", 1), ("h", 3)])
+            report["overlay_hbc"] = hbc.status(wii).get("overlay")
     finally:
         hbc.LogServer.unregister(wii)
         log.close()

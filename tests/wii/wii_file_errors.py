@@ -27,6 +27,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import wii_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 
@@ -83,8 +84,7 @@ def main():
         if not d:
             shutil.copy(root / "channel/channelapp/channelapp-channel.dol",
                         big.with_name("hbc-errors.dol"))
-            hbc.send(wii, str(big.with_name("hbc-errors.dol")), [])
-            hbc.relaunch_wait(wii, dolphin_smoke.expected)
+            wii_checks.ensure_hbc(wii, str(big.with_name("hbc-errors.dol")))
         print(f"HBC {hbc.hbc_wait(wii, 60)}", flush=True)
         time.sleep(3)
         failed += cases(wii, "HBC", big)

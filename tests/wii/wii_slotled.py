@@ -64,6 +64,9 @@ def bench_wii():
     wii = os.environ.get("WII_BENCH_IP")
     if not wii or not os.environ.get("WII_BENCH_JOB_START"):
         sys.exit("run this as a wii-bench queue job")
+    sys.path.insert(0, str(root / "tests" / "lib"))
+    import wii_checks  # tests/lib: the name (WII_BENCH_WII) or the address says production
+    wii_checks.refuse_production(wii)
     if wii.strip() in PROTECTED:
         sys.exit(f"refusing {wii}: a production Wii")
     return wii

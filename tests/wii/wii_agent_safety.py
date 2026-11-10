@@ -33,6 +33,7 @@ sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
 import agent_checks  # noqa: E402
 import hbc  # noqa: E402
+import wii_checks  # noqa: E402
 
 APP = str(root / "tests/apps/agent_app/agent_app.dol")
 THREADS = "-- threads when the app stopped"
@@ -43,7 +44,7 @@ def run_until_back(wii, args, seconds=60):
     return the crash and the kept log HBC has. A quick crash can be over
     before the agent is ever seen, so HBC's report also counts."""
     hbc.request(wii, b"HBCC")
-    hbc.send(wii, APP, args)
+    wii_checks.send_app(wii, APP, args)
     deadline, seen = time.monotonic() + seconds, False
     while time.monotonic() < deadline:
         try:
@@ -98,8 +99,8 @@ def check_deadlock(wii):
 
 
 def agent_status(wii, args, settle=4):
-    hbc.send(wii, APP, args)
-    agent_checks.wait_agent(wii)
+    wii_checks.send_app(wii, APP, args)
+    agent_checks.wait_agent(wii, 60)
     time.sleep(settle)
     return hbc.status(wii)
 

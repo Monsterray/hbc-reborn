@@ -35,6 +35,7 @@ root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
 import hbc  # noqa: E402
+import wii_checks  # noqa: E402
 from wii_agent_safety import APP  # noqa: E402
 
 PRODUCTION = {"192.168.8.200", "192.168.8.243"}
@@ -175,6 +176,7 @@ def main():
                         help="confirms someone is at the Wii for a --reset run")
     opts = parser.parse_args()
     wii = hbc.wii_address(opts.wii)
+    wii_checks.refuse_production(wii, "the way-out tests run on the bench Wii only")
     if wii in PRODUCTION:
         raise SystemExit(f"{wii} is a production Wii: the way-out tests run on the bench Wii only")
     if not os.environ.get("WII_BENCH_JOB"):

@@ -20,6 +20,7 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(root / "tests" / "lib"))
 import testenv  # noqa: E402,F401  tools/ and every test layer on sys.path
+import wii_checks  # noqa: E402
 import dolphin_smoke  # noqa: E402
 import hbc  # noqa: E402
 import wii_mboard as wm  # noqa: E402
@@ -44,8 +45,7 @@ def main():
             failed.append(what)
 
     try:
-        hbc.send(wii, str(snap), [])
-        hbc.relaunch_wait(wii, dolphin_smoke.expected)
+        wii_checks.ensure_hbc(wii, str(snap))
         check(hbc.upload_file(str(app)) == "hbctest-recv/boot.dol", "the dialog is sent hbctest-recv/boot.dol")
         cam = subprocess.Popen([wm.PY, wm.CAPTURE, "watch", "40", "--every", "1",
                                 "--out", str(out), "--label", "tv_receive"],
