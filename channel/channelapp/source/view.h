@@ -44,6 +44,9 @@ void view_set_focus (view *v, s8 new_focus);
 u8 view_set_focus_prev (view *v);
 u8 view_set_focus_next (view *v);
 u8 view_move_focus(view *v, s8 mod);
+// After a D-pad press: when focus is still old_focus, shake that widget
+// toward (dx, dy), each -1, 0 or 1, to show it is at an edge.
+void view_edge_bump(const view *v, s8 old_focus, s8 dx, s8 dy);
 
 void view_enable_cursor (bool enable);
 s8 view_widget_at_xy (const view *v, s32 x, s32 y);
