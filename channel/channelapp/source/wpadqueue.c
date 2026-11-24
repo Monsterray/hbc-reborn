@@ -8,7 +8,7 @@
 // crashes the program as it connects.
 //
 // The app is linked with -Wl,--wrap=wiiuse_init_cmd_queue (Makefile), so
-// libogc's call from wiiuse_init lands here. tests/dolphin_wpad_queue.py
+// libogc's call from wiiuse_init lands here. tests/dolphin/dolphin_wpad_queue.py
 // shows the empty queues without this file and the full ones with it.
 
 #include <malloc.h>

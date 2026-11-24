@@ -1,4 +1,4 @@
-// The way out when an app stops (../hbc_agent.h, "The way out"): back to
+// The way out when an app stops (hbc_agent.h, "The way out"): back to
 // HBC even when IOS has wedged.
 //
 // libogc's __reload() jumps to the reload stub at 0x80001800. The stub turns
@@ -37,7 +37,7 @@
 //
 // Each choice is written to the crash block's way_out and the kept log before
 // it is taken, and drawn on the TV (screen_note()), which a power cycle does
-// not lose: the capture card shows how far it got. tests/way_out_host runs
+// not lose: the capture card shows how far it got. tests/host/way_out_host runs
 // this file on the PC against a model of the IPC registers (WAY_OUT_HOST).
 
 #ifndef WAY_OUT_HOST
@@ -80,7 +80,7 @@ static u32 ints_off(void) {
 #endif
 
 // Set by a test app to make the agent see a failure it cannot cause itself:
-// HBC_WAY_TEST_* bits (tests/agent_app's wayout mode). Never set otherwise.
+// HBC_WAY_TEST_* bits (tests/apps/agent_app's wayout mode). Never set otherwise.
 u32 hbc_agent_way_out_test;
 enum {
 	WAY_TEST_STUCK_FD = 1,     // fd 3's close gets no reply

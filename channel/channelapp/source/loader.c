@@ -13,6 +13,7 @@
 #include <zlib.h>
 
 #include "../config.h"
+#include "../build_tag.h"
 #include "blob.h"
 #include "tcp.h"
 #include "appentry.h"
@@ -27,6 +28,8 @@
 #include "netrecovery.h"
 #include "devfile.h"
 #include "devnet.h"
+#include "bootlog.h"
+#include "usbstart.h"
 #include "discover.h"
 #include "zmem.h"
 
@@ -247,6 +250,8 @@ static void * ld_tcp_func (void *arg) {
 	mask = 0;
 
 	ta->running = true;
+	bootlog_thread("net");
+	tcp_measure_this_thread();
 	LWP_MutexLock (ta->cmutex);
 
 	ta->cmd = LDTCPCMD_INIT;
@@ -285,7 +290,7 @@ static void * ld_tcp_func (void *arg) {
 			ta->state = LDTCPS_INITIALIZING;
 
 			while (retries) {
-				res = net_init_async(NULL, NULL);
+				res = BOOTLOG("net_init_async", net_init_async(NULL, NULL));
 
 				if (res) {
 					gprintf("net_init_async failed: %d\n", res);
@@ -295,7 +300,7 @@ static void * ld_tcp_func (void *arg) {
 				// One 30 s budget for all the attempts; restart and stop are
 				// seen every 50 ms, so a start that IOS never finishes no
 				// longer holds the worker, or an app launch, forever.
-				res = netinit_wait(init_start, &tcp_stop, &tcp_restart);
+				res = BOOTLOG("net_init (wait)", netinit_wait(init_start, &tcp_stop, &tcp_restart));
 
 				if (res == -ECANCELED) {
 					start_cancelled = true;
@@ -350,7 +355,7 @@ static void * ld_tcp_func (void *arg) {
 
 			mask = net_gethostip () & 0xffff0000;
 
-			s = tcp_listen (LD_TCP_PORT, 3);
+			s = BOOTLOG("tcp_listen", tcp_listen (LD_TCP_PORT, 3));
 
 			if ((s == -ENETRESET) && retries) {
 				gprintf("ENETRESET, reiniting\n");
@@ -377,8 +382,7 @@ static void * ld_tcp_func (void *arg) {
 			}
 
 			ta->state = LDTCPS_INITIALIZED;
-			if (!tcp_restart)
-				netrecovery_ready();
+			netrecovery_ready_unless(&tcp_restart);
 
 			continue;
 		}
@@ -394,15 +398,14 @@ static void * ld_tcp_func (void *arg) {
 
 			len_sa = sizeof (struct sockaddr_in);
 
-			sn = net_accept (s, (struct sockaddr *) &sa, &len_sa);
+			sn = tcp_accept (s, (struct sockaddr *) &sa, &len_sa);
 			if (sn == -EAGAIN)
 				continue;
 
 			if (sn == -ENETRESET) {
 				gprintf("ENETRESET, reiniting\n");
 				netrecovery_request();
-				tcp_net_deinit("Network reset", NULL);
-				s = -1;
+				tcp_net_deinit("Network reset", &s);
 				ta->state = LDTCPS_UNINITIALIZED;
 				ta->cmd = LDTCPCMD_INIT;
 				continue;
@@ -430,8 +433,8 @@ static void * ld_tcp_func (void *arg) {
 			}
 
 			if (!memcmp(buf, "HBCV", 4)) {
-				tcp_write(sn, (const u8 *)CHANNEL_VERSION_STR,
-						sizeof(CHANNEL_VERSION_STR), NULL, NULL);
+				tcp_write(sn, (const u8 *)CHANNEL_BUILD_STR,
+						sizeof(CHANNEL_BUILD_STR), NULL, NULL);
 				tcp_close(sn);
 				continue;
 			}
@@ -635,8 +638,10 @@ static u32 net_retry_ms;
 // HOME > HBC > Restart network. The worker sees the flag even in a busy
 // start; an idle one is woken by loader_signal_threads().
 void loader_tcp_restart (void) {
-	netrecovery_request();
+	// The flag first: a worker coming up in between then keeps the request
+	// (netrecovery_ready_unless), or clears it before it is made.
 	tcp_restart = true;
+	netrecovery_request();
 }
 
 void loader_signal_threads (void) {
@@ -1250,15 +1255,61 @@ void loader_load(loader_result *result, view *sub_view, app_entry *entry) {
 	result->type = LT_EXECUTABLE;
 }
 
+// A USB drive stopped responding at start-up and is still in: the app would
+// most likely reload IOS and hang on it. A remote launch is refused (no one
+// may be at the Wii); a menu launch asks, and goes on when OK is pressed.
+static bool usb_guard(const loader_result *result, view *sub_view) {
+	if (!usbstart_replug_needed())
+		return true;
+	if (result->remote) {
+		hlog("Launch refused: the USB drive that stopped responding is still in\n");
+		// Under 96 bytes, so HBCS "upload" carries all of it.
+		ld_error(result, sub_view, "usb_stuck",
+				 _("A USB drive stopped responding at start-up. "
+				   "Unplug it and plug it back in, then send again."));
+		return false;
+	}
+	// Cancel has the focus, so A pressed without reading does not launch;
+	// either button launches once the drive has come out.
+	bool ok = show_message(sub_view, DLGMT_WARNING, DLGB_OKCANCEL,
+						   _("A USB drive stopped responding when the Homebrew Channel "
+							 "started. Unplug it and plug it back in, then press A. If it "
+							 "stays in, the app can stop on a black screen until the drive "
+							 "is unplugged."),
+						   1) == 0;
+	bool out = !usbstart_replug_needed();
+
+	hlog("Launch %s: the stuck USB drive %s\n", ok || out ? "goes on" : "cancelled",
+		 out ? "was unplugged" : "is still in");
+	return ok || out;
+}
+
 bool loader_load_executable(entry_point *ep, loader_result *result,
 							view *sub_view) {
-	bool res = loader_reloc(ep, result->data, result->data_len,
-							result->args, result->args_len, true);
+	bool res;
+	char caption[64], installed[PATH_MAX];
+	bool installed_run = false;
+
+	if (!usb_guard(result, sub_view)) {
+		blob_free(result->data);
+		return false;
+	}
+
+	// A network launch of an installed app's own file (hbc.py send/run of
+	// apps/X/boot.dol): its run counts. Checked before the loader touches the data.
+	if (result->remote && settings.new_badges && devnet_upload_caption(caption, sizeof(caption)))
+		installed_run = app_run_match_upload("sd:", caption, result->data,
+				result->data_len, installed, sizeof(installed));
+	res = loader_reloc(ep, result->data, result->data_len,
+					   result->args, result->args_len, true);
 
 	if (!res)
 		ld_error (result, sub_view, "not_wii_app", text_err_invalid_bin);
-	else if (result->remote)
+	else if (result->remote) {
 		devnet_upload_result("launched", NULL, NULL);
+		if (installed_run && !app_run_record(installed))
+			gprintf("could not save app launch marker\n");
+	}
 	// args starts with the boot file's path. Note the run so its app badge
 	// clears (Options > App badges).
 	else if (settings.new_badges && !app_run_record(result->args))

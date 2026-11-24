@@ -19,7 +19,7 @@
 #include "bubbles.h"
 #include "panic.h"
 #include "avatar.h"
-#include "../../../sdk/hbc_agent.h"
+#include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "view.h"
 
 #define FOCUS_FLAGS (WF_VISIBLE | WF_ENABLED | WF_FOCUSABLE)

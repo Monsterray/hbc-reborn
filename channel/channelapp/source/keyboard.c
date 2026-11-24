@@ -7,6 +7,7 @@
 // 04f2:0841 lists its second, silent one first) then never types, and the
 // wait holds up HBC's exit until a key is pressed.
 
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -15,6 +16,8 @@
 #include <ogc/machine/processor.h>
 
 #include "keyboard.h"
+#include "bootlog.h"
+#include "usbstart.h"
 
 #define KBD_MAX 4		// keyboard interfaces read at once
 #define REPORT 8		// a boot keyboard report: modifiers, 0, six keys
@@ -26,9 +29,16 @@ static struct kbd {
 	s32 device_id, fd;
 	u8 ep;
 	volatile u8 state;
-	u8 report[REPORT] ATTRIBUTE_ALIGN (32);	// IOS writes here
 	u8 keys[REPORT];	// the last report, all zero once it ends
+	// IOS writes here by DMA, and libogc invalidates the cache line(s) of
+	// the buffer. It has a whole 32-byte line to itself (nothing else in
+	// the line: an invalidate would drop the CPU's writes to it).
+	u8 report[32] ATTRIBUTE_ALIGN (32);
 } kbds[KBD_MAX];
+
+_Static_assert(offsetof (struct kbd, report) % 32 == 0 && sizeof (struct kbd) % 32 == 0 &&
+		sizeof ((struct kbd *) 0)->report == 32 && REPORT <= 32,
+		"kbd.report must own its cache line");
 
 // Devices proven not to be keyboards (their descriptors have no boot
 // keyboard interface), so they are opened once. One that could not be
@@ -94,7 +104,9 @@ static bool kbd_seen (s32 device_id) {
 }
 
 // Opens one device's boot keyboard interface, if it has one, into a free
-// slot. False only when the device is proven not to be a keyboard.
+// slot. False only when the device is proven not to be a keyboard. Each IOS
+// call can come back after keyboard_shutdown gave up on this thread: then the
+// device is closed here and no slot is taken.
 static bool kbd_open (const usb_device_entry *e) {
 	usb_devdesc d;
 	usb_interfacedesc *u;
@@ -105,9 +117,18 @@ static bool kbd_open (const usb_device_entry *e) {
 	for(i = 0; i < KBD_MAX && !k; i++)
 		if(kbds[i].state == KBD_FREE)
 			k = &kbds[i];
-	if(!k || USB_OpenDevice (e->device_id, e->vid, e->pid, &fd) < 0)
+	if(!k || BOOTLOG("kbd USB_OpenDevice", USB_OpenDevice (e->device_id, e->vid, e->pid, &fd)) < 0)
 		return true;
-	if(USB_GetDescriptors (fd, &d) < 0) {
+	if(stopping) {
+		USB_CloseDevice (&fd);
+		return true;
+	}
+	if(BOOTLOG("kbd USB_GetDescriptors", USB_GetDescriptors (fd, &d)) < 0) {
+		USB_CloseDevice (&fd);
+		return true;
+	}
+	if(stopping) {
+		USB_FreeDescriptors (&d);
 		USB_CloseDevice (&fd);
 		return true;
 	}
@@ -126,6 +147,8 @@ static bool kbd_open (const usb_device_entry *e) {
 				// Boot reports, whatever the keyboard would send otherwise.
 				USB_WriteCtrlMsg (fd, USB_REQTYPE_INTERFACE_SET,
 								  USB_REQ_SETPROTOCOL, 0, u->bInterfaceNumber, 0, NULL);
+				if(stopping)
+					goto done;
 				k->device_id = e->device_id;
 				k->fd = fd;
 				k->ep = u->endpoints[p].bEndpointAddress;
@@ -138,18 +161,17 @@ static bool kbd_open (const usb_device_entry *e) {
 			}
 		}
 
+done:
 	USB_FreeDescriptors (&d);
 	USB_CloseDevice (&fd);
-	return false;
+	return stopping;
 }
 
 // New keyboards, and slots of ended ones back to free.
 static void kbd_look (void) {
 	static usb_device_entry list[16] ATTRIBUTE_ALIGN (32);
 	u8 count = 0;
-	u32 i;
-
-	u32 j, kept;
+	u32 i, j, kept;
 
 	for(i = 0; i < KBD_MAX; i++)
 		if(kbds[i].state == KBD_ENDED) {
@@ -157,7 +179,8 @@ static void kbd_look (void) {
 			kbds[i].state = KBD_FREE;
 		}
 
-	if(USB_GetDeviceList (list, 16, USB_CLASS_HID, &count) < 0)
+	if(BOOTLOG("kbd USB_GetDeviceList", USB_GetDeviceList (list, 16, USB_CLASS_HID, &count)) < 0 ||
+			stopping)
 		return;
 	// Forget devices that are gone: their IDs can come back on another one.
 	for(i = kept = 0; i < seen_count; i++) {
@@ -173,12 +196,36 @@ static void kbd_look (void) {
 			seen[seen_count++] = list[i].device_id;
 }
 
+// USB_Initialize and the device list are synchronous IOS calls, and IOS's
+// USB stack can stop answering until a stuck drive is unplugged (a drive a
+// reset left mid-transfer, as port power survives a reset). Made on the main
+// thread, they would leave a black screen before HBC's first frame. They run
+// on this thread instead; the reads it starts answer in the IPC interrupt.
+static lwp_t worker = LWP_THREAD_NULL;
+static volatile bool worker_done = true;
+static u8 worker_stack[16 * 1024] ATTRIBUTE_ALIGN (32);
+
+static void *kbd_worker (void *arg) {
+	(void) arg;
+	bootlog_thread("kbd");
+	// HBC starts USB only when it looks for a drive (usbmsd.c); a second
+	// call does nothing.
+	if(BOOTLOG("kbd USB_Initialize", USB_Initialize ()) >= 0)
+		while(!stopping) {
+			kbd_look ();
+			for(u32 t = 0; t < LOOK_FRAMES && !stopping; t++)
+				usleep (1000000 / 60);
+		}
+	worker_done = true;
+	return NULL;
+}
+
 void keyboard_init (void) {
 	if(inited)
 		return;
-	// HBC starts USB only when it looks for a drive (usbmsd.c); a second
-	// call does nothing.
-	if(USB_Initialize () < 0)
+	if(!worker_done)	// the last one never came back from IOS: no second
+		return;
+	if(usbstart_stuck ())	// USB was stuck at the start: leave it alone
 		return;
 	memset (kbds, 0, sizeof(kbds));
 	memset (keys_pressed, 0, sizeof(keys_pressed));
@@ -186,6 +233,11 @@ void keyboard_init (void) {
 	seen_count = 0;
 	frames = 0;
 	stopping = false;
+	worker_done = false;
+	if(LWP_CreateThread (&worker, kbd_worker, NULL, worker_stack, sizeof(worker_stack), 40) < 0) {
+		worker_done = true;
+		return;
+	}
 	inited = true;
 }
 
@@ -195,6 +247,14 @@ void keyboard_shutdown (void) {
 	if(!inited)
 		return;
 	stopping = true;
+	// The worker ends at its next look. One stuck in IOS is left behind: it
+	// may still finish its call, then closes its own device and takes no slot,
+	// since it sees stopping.
+	for(t = 0; t < 200 && !worker_done; t++)
+		usleep (1000);
+	if(worker_done && worker != LWP_THREAD_NULL)
+		LWP_JoinThread (worker, NULL);
+	worker = LWP_THREAD_NULL;
 	for(i = 0; i < KBD_MAX; i++) {
 		if(kbds[i].state == KBD_FREE)
 			continue;
@@ -216,8 +276,7 @@ void keyboard_scan (void) {
 
 	if(!inited)
 		return;
-	if(frames++ % LOOK_FRAMES == 0)
-		kbd_look ();
+	frames++;	// new keyboards: kbd_worker looks every LOOK_FRAMES frames' time
 
 	memset (keys_now, 0, sizeof(keys_now));
 	_CPU_ISR_Disable (level);

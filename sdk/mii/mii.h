@@ -43,7 +43,7 @@
  *     whole set survives an interruption. A Remote whose copies are both broken
  *     reads as MII_E_FORMAT, never as an empty set to write over.
  *
- * docs/mii.md has the formats, their sources and the proof on a Wii. This
+ * docs/mii/README.md has the formats, their sources and the proof on a Wii. This
  * file and mii.c are in the public domain: copy them into your project.
  */
 
@@ -57,7 +57,7 @@
 extern "C" {
 #endif
 
-#define MII_VERSION "1.1.0"      /* sdk/mii, as of HBC 1.10.13 */
+#define MII_VERSION "1.1.1"      /* sdk/mii's data API; 1.1.1 (HBC 1.11.0): a failed MAC lookup is asked again */
 
 enum {
 	MII_OK = 0,

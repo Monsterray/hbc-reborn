@@ -834,7 +834,8 @@ static void file_remove(s32 s, const char *path, u8 flags, devfile_change_fn cha
 	const char *pattern = NULL;
 	bool recursive = flags & DEVNET_FLAG_RECURSIVE;
 	u32 matches = 0;
-	u8 out[4];
+	u8 out[8];
+	bool deleting = false;
 	s32 err;
 
 	parent[0] = 0;
@@ -876,11 +877,19 @@ static void file_remove(s32 s, const char *path, u8 flags, devfile_change_fn cha
 		err = -ENOENT;
 	if (!err) {
 		devfile_last.st.size = rm_total;   // the circle fills from here
+		deleting = true;
 		err = rm_pass(RM_DELETE, parent, pattern, path, recursive, changed, NULL);
 	}
 	gprintf("devnet: E %s: %d, %u deleted\n", path, err, (unsigned) rm_done);
 	put_u32(out, rm_done);
-	devfile_reply(s, err, err ? NULL : out, err ? 0 : sizeof(out));
+	put_u32(out + 4, rm_total);
+	// Success: u32 deleted (a client reads 4 bytes, or 8 with the total). A
+	// failure after deleting began also carries both, so the client can say how
+	// far it got; a failure before that (nothing deleted) has no payload.
+	if (!err)
+		devfile_reply(s, 0, out, 4);
+	else
+		devfile_reply(s, err, deleting ? out : NULL, deleting ? sizeof(out) : 0);
 }
 
 // Read and drop n bytes the client sent after the request (op R's

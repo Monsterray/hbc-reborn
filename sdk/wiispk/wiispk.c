@@ -64,7 +64,7 @@ static bool plausible(const void *p) {
 
 static struct wiimote_t **locate_remotes(void) {
 #ifndef GEKKO
-	return NULL;    // a host build (tests/wiispk_host) has no remotes
+	return NULL;    // a host build (tests/host/wiispk_host) has no remotes
 #else
 	const u32 *op = (const u32 *) WPAD_Rumble;
 	register u32 sda asm("r13");

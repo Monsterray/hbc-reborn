@@ -30,6 +30,14 @@ void netrecovery_ready(void) {
 	_CPU_ISR_Restore(level);
 }
 
+void netrecovery_ready_unless(const volatile bool *restart) {
+	u32 level;
+	_CPU_ISR_Disable(level);
+	if (!*restart)
+		requested = false;
+	_CPU_ISR_Restore(level);
+}
+
 static void cleanup_begin(u32 timeout_ms) {
 	u32 level;
 	_CPU_ISR_Disable(level);

@@ -44,6 +44,7 @@ korean-key
 /channel/title/*/tmd
 /channel/title/title.stamp
 /channel/channelapp/title_id.h
+/channel/channelapp/build_tag.h
 
 # Host tools
 /channel/wiiload/wiiload
@@ -71,8 +72,11 @@ venv/
 Thumbs.db
 desktop.ini
 
-# Overlay preview renders (tests/overlay_preview/preview.py)
-/tests/overlay_preview/out/
+# Wiki pages built by tools/wiki.py
+/build/
+
+# Overlay preview renders (tests/host/overlay_preview/preview.py)
+/tests/host/overlay_preview/out/
 
 # --- wii-bench: the lease server's history on the homeserver ------------
 /tools/wii-bench/history/

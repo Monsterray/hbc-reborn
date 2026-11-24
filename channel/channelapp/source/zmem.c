@@ -1,5 +1,5 @@
 // A MEM1 arena for zlib state. zlib's window and hash tables are hot,
-// random-access data: on a Wii (tests/membench) inflate ran 25% faster and
+// random-access data: on a Wii (tests/apps/membench) inflate ran 25% faster and
 // level 1 deflate 14% faster with their state in MEM1 than in MEM2. By the
 // time a transfer starts, the menu has filled MEM1 and the heap hands out
 // MEM2, so the arena is reserved at startup. One stream owns it at a time;

@@ -13,7 +13,10 @@ typedef struct {
 
 typedef enum {
 	GFXT_RGBA8,
-	GFXT_A8
+	GFXT_A8,
+	// Alpha only, like GFXT_A8 (the entity colour tints it), but a picture:
+	// bilinear, and its width is in view units like an RGBA8 texture's.
+	GFXT_I8
 } gfx_tex_type;
 
 typedef enum {

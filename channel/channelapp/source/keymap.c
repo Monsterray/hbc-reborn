@@ -1,5 +1,5 @@
 // A USB keyboard's keys as a Wii Remote's buttons (keymap.h). No libogc here
-// beyond the button values, so tests/test_keymap.py runs it on a PC.
+// beyond the button values, so tests/host/test_keymap.py runs it on a PC.
 
 #include <wiiuse/wpad.h>
 

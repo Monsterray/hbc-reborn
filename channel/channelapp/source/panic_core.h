@@ -2,9 +2,9 @@
 // walk may read, the backtrace, what a fault's registers say, the crash block
 // HBC leaves for `hbc.py crash`. No libogc, no heap, no newlib: the crash screen
 // runs inside an exception, where a held lock or a corrupt heap must not matter.
-// tests/panic_host/test.c runs this file on the PC.
+// tests/host/panic_host/test.c runs this file on the PC.
 //
-// Include after <gctypes.h> and sdk/hbc_agent.h.
+// Include after <gctypes.h> and sdk/hbc_agent/hbc_agent.h.
 
 #ifndef PANIC_CORE_H
 #define PANIC_CORE_H

@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -47,15 +48,23 @@ static void unlock(void) {}
 
 static const char dir_name[] = "hbc";
 static const char file_name[] = "apps_seen.txt";
+static const char missed_word[] = "missed";
 static const char *tracked[] = { "boot.dol", "boot.elf", "meta.xml", "icon.png" };
 #define TRACKED_COUNT (sizeof(tracked) / sizeof(tracked[0]))
 #define MAX_RECORDS 4096
 #define LINE_MAX_LEN 1024
+#define META_INDEX 2	// "meta.xml" in tracked[]
+#define META_MAX 65536
 
 typedef struct {
 	unsigned present;
 	uint64_t size;
 	int64_t modified;
+	// meta.xml only: a hash of its text without <sort_id> (meta_hash). Set
+	// when the file was small enough to read. A line written by an older HBC
+	// has none: that file is then judged by size and time.
+	unsigned has_hash;
+	uint32_t hash;
 } file_stamp;
 
 typedef struct {
@@ -66,6 +75,9 @@ typedef struct {
 	char *name;
 	app_stamp stamp;
 	bool seen;
+	// Not seen by the last scan that ended whole. A second such scan in a
+	// row prunes the record; one miss may be a directory read error.
+	bool missed;
 } record;
 
 static record *records;
@@ -74,7 +86,8 @@ static char table_root[PATH_MAX];
 // table_readable: the file was read to its end, or there was none. After
 // any other failure (EIO, a card pulled while reading) the table is only
 // part of the file: never write it back, nor prune from it.
-static bool table_dirty, table_open, table_readable;
+// table_missing: the file read as "not found" (ENOENT), the table is empty.
+static bool table_dirty, table_open, table_readable, table_missing;
 
 static void table_free(void) {
 	size_t i;
@@ -87,6 +100,7 @@ static void table_free(void) {
 	table_dirty = false;
 	table_open = false;
 	table_readable = false;
+	table_missing = false;
 }
 
 static record *table_find(const char *name) {
@@ -117,6 +131,7 @@ static record *table_add(const char *name, const app_stamp *stamp) {
 		return NULL;
 	r->stamp = *stamp;
 	r->seen = false;
+	r->missed = false;
 	record_count++;
 	return r;
 }
@@ -132,6 +147,58 @@ static bool app_file_path(char *out, size_t size, const char *root, const char *
 	int n = snprintf(out, size, "%s/apps/%s/%s", root, name, file);
 
 	return n > 0 && (size_t) n < size;
+}
+
+static bool is_space(char c) {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+// FNV-1a over meta.xml with every <sort_id>...</sort_id> removed (hbc.py order
+// and the Custom order rewrite it) and without the white space around tags, so
+// a reorder leaves the hash alone and any other edit changes it.
+static bool meta_hash(const char *path, uint32_t *out) {
+	FILE *f = fopen(path, "rb");
+	char *b, *at, *end;
+	size_t n, i, j;
+	uint32_t h = 2166136261u;
+
+	if (!f)
+		return false;
+	b = malloc(META_MAX + 1);
+	if (!b) {
+		fclose(f);
+		return false;
+	}
+	n = fread(b, 1, META_MAX + 1, f);
+	if (ferror(f) || n > META_MAX) {
+		fclose(f);
+		free(b);
+		return false;
+	}
+	fclose(f);
+	b[n] = 0;
+	while ((at = strstr(b, "<sort_id>")) && (end = strstr(at, "</sort_id>"))) {
+		end += strlen("</sort_id>");
+		memmove(at, end, n - (size_t) (end - b));
+		n -= (size_t) (end - at);
+		b[n] = 0;
+	}
+	for (i = 0; i < n; i = j) {
+		if (is_space(b[i])) {
+			for (j = i; j < n && is_space(b[j]); ++j)
+				;
+			if (!i || b[i - 1] == '>' || j == n || b[j] == '<')
+				continue;
+			for (; i < j; ++i)
+				h = (h ^ (unsigned char) b[i]) * 16777619u;
+			continue;
+		}
+		h = (h ^ (unsigned char) b[i]) * 16777619u;
+		j = i + 1;
+	}
+	free(b);
+	*out = h;
+	return true;
 }
 
 static bool snapshot(const char *root, const char *name, app_stamp *stamp) {
@@ -153,6 +220,8 @@ static bool snapshot(const char *root, const char *name, app_stamp *stamp) {
 		stamp->files[i].present = 1;
 		stamp->files[i].size = st.st_size;
 		stamp->files[i].modified = st.st_mtime;
+		if (i == META_INDEX)
+			stamp->files[i].has_hash = meta_hash(path, &stamp->files[i].hash);
 	}
 	// A launch needs an executable; don't create history for an
 	// incomplete installation or a folder that vanished.
@@ -164,14 +233,22 @@ static bool same_stamp(const app_stamp *a, const app_stamp *b) {
 
 	for (i = 0; i < TRACKED_COUNT; ++i) {
 		const file_stamp *x = &a->files[i], *y = &b->files[i];
-		if (x->present != y->present || x->size != y->size || x->modified != y->modified)
+		if (x->present != y->present)
+			return false;
+		if (i == META_INDEX && x->has_hash && y->has_hash) {
+			if (x->hash != y->hash)
+				return false;
+			continue;
+		}
+		if (x->size != y->size || x->modified != y->modified)
 			return false;
 	}
 	return true;
 }
 
-// "<name>\tboot.dol=SIZE@TIME boot.elf=- meta.xml=SIZE@TIME icon.png=SIZE@TIME"
-static bool parse_line(char *line, char **name, app_stamp *stamp) {
+// "<name>\tboot.dol=SIZE@TIME boot.elf=- meta.xml=h:HEX8 icon.png=SIZE@TIME[ missed]"
+// (meta.xml=SIZE@TIME is the older form; see apprun.h)
+static bool parse_line(char *line, char **name, app_stamp *stamp, bool *missed) {
 	char *tab = strchr(line, '\t'), *p;
 	unsigned i;
 
@@ -193,6 +270,19 @@ static bool parse_line(char *line, char **name, app_stamp *stamp) {
 		p += len + 1;
 		if (*p == '-') {
 			p++;
+		} else if (i == META_INDEX && p[0] == 'h' && p[1] == ':') {
+			char *e;
+			unsigned long v;
+
+			p += 2;
+			if (!isxdigit((unsigned char) *p))
+				return false;
+			v = strtoul(p, &e, 16);
+			if (e - p != 8)
+				return false;
+			p = e;
+			s->present = s->has_hash = 1;
+			s->hash = (uint32_t) v;
 		} else {
 			if (sscanf(p, "%" SCNu64 "@%" SCNd64 "%n", &s->size, &s->modified, &used) != 2)
 				return false;
@@ -204,7 +294,8 @@ static bool parse_line(char *line, char **name, app_stamp *stamp) {
 	}
 	while (*p == ' ')
 		p++;
-	return *p == 0;
+	*missed = !strcmp(p, missed_word);
+	return *p == 0 || *missed;
 }
 
 static void table_load(const char *root) {
@@ -224,12 +315,15 @@ static void table_load(const char *root) {
 	}
 	if (!f) {
 		table_readable = errno == ENOENT;
+		table_missing = table_readable;
 		return;
 	}
 	while (record_count < MAX_RECORDS && fgets(line, sizeof(line), f)) {
 		size_t len = strlen(line);
 		char *name;
 		app_stamp stamp;
+		bool missed;
+		record *added;
 
 		if (len && line[len - 1] == '\n') {
 			line[--len] = 0;
@@ -242,9 +336,10 @@ static void table_load(const char *root) {
 				;
 			continue;
 		}
-		if (line[0] == '#' || !parse_line(line, &name, &stamp) || table_find(name))
+		if (line[0] == '#' || !parse_line(line, &name, &stamp, &missed) || table_find(name))
 			continue;
-		table_add(name, &stamp);
+		if ((added = table_add(name, &stamp)))
+			added->missed = missed;
 	}
 	table_readable = !ferror(f) && (feof(f) || record_count == MAX_RECORDS);
 	fclose(f);
@@ -265,12 +360,19 @@ static bool table_write(void) {
 			!file_path(backup, sizeof(backup), table_root, ".bak") ||
 			snprintf(dir, sizeof(dir), "%s/%s", table_root, dir_name) >= (int) sizeof(dir))
 		return false;
+	// libfat turns a sector read error during the path lookup into ENOENT, so
+	// "not found" at load can be a file that is there. Writing this empty
+	// table over it would erase every app's history (and mark all "New").
+	if (table_missing && (!stat(path, &st) || !stat(backup, &st)))
+		return false;
 	if (MKDIR(dir) && errno != EEXIST)
 		return false;
 	if (!(f = fopen(part, "wb")))
 		return false;
 	ok = fputs("# HBC app badges: one app folder per line, then the size@modified time of\n"
-			"# its files at the last run from HBC. Delete this file to start over.\n", f) >= 0;
+			"# its files at the last run from HBC (meta.xml: a hash of its text without\n"
+			"# <sort_id>, h:HEX8; an older meta.xml=SIZE@TIME is judged by size and time\n"
+			"# until the app's next run). Delete this file to start over.\n", f) >= 0;
 	for (r = 0; ok && r < record_count; ++r) {
 		const record *rec = &records[r];
 
@@ -278,12 +380,16 @@ static bool table_write(void) {
 		for (i = 0; ok && i < TRACKED_COUNT; ++i) {
 			const file_stamp *s = &rec->stamp.files[i];
 
-			if (s->present)
+			if (s->present && s->has_hash)
+				ok = fprintf(f, "%s%s=h:%08" PRIx32, i ? " " : "", tracked[i], s->hash) > 0;
+			else if (s->present)
 				ok = fprintf(f, "%s%s=%" PRIu64 "@%" PRId64, i ? " " : "", tracked[i],
 						s->size, s->modified) > 0;
 			else
 				ok = fprintf(f, "%s%s=-", i ? " " : "", tracked[i]) > 0;
 		}
+		if (ok && rec->missed)
+			ok = fprintf(f, " %s", missed_word) > 0;
 		ok = ok && fputc('\n', f) != EOF;
 	}
 	if (fclose(f))
@@ -340,16 +446,24 @@ void app_run_end(bool complete) {
 	size_t i, kept = 0;
 
 	if (table_open && complete && table_readable) {
+		// libfat's readdir shows a read error as the end of the folder, which
+		// no flag can tell from a whole scan. So a record goes only after two
+		// whole scans in a row missed it (the flag is kept in the file).
 		for (i = 0; i < record_count; ++i) {
-			if (records[i].seen)
-				records[kept++] = records[i];
-			else
-				free(records[i].name);
+			record *r = &records[i];
+
+			if (!r->seen && r->missed) {
+				free(r->name);
+				table_dirty = true;
+				continue;
+			}
+			if (r->seen == r->missed) {	// seen after a miss, or missed the first time
+				r->missed = !r->seen;
+				table_dirty = true;
+			}
+			records[kept++] = *r;
 		}
-		if (kept != record_count) {
-			record_count = kept;
-			table_dirty = true;
-		}
+		record_count = kept;
 		if (table_dirty)
 			table_write();
 	}
@@ -413,8 +527,10 @@ bool app_run_record(const char *boot_path) {
 	if (!r) {
 		ok = (r = table_add(name, &current)) != NULL;
 		table_dirty = ok;
-	} else if (!same_stamp(&r->stamp, &current)) {
+	} else if (!same_stamp(&r->stamp, &current) || r->missed ||
+			(current.files[META_INDEX].has_hash && !r->stamp.files[META_INDEX].has_hash)) {
 		r->stamp = current;
+		r->missed = false;
 		table_dirty = true;
 	}
 	if (ok && table_dirty)
@@ -422,4 +538,51 @@ bool app_run_record(const char *boot_path) {
 	table_free();
 	unlock();
 	return ok;
+}
+
+// Does a network upload (HBCA caption "<name>/boot.dol" or boot.elf) hold the
+// very bytes of the installed app <root>/apps/<name>/<file>? Then the run is
+// that app's: boot_path gets the path for app_run_record. Size first, then
+// the content. Anything else (a loose file, another build) is not recorded.
+bool app_run_match_upload(const char *root, const char *caption, const void *data,
+		size_t len, char *boot_path, size_t boot_size) {
+	char name[NAME_MAX + 1], path[PATH_MAX], buf[1024];
+	const char *slash = caption ? strrchr(caption, '/') : NULL, *file;
+	const unsigned char *d = data;
+	struct stat st;
+	FILE *f;
+	size_t off = 0, n, nlen;
+	bool same = true;
+
+	if (!slash || slash == caption)
+		return false;
+	file = slash + 1;
+	if (!strcasecmp(file, "boot.dol"))
+		file = tracked[0];
+	else if (!strcasecmp(file, "boot.elf"))
+		file = tracked[1];
+	else
+		return false;
+	nlen = (size_t) (slash - caption);
+	if (nlen >= sizeof(name) || memchr(caption, '/', nlen) || memchr(caption, '\\', nlen) ||
+			memchr(caption, ':', nlen) || memchr(caption, '\t', nlen) ||
+			(nlen == 1 && caption[0] == '.') || (nlen == 2 && !strncmp(caption, "..", 2)))
+		return false;
+	memcpy(name, caption, nlen);
+	name[nlen] = 0;
+	if (!app_file_path(path, sizeof(path), root, name, file) || stat(path, &st) ||
+			!S_ISREG(st.st_mode) || (uint64_t) st.st_size != len)
+		return false;
+	if (!(f = fopen(path, "rb")))
+		return false;
+	while (same && off < len) {
+		n = fread(buf, 1, len - off < sizeof(buf) ? len - off : sizeof(buf), f);
+		if (!n || memcmp(buf, d + off, n))
+			same = false;
+		off += n;
+	}
+	fclose(f);
+	if (!same || snprintf(boot_path, boot_size, "%s", path) >= (int) boot_size)
+		return false;
+	return true;
 }

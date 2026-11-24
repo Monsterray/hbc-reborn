@@ -6,7 +6,7 @@
  * The layouts are the NW4R formats as BrawlBox and others document them,
  * checked against the Mii Channel's own files; the per-bone scale for
  * height and build follows Nintendo's later Mii libraries
- * (docs/research/mii-bodies.md). The files are the user's own copies.
+ * (docs/mii/bodies.md). The files are the user's own copies.
  */
 
 #include <errno.h>

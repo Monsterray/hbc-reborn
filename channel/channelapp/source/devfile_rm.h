@@ -2,7 +2,7 @@
 #define _DEVFILE_RM_H_
 
 // Pure helpers of the tree delete (HBCF op 'E', docs/devnet.md), kept apart
-// from devfile.c so tests/test_devfile_rm.py can compile them on the PC.
+// from devfile.c so tests/host/test_devfile_rm.py can compile them on the PC.
 
 #include <stdbool.h>
 #include <string.h>

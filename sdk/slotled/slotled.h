@@ -21,8 +21,10 @@
  *     ...
  *     slotled_shutdown();                // before exit: back as it was
  *
- * Every direct call returns at once; the effect runs from the timer. A
- * new effect replaces the one running. Levels are perceived brightness:
+ * Every direct call returns at once (except slotled_wait), and the effect
+ * runs from the timer. A new effect replaces the one running; a call that
+ * fails leaves it running. Steps last whole 4 ms periods: a step shorter
+ * than that may not show. Levels are perceived brightness:
  * 128 looks about half as bright as 255 (the duty cycle is level squared).
  *
  * The IOS calls and the direct calls drive the same pin. While a direct
@@ -51,6 +53,7 @@ extern "C" {
 #define SLOTLED_MAX 255             /* full brightness */
 #define SLOTLED_PERIOD_US 4000      /* one modulation period: 250 Hz */
 #define SLOTLED_MAX_STEPS 512       /* steps the builders can make */
+#define SLOTLED_MAX_PLAY 4096       /* steps slotled_play takes */
 
 /* Slot illumination, for the IOS level and the saved setting. */
 enum {
@@ -116,8 +119,9 @@ int slotled_heartbeat(int level, uint32_t period_ms, uint32_t count);
  * Returns the characters sent, or an error. */
 int slotled_morse(const char *text, int level, uint32_t unit_ms, uint32_t count);
 
-/* Plays your steps. They are read while it plays: keep them until
- * slotled_busy() is false or another effect replaces them. */
+/* Plays your steps (at most SLOTLED_MAX_PLAY). They are read while it
+ * plays: keep them until slotled_busy() is false or another effect
+ * replaces them. */
 int slotled_play(const slotled_effect *effect);
 
 /* `level` for `ms` over whatever is running, which carries on beneath it
@@ -125,10 +129,11 @@ int slotled_play(const slotled_effect *effect);
  * activity, call it on each transfer. */
 int slotled_flash(int level, uint32_t ms);
 
-/* Whether a finite effect, or a flash, is still running. */
+/* Whether an effect, or a flash, is still running. An effect with count 0
+ * runs until it is replaced, so it is always busy. */
 int slotled_busy(void);
 
-/* Waits until slotled_busy() is false. */
+/* Waits until slotled_busy() is false: never, while a count-0 effect runs. */
 void slotled_wait(void);
 
 /* ---- Through IOS ------------------------------------------------------- */

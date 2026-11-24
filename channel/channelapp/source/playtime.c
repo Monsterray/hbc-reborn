@@ -4,7 +4,7 @@
 // the Message Board at its next start. HBC spoils that record, as it always
 // has: one record cannot tell HBC from the apps it runs. Instead HBC logs
 // each session itself, straight into the Message Board's play log in
-// cdb.vff (sdk/mboard's mboard_play_vff(), docs/messageboard.md): its own time in the menu, and
+// cdb.vff (sdk/mboard's mboard_play_vff(), docs/mboard/play-log.md): its own time in the menu, and
 // each app it launched, timed from the launch to HBC's return. A pending
 // launch is kept in HBC's data folder so it survives the app.
 //
@@ -24,6 +24,7 @@
 #include "../config.h"
 #include "mboard.h"
 #include "devnet.h"
+#include "bootlog.h"
 #include "isfs.h"
 #include "nandperm.h"
 #include "playtime.h"
@@ -223,7 +224,9 @@ static void *playtime_func(void *arg) {
 	state st;
 
 	(void) arg;
-	devnet_boot_mark(playtime_clear(&from_menu, &menu_start) ? "playtime_cleared" : "playtime_failed");
+	bootlog_thread("play");
+	devnet_boot_mark(BOOTLOG("playtime_clear (NAND)", playtime_clear(&from_menu, &menu_start)) ?
+					 "playtime_cleared" : "playtime_failed");
 	session_start = from_menu ? menu_start : hbc_boot;
 
 	// An app HBC launched: back through HBC's reload stub, it ran until this

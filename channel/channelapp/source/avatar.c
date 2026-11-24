@@ -43,6 +43,7 @@
 #include "mii.h"
 #include "miidraw.h"
 #include "avatar.h"
+#include "bootlog.h"
 #include "fpurelease.h"
 #include "poison.h"
 
@@ -153,6 +154,7 @@ static void *loader_body(void *arg) {
 	char name[MII_NAME_UTF8_MAX + 1];
 
 	(void) arg;
+	bootlog_thread("avatar");
 	// HBC mounts its devices as it starts: while the card is not mounted yet,
 	// try for a minute. A mounted card without the file (no Save Mii faces
 	// yet) is an answer, not a wait. Every sleep checks for avatar_deinit,
@@ -162,7 +164,7 @@ static void *loader_body(void *arg) {
 		int k;
 
 		app_entry_mount_for(MII_RES_PATH);
-		r = mii_res_load(&res, NULL);
+		r = BOOTLOG("mii_res_load", mii_res_load(&res, NULL));
 		if ((r != MII_E_NO_FILE && r != MII_E_IO) || stat("sd:/", &st) == 0)
 			break;
 		for (k = 0; k < 20 && !stopping; ++k)

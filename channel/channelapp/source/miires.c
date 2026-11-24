@@ -1,5 +1,5 @@
 // "Save Mii faces": copies the Wii's own Mii models to sd:/mii for apps that
-// draw Miis (docs/research/mii-rendering.md, docs/research/mii-bodies.md,
+// draw Miis (docs/mii/rendering.md, docs/mii/bodies.md,
 // sdk/mii): the faces, RFL_Res.dat, from the Wii Menu, and the bodies,
 // maleBody.brres and femaleBody.brres, with its effects (effect_nigaoe.breff
 // and .breft, 1.12.2), from the Mii Channel. The files are
@@ -9,7 +9,7 @@
 // Both titles keep them in U8 archives inside their content files, and an
 // app cannot read any of them: ES_OpenTitleContent refuses another title's
 // contents (-1026), and ISFS refuses /shared1 and the titles' content
-// folders (-102), as tests/mii_res_probe showed on the bench Wii. So HBC
+// folders (-102), as tests/apps/mii_res_probe showed on the bench Wii. So HBC
 // lifts IOS's NAND permission check for the reads (nandperm.c, as for the
 // play log), reads only what it needs of each content (the U8 header and
 // node table, then the one file) and puts the check back.
