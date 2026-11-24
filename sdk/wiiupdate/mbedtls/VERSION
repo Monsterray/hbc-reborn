@@ -1,0 +1,2 @@
+Mbed TLS 3.6.7 (https://github.com/Mbed-TLS/mbedtls, tag mbedtls-3.6.7)
+Only include/ and library/ are kept, unchanged; LICENSE is the upstream one.

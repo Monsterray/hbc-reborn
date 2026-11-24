@@ -26,6 +26,7 @@ typedef struct {
 	int progress_arc;   // settings.progress_arc
 	int edge_paging;    // settings.edge_paging
 	int new_badges;     // settings.new_badges
+	int check_updates; // settings.check_updates (update.c)
 } dialog_options_result;
 
 extern u16 width_dialog, height_dialog;
