@@ -1,8 +1,6 @@
 #include <string.h>
 #include <gccore.h>
 #include <ogc/machine/processor.h>
-#include <tuxedo/ppc/exception.h>
-#include <tuxedo/thread.h>
 #include <ogc/lwp_watchdog.h>
 
 #include "gfx.h"
@@ -13,6 +11,19 @@
 #include "panic_core.h"
 
 #include "panic.h"
+
+// The exception numbers of tuxedo (libogc 3), which this screen and
+// panic_core.h count in: libogc2's EX_* plus one (its first is the system reset).
+enum {
+	PPC_EXCPT_RESET = 1, PPC_EXCPT_MCHK, PPC_EXCPT_DSI, PPC_EXCPT_ISI, PPC_EXCPT_IRQ,
+	PPC_EXCPT_ALIGN, PPC_EXCPT_UNDEF, PPC_EXCPT_FPU, PPC_EXCPT_DECR, PPC_EXCPT_SYSCALL,
+	PPC_EXCPT_TRACE, PPC_EXCPT_PM, PPC_EXCPT_BKPT,
+};
+
+// What the screen shows of a libogc2 frame_context.
+typedef struct {
+	u32 pc, msr, lr, cr, ctr, xer, gpr[32];
+} PPCContext;
 
 // steal from libogc
 extern unsigned char console_font_8x16[];
@@ -350,8 +361,8 @@ static void hbc_exception_screen(unsigned exid, PPCContext *ctx)
 	}
 
 	if (exid == PPC_EXCPT_DSI || exid == PPC_EXCPT_ALIGN) {
-		dar = mfspr(DAR);
-		dsisr = mfspr(DSISR);
+		dar = mfspr(19)  /* DAR */;
+		dsisr = mfspr(18)  /* DSISR */;
 	}
 	frames[0] = ctx->lr;
 	nframes = 1 + panic_backtrace(ctx->gpr[1], frames + 1, MAX_FRAMES - 1, rd32);
@@ -362,7 +373,7 @@ static void hbc_exception_screen(unsigned exid, PPCContext *ctx)
 	info.cr = ctx->cr; info.ctr = ctx->ctr; info.sp = ctx->gpr[1];
 	info.dar = dar; info.dsisr = dsisr;
 	info.uptime_ms = (u32) ((gettime() - start_time) / (TB_PER_S / 1000));
-	info.thread = (u32) KThreadGetSelf();
+	info.thread = (u32) LWP_GetSelf();
 	info.app = "HBC " CHANNEL_BUILD_STR;
 	info.frames = frames; info.nframes = nframes;
 	// HBC crashed soon after its start last time too: the System Menu, not
@@ -472,15 +483,29 @@ static void hbc_exception_screen(unsigned exid, PPCContext *ctx)
 	}
 }
 
+// libogc2 has no panic hook: its default handler calls c_default_exceptionhandler
+// (wrapped at link time, -Wl,--wrap=c_default_exceptionhandler in the Makefile),
+// which never returns here. Until panic_install_exception_screen the default
+// is on, so a crash before main() gets this screen too.
+extern void __real_c_default_exceptionhandler(frame_context *fc);
+static int screen_on = 1;
+
+void __wrap_c_default_exceptionhandler(frame_context *fc)
+{
+	PPCContext c;
+	int i;
+
+	if (!screen_on)
+		__real_c_default_exceptionhandler(fc);
+	c.pc = fc->srr0; c.msr = fc->srr1; c.lr = fc->lr; c.cr = fc->cr;
+	c.ctr = fc->ctr; c.xer = fc->xer;
+	for (i = 0; i < 32; i++)
+		c.gpr[i] = fc->gpr[i];
+	hbc_exception_screen(fc->nExcept + 1, &c);
+}
+
 void panic_install_exception_screen(void)
 {
 	start_time = gettime();
-	PPCExcptCurPanicFn = hbc_exception_screen;
-}
-
-// libogc's weak one installs libogc's own screen. A crash before main() gets here.
-void __SYS_InstallPanicHandler(void)
-{
-	start_time = gettime();
-	PPCExcptCurPanicFn = hbc_exception_screen;
+	screen_on = 1;
 }

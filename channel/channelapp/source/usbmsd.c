@@ -464,7 +464,8 @@ static s32 open_drive(drive *d, s32 device_id, u16 vid, u16 pid) {
 
 // ---- The disc interfaces -----------------------------------------------------
 
-static bool startup(void) {
+static bool startup(DISC_INTERFACE *disc) {
+	(void) disc;
 	u32 level, i;
 	u8 *mem;
 
@@ -611,7 +612,8 @@ static bool write_sectors(int slot, sec_t sector, sec_t n, const void *buffer) {
 	return d->mounted;
 }
 
-static bool clear_status(void) {
+static bool flush_cache(DISC_INTERFACE *disc) {
+	(void) disc;
 	return true;
 }
 
@@ -623,18 +625,18 @@ static bool shutdown(int slot) {
 
 // libogc 3's disc interfaces take no argument: one set of entry points a slot.
 #define SLOT(n) \
-	static bool inserted##n(void) { return is_inserted(n); } \
-	static bool read##n(sec_t s, sec_t c, void *b) { return read_sectors(n, s, c, b); } \
-	static bool write##n(sec_t s, sec_t c, const void *b) { return write_sectors(n, s, c, b); } \
-	static bool shutdown##n(void) { return shutdown(n); }
+	static bool inserted##n(DISC_INTERFACE *d) { (void) d; return is_inserted(n); } \
+	static bool read##n(DISC_INTERFACE *d, sec_t s, sec_t c, void *b) { (void) d; return read_sectors(n, s, c, b); } \
+	static bool write##n(DISC_INTERFACE *d, sec_t s, sec_t c, const void *b) { (void) d; return write_sectors(n, s, c, b); } \
+	static bool shutdown##n(DISC_INTERFACE *d) { (void) d; return shutdown(n); }
 SLOT(0)
 SLOT(1)
 
 DISC_INTERFACE usbmsd_disc[USBMSD_DRIVES] = {
 	{ DEVICE_TYPE_WII_USB, FEATURE_MEDIUM_CANREAD | FEATURE_MEDIUM_CANWRITE | FEATURE_WII_USB,
-	  startup, inserted0, read0, write0, clear_status, shutdown0 },
+	  startup, inserted0, read0, write0, NULL, flush_cache, shutdown0, 0, 0, 512 },
 	{ DEVICE_TYPE_WII_USB, FEATURE_MEDIUM_CANREAD | FEATURE_MEDIUM_CANWRITE | FEATURE_WII_USB,
-	  startup, inserted1, read1, write1, clear_status, shutdown1 },
+	  startup, inserted1, read1, write1, NULL, flush_cache, shutdown1, 0, 0, 512 },
 };
 
 int usbmsd_json(char *buf, int size) {

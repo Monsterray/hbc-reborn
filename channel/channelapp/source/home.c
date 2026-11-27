@@ -168,7 +168,7 @@ static bool bootmii_is_installed(u64 title_id) {
 		return false;
 
 	tmdbuf = pmemalign(32, 1024);
-	if (ES_GetTMDView(title_id, (tmd_view *) tmdbuf, tmd_view_size) < 0) {
+	if (ES_GetTMDView(title_id, (u8 *) tmdbuf, tmd_view_size) < 0) {
 		free(tmdbuf);
 		return false;
 	}

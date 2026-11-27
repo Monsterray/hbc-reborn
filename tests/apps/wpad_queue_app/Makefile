@@ -5,9 +5,9 @@ endif
 CC = $(DEVKITPPC)/bin/powerpc-eabi-gcc
 ELF2DOL := $(firstword $(wildcard $(DEVKITPRO)/tools/bin/elf2dol.exe) $(DEVKITPRO)/tools/bin/elf2dol)
 CFLAGS = -g -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall -Wextra $(EXTRA_CFLAGS) \
-	-I$(DEVKITPRO)/libogc/include
+	-I$(DEVKITPRO)/libogc2/wii/include
 LDFLAGS = -mrvl -mcpu=750 -meabi -mhard-float -Wl,-z,noexecstack \
-	-L$(DEVKITPRO)/libogc/lib/wii
+	-L$(DEVKITPRO)/libogc2/wii/lib
 
 # wpad_queue_app.dol is libogc as it is: slots 3 to 5 get no command queue.
 # wpad_queue_app-fixed.dol links the channel's wpadqueue.c, as the channel does.

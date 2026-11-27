@@ -66,7 +66,8 @@ class MemoryLayoutTest(unittest.TestCase):
         nm = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
         end = next(int(l.split()[0], 16) for l in nm.splitlines() if l.endswith(" _end"))
         if end > 0x81700000:
-            self.assertIn("hbc_exception_screen", syms, "HBC ends past 0x81700000 without its own crash screen")
+            self.assertTrue("hbc_exception_screen" in syms or "__wrap_c_default_exceptionhandler" in syms,
+                            "HBC ends past 0x81700000 without its own crash screen")
 
     def test_crash_screen_hook_is_set_first(self):
         # A fault before the video is up (devnet, zmem, audio) went to
@@ -91,11 +92,12 @@ class MemoryLayoutTest(unittest.TestCase):
                          "__Arena1Lo is not the 32-byte aligned end of .bss")
 
     def test_early_panic_handler_is_hbcs(self):
-        # libogc's weak __SYS_InstallPanicHandler installs its own screen; a
-        # crash before main() (static constructors, crt0) must reach HBC's.
+        # libogc2's default exception handler calls c_default_exceptionhandler,
+        # which the link wraps (-Wl,--wrap=c_default_exceptionhandler); a crash
+        # before main() (static constructors, crt0) must reach HBC's screen.
         out = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
         kinds = {line.split()[2]: line.split()[1] for line in out.splitlines() if len(line.split()) == 3}
-        self.assertEqual(kinds.get("__SYS_InstallPanicHandler"), "T", "HBC's strong __SYS_InstallPanicHandler is missing")
+        self.assertEqual(kinds.get("__wrap_c_default_exceptionhandler"), "T", "HBC's wrapped c_default_exceptionhandler is missing")
 
     def test_small_data_base_is_the_section_start(self):
         nm = subprocess.run([NM, str(ELF)], capture_output=True, text=True, check=True).stdout
@@ -112,7 +114,7 @@ class MemoryLayoutTest(unittest.TestCase):
         self.assertTrue(0 <= unit < 2048, f"Unit01 is {unit} bytes past _SDA_BASE_, out of psq_l's reach")
         dis = subprocess.run([OBJDUMP, "-d", str(ELF)], capture_output=True, text=True, check=True).stdout
         loads = [line.strip() for line in dis.splitlines() if "psq_" in line and "(r13)" in line]
-        self.assertTrue(loads, "no psq_l through r13: ps_guMtxConcat not linked?")
+        # libogc2's guMtxConcat is plain C: no psq_l to check unless it is linked.
         for line in loads:
             offset, w, i = line.split()[-1].replace("(r13)", "").split(",")[1:4]
             self.assertEqual((int(offset), int(w), int(i)), (unit, 0, 0), f"psq through r13 off: {line}")

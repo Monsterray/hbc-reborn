@@ -20,6 +20,9 @@ AR = $(PREFIX)ar
 
 HBC_SRC = ../../channel/channelapp/source
 OGC ?= libogc
+# The default build is libogc2 (Extrems' fork), installed under libogc2/wii; OGC=libogc2
+# and OGC=libogc-1.8.23 name older libraries kept flat under $(DEVKITPRO).
+OGC_DIR = $(if $(filter libogc,$(OGC)),libogc2/wii,$(OGC))
 ifeq ($(OGC),libogc)
 OUT = libhbcagent.a
 BUILD = build
@@ -31,7 +34,7 @@ endif
 CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall $(EXTRA_CFLAGS) \
 	-DDEVSTREAM_SLOTS=2 -DDEVSTREAM_WORKER_STACK=16384 \
 	-I$(HBC_SRC) -I.. \
-	-I$(DEVKITPRO)/$(OGC)/include -I$(DEVKITPRO)/portlibs/ppc/include
+	-I$(DEVKITPRO)/$(OGC_DIR)/include -I$(DEVKITPRO)/portlibs/ppc/include
 
 SRC = agent.c safety.c way_out.c alloc_wrap.c info.c ogc_exc.S overlay.c ov_ui.c ov_draw.c ../wiispk/wiispk.c $(HBC_SRC)/devfile.c $(HBC_SRC)/devstream.c $(HBC_SRC)/tcp.c $(HBC_SRC)/discover.c $(HBC_SRC)/zmem.c
 OBJ = $(addprefix $(BUILD)/,$(notdir $(patsubst %.S,%.o,$(SRC:.c=.o))))

@@ -25,7 +25,7 @@
 
 typedef struct {
 	const char *name;
-	const DISC_INTERFACE *device;
+	DISC_INTERFACE *device;
 	bool last_status;
 } device_t;
 
@@ -71,15 +71,15 @@ static const char *dev_call(int i, int what) {
 }
 
 static bool dev_startup(int i) {
-	return BOOTLOG(dev_call(i, DEV_STARTUP), devices[i].device->startup());
+	return BOOTLOG(dev_call(i, DEV_STARTUP), devices[i].device->startup(devices[i].device));
 }
 
 static bool dev_inserted(int i) {
-	return BOOTLOG(dev_call(i, DEV_INSERTED), devices[i].device->isInserted());
+	return BOOTLOG(dev_call(i, DEV_INSERTED), devices[i].device->isInserted(devices[i].device));
 }
 
 static void dev_shutdown(int i) {
-	BOOTLOG_VOID(dev_call(i, DEV_SHUTDOWN), devices[i].device->shutdown());
+	BOOTLOG_VOID(dev_call(i, DEV_SHUTDOWN), devices[i].device->shutdown(devices[i].device));
 }
 static app_filter current_filter = APP_FILTER_ALL;
 static app_sort current_sort = APP_SORT_NAME;
@@ -465,7 +465,7 @@ static void probe_fs(int i) {
 	int p, n = 0;
 
 	out[0] = 0;
-	if (!devices[i].device->readSectors(0, 1, sector)) {
+	if (!devices[i].device->readSectors(devices[i].device, 0, 1, sector)) {
 		snprintf(out, sizeof(mount_why[i]), "first sector unreadable");
 		return;
 	}
@@ -478,14 +478,14 @@ static void probe_fs(int i) {
 		return;
 	}
 	// GPT: each partition's file system, by its boot sector's name.
-	if (sector[0x1be + 4] == 0xee && devices[i].device->readSectors(1, 1, sector) &&
+	if (sector[0x1be + 4] == 0xee && devices[i].device->readSectors(devices[i].device, 1, 1, sector) &&
 			!memcmp(sector, "EFI PART", 8)) {
 		static u8 entries[512] ATTRIBUTE_ALIGN(32);
 		u32 lba = le32(sector + 72), size = le32(sector + 84), e;
 
 		n = snprintf(out, sizeof(mount_why[i]), "GPT:");
 		if (size >= 128 && size <= 512 && !(512 % size) &&
-				devices[i].device->readSectors(lba, 1, entries))
+				devices[i].device->readSectors(devices[i].device, lba, 1, entries))
 			for (e = 0; e < 512 / size; ++e) {
 				const u8 *q = entries + e * size;
 				u32 first = le32(q + 32);
@@ -495,7 +495,7 @@ static void probe_fs(int i) {
 					continue;
 				if (!memcmp(q, efi_system, 16))
 					fs = "EFI";
-				else if (!devices[i].device->readSectors(first, 1, sector))
+				else if (!devices[i].device->readSectors(devices[i].device, first, 1, sector))
 					fs = "?";
 				else
 					fs = !memcmp(sector + 3, "NTFS", 4) ? "NTFS" :
@@ -531,10 +531,10 @@ static mutex_t extra_lock = LWP_MUTEX_NULL;
 // its first sector. 512-byte sectors (usbmsd.c offers no others).
 static bool mount_gpt(int i) {
 	static u8 sector[512] ATTRIBUTE_ALIGN(32);
-	const DISC_INTERFACE *d = devices[i].device;
+	DISC_INTERFACE *d = devices[i].device;
 	u32 entries_lba, count, size, e, lba = 0;
 
-	if (!d->readSectors(1, 1, sector) || memcmp(sector, "EFI PART", 8))
+	if (!d->readSectors(d, 1, 1, sector) || memcmp(sector, "EFI PART", 8))
 		return false;
 	entries_lba = le32(sector + 72);   // the high word is 0 below 2 TiB
 	count = le32(sector + 80);
@@ -547,7 +547,7 @@ static bool mount_gpt(int i) {
 
 		if (lba != entries_lba + e * size / 512) {
 			lba = entries_lba + e * size / 512;
-			if (!d->readSectors(lba, 1, sector))
+			if (!d->readSectors(d, lba, 1, sector))
 				return false;
 		}
 		p = sector + e * size % 512;
@@ -560,7 +560,7 @@ static bool mount_gpt(int i) {
 			hlog("Mounted %s: GPT partition %u at sector %u\n", devices[i].name, e + 1, first);
 			return true;
 		}
-		if (lba != entries_lba + e * size / 512 || !d->readSectors(lba, 1, sector))
+		if (lba != entries_lba + e * size / 512 || !d->readSectors(d, lba, 1, sector))
 			return false;   // fatMount used the buffer's sector? reread it
 	}
 	return false;

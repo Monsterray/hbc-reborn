@@ -8,6 +8,10 @@
 #ifndef AGENT_OGC_FLAVOR_H
 #define AGENT_OGC_FLAVOR_H
 
+#ifndef __ASSEMBLER__
+#include <ogc/libversion.h>   /* _LIBOGC2_REVISION_ */
+#endif
+
 #if __has_include(<tuxedo/ppc/exception.h>)
 #define AGENT_TUXEDO 1
 #else

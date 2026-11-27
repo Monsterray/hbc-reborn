@@ -11,8 +11,8 @@ endif
 CC = $(DEVKITPPC)/bin/powerpc-eabi-gcc
 ELF2DOL := $(firstword $(wildcard $(DEVKITPRO)/tools/bin/elf2dol.exe) $(DEVKITPRO)/tools/bin/elf2dol)
 CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall -Wextra $(EXTRA_CFLAGS) \
-	-I.. -I$(DEVKITPRO)/libogc/include
-LDFLAGS = -mrvl -mcpu=750 -meabi -mhard-float -Wl,-z,noexecstack -L$(DEVKITPRO)/libogc/lib/wii
+	-I.. -I$(DEVKITPRO)/libogc2/wii/include
+LDFLAGS = -mrvl -mcpu=750 -meabi -mhard-float -Wl,-z,noexecstack -L$(DEVKITPRO)/libogc2/wii/lib
 
 mii_example.dol: mii_example.elf
 	$(ELF2DOL) $< $@

@@ -14,7 +14,7 @@ CC = $(PREFIX)gcc
 AR = $(PREFIX)ar
 
 CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall -Wextra $(EXTRA_CFLAGS) \
-	-I$(DEVKITPRO)/libogc/include
+	-I$(DEVKITPRO)/libogc2/wii/include
 
 libslotled.a: build/slotled.o
 	rm -f $@

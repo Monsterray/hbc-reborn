@@ -5,9 +5,9 @@ endif
 CC = $(DEVKITPPC)/bin/powerpc-eabi-gcc
 ELF2DOL := $(firstword $(wildcard $(DEVKITPRO)/tools/bin/elf2dol.exe) $(DEVKITPRO)/tools/bin/elf2dol)
 CFLAGS = -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall -Wextra $(EXTRA_CFLAGS) \
-	-I../../../sdk/mboard -I$(DEVKITPRO)/libogc/include -I$(DEVKITPRO)/portlibs/ppc/include
+	-I../../../sdk/mboard -I$(DEVKITPRO)/libogc2/wii/include -I$(DEVKITPRO)/portlibs/ppc/include
 LDFLAGS = -mrvl -mcpu=750 -meabi -mhard-float -Wl,-z,noexecstack \
-	-L$(DEVKITPRO)/libogc/lib/wii -L$(DEVKITPRO)/portlibs/ppc/lib
+	-L$(DEVKITPRO)/libogc2/wii/lib -L$(DEVKITPRO)/portlibs/ppc/lib
 
 mboard_app.dol: mboard_app.elf
 	$(ELF2DOL) $< $@

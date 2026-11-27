@@ -18,6 +18,10 @@
 #include <ogc/libversion.h>
 #include <ogc/machine/processor.h>
 
+#ifdef _LIBOGC2_REVISION_
+/* libogc2 has no tuxedo and no lazy FPU owner in SPRG3: nothing to release. */
+static inline void fpu_release(void) {}
+#else
 #if _V_MAJOR_ != 3 || _V_MINOR_ != 1
 #error "fpu_release reads libogc 3.1's FPU owner (SPRG3): check it for this libogc"
 #endif
@@ -32,5 +36,6 @@ static inline void fpu_release(void) {
 		__asm__ volatile("mtspr 275,%0" : : "r" (0));
 	_CPU_ISR_Restore(level);
 }
+#endif
 
 #endif
