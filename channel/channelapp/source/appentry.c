@@ -46,6 +46,10 @@ const char *app_fn_icon = "icon.png";
 // The order is what settings.xml stores as the preferred device, so a new
 // device goes at the end. Both USB drives come from usbmsd.c: libogc's own
 // driver serves only one.
+// libogc2 deprecates the __io_gcsd[ab] variables for get_io_gcsd[ab](), which a static
+// table cannot call.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 static device_t devices[DEVICE_COUNT] = {
 	{ "sd", &__io_wiisd, false },
 	{ "usb", &usbmsd_disc[0], false },
@@ -53,6 +57,7 @@ static device_t devices[DEVICE_COUNT] = {
 	{ "cardb", &__io_gcsdb, false },
 	{ "usb2", &usbmsd_disc[1], false }
 };
+#pragma GCC diagnostic pop
 
 static int device_active = -1;
 static int device_prefered = -1;
