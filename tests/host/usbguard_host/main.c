@@ -161,8 +161,8 @@ static int32_t fake(void *arg)
 	return -4;
 }
 
-static bool fake_startup(void) { return fake(NULL) >= 0; }
-static bool fake_inserted(void) { return true; }
+static bool fake_startup(DISC_INTERFACE *d) { (void) d; return fake(NULL) >= 0; }
+static bool fake_inserted(DISC_INTERFACE *d) { (void) d; return true; }
 static int fat_ok = 1;
 
 bool fatMountSimple(const char *name, const DISC_INTERFACE *iface)

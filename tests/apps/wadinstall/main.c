@@ -10,6 +10,7 @@
 //   Exits to the reload stub: HBC, as installed.
 
 #include <malloc.h>
+#include <sys/stat.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>

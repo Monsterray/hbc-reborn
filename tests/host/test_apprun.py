@@ -233,7 +233,8 @@ class AppRunTest(unittest.TestCase):
         self.assertEqual(got, px(self.boot("Foo")).decode())
         self.assertTrue(self.api.t_record(got.encode()))
         self.assertEqual(self.state("Foo"), UNCHANGED)
-        self.assertIsNotNone(self.match("foo/BOOT.DOL", data))
+        if self.boot("Foo").with_name("BOOT.DOL").exists():  # FAT is case-insensitive, Linux file systems are not
+            self.assertIsNotNone(self.match("foo/BOOT.DOL", data))
         same_size = bytes(b ^ 1 for b in data[:1]) + data[1:]
         for caption, payload in (("Foo/boot.dol", same_size),  # same size, other bytes
                                  ("Foo/boot.dol", data + b"x"),

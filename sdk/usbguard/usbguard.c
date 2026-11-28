@@ -655,7 +655,7 @@ int32_t usbguard_test_reload_call(usbguard_fn fn, void *arg, const usbguard_opts
 
 struct mount_args {
 	const char *name;
-	const DISC_INTERFACE *iface;
+	DISC_INTERFACE *iface;   // libogc2 callbacks and libfat take it non-const
 	uint32_t warn_ms;
 };
 
@@ -664,9 +664,9 @@ static int32_t mount_fn(void *p)
 	const struct mount_args *a = p;
 	uint32_t t0 = ug_now();
 
-	if (!a->iface->startup())
+	if (!a->iface->startup(a->iface))
 		return ug_now() - t0 >= a->warn_ms ? USBGUARD_D2X_GAVE_UP : USBGUARD_NO_DRIVE;
-	if (!a->iface->isInserted())
+	if (!a->iface->isInserted(a->iface))
 		return USBGUARD_NO_DRIVE;
 	return fatMountSimple(a->name, a->iface) ? 0 : USBGUARD_NOT_MOUNTED;
 }
@@ -679,7 +679,7 @@ int32_t usbguard_mount(const char *name, const DISC_INTERFACE *iface, const usbg
 
 	fill(&o, opts);
 	a.name = name;
-	a.iface = iface;
+	a.iface = (DISC_INTERFACE *)iface;
 	a.warn_ms = o.warn_ms;
 	r = usbguard_call(mount_fn, &a, &o);
 	/* A slow startup failure with no drive connected, or a quick one. */

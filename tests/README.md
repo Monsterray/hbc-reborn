@@ -64,7 +64,7 @@ test's own docstring: edit the docstring, then run the script.
 | [`test_workstation_paths.py`](host/test_workstation_paths.py) | No paths of one workstation: no tracked text file names a project, tool or home folder of one PC (C:/projects/..., /c/tools/..., /mnt/c/..., a C:/Python3xx), so the project works on anyone's workstation. |
 | [`usbguard_host/`](host/usbguard_host/) | sdk/usbguard on a PC (tests/host/test_usbguard.py drives it): fake EHCI registers, fake calls that block, fail or return late, and scripted pulls, replugs and frees from on_wait. |
 | [`way_out_host/`](host/way_out_host/) | sdk/hbc_agent/way_out.c on a PC, against a model of the Wii's IPC registers and of IOS answering, or not: each scenario checks which way out the agent takes and what it notes. |
-| [`wiipax_section_bounds.c`](host/wiipax_section_bounds.c) | define main wiipax_tool_main include "../wiipax/client/main.c" undef main |
+| [`wiipax_section_bounds.c`](host/wiipax_section_bounds.c) | define main wiipax_tool_main include "../../wiipax/client/main.c" undef main |
 | [`wiispk_host/`](host/wiispk_host/) | Host test for sdk/wiispk: loads a WAV, checks the resampler's low-pass, and measures the ADPCM encoder against two models of the speaker's decoder. |
 
 ## dolphin/: Dolphin, in a throwaway profile

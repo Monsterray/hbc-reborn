@@ -1,7 +1,7 @@
 #include <stdio.h>
 
 #define main wiipax_tool_main
-#include "../wiipax/client/main.c"
+#include "../../wiipax/client/main.c"
 #undef main
 
 int main(void) {

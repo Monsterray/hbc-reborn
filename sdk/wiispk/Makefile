@@ -14,7 +14,7 @@ CC = $(PREFIX)gcc
 AR = $(PREFIX)ar
 
 CFLAGS = -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -O2 -Wall $(EXTRA_CFLAGS) \
-	-I$(DEVKITPRO)/libogc/include
+	-I$(DEVKITPRO)/libogc2/wii/include
 
 libwiispk.a: build/wiispk.o
 	rm -f $@

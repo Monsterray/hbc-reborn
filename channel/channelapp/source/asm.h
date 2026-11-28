@@ -288,6 +288,7 @@
 #define	DBAT0U		536
 #define	DBAT0L		537	
 #define	DBAT1U		538	
+#undef DBAT1L   /* libogc2 numbers it 539; the stub is written to this value */
 #define	DBAT1L		538	
 #define	DBAT2U		540	
 #define	DBAT2L		541	
@@ -330,6 +331,7 @@
 #define MSR_SE				0x00000400
 #define MSR_ME				0x00001000
 #define MSR_FP				0x00002000
+#undef MSR_POW
 #define MSR_POW				0x00004000
 #define MSR_EE				0x00008000
 

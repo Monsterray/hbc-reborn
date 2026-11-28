@@ -30,7 +30,7 @@ class UsbguardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.exe = pathlib.Path(cls.tmp.name) / "usbguard_host"
-        subprocess.run([CC, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+        subprocess.run([CC, "-std=c99", "-D_POSIX_C_SOURCE=200809L", "-O2", "-Wall", "-Wextra", "-Werror",
                         "-D_CRT_SECURE_NO_WARNINGS", "-DUSBGUARD_NO_OGC",
                         "-DUSBGUARD_SETTLE_MS=100", "-DUSBGUARD_D2X_GIVEUP_MS=250",
                         "-I", str(root / "sdk/usbguard"),

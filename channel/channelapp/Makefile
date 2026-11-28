@@ -38,7 +38,7 @@ DIR_INCLUDES = $(DIR_BUILD) \
 		$(MBOARD) \
 		$(MII) \
 		$(USBGUARD) \
-		$(DEVKITPRO)/libogc/include \
+		$(DEVKITPRO)/libogc2/wii/include \
 		$(DEVKITPRO)/portlibs/ppc/include \
 		$(DEVKITPRO)/portlibs/ppc/include/freetype2
 
@@ -49,7 +49,7 @@ AGENT = ../../sdk/hbc_agent
 
 DIR_LIBS = \
 		$(AGENT) \
-		$(DEVKITPRO)/libogc/lib/wii \
+		$(DEVKITPRO)/libogc2/wii/lib \
 		$(DEVKITPRO)/portlibs/ppc/lib
 
 LIBS = hbcagent mxml freetype brotlidec brotlicommon png bz2 z db fat wiiuse bte ogc m
@@ -65,7 +65,7 @@ LDFLAGS_STUB = $(MACHDEP) $(LDFLAGS_COMMON) -Wl,-Ttext=0x80001800 -Wl,--section-
 LDFLAGS_APP = $(MACHDEP) $(LDFLAGS_COMMON) -specs=newrvl.spec -Wl,--section-start,.init=$(BASE_ADDR) \
 	      $(DIR_LIBS:%=-L%) $(LIBS:%=-l%) -Wl,-Map,channelapp.map
 # The Wii Remotes' command queues, out of libogc's kernel heap (source/wpadqueue.c).
-LDFLAGS_APP += -Wl,--wrap=wiiuse_init_cmd_queue
+LDFLAGS_APP += -Wl,--wrap=wiiuse_init_cmd_queue,--wrap=c_default_exceptionhandler
 # make DEBUG_POISON=1: poison fresh and freed heap memory (source/poison.c)
 ifeq ($(DEBUG_POISON),1)
 CFLAGS += -DDEBUG_POISON $(if $(POISON_MODE),-DPOISON_MODE=$(POISON_MODE))

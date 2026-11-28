@@ -216,7 +216,7 @@ static bool stop_like_a_loader(const char *mode) {
 	// What a loader shuts down itself before IOS goes: each keeps a handle
 	// to the old IOS otherwise.
 	fatUnmount("sd:");
-	__io_wiisd.shutdown();
+	__io_wiisd.shutdown(&__io_wiisd);
 	net_deinit();
 	WPAD_Shutdown();
 	i = IOS_ReloadIOS(58);

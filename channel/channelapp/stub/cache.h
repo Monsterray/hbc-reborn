@@ -39,7 +39,7 @@ distribution.
 */ 
 
 #include <gctypes.h>
-#include <gcbool.h>
+#include <stdbool.h>
 
 #define LC_BASEPREFIX		0xe000
 #define LC_BASE				(LC_BASEPREFIX<<16)

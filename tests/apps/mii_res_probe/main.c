@@ -65,7 +65,7 @@ typedef struct {
 } blob;
 
 static bool es_read(const tikview *view, u16 index, u32 size, blob *out) {
-	s32 cfd = ES_OpenTitleContent(MENU, view, index), r;
+	s32 cfd = ES_OpenTitleContent(MENU, (tikview *) view, index), r;
 	u32 done = 0;
 
 	if (cfd < 0) {
