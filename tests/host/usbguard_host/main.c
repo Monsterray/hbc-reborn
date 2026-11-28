@@ -25,6 +25,7 @@
 // Prints "phase NAME MS" at each phase change, "fn N KIND", "write PORT
 // VALUE", "result R", then "check S", "pulled B", "blocked B".
 
+#define _POSIX_C_SOURCE 200809L  // -std=c99 hides usleep and clock_gettime
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
